@@ -217,6 +217,11 @@ def create_template_database(server: PostgresServer) -> str:
 
 
 def _run_migrations(server: PostgresServer, database: str) -> None:
+    run_alembic(server, database, 'upgrade', 'head')
+
+
+def run_alembic(server: PostgresServer, database: str, *args: str) -> None:
+    """Run ``alembic <args>`` against ``database``."""
     # Run alembic out of process: importing ``migrations/env.py`` here would
     # reconfigure logging for the whole pytest session (alembic.ini sets the
     # root logger to DEBUG).
@@ -239,7 +244,7 @@ def _run_migrations(server: PostgresServer, database: str) -> None:
     env.pop('STRIPE_API_KEY', None)
 
     result = subprocess.run(
-        [sys.executable, '-m', 'alembic', '-c', str(ALEMBIC_INI), 'upgrade', 'head'],
+        [sys.executable, '-m', 'alembic', '-c', str(ALEMBIC_INI), *args],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -247,8 +252,8 @@ def _run_migrations(server: PostgresServer, database: str) -> None:
     )
     if result.returncode != 0:
         raise PostgresUnavailableError(
-            'alembic upgrade head failed while building the test database '
-            f'template:\n{result.stdout}\n{result.stderr}'
+            f'alembic {" ".join(args)} failed on {database}:'
+            f'\n{result.stdout}\n{result.stderr}'
         )
 
 
