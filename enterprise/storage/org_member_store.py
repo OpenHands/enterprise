@@ -164,6 +164,39 @@ class OrgMemberStore:
             return True
 
     @staticmethod
+    async def set_all_membership_statuses(user_id: UUID, status: str) -> int:
+        """Set ``status`` on every membership for ``user_id``.
+
+        Returns the number of membership rows updated.
+        """
+        if status not in ('active', 'inactive', 'invited'):
+            raise ValueError(f'Invalid membership status: {status!r}')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember).filter(OrgMember.user_id == user_id)
+            )
+            members = list(result.scalars().all())
+            for member in members:
+                member.status = status
+            await session.commit()
+            return len(members)
+
+    @staticmethod
+    async def list_memberships_with_orgs(
+        user_id: UUID,
+    ) -> list[tuple[OrgMember, 'Org']]:
+        """Return ``(OrgMember, Org)`` pairs for a user."""
+        from storage.org import Org
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember, Org)
+                .join(Org, Org.id == OrgMember.org_id)
+                .filter(OrgMember.user_id == user_id)
+            )
+            return list(result.all())
+
+    @staticmethod
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
         """Return kwargs for OrgMember construction (keys match column names)."""
         return {

@@ -896,7 +896,21 @@ describe("UserContextMenu", () => {
 
   it("links Super Admin as its own destination for instance admins", async () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ app_mode: "saas" }),
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          enable_billing: false,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_onboarding: false,
+          enable_super_admin: true,
+        },
+      }),
     );
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
       items: [MOCK_TEAM_ORG_ACME],

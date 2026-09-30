@@ -7,6 +7,7 @@ workspace based on claimed Git organizations.
 
 from uuid import UUID
 
+from server.auth.org_access import OrgNotUsableError, assert_org_usable_for_product
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_member_store import OrgMemberStore
 
@@ -23,6 +24,11 @@ async def resolve_org_for_repo(
     If the repo's git organization is claimed by an OpenHands org, returns the
     claiming org's ID. When keycloak_user_id is provided, also verifies the user
     is a member of that org.
+
+    Raises:
+        OrgNotUsableError: If the claimed org (or the user's membership) is
+            suspended — callers should abort starting a conversation rather
+            than falling back to a personal workspace.
 
     Args:
         provider: Git provider name ("github", "gitlab", "bitbucket")
@@ -45,6 +51,16 @@ async def resolve_org_for_repo(
                 f'[OrgResolver] No claim found for {provider}/{git_org}',
             )
             return None
+
+        # Suspended orgs must not receive resolver conversations. Do not fall
+        # back to personal workspace — that would silently reroute work.
+        # Instance super admins are intentionally not exempt here: webhooks
+        # must not start agent runs for suspended orgs.
+        await assert_org_usable_for_product(
+            claim.org_id,
+            user_id=keycloak_user_id,
+            allow_instance_super_admin=False,
+        )
 
         # Skip membership check if no user_id provided
         if keycloak_user_id is None:
@@ -70,6 +86,12 @@ async def resolve_org_for_repo(
             f'for {provider}/{git_org} (user {keycloak_user_id})',
         )
         return claim.org_id
+    except OrgNotUsableError:
+        logger.info(
+            f'[OrgResolver] Refusing suspended org/membership for '
+            f'{provider}/{git_org}',
+        )
+        raise
     except Exception:
         logger.exception(
             f'[OrgResolver] Error resolving org for {provider}/{git_org}',

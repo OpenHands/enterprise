@@ -502,6 +502,29 @@ function mergeModels(snapshots: SuperAdminOrgUsageSnapshot[]) {
   );
 }
 
+export function mergeSuperAdminSnapshots(
+  selectedOrgIds: string[],
+  snapshots: SuperAdminOrgUsageSnapshot[],
+): SuperAdminUsageView {
+  return {
+    selectedOrgIds,
+    snapshots,
+    conversations: snapshots.reduce((sum, row) => sum + row.conversations, 0),
+    activeConversations: snapshots.reduce(
+      (sum, row) => sum + row.activeConversations,
+      0,
+    ),
+    spend: Number(
+      snapshots.reduce((sum, row) => sum + row.spend, 0).toFixed(2),
+    ),
+    dailyUsage: mergeDaily(snapshots),
+    agentUsage: mergeAgents(snapshots),
+    modelUsage: mergeModels(snapshots),
+    users: snapshots.flatMap((row) => row.users),
+    conversationRows: snapshots.flatMap((row) => row.conversationRows),
+  };
+}
+
 export function getSuperAdminUsageView(
   selectedOrgIds: string[],
   timeWindow: string,
@@ -523,21 +546,59 @@ export function getSuperAdminUsageView(
           selectedOrgIds.includes(snapshot.orgId),
         );
 
+  return mergeSuperAdminSnapshots(selectedOrgIds, snapshots);
+}
+
+export interface LiveOrgUsageStatsInput {
+  orgId: string;
+  orgName: string;
+  stats: {
+    usage_conversation_count: number;
+    agent_runs: number;
+    estimated_spend: number;
+    daily_usage: { date: string; conversations: number }[];
+    model_usage: {
+      model_name: string;
+      conversation_count: number;
+      total_tokens: number;
+      total_cost: number;
+    }[];
+    agent_usage: { agent_name: string; total_cost: number }[];
+  };
+  users?: Array<UserUsageRow & { org_name?: string }>;
+  conversationRows?: Array<ConversationRow & { org_name?: string }>;
+}
+
+export function snapshotFromLiveOrgUsage(
+  input: LiveOrgUsageStatsInput,
+): SuperAdminOrgUsageSnapshot {
   return {
-    selectedOrgIds,
-    snapshots,
-    conversations: snapshots.reduce((sum, row) => sum + row.conversations, 0),
-    activeConversations: snapshots.reduce(
-      (sum, row) => sum + row.activeConversations,
-      0,
-    ),
-    spend: Number(
-      snapshots.reduce((sum, row) => sum + row.spend, 0).toFixed(2),
-    ),
-    dailyUsage: mergeDaily(snapshots),
-    agentUsage: mergeAgents(snapshots),
-    modelUsage: mergeModels(snapshots),
-    users: snapshots.flatMap((row) => row.users),
-    conversationRows: snapshots.flatMap((row) => row.conversationRows),
+    orgId: input.orgId,
+    orgName: input.orgName,
+    conversations: input.stats.usage_conversation_count,
+    activeConversations: input.stats.agent_runs,
+    spend: input.stats.estimated_spend,
+    dailyUsage: input.stats.daily_usage.map((point) => ({
+      date: point.date,
+      conversations: point.conversations,
+    })),
+    agentUsage: input.stats.agent_usage.map((row) => ({
+      agent_name: row.agent_name,
+      total_cost: row.total_cost,
+    })),
+    modelUsage: input.stats.model_usage.map((row) => ({
+      model_name: row.model_name,
+      conversation_count: row.conversation_count,
+      total_tokens: row.total_tokens,
+      total_cost: row.total_cost,
+    })),
+    users: (input.users ?? []).map((user) => ({
+      ...user,
+      org_name: user.org_name ?? input.orgName,
+    })),
+    conversationRows: (input.conversationRows ?? []).map((row) => ({
+      ...row,
+      org_name: row.org_name ?? input.orgName,
+    })),
   };
 }

@@ -16,17 +16,17 @@ import {
   rowsToCsv,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
+import { useSuperAdminUsage } from "#/hooks/query/use-super-admin-usage";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { formControlFilterTriggerClassName } from "#/utils/form-control-classes";
-import { SUPER_ADMIN_ORGS } from "./super-admin-mock";
-import { getSuperAdminUsageView } from "./super-admin-usage-data";
 
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
 
 function selectedOrgLabel(
   selectedIds: string[],
+  orgs: { id: string; name: string }[],
   translate: (key: I18nKey, options?: { count: number }) => string,
 ) {
   if (selectedIds.length === 0) {
@@ -34,7 +34,7 @@ function selectedOrgLabel(
   }
   if (selectedIds.length === 1) {
     return (
-      SUPER_ADMIN_ORGS.find((org) => org.id === selectedIds[0])?.name ??
+      orgs.find((org) => org.id === selectedIds[0])?.name ??
       translate(I18nKey.SUPER_ADMIN$ALL_ORGS)
     );
   }
@@ -44,9 +44,11 @@ function selectedOrgLabel(
 }
 
 function OrgComparePicker({
+  orgs,
   selectedIds,
   onChange,
 }: {
+  orgs: { id: string; name: string }[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
 }) {
@@ -54,7 +56,7 @@ function OrgComparePicker({
   const [open, setOpen] = useState(false);
   const ref = useClickOutsideElement<HTMLDivElement>(() => setOpen(false));
   const comparing = selectedIds.length > 0;
-  const label = selectedOrgLabel(selectedIds, t);
+  const label = selectedOrgLabel(selectedIds, orgs, t);
 
   const toggleOrg = (orgId: string) => {
     if (selectedIds.includes(orgId)) {
@@ -107,7 +109,7 @@ function OrgComparePicker({
             {t(I18nKey.SUPER_ADMIN$COMPARE_ORGS)}
           </p>
           <div className="flex flex-col gap-1">
-            {SUPER_ADMIN_ORGS.map((org) => {
+            {orgs.map((org) => {
               const checked = selectedIds.includes(org.id);
               return (
                 <label
@@ -201,10 +203,12 @@ export function SuperAdminDashboard() {
     title: string | null;
   } | null>(null);
 
-  const usage = useMemo(
-    () => getSuperAdminUsageView(selectedOrgIds, timeWindow),
-    [selectedOrgIds, timeWindow],
-  );
+  const {
+    orgs,
+    usage,
+    isLoading: usageLoading,
+    isError: usageError,
+  } = useSuperAdminUsage({ selectedOrgIds, timeWindow });
   const comparing = selectedOrgIds.length > 0;
   const timeWindowLabel =
     timeWindow === "ytd" ? "YTD" : timeWindow.toUpperCase();
@@ -365,7 +369,7 @@ export function SuperAdminDashboard() {
     }, 400);
   };
 
-  const scopeLabel = selectedOrgLabel(selectedOrgIds, t);
+  const scopeLabel = selectedOrgLabel(selectedOrgIds, orgs, t);
 
   return (
     <div className="space-y-6" data-testid="super-admin-dashboard">
@@ -393,6 +397,7 @@ export function SuperAdminDashboard() {
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <OrgComparePicker
+            orgs={orgs}
             selectedIds={selectedOrgIds}
             onChange={(ids) => {
               setSelectedOrgIds(ids);
@@ -420,6 +425,22 @@ export function SuperAdminDashboard() {
           </div>
         </div>
       </div>
+
+      {usageLoading ? (
+        <p className="text-sm text-[var(--oh-muted)]">
+          {t(I18nKey.SUPER_ADMIN$LOADING)}
+        </p>
+      ) : null}
+      {usageError ? (
+        <p className="text-sm text-red-400">
+          {t(I18nKey.SUPER_ADMIN$USAGE_LOAD_ERROR)}
+        </p>
+      ) : null}
+      {!usageLoading && !usageError && usage.snapshots.length === 0 ? (
+        <p className="text-sm text-[var(--oh-muted)]">
+          {t(I18nKey.SUPER_ADMIN$NO_USAGE_YET)}
+        </p>
+      ) : null}
 
       {activeTab === "overview" && (
         <OverviewTab

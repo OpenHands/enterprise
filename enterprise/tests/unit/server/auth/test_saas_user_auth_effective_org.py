@@ -10,6 +10,7 @@ Validates the precedence rules:
 """
 
 import uuid
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -134,6 +135,16 @@ def _stores_patched(async_session_maker):
     )
 
 
+@contextmanager
+def _with_auth_stores(async_session_maker):
+    """Patch all auth-related stores (including OrgStore for lifecycle gates)."""
+    with ExitStack() as stack:
+        for p in _stores_patched(async_session_maker):
+            stack.enter_context(p)
+        yield
+
+
+
 class TestGetEffectiveOrgId:
     @pytest.mark.asyncio
     async def test_no_header_falls_back_to_current_org_id(
@@ -144,10 +155,7 @@ class TestGetEffectiveOrgId:
             user_id=user_id,
             refresh_token=SecretStr('mock'),
         )
-        with (
-            _stores_patched(async_session_maker)[0],
-            _stores_patched(async_session_maker)[2],
-        ):
+        with _with_auth_stores(async_session_maker):
             effective = await user_auth.get_effective_org_id()
 
         assert effective == org_id
@@ -162,10 +170,7 @@ class TestGetEffectiveOrgId:
             refresh_token=SecretStr('mock'),
             _x_org_id_header=str(other_org_id),
         )
-        with (
-            _stores_patched(async_session_maker)[0],
-            _stores_patched(async_session_maker)[2],
-        ):
+        with _with_auth_stores(async_session_maker):
             effective = await user_auth.get_effective_org_id()
 
         assert effective == other_org_id
@@ -180,7 +185,7 @@ class TestGetEffectiveOrgId:
             refresh_token=SecretStr('mock'),
             effective_org_id_override=other_org_id,
         )
-        with _stores_patched(async_session_maker)[2]:
+        with _with_auth_stores(async_session_maker):
             effective = await user_auth.get_effective_org_id()
 
         assert effective == other_org_id
@@ -353,11 +358,7 @@ class TestGetEffectiveOrgId:
             refresh_token=SecretStr('mock'),
             _x_org_id_header=str(other_org_id),
         )
-        with (
-            _stores_patched(async_session_maker)[0],
-            _stores_patched(async_session_maker)[2],
-            _stores_patched(async_session_maker)[3],
-        ):
+        with _with_auth_stores(async_session_maker):
             effective = await user_auth.get_effective_org_id()
 
         assert effective == other_org_id
@@ -389,11 +390,7 @@ class TestGetEffectiveOrgId:
             refresh_token=SecretStr('mock'),
             _x_org_id_header=str(other_org_id),
         )
-        with (
-            _stores_patched(async_session_maker)[0],
-            _stores_patched(async_session_maker)[2],
-            _stores_patched(async_session_maker)[3],
-        ):
+        with _with_auth_stores(async_session_maker):
             with pytest.raises(HTTPException) as exc_info:
                 await user_auth.get_effective_org_id()
 
@@ -417,13 +414,14 @@ class TestGetEffectiveOrgId:
     ):
         # User's persisted current_org is `org_id`, but API key is pinned
         # to `other_org_id`. Effective org must be `other_org_id`.
-        await _seed_minimal(async_session_maker, user_id, org_id)
+        await _seed_minimal(async_session_maker, user_id, org_id, other_org_id)
         user_auth = SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr('mock'),
             api_key_org_id=other_org_id,
         )
-        effective = await user_auth.get_effective_org_id()
+        with _with_auth_stores(async_session_maker):
+            effective = await user_auth.get_effective_org_id()
         assert effective == other_org_id
 
     @pytest.mark.asyncio
@@ -445,13 +443,15 @@ class TestGetEffectiveOrgId:
     async def test_api_key_org_id_matching_header_is_allowed(
         self, async_session_maker, user_id, org_id
     ):
+        await _seed_minimal(async_session_maker, user_id, org_id)
         user_auth = SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr('mock'),
             api_key_org_id=org_id,
             _x_org_id_header=str(org_id),
         )
-        effective = await user_auth.get_effective_org_id()
+        with _with_auth_stores(async_session_maker):
+            effective = await user_auth.get_effective_org_id()
         assert effective == org_id
 
     @pytest.mark.asyncio
@@ -464,16 +464,139 @@ class TestGetEffectiveOrgId:
             refresh_token=SecretStr('mock'),
             _x_org_id_header=str(other_org_id),
         )
-        with (
-            _stores_patched(async_session_maker)[0],
-            _stores_patched(async_session_maker)[2],
-        ):
+        with _with_auth_stores(async_session_maker):
             first = await user_auth.get_effective_org_id()
 
         # Drop the patches; if cache works the second call must not touch DB.
         second = await user_auth.get_effective_org_id()
         assert first == second == other_org_id
         assert user_auth._effective_org_id_resolved is True
+
+    @pytest.mark.asyncio
+    async def test_suspended_org_current_org_raises_403(
+        self, async_session_maker, user_id, org_id
+    ):
+        await _seed_minimal(async_session_maker, user_id, org_id)
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.status = 'suspended'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+        )
+        with _with_auth_stores(async_session_maker):
+            with pytest.raises(HTTPException) as exc_info:
+                await user_auth.get_effective_org_id()
+
+        assert exc_info.value.status_code == 403
+        assert 'suspended' in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_suspended_org_allowed_for_instance_super_admin(
+        self, async_session_maker, user_id, org_id
+    ):
+        await _seed_minimal(
+            async_session_maker,
+            user_id,
+            org_id,
+            super_role_name='admin',
+        )
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.status = 'suspended'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+        )
+        with _with_auth_stores(async_session_maker):
+            effective = await user_auth.get_effective_org_id()
+
+        assert effective == org_id
+
+    @pytest.mark.asyncio
+    async def test_suspended_org_x_org_id_raises_403(
+        self, async_session_maker, user_id, org_id, other_org_id
+    ):
+        await _seed_minimal(async_session_maker, user_id, org_id, other_org_id)
+        async with async_session_maker() as session:
+            org = await session.get(Org, other_org_id)
+            org.status = 'suspended'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+            _x_org_id_header=str(other_org_id),
+        )
+        with _with_auth_stores(async_session_maker):
+            with pytest.raises(HTTPException) as exc_info:
+                await user_auth.get_effective_org_id()
+
+        assert exc_info.value.status_code == 403
+        assert 'suspended' in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_inactive_membership_raises_403(
+        self, async_session_maker, user_id, org_id
+    ):
+        await _seed_minimal(async_session_maker, user_id, org_id)
+        async with async_session_maker() as session:
+            member = await session.get(
+                OrgMember, {'org_id': org_id, 'user_id': uuid.UUID(user_id)}
+            )
+            # Composite PK lookup may differ; update via query if needed.
+            if member is None:
+                from sqlalchemy import select
+
+                result = await session.execute(
+                    select(OrgMember).where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.user_id == uuid.UUID(user_id),
+                    )
+                )
+                member = result.scalar_one()
+            member.status = 'inactive'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+        )
+        with _with_auth_stores(async_session_maker):
+            with pytest.raises(HTTPException) as exc_info:
+                await user_auth.get_effective_org_id()
+
+        assert exc_info.value.status_code == 403
+        assert 'suspended' in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_permission_check_allows_suspended_org_target(
+        self, async_session_maker, user_id, org_id
+    ):
+        """Admin permission resolution must still see suspended orgs.
+
+        ``get_target_org_id_for_permission_check`` skips the product
+        lifecycle gate so super-admin routes can manage suspended orgs.
+        """
+        await _seed_minimal(async_session_maker, user_id, org_id)
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.status = 'suspended'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+            _x_org_id_header=str(org_id),
+        )
+        with _with_auth_stores(async_session_maker):
+            target = await user_auth.get_target_org_id_for_permission_check()
+
+        assert target == org_id
 
 
 class TestGetTargetOrgIdForPermissionCheck:

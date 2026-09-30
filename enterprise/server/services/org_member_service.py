@@ -34,6 +34,9 @@ class OrgMemberService:
         Retrieves the authenticated user's role, status, email, and LLM override
         fields (with masked API keys) within the specified organization.
 
+        Instance Super Admins who are not members still receive a synthetic
+        membership so Open Org / inspection of suspended orgs keeps working.
+
         Args:
             org_id: Organization ID (UUID)
             user_id: User ID (UUID)
@@ -43,11 +46,16 @@ class OrgMemberService:
 
         Raises:
             OrgMemberNotFoundError: If user is not a member of the organization
+                and is not an instance Super Admin
             RoleNotFoundError: If the role associated with the member is not found
         """
         # Look up the user's membership in this org
         org_member = await OrgMemberStore.get_org_member(org_id, user_id)
         if org_member is None:
+            from server.auth.authorization import is_instance_super_admin
+
+            if await is_instance_super_admin(str(user_id)):
+                return await MeResponse.for_instance_super_admin(org_id, user_id)
             raise OrgMemberNotFoundError(str(org_id), str(user_id))
 
         # Resolve role name from role_id

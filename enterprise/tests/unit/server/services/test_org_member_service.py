@@ -2292,10 +2292,17 @@ class TestOrgMemberServiceGetMe:
         THEN: Raises OrgMemberNotFoundError
         """
         # Arrange
-        with patch(
-            'server.services.org_member_service.OrgMemberStore.get_org_member',
-            new_callable=AsyncMock,
-        ) as mock_get_member:
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.auth.authorization.is_instance_super_admin',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
             mock_get_member.return_value = None
 
             # Act & Assert
@@ -2303,6 +2310,33 @@ class TestOrgMemberServiceGetMe:
                 await OrgMemberService.get_me(org_id, current_user_id)
 
             assert str(org_id) in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_get_me_instance_super_admin_non_member_returns_synthetic(
+        self, org_id, current_user_id
+    ):
+        """Non-member Super Admins get a synthetic /me for Open Org."""
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.auth.authorization.is_instance_super_admin',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                'server.routes.org_models.MeResponse.for_instance_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_synthetic,
+        ):
+            mock_synthetic.return_value = MagicMock()
+            result = await OrgMemberService.get_me(org_id, current_user_id)
+
+        mock_synthetic.assert_awaited_once_with(org_id, current_user_id)
+        assert result is mock_synthetic.return_value
 
     @pytest.mark.asyncio
     async def test_get_me_role_not_found_raises_error(
