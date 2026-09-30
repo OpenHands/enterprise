@@ -16,6 +16,7 @@ interface ModalButtonGroupProps {
   // For single-action modals where the primary button already closes; avoids a
   // redundant second "Close" button next to it.
   hideSecondaryButton?: boolean;
+  isPrimaryDisabled?: boolean;
 }
 
 export function ModalButtonGroup({
@@ -28,6 +29,7 @@ export function ModalButtonGroup({
   primaryTestId,
   secondaryTestId,
   hideSecondaryButton = false,
+  isPrimaryDisabled = false,
 }: ModalButtonGroupProps) {
   const { t } = useTranslation();
   const closeText = secondaryText ?? t(I18nKey.BUTTON$CLOSE);
@@ -51,7 +53,7 @@ export function ModalButtonGroup({
         onClick={onPrimaryClick}
         className="flex items-center justify-center"
         testId={primaryTestId}
-        isDisabled={isLoading}
+        isDisabled={isLoading || isPrimaryDisabled}
       >
         {isLoading ? (
           <LoadingSpinner

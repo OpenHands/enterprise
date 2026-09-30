@@ -54,7 +54,8 @@ import type {
   SuperAdminOrgRow,
   SuperAdminUserRow,
 } from "./super-admin-mock";
-import { useSuperAdminOpenOrg } from "./use-super-admin-open-org";
+import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
+import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
 
 function navCopy(path: string) {
   return (
@@ -96,7 +97,8 @@ export function SuperAdminSetup() {
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
   const { data: me } = useMe();
-  const openOrg = useSuperAdminOpenOrg();
+  const { viewOrg, pendingOrg, dismissGrant, confirmGrant, userId } =
+    useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.organizations);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -178,7 +180,7 @@ export function SuperAdminOrganizations() {
                 type="button"
                 data-testid={`super-admin-org-open-${row.id}`}
                 className="block max-w-full truncate text-left hover:underline"
-                onClick={() => openOrg(row.id, row.name)}
+                onClick={() => viewOrg(row.id, row.name)}
               >
                 {row.name}
               </button>
@@ -218,7 +220,7 @@ export function SuperAdminOrganizations() {
                   {
                     label: t(I18nKey.SUPER_ADMIN$VIEW_ORG),
                     testId: `super-admin-org-view-${row.id}`,
-                    onSelect: () => openOrg(row.id, row.name),
+                    onSelect: () => viewOrg(row.id, row.name),
                   },
                   row.status === "active"
                     ? {
@@ -257,13 +259,23 @@ export function SuperAdminOrganizations() {
           onClose={() => setCreateOpen(false)}
         />
       )}
+      {pendingOrg ? (
+        <SuperAdminGrantSelfAccessModal
+          orgId={pendingOrg.orgId}
+          orgName={pendingOrg.orgName}
+          userId={userId}
+          onClose={dismissGrant}
+          onGranted={confirmGrant}
+        />
+      ) : null}
     </div>
   );
 }
 
 export function SuperAdminUsers() {
   const { t } = useTranslation();
-  const openOrg = useSuperAdminOpenOrg();
+  const { viewOrg, pendingOrg, dismissGrant, confirmGrant, userId } =
+    useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
   const [provisionOpen, setProvisionOpen] = useState(false);
@@ -429,7 +441,7 @@ export function SuperAdminUsers() {
               <SuperAdminUserMemberships
                 memberships={row.memberships}
                 field="orgName"
-                onOrgClick={openOrg}
+                onOrgClick={viewOrg}
               />
             ),
           },
@@ -610,6 +622,15 @@ export function SuperAdminUsers() {
             name: org.name,
           }))}
           onClose={() => setManagedUserId(null)}
+        />
+      ) : null}
+      {pendingOrg ? (
+        <SuperAdminGrantSelfAccessModal
+          orgId={pendingOrg.orgId}
+          orgName={pendingOrg.orgName}
+          userId={userId}
+          onClose={dismissGrant}
+          onGranted={confirmGrant}
         />
       ) : null}
     </div>

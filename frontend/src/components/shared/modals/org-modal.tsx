@@ -21,6 +21,7 @@ interface OrgModalProps {
   asForm?: boolean;
   formAction?: (formData: FormData) => void;
   hideSecondaryButton?: boolean;
+  isPrimaryDisabled?: boolean;
   className?: string;
 }
 
@@ -41,6 +42,7 @@ export function OrgModal({
   asForm = false,
   formAction,
   hideSecondaryButton = false,
+  isPrimaryDisabled = false,
   className,
 }: OrgModalProps) {
   const content = (
@@ -62,6 +64,7 @@ export function OrgModal({
         primaryTestId={primaryButtonTestId}
         secondaryTestId={secondaryButtonTestId}
         hideSecondaryButton={hideSecondaryButton}
+        isPrimaryDisabled={isPrimaryDisabled}
       />
     </>
   );

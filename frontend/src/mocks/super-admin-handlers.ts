@@ -162,6 +162,22 @@ if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
   applyFreshSaAdminSeed();
 }
 
+type MockMembershipAdded = {
+  userId: string;
+  orgId: string;
+  orgName: string;
+  role: string;
+};
+
+const membershipAddedListeners = new Set<(event: MockMembershipAdded) => void>();
+
+/** Lets the org mock record a membership created from the admin groups API. */
+export function onMockAdminMembershipAdded(
+  listener: (event: MockMembershipAdded) => void,
+) {
+  membershipAddedListeners.add(listener);
+}
+
 export function registerMockAdminOrg(org: {
   id: string;
   name: string;
@@ -485,11 +501,18 @@ export const SUPER_ADMIN_HANDLERS = [
     if (body.action === "add") {
       const role = body.role ?? "member";
       orgIds.forEach((orgId) => {
-        const already = target.memberships.some(
+        const org = adminOrgs.find((row) => row.id === orgId);
+        if (!org || org.is_personal) {
+          return;
+        }
+        const existing = target.memberships.find(
           (membership) => membership.org_id === orgId,
         );
-        const org = adminOrgs.find((row) => row.id === orgId);
-        if (already || !org || org.is_personal) {
+        if (existing) {
+          if (existing.status !== "active") {
+            existing.role = role;
+            existing.status = "active";
+          }
           return;
         }
         target.memberships.push({
@@ -499,6 +522,14 @@ export const SUPER_ADMIN_HANDLERS = [
           status: "active",
         });
         org.member_count += 1;
+        membershipAddedListeners.forEach((listener) =>
+          listener({
+            userId: target.user_id,
+            orgId,
+            orgName: org.name,
+            role,
+          }),
+        );
       });
       target.status = "active";
       return HttpResponse.json(target);

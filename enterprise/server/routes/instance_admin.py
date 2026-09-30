@@ -459,6 +459,12 @@ async def _add_selected_memberships(
             )
         existing = await OrgMemberStore.get_org_member(org_id, user.id)
         if existing is not None:
+            # A suspended or invited row is not access. Granting again
+            # reactivates it at the chosen role instead of leaving them out.
+            if existing.status != 'active':
+                await OrgMemberStore.update_user_role_in_org(
+                    org_id, user.id, role.id, status='active'
+                )
             continue
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
         await OrgMemberStore.add_user_to_org(

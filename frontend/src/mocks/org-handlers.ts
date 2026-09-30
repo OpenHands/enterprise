@@ -8,7 +8,10 @@ import {
 } from "#/types/org";
 import { isInstanceSuperAdmin } from "#/utils/org/permissions";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
-import { registerMockAdminOrg } from "./super-admin-handlers";
+import {
+  onMockAdminMembershipAdded,
+  registerMockAdminOrg,
+} from "./super-admin-handlers";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -324,6 +327,22 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
   ],
 };
 
+onMockAdminMembershipAdded(({ userId, orgId, role }) => {
+  if (userId !== MOCK_ME.user_id) {
+    return;
+  }
+  const members = ORGS_AND_MEMBERS[orgId] ?? [];
+  if (members.some((member) => member.user_id === userId)) {
+    return;
+  }
+  const nextRole: OrganizationUserRole =
+    role === "owner" || role === "admin" ? role : "member";
+  ORGS_AND_MEMBERS[orgId] = [
+    ...members,
+    currentUserMembership(orgId, nextRole),
+  ];
+});
+
 export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
   "1": INITIAL_MOCK_MEMBERS["1"].map((member) => ({ ...member })),
   "2": INITIAL_MOCK_MEMBERS["2"].map((member) => ({ ...member })),
@@ -549,7 +568,15 @@ export const ORG_HANDLERS = [
     const membership = ORGS_AND_MEMBERS[orgId]?.find(
       (member) => member.user_id === MOCK_ME.user_id,
     );
-    if (!membership && !isInstanceSuperAdmin(MOCK_ME.permissions)) {
+    if (membership) {
+      return HttpResponse.json({
+        ...MOCK_ME,
+        ...membership,
+        org_id: orgId,
+        permissions: MOCK_ME.permissions,
+      });
+    }
+    if (!isInstanceSuperAdmin(MOCK_ME.permissions)) {
       return HttpResponse.json({ error: "Not a member" }, { status: 404 });
     }
 
