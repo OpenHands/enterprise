@@ -721,7 +721,7 @@ describe("Budgets", () => {
       screen.getByRole("button", { name: "Default budget for users" }),
     );
 
-    await user.click(screen.getByRole("button", { name: "Save default" }));
+    await user.click(screen.getByRole("button", { name: "Update default" }));
 
     await waitFor(() =>
       expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
