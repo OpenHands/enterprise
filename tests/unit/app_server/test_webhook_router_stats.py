@@ -782,21 +782,15 @@ class TestProcessStatsEvent:
         async_session,
         v1_conversation_metadata,
     ):
-        """A failed stats write must not poison the reused session.
-
-        An out-of-range token value makes the commit inside
-        ``update_conversation_statistics`` fail mid-flush, which leaves the
-        AsyncSession needing a rollback. ``process_stats_event`` swallows the
-        error, so without the rollback in its handler the next statement on the
-        same session raises ``PendingRollbackError`` -- turning one bad event
-        into a sustained stream of 500s that never self-heals. Assert the
-        session is usable again after the failed event.
+        """A failed stats write must not poison the reused session, leaving
+        every later request to 500 until the process restarts. Guards the
+        rollback in ``process_stats_event``'s error handler.
         """
         conversation_id, _ = v1_conversation_metadata
 
-        # One past the PostgreSQL BIGINT (int64) maximum, so the write fails
-        # with an out-of-range DataError on flush -- the same failure class the
-        # rollback protects against.
+        # One past the BIGINT (int64) max, so the write fails with an
+        # out-of-range DataError on flush -- the failure class the rollback
+        # protects against.
         overflow = 2**63
         bad_event = ConversationStateUpdateEvent(
             key='stats',
