@@ -107,13 +107,14 @@ async def _check(
     settings: SandboxLifecycleSettings | None = None,
 ):
     row = harness.row()
+    service = harness.service(db_session)
+    service.httpx_client = agent_server  # type: ignore[assignment]
     return await tasks.check_sandbox(
         harness.sandbox_id,
         backend=row.backend,
         settings=settings or SandboxLifecycleSettings(),
         db_session=db_session,
-        sandbox_service=harness.service(db_session),
-        httpx_client=agent_server,  # type: ignore[arg-type]
+        sandbox_service=service,
         now=datetime.now(UTC),
     )
 
@@ -285,7 +286,7 @@ class TestSweep:
 
         @contextlib.asynccontextmanager
         async def _services():
-            yield db_session, None, None
+            yield db_session, None
 
         with (
             patch.object(

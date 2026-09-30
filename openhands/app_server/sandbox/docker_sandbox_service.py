@@ -9,7 +9,6 @@ from typing import AsyncGenerator, ClassVar
 
 import base62
 import docker
-import httpx
 from docker.errors import APIError, NotFound
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,9 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
-from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -38,10 +37,8 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_HEADERS_VALUE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
-    RUNTIME_IDLE_TIMEOUT_VARIABLE,
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
-    ManagedSandboxServiceInjector,
     SandboxService,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -126,7 +123,6 @@ class DockerSandboxService(ManagedSandboxService):
     mounts: list[VolumeMount]
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
-    httpx_client: httpx.AsyncClient
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
@@ -134,9 +130,6 @@ class DockerSandboxService(ManagedSandboxService):
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
     kvm_enabled: bool = False
-    lifecycle: SandboxLifecycleSettings = field(
-        default_factory=SandboxLifecycleSettings
-    )
 
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
@@ -485,9 +478,7 @@ class DockerSandboxService(ManagedSandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
-        idle_seconds = self.lifecycle.idle_seconds
-        if idle_seconds:
-            env_vars[RUNTIME_IDLE_TIMEOUT_VARIABLE] = str(idle_seconds)
+        env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.

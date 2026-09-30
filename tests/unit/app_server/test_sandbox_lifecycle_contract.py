@@ -21,8 +21,8 @@ from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxService,
     ExposedPort,
 )
+from openhands.app_server.sandbox.managed_sandbox_service import ManagedSandboxService
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER
-from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     LifecycleState,
@@ -107,7 +107,7 @@ class DockerHarness:
         self.containers[container.name] = container
         return container
 
-    def service(self, db_session) -> SandboxService:
+    def service(self, db_session) -> ManagedSandboxService:
         spec = MagicMock()
         spec.id = 'test-image:latest'
         spec.initial_env = {}
@@ -184,7 +184,7 @@ class E2BHarness:
         self.states[self.sandbox_id] = SandboxState.RUNNING
         return MagicMock(sandbox_id=self.sandbox_id)
 
-    def service(self, db_session) -> SandboxService:
+    def service(self, db_session) -> ManagedSandboxService:
         return e2b_tests._service(db_session)
 
     def row(self) -> StoredSandbox:
@@ -213,7 +213,7 @@ class K8sHarness:
     def __init__(self):
         self.k8s = k8s_tests.FakeAgentSandbox()
 
-    def service(self, db_session) -> SandboxService:
+    def service(self, db_session) -> ManagedSandboxService:
         return k8s_tests._service(db_session, self.k8s)
 
     def row(self) -> StoredSandbox:

@@ -3,14 +3,10 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import ClassVar
 
 import httpx
-from pydantic import Field
 
-from openhands.agent_server.env_parser import from_env
 from openhands.app_server.errors import SandboxError
-from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
@@ -30,9 +26,6 @@ _logger = logging.getLogger(__name__)
 SESSION_API_KEY_VARIABLE = 'OH_SESSION_API_KEYS_0'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
-# The agent server caps a foreground terminal command below this, so that one
-# long command does not look like an idle sandbox.
-RUNTIME_IDLE_TIMEOUT_VARIABLE = 'OH_RUNTIME_IDLE_TIMEOUT_SECONDS'
 
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
 # on a 401 (#5189). These names are the contract consumed by the agent-server's
@@ -438,27 +431,3 @@ class SandboxService(ABC):
 
 class SandboxServiceInjector(DiscriminatedUnionMixin, Injector[SandboxService], ABC):
     pass
-
-
-class ManagedSandboxServiceInjector(SandboxServiceInjector, ABC):
-    """A backend whose sandboxes the app pauses and deletes.
-
-    The background worker applies the rules in ``sandbox.lifecycle`` to the
-    backend's rows in the sandbox table. The backend stores a row for each
-    sandbox under ``backend``, and keeps the row's lifecycle columns current
-    when it starts, resumes and pauses a sandbox.
-    """
-
-    backend: ClassVar[str]
-    lifecycle: SandboxLifecycleSettings = Field(
-        # The legacy RUNTIME setting builds the injector without reading env.
-        default_factory=lambda: from_env(
-            SandboxLifecycleSettings, 'OH_SANDBOX_LIFECYCLE'
-        ),
-        description=(
-            "When the app pauses and deletes this backend's sandboxes. "
-            'Configure via OH_SANDBOX_LIFECYCLE_IDLE_SECONDS, '
-            'OH_SANDBOX_LIFECYCLE_MAX_SESSION_SECONDS and '
-            'OH_SANDBOX_LIFECYCLE_DELETE_AFTER_SECONDS.'
-        ),
-    )

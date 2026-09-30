@@ -10,12 +10,10 @@ import logging
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime
 
-import httpx
 from procrastinate import Blueprint, JobContext
 from procrastinate.exceptions import AlreadyEnqueued
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.lifecycle.rules import (
     Action,
     Decision,
@@ -24,11 +22,11 @@ from openhands.app_server.sandbox.lifecycle.rules import (
 )
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.lifecycle.sweep import find_due_sandbox_ids
-from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
-from openhands.app_server.sandbox.sandbox_service import (
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
     ManagedSandboxServiceInjector,
-    SandboxService,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.sandbox.sandbox_store import (
     lock_stored_sandbox_if_free,
     mark_paused,
@@ -42,7 +40,6 @@ _logger = logging.getLogger(__name__)
 # and the next sweep, a minute later, picks up the rest.
 SWEEP_BATCH_SIZE = 1000
 CHECK_TIMEOUT_SECONDS = 120
-PROBE_TIMEOUT_SECONDS = 6
 
 lifecycle = Blueprint()
 
@@ -58,17 +55,12 @@ def _managed_backend() -> ManagedSandboxServiceInjector | None:
 
 
 @contextlib.asynccontextmanager
-async def _services() -> AsyncIterator[
-    tuple[AsyncSession, SandboxService, httpx.AsyncClient]
-]:
+async def _services() -> AsyncIterator[tuple[AsyncSession, ManagedSandboxService]]:
     """The services the jobs use, acting for every user.
 
     They share one database session, committed when the block ends.
     """
-    from openhands.app_server.config import (
-        get_httpx_client,
-        get_sandbox_service,
-    )
+    from openhands.app_server.config import get_sandbox_service
     from openhands.app_server.services.db_session import get_db_session
 
     state = InjectorState()
@@ -76,9 +68,10 @@ async def _services() -> AsyncIterator[
     async with (
         get_db_session(state) as db_session,
         get_sandbox_service(state) as sandbox_service,
-        get_httpx_client(state) as httpx_client,
     ):
-        yield db_session, sandbox_service, httpx_client
+        # The jobs only run when the backend's injector is managed.
+        assert isinstance(sandbox_service, ManagedSandboxService)
+        yield db_session, sandbox_service
 
 
 @lifecycle.periodic(cron='* * * * *')
@@ -90,7 +83,7 @@ async def sweep(context: JobContext, timestamp: int) -> None:
     backend = _managed_backend()
     if backend is None:
         return
-    async with _services() as (db_session, _, _):
+    async with _services() as (db_session, _):
         sandbox_ids = await find_due_sandbox_ids(
             db_session,
             backend.backend,
@@ -124,7 +117,7 @@ async def check(sandbox_id: str) -> None:
         return
     async with (
         asyncio.timeout(CHECK_TIMEOUT_SECONDS),
-        _services() as (db_session, sandbox_service, client),
+        _services() as (db_session, sandbox_service),
     ):
         await check_sandbox(
             sandbox_id,
@@ -132,7 +125,6 @@ async def check(sandbox_id: str) -> None:
             settings=backend.lifecycle,
             db_session=db_session,
             sandbox_service=sandbox_service,
-            httpx_client=client,
             now=datetime.now(UTC),
         )
 
@@ -143,8 +135,7 @@ async def check_sandbox(
     backend: str,
     settings: SandboxLifecycleSettings,
     db_session: AsyncSession,
-    sandbox_service: SandboxService,
-    httpx_client: httpx.AsyncClient,
+    sandbox_service: ManagedSandboxService,
     now: datetime,
 ) -> Decision | None:
     """Apply the rules to one sandbox. The caller commits.
@@ -165,7 +156,7 @@ async def check_sandbox(
         and live_status == SandboxStatus.RUNNING
         and not max_session_due(row, settings, now)
     ):
-        idle_time = await _read_idle_time(sandbox_service, sandbox, httpx_client)
+        idle_time = await sandbox_service.get_idle_time(sandbox)
 
     decision = decide(row, live_status, idle_time, settings, now)
     log_extra = {
@@ -192,28 +183,3 @@ async def check_sandbox(
         assert decision.last_active_at is not None
         row.last_active_at = decision.last_active_at
     return decision
-
-
-async def _read_idle_time(
-    sandbox_service: SandboxService,
-    sandbox: SandboxInfo,
-    httpx_client: httpx.AsyncClient,
-) -> float | None:
-    """How long the agent server has done nothing, by its own count.
-
-    None when the agent server cannot be read, which changes nothing: a slow
-    or restarting agent server is not an idle one.
-    """
-    try:
-        url = sandbox_service._get_agent_server_url(sandbox)
-        response = await httpx_client.get(
-            f'{url.rstrip("/")}/server_info', timeout=PROBE_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-        return float(response.json()['idle_time'])
-    except (SandboxError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-        _logger.info(
-            'sandbox_lifecycle.probe_failed',
-            extra={'sandbox_id': sandbox.id, 'error': str(exc)},
-        )
-        return None
