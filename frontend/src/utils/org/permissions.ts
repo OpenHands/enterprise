@@ -45,12 +45,13 @@ export type PermissionKey =
   | ProvisionUserPermission
   | ManageSuperAdminsPermission;
 
-/** Instance-level permissions granted only to the superadmin super role.
- *  Used by the FE to detect Super Admin identity — keep this list to
- *  permissions that are never granted via org-scoped roles. */
+/** Instance-level permissions that identify a Super Admin in the FE.
+
+ *  Must stay aligned with backend ``is_instance_super_admin`` /
+ *  ``MANAGE_SUPER_ADMINS``. Do **not** include ``provision_user`` — that
+ *  permission is also granted to org owners/admins.
+ */
 export const INSTANCE_SUPER_ADMIN_PERMISSIONS: PermissionKey[] = [
-  "create_organization",
-  "provision_user",
   "manage_super_admins",
 ];
 

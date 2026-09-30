@@ -922,7 +922,7 @@ describe("UserContextMenu", () => {
     seedActiveUser({
       role: "admin",
       org_id: MOCK_TEAM_ORG_ACME.id,
-      permissions: ["create_organization"],
+      permissions: ["manage_super_admins", "create_organization"],
     });
 
     renderUserContextMenu({

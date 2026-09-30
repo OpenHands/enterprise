@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import type { ProvisionUserResponse } from "#/api/super-admin-service/super-admin-service.api";
 import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import {
@@ -22,6 +23,7 @@ import {
 } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
+import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_PATHS,
@@ -264,6 +266,10 @@ export function SuperAdminUsers() {
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [orgId, setOrgId] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<"member" | "admin" | "owner">("member");
+  const [provisionResult, setProvisionResult] =
+    useState<ProvisionUserResponse | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
   const provision = useProvisionSuperAdminUser();
@@ -317,15 +323,38 @@ export function SuperAdminUsers() {
       return;
     }
     provision.mutate(
-      { orgId, payload: { email: trimmedEmail, role: "member" } },
       {
-        onSuccess: () => {
+        orgId,
+        payload: {
+          email: trimmedEmail,
+          role,
+          ...(password.trim() ? { password: password.trim() } : {}),
+        },
+      },
+      {
+        onSuccess: (response) => {
           setEmail("");
           setOrgId("");
-          setProvisionOpen(false);
+          setPassword("");
+          setRole("member");
+          setProvisionResult(response);
         },
       },
     );
+  };
+
+  const closeProvision = () => {
+    setProvisionOpen(false);
+    setProvisionResult(null);
+    setEmail("");
+    setOrgId("");
+    setPassword("");
+    setRole("member");
+  };
+
+  const copySecret = async (value: string) => {
+    await navigator.clipboard.writeText(value);
+    displaySuccessToast(t(I18nKey.SETTINGS$API_KEY_COPIED));
   };
 
   return (
@@ -338,7 +367,10 @@ export function SuperAdminUsers() {
             type="button"
             variant="primary"
             startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setProvisionOpen(true)}
+            onClick={() => {
+              setProvisionResult(null);
+              setProvisionOpen(true);
+            }}
           >
             {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
           </BrandButton>
@@ -457,41 +489,127 @@ export function SuperAdminUsers() {
       {provisionOpen && (
         <OrgModal
           testId="super-admin-provision-form"
-          title={t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
-          description={t(I18nKey.SUPER_ADMIN$PROVISION_USER_DESCRIPTION)}
-          primaryButtonText={t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
-          onPrimaryClick={handleProvision}
-          onClose={() => setProvisionOpen(false)}
+          title={
+            provisionResult
+              ? t(I18nKey.SUPER_ADMIN$PROVISION_CREDENTIALS_TITLE)
+              : t(I18nKey.SUPER_ADMIN$PROVISION_USER)
+          }
+          description={
+            provisionResult
+              ? t(I18nKey.SUPER_ADMIN$PROVISION_CREDENTIALS_WARNING)
+              : t(I18nKey.SUPER_ADMIN$PROVISION_USER_DESCRIPTION)
+          }
+          primaryButtonText={
+            provisionResult
+              ? t(I18nKey.BUTTON$CLOSE)
+              : t(I18nKey.SUPER_ADMIN$PROVISION_USER)
+          }
+          onPrimaryClick={provisionResult ? closeProvision : handleProvision}
+          onClose={closeProvision}
+          isLoading={provision.isPending}
+          hideSecondaryButton={!!provisionResult}
         >
-          <div className="flex w-full flex-col gap-3">
-            <SettingsInput
-              type="email"
-              label={t(I18nKey.ORG$CONTACT_EMAIL)}
-              value={email}
-              placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
-              onChange={setEmail}
-            />
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-[var(--oh-muted)]">
-                {t(I18nKey.SUPER_ADMIN$PROVISION_ORG)}
-              </span>
-              <select
-                data-testid="super-admin-provision-org"
-                className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
-                value={orgId}
-                onChange={(event) => setOrgId(event.target.value)}
-              >
-                <option value="">
-                  {t(I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER)}
-                </option>
-                {teamOrgs.map((org) => (
-                  <option key={org.id} value={org.id}>
-                    {org.name}
+          {provisionResult ? (
+            <div
+              className="flex w-full flex-col gap-4"
+              data-testid="super-admin-provision-credentials"
+            >
+              {provisionResult.password ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-[var(--oh-muted)]">
+                      {t(I18nKey.SUPER_ADMIN$PROVISION_PASSWORD)}
+                    </span>
+                    <BrandButton
+                      type="button"
+                      variant="secondary"
+                      onClick={() =>
+                        copySecret(provisionResult.password as string)
+                      }
+                    >
+                      {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
+                    </BrandButton>
+                  </div>
+                  <div className="break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-3 font-mono text-sm">
+                    {provisionResult.password}
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-[var(--oh-muted)]">
+                    {t(I18nKey.SUPER_ADMIN$PROVISION_API_KEY)}
+                  </span>
+                  <BrandButton
+                    type="button"
+                    variant="secondary"
+                    onClick={() => copySecret(provisionResult.api_key)}
+                  >
+                    {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
+                  </BrandButton>
+                </div>
+                <div className="break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-3 font-mono text-sm">
+                  {provisionResult.api_key}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex w-full flex-col gap-3">
+              <SettingsInput
+                type="email"
+                label={t(I18nKey.ORG$CONTACT_EMAIL)}
+                value={email}
+                placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
+                onChange={setEmail}
+              />
+              <SettingsInput
+                type="password"
+                label={t(I18nKey.SUPER_ADMIN$PROVISION_PASSWORD_OPTIONAL)}
+                value={password}
+                placeholder={t(
+                  I18nKey.SUPER_ADMIN$PROVISION_PASSWORD_PLACEHOLDER,
+                )}
+                onChange={setPassword}
+              />
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-[var(--oh-muted)]">
+                  {t(I18nKey.SUPER_ADMIN$PROVISION_ORG)}
+                </span>
+                <select
+                  data-testid="super-admin-provision-org"
+                  className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
+                  value={orgId}
+                  onChange={(event) => setOrgId(event.target.value)}
+                >
+                  <option value="">
+                    {t(I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER)}
                   </option>
-                ))}
-              </select>
-            </label>
-          </div>
+                  {teamOrgs.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-[var(--oh-muted)]">
+                  {t(I18nKey.SUPER_ADMIN$PROVISION_ROLE)}
+                </span>
+                <select
+                  data-testid="super-admin-provision-role"
+                  className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
+                  value={role}
+                  onChange={(event) =>
+                    setRole(event.target.value as "member" | "admin" | "owner")
+                  }
+                >
+                  <option value="member">{t(I18nKey.ORG$ROLE_MEMBER)}</option>
+                  <option value="admin">{t(I18nKey.ORG$ROLE_ADMIN)}</option>
+                  <option value="owner">{t(I18nKey.ORG$ROLE_OWNER)}</option>
+                </select>
+              </label>
+            </div>
+          )}
         </OrgModal>
       )}
     </div>
