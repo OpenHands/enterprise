@@ -1,5 +1,6 @@
 """Unit tests for the LiteLLM-proxy-backed model discovery service."""
 
+import importlib
 import logging
 
 import httpx
@@ -513,6 +514,56 @@ class TestByokUnion:
             'gemini/gemini-2.0-flash',
         ]
         assert response.verified_models == []
+
+
+def _lite_llm_manager():
+    # sys.modules, not the package attribute: other tests re-import this module.
+    return importlib.import_module('storage.lite_llm_manager')
+
+
+@pytest.fixture
+def litellm_off(monkeypatch):
+    monkeypatch.setattr(_lite_llm_manager(), 'ENABLE_LEGACY_LITELLM', False)
+
+
+class TestLiteLLMDisabled:
+    async def test_never_contacts_proxy(self, monkeypatch, litellm_off):
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models == []
+        assert response.verified_models == []
+
+    async def test_byok_on_serves_only_catalogue(self, monkeypatch, litellm_off):
+        byok_on(monkeypatch)
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models
+        assert not any(m.startswith('openhands/') for m in response.models)
+
+    async def test_warm_cache_is_not_served(self, monkeypatch):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+        warm = await LiteLLMProxyModelService()._get_models_response()
+        assert warm.models
+
+        monkeypatch.setattr(_lite_llm_manager(), 'ENABLE_LEGACY_LITELLM', False)
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert response.models == []
+
+    async def test_search_llm_models_has_no_managed_models(
+        self, monkeypatch, litellm_off
+    ):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        page = await LiteLLMProxyModelService().search_llm_models(limit=100)
+
+        assert page.items == []
 
 
 class TestInjector:
