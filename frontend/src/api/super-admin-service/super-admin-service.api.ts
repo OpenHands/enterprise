@@ -30,7 +30,12 @@ export interface SuperAdminApiUser {
   status: "active" | "inactive";
 }
 
-export type SuperAdminGroupAction = "suspend" | "resume" | "remove" | "add";
+export type SuperAdminGroupAction =
+  | "suspend"
+  | "resume"
+  | "remove"
+  | "add"
+  | "set_role";
 
 export interface ProvisionUserRequest {
   email: string;

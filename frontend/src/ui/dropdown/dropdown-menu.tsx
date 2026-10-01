@@ -1,5 +1,6 @@
 /* eslint-disable react/jsx-props-no-spreading */
-import type { ReactNode } from "react";
+import { Fragment, type CSSProperties, type ReactNode } from "react";
+import { Check } from "lucide-react";
 import { cn } from "#/utils/utils";
 import { DropdownOption } from "./types";
 import {
@@ -21,6 +22,10 @@ interface DropdownMenuProps {
   }) => object;
   footer?: ReactNode;
   onFooterClick?: () => void;
+  /** Fixed coordinates when the menu is portaled out of its trigger. */
+  style?: CSSProperties;
+  /** Draw a check beside the selected option. */
+  showSelectionCheck?: boolean;
 }
 
 export function DropdownMenu({
@@ -32,12 +37,15 @@ export function DropdownMenu({
   getItemProps,
   footer,
   onFooterClick,
+  style,
+  showSelectionCheck = false,
 }: DropdownMenuProps) {
   return (
     <div
+      style={style}
       className={cn(
-        "absolute z-50 flex max-h-60 flex-col overflow-hidden text-white",
-        "w-full mt-1",
+        "flex max-h-60 flex-col overflow-hidden text-white",
+        style ? "fixed" : "absolute z-50 mt-1 w-full",
         "bg-tertiary rounded-[6px] context-menu-box-shadow",
         dropdownMenuPanelPaddingClassName,
         !isOpen && "hidden",
@@ -58,26 +66,45 @@ export function DropdownMenu({
         )}
         {isOpen &&
           filteredOptions.map((option, index) => (
-            <li
-              key={option.value}
-              {...getItemProps({
-                item: option,
-                index,
-                className: cn(
-                  dropdownMenuRowClassName,
-                  "focus:outline-none",
-                  selectedItem?.value === option.value &&
-                    "bg-[var(--oh-interactive-selected)] text-white",
-                ),
-              })}
-            >
-              <span className="min-w-0 truncate">{option.label}</span>
-            </li>
+            <Fragment key={option.value}>
+              {option.divider ? (
+                <li
+                  role="separator"
+                  aria-hidden
+                  className="my-1 list-none border-t border-[var(--oh-border)]"
+                />
+              ) : null}
+              <li
+                {...getItemProps({
+                  item: option,
+                  index,
+                  className: cn(
+                    dropdownMenuRowClassName,
+                    "focus:outline-none",
+                    selectedItem?.value === option.value &&
+                      "bg-[var(--oh-interactive-selected)] text-white",
+                  ),
+                })}
+              >
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {showSelectionCheck ? (
+                  <Check
+                    aria-hidden
+                    className={cn(
+                      "size-3.5 shrink-0",
+                      selectedItem?.value === option.value
+                        ? "opacity-100"
+                        : "opacity-0",
+                    )}
+                  />
+                ) : null}
+              </li>
+            </Fragment>
           ))}
       </ul>
       {isOpen && footer ? (
         <div
-          className="shrink-0 border-t border-[var(--oh-border)] pt-0.5"
+          className="mt-1 shrink-0 border-t border-[var(--oh-border)] pt-1"
           onMouseDown={(event) => {
             // Keep the menu in the same pointer gesture so Downshift does not
             // treat this as an outside click before the footer action runs.

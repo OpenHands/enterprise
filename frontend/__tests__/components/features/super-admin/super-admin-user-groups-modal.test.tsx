@@ -5,14 +5,44 @@ import { SuperAdminUserGroupsModal } from "#/components/features/super-admin/sup
 import type { SuperAdminUserRow } from "#/components/features/super-admin/super-admin-mock";
 import { resetSuperAdminMockState } from "#/mocks/super-admin-handlers";
 
-const { mutate } = vi.hoisted(() => ({ mutate: vi.fn() }));
+const { mutate, mutateStatus, mutateRemove } = vi.hoisted(() => ({
+  mutate: vi.fn(),
+  mutateStatus: vi.fn(),
+  mutateRemove: vi.fn(),
+}));
 
 vi.mock("#/hooks/mutation/use-super-admin-mutations", () => ({
   useUpdateSuperAdminUserGroups: () => ({
     mutate,
     isPending: false,
   }),
+  useUpdateSuperAdminUserStatus: () => ({
+    mutate: mutateStatus,
+    isPending: false,
+  }),
+  useRemoveSuperAdminUser: () => ({
+    mutate: mutateRemove,
+    isPending: false,
+  }),
 }));
+
+async function chooseDropdownOption(
+  events: ReturnType<typeof userEvent.setup>,
+  testId: string,
+  label: string,
+) {
+  const input = screen.getByTestId(testId).querySelector("input");
+  if (!input) {
+    throw new Error(`dropdown ${testId} has no input`);
+  }
+  await events.click(input);
+  const options = await screen.findAllByRole("option");
+  const option = options.find((node) => node.textContent === label);
+  if (!option) {
+    throw new Error(`dropdown option ${label} not found`);
+  }
+  await events.click(option);
+}
 
 const user: SuperAdminUserRow = {
   id: "99",
@@ -28,6 +58,54 @@ const user: SuperAdminUserRow = {
 describe("SuperAdminUserGroupsModal", () => {
   beforeEach(() => {
     mutate.mockClear();
+    mutateStatus.mockClear();
+    mutateRemove.mockClear();
+  });
+
+  it("suspends the account and deletes the user after confirmation", async () => {
+    const events = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={onClose}
+      />,
+    );
+
+    await events.click(screen.getByTestId("super-admin-groups-modal-close"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await events.click(screen.getByTestId("super-admin-user-suspend"));
+    expect(mutateStatus).toHaveBeenCalledWith({
+      userId: "99",
+      status: "inactive",
+    });
+
+    await events.click(screen.getByTestId("super-admin-user-delete"));
+    expect(mutateRemove).not.toHaveBeenCalled();
+    await events.click(screen.getByTestId("super-admin-user-delete-confirm"));
+    expect(mutateRemove).toHaveBeenCalledWith(
+      { userId: "99" },
+      { onSuccess: onClose },
+    );
+  });
+
+  it("activates a suspended account", async () => {
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={{ ...user, status: "inactive" }}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await events.click(screen.getByTestId("super-admin-user-activate"));
+    expect(mutateStatus).toHaveBeenCalledWith({
+      userId: "99",
+      status: "active",
+    });
   });
 
   it("suspends and removes only the checked groups", async () => {
@@ -46,7 +124,11 @@ describe("SuperAdminUserGroupsModal", () => {
 
     await events.click(screen.getByTestId("super-admin-group-current-2"));
     await events.click(screen.getByTestId("super-admin-group-current-4"));
-    await events.click(screen.getByTestId("super-admin-groups-suspend"));
+    await chooseDropdownOption(
+      events,
+      "super-admin-groups-bulk",
+      "SUPER_ADMIN$SUSPEND",
+    );
 
     expect(mutate).toHaveBeenCalledWith(
       {
@@ -57,7 +139,11 @@ describe("SuperAdminUserGroupsModal", () => {
       expect.any(Object),
     );
 
-    await events.click(screen.getByTestId("super-admin-groups-remove"));
+    await chooseDropdownOption(
+      events,
+      "super-admin-groups-bulk",
+      "SUPER_ADMIN$REMOVE",
+    );
     expect(mutate).toHaveBeenLastCalledWith(
       {
         userId: "99",
@@ -68,7 +154,92 @@ describe("SuperAdminUserGroupsModal", () => {
     );
   });
 
-  it("adds the user to every checked organization", async () => {
+  it("changes one membership role from its dropdown", async () => {
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+
+    await chooseDropdownOption(
+      events,
+      "super-admin-group-current-role-4",
+      "ORG$ROLE_MEMBER",
+    );
+
+    expect(mutate).toHaveBeenCalledWith(
+      {
+        userId: "99",
+        action: "set_role",
+        orgIds: ["4"],
+        role: "member",
+      },
+      expect.any(Object),
+    );
+
+    expect(
+      screen.getByTestId("super-admin-group-current-suspended-4"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-group-current-suspended-2"),
+    ).not.toBeInTheDocument();
+
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2").querySelector(
+        "input",
+      ) as HTMLInputElement,
+    );
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2-status"),
+    );
+    expect(mutate).toHaveBeenCalledWith(
+      {
+        userId: "99",
+        action: "suspend",
+        orgIds: ["2"],
+      },
+      expect.any(Object),
+    );
+
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-4").querySelector(
+        "input",
+      ) as HTMLInputElement,
+    );
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-4-status"),
+    );
+    expect(mutate).toHaveBeenCalledWith(
+      {
+        userId: "99",
+        action: "resume",
+        orgIds: ["4"],
+      },
+      expect.any(Object),
+    );
+
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2").querySelector(
+        "input",
+      ) as HTMLInputElement,
+    );
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2-remove"),
+    );
+    expect(mutate).toHaveBeenLastCalledWith(
+      {
+        userId: "99",
+        action: "remove",
+        orgIds: ["2"],
+      },
+      expect.any(Object),
+    );
+  });
+
+  it("adds a group from the add menu at the chosen role", async () => {
     const events = userEvent.setup();
     render(
       <SuperAdminUserGroupsModal
@@ -86,16 +257,33 @@ describe("SuperAdminUserGroupsModal", () => {
       screen.queryByTestId("super-admin-group-add-2"),
     ).not.toBeInTheDocument();
 
-    await events.click(screen.getByTestId("super-admin-group-add-5"));
-    await events.click(screen.getByTestId("super-admin-group-add-3"));
     await events.click(screen.getByTestId("super-admin-groups-add"));
+    await events.click(screen.getByTestId("super-admin-group-add-5"));
+    expect(screen.getByTestId("super-admin-group-add-5")).toBeInTheDocument();
+    await events.click(
+      screen.getByTestId("super-admin-group-add-role-5-member"),
+    );
 
     expect(mutate).toHaveBeenCalledWith(
       {
         userId: "99",
         action: "add",
-        orgIds: ["5", "3"],
+        orgIds: ["5"],
         role: "member",
+      },
+      expect.any(Object),
+    );
+
+    await events.click(screen.getByTestId("super-admin-group-add-3"));
+    expect(screen.getByTestId("super-admin-group-add-3")).toBeInTheDocument();
+    await events.click(screen.getByTestId("super-admin-group-add-role-3-admin"));
+
+    expect(mutate).toHaveBeenLastCalledWith(
+      {
+        userId: "99",
+        action: "add",
+        orgIds: ["3"],
+        role: "admin",
       },
       expect.any(Object),
     );

@@ -416,6 +416,7 @@ export function SuperAdminUsers() {
         rows={rows}
         getRowKey={(row) => row.id}
         empty={t(I18nKey.SUPER_ADMIN$EMPTY_USERS)}
+        onRowClick={(row) => setManagedUserId(row.id)}
         columns={[
           {
             key: "name",
@@ -475,8 +476,8 @@ export function SuperAdminUsers() {
                 ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
                 items={[
                   {
-                    label: t(I18nKey.SUPER_ADMIN$MANAGE_GROUPS),
-                    testId: `super-admin-manage-groups-${row.id}`,
+                    label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
+                    testId: `super-admin-manage-user-${row.id}`,
                     onSelect: () => setManagedUserId(row.id),
                   },
                 ]}

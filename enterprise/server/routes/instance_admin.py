@@ -99,7 +99,7 @@ class AdminUserStatusUpdate(BaseModel):
 class AdminUserGroupsUpdate(BaseModel):
     """Suspend, resume, remove, or add a user in specific organizations."""
 
-    action: Literal['suspend', 'resume', 'remove', 'add']
+    action: Literal['suspend', 'resume', 'remove', 'add', 'set_role']
     org_ids: list[UUID] = Field(min_length=1)
     role: Literal['owner', 'admin', 'member'] | None = None
 
@@ -433,6 +433,49 @@ async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
         await OrgMemberStore.remove_user_from_org(org.id, user.id)
 
 
+async def _set_selected_roles(
+    user: User,
+    org_ids: list[UUID],
+    role_name: str,
+) -> None:
+    """Change the role on existing memberships without adding new ones."""
+    role = await RoleStore.get_role_by_name(role_name)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Role {role_name!r} not found',
+        )
+    if role_name != ROLE_OWNER:
+        selected = set(org_ids)
+        membership_pairs = await OrgMemberStore.list_memberships_with_orgs(
+            user.id
+        )
+        blocked: list[str] = []
+        for member, org in membership_pairs:
+            if org.id not in selected:
+                continue
+            current = await RoleStore.get_role_by_id(member.role_id)
+            if current and current.name == ROLE_OWNER:
+                if await OrgMemberService._is_last_owner(org.id, user.id):
+                    blocked.append(org.name)
+        if blocked:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'Cannot change role: last owner of '
+                    + ', '.join(sorted(blocked))
+                ),
+            )
+    for org_id in org_ids:
+        existing = await OrgMemberStore.get_org_member(org_id, user.id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Membership not found',
+            )
+        await OrgMemberStore.update_user_role_in_org(org_id, user.id, role.id)
+
+
 async def _add_selected_memberships(
     user: User,
     org_ids: list[UUID],
@@ -490,6 +533,8 @@ async def update_admin_user_groups(
     ``suspend`` and ``resume`` update only the selected org rows.
     ``remove`` drops those memberships and still refuses to remove the
     last owner of an organization. ``add`` creates the missing memberships.
+    ``set_role`` changes the role on existing memberships and refuses to
+    demote the last owner.
     """
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
@@ -509,6 +554,13 @@ async def update_admin_user_groups(
             ) from exc
     elif body.action == 'remove':
         await _remove_selected_memberships(user, body.org_ids)
+    elif body.action == 'set_role':
+        if body.role is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Role is required',
+            )
+        await _set_selected_roles(user, body.org_ids, body.role)
     else:
         await _add_selected_memberships(
             user, body.org_ids, body.role or ROLE_MEMBER

@@ -88,6 +88,7 @@ interface SuperAdminTableProps<T> {
   rows: T[];
   getRowKey: (row: T) => string;
   empty: string;
+  onRowClick?: (row: T) => void;
 }
 
 export function SuperAdminTable<T>({
@@ -96,6 +97,7 @@ export function SuperAdminTable<T>({
   rows,
   getRowKey,
   empty,
+  onRowClick,
 }: SuperAdminTableProps<T>) {
   return (
     <div
@@ -139,7 +141,11 @@ export function SuperAdminTable<T>({
               rows.map((row) => (
                 <tr
                   key={getRowKey(row)}
-                  className={settingsListTableRowClassName}
+                  className={cn(
+                    settingsListTableRowClassName,
+                    onRowClick && "cursor-pointer",
+                  )}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
                 >
                   {columns.map((column) => (
                     <td
@@ -245,7 +251,10 @@ export function SuperAdminRowMenu({
         aria-expanded={open}
         data-testid={testId}
         className={settingsListIconActionButtonClassName}
-        onClick={() => setOpen((current) => !current)}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
       >
         <ThreeDotsVerticalIcon width={16} height={16} />
       </button>
@@ -312,9 +321,10 @@ export function SuperAdminUserMemberships({
                   type="button"
                   data-testid={`super-admin-user-org-${membership.orgId}`}
                   className="block max-w-full truncate text-left hover:underline"
-                  onClick={() =>
-                    onOrgClick(membership.orgId, membership.orgName)
-                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOrgClick(membership.orgId, membership.orgName);
+                  }}
                 >
                   {membership.orgName}
                 </button>

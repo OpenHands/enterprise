@@ -498,6 +498,42 @@ export const SUPER_ADMIN_HANDLERS = [
       return HttpResponse.json(target);
     }
 
+    if (body.action === "set_role") {
+      const role = body.role ?? "member";
+      const blocked = orgIds.filter((orgId) => {
+        const membership = target.memberships.find(
+          (row) => row.org_id === orgId && row.role === "owner",
+        );
+        if (!membership || role === "owner") {
+          return false;
+        }
+        return !adminUsers.some(
+          (user) =>
+            user.user_id !== target.user_id &&
+            user.memberships.some(
+              (row) => row.org_id === orgId && row.role === "owner",
+            ),
+        );
+      });
+      if (blocked.length > 0) {
+        const names = blocked.map(
+          (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
+        );
+        return HttpResponse.json(
+          {
+            detail: `Cannot change role: last owner of ${names.join(", ")}`,
+          },
+          { status: 409 },
+        );
+      }
+      target.memberships = target.memberships.map((membership) =>
+        orgIds.includes(membership.org_id)
+          ? { ...membership, role }
+          : membership,
+      );
+      return HttpResponse.json(target);
+    }
+
     if (body.action === "add") {
       const role = body.role ?? "member";
       orgIds.forEach((orgId) => {
