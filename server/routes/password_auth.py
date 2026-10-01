@@ -77,7 +77,7 @@ def _set_password_cookie(
         key='openhands_auth',
         value=sign_oauth_v2_cookie(payload, PASSWORD_SESSION_MAX_AGE_SECONDS),
         max_age=PASSWORD_SESSION_MAX_AGE_SECONDS,
-        domain=get_cookie_domain(),
+        domain=get_cookie_domain(request),
         secure=get_web_url(request).startswith('https'),
         httponly=True,
         samesite=get_cookie_samesite(),

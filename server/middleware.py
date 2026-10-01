@@ -131,14 +131,14 @@ class SetAuthCookieMiddleware:
             if v2_cookie:
                 response.delete_cookie(
                     OAUTH_V2_COOKIE_NAME,
-                    domain=get_cookie_domain(),
+                    domain=get_cookie_domain(request),
                     samesite=get_cookie_samesite(),
                 )
             if keycloak_auth_cookie:
                 delete_chunked_cookie(
                     response,
                     'keycloak_auth',
-                    domain=get_cookie_domain(),
+                    domain=get_cookie_domain(request),
                     samesite=get_cookie_samesite(),
                 )
             return response
