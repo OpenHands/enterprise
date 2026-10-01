@@ -1,40 +1,42 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import axios, { AxiosError } from "axios";
 import AuthService from "#/api/auth-service/auth-service.api";
+import { WebClientConfig } from "#/api/option-service/option.types";
 import { useConfig } from "./use-config";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 
-export const useIsAuthed = () => {
-  const { data: config } = useConfig();
-  const isOnIntermediatePage = useIsOnIntermediatePage();
-
-  const appMode = config?.app_mode;
-
-  return useQuery({
+export const getIsAuthedQueryOptions = (appMode: WebClientConfig["app_mode"]) =>
+  queryOptions({
     queryKey: ["user", "authenticated", appMode],
     queryFn: async () => {
       try {
-        // If in OSS mode or authentication succeeds, return true
-        await AuthService.authenticate(appMode!);
+        await AuthService.authenticate(appMode);
         return true;
       } catch (error) {
-        // If it's a 401 error, return false (not authenticated)
         if (axios.isAxiosError(error)) {
           const axiosError = error as AxiosError;
           if (axiosError.response?.status === 401) {
             return false;
           }
         }
-        // For any other error, throw it to put the query in error state
         throw error;
       }
     },
-    enabled: !!appMode && !isOnIntermediatePage,
-    staleTime: 1000 * 60 * 5, // 5 minutes
-    gcTime: 1000 * 60 * 15, // 15 minutes
+    staleTime: 1000 * 60 * 5,
+    gcTime: 1000 * 60 * 15,
     retry: false,
     meta: {
       disableToast: true,
     },
+  });
+
+export const useIsAuthed = () => {
+  const { data: config } = useConfig();
+  const isOnIntermediatePage = useIsOnIntermediatePage();
+  const appMode = config?.app_mode;
+
+  return useQuery({
+    ...getIsAuthedQueryOptions(appMode ?? "oss"),
+    enabled: !!appMode && !isOnIntermediatePage,
   });
 };

@@ -3,6 +3,7 @@ import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
+import { getIsAuthedQueryOptions } from "#/hooks/query/use-is-authed";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
 import { hasPendingOrgSwitch } from "./org-url-param";
 import { getActiveOrganizationUser } from "./permission-checks";
@@ -73,7 +74,16 @@ export const createPermissionGuard =
     }
 
     // In OSS mode, skip permission checks - all settings are accessible
-    if (config?.app_mode === "oss") {
+    if (!config || config.app_mode === "oss") {
+      return PERMISSION_GRANTED;
+    }
+
+    try {
+      const isAuthed = await queryClient.fetchQuery(
+        getIsAuthedQueryOptions(config.app_mode),
+      );
+      if (!isAuthed) return PERMISSION_GRANTED;
+    } catch {
       return PERMISSION_GRANTED;
     }
 
