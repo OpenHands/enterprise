@@ -86,6 +86,13 @@ class TestAssignProvider:
         monkeypatch.setattr(llm_utils, '_BARE_OPENAI_MODELS', set())
         monkeypatch.setattr(llm_utils, '_BARE_ANTHROPIC_MODELS', set())
         monkeypatch.setattr(llm_utils, '_BARE_MISTRAL_MODELS', set())
+        # LiteLLM loads a mutable remote catalog; pin this test's routing inputs.
+        monkeypatch.setattr(
+            llm_utils.litellm, 'vertex_language_models', {'gemini-2.0-flash'}
+        )
+        monkeypatch.setattr(
+            llm_utils.litellm, 'bedrock_models', {'cohere.command-r-v1:0'}
+        )
 
         # gemini-* lives bare in litellm.model_cost; LiteLLM routes it to
         # vertex_ai. Without the fallback the frontend's provider filter

@@ -3641,6 +3641,107 @@ class TestFreeTierModelRestriction:
         assert json_payload['models'] == ['__openhands_no_free_models__']
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('blocked', [True, False])
+    async def test_set_team_blocked_updates_only_admission_state(self, blocked):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_client.post.return_value = mock_response
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            await LiteLlmManager._set_team_blocked(
+                mock_client,
+                team_id='test-team-id',
+                blocked=blocked,
+            )
+
+        mock_client.post.assert_awaited_once_with(
+            'http://test.com/team/update',
+            json={'team_id': 'test-team-id', 'blocked': blocked},
+        )
+        mock_response.raise_for_status.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('response_body', 'confirmed'),
+        [
+            ({'team_id': 'test-team-id', 'blocked': True}, True),
+            ({'team_id': 'other-team', 'blocked': True}, False),
+            ({'team_id': 'test-team-id', 'blocked': False}, False),
+            ({'team_id': 'test-team-id'}, False),
+        ],
+    )
+    async def test_block_team_requires_native_confirmation(
+        self, response_body, confirmed
+    ):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        response = httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request('POST', 'http://test.com/team/block'),
+        )
+        mock_client.post.return_value = response
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            if confirmed:
+                await LiteLlmManager._block_team(mock_client, 'test-team-id')
+            else:
+                with pytest.raises(RuntimeError, match='did not confirm'):
+                    await LiteLlmManager._block_team(mock_client, 'test-team-id')
+
+        mock_client.post.assert_awaited_once_with(
+            'http://test.com/team/block', json={'team_id': 'test-team-id'}
+        )
+
+    @pytest.mark.asyncio
+    async def test_block_team_propagates_management_failure(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = httpx.Response(
+            500, request=httpx.Request('POST', 'http://test.com/team/block')
+        )
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-api-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await LiteLlmManager._block_team(mock_client, 'test-team-id')
+
+    @pytest.mark.asyncio
+    async def test_block_team_fails_without_management_config(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', None),
+            pytest.raises(RuntimeError, match='LiteLLM API configuration not found'),
+        ):
+            await LiteLlmManager._block_team(mock_client, 'test-team-id')
+        mock_client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_set_team_blocked_fails_without_management_config(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', None),
+            pytest.raises(RuntimeError, match='LiteLLM API configuration not found'),
+        ):
+            await LiteLlmManager._set_team_blocked(
+                mock_client,
+                team_id='test-team-id',
+                blocked=True,
+            )
+
+        mock_client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_create_team_free_tier_restricts_models_and_disables_budget(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_response = MagicMock()
@@ -3960,6 +4061,45 @@ class TestGetTeamMembersFinancialData:
                     )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('other_member', [False, True])
+    async def test_unkeyed_exception_is_limited_to_provisioned_member(
+        self, mock_http_client, other_member
+    ):
+        response = MagicMock(is_success=True, status_code=200)
+        roles = [{'user_id': 'pending', 'role': 'user'}]
+        if other_member:
+            roles.append({'user_id': 'other', 'role': 'user'})
+        response.json.return_value = {
+            'team_info': {
+                'team_id': 'test-team',
+                'max_budget': 5,
+                'spend': 0,
+                'members_with_roles': roles,
+            },
+            'team_memberships': [],
+            'keys': [],
+        }
+        mock_http_client.get.return_value = response
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'test-key'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://test.com'),
+        ):
+            if other_member:
+                with pytest.raises(ValueError, match='no validated key spend'):
+                    await LiteLlmManager._get_team_members_financial_data(
+                        mock_http_client, 'test-team', unkeyed_member_id='pending'
+                    )
+            else:
+                result = await LiteLlmManager._get_team_members_financial_data(
+                    mock_http_client, 'test-team', unkeyed_member_id='pending'
+                )
+                assert result['members']['pending'] == {
+                    'spend': 0,
+                    'max_budget': 5,
+                    'uses_shared_budget': True,
+                }
+
+    @pytest.mark.asyncio
     async def test_returns_empty_dict_when_litellm_not_configured(
         self, mock_http_client
     ):
@@ -4189,3 +4329,171 @@ class TestGetTeamMembersFinancialData:
             'max_budget': 100.0,
             'uses_shared_budget': False,
         }
+
+
+class TestDiagnoseState:
+    """LiteLLM state probe used by the managed-key refresh endpoint when a
+    freshly-minted key fails ``verify_key``. Uses ``httpx.MockTransport`` so
+    the actual ``httpx.AsyncClient`` code paths (URL construction, header
+    injection, timeout wiring) are exercised, not mocked away.
+    """
+
+    @staticmethod
+    def _install_transport(monkeypatch, handler):
+        """Route every ``httpx.AsyncClient(...)`` inside diagnose_state
+        through a MockTransport whose behavior is defined by ``handler``.
+        """
+        real_init = httpx.AsyncClient.__init__
+
+        def _init(self, *args, **kwargs):
+            kwargs['transport'] = httpx.MockTransport(handler)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(httpx.AsyncClient, '__init__', _init)
+
+    @pytest.mark.asyncio
+    async def test_all_green_when_liveliness_readiness_and_master_key_all_200(
+        self, monkeypatch
+    ):
+        """Happy path: LiteLLM is up, DB reachable, master key still works.
+        If this is what diagnose_state reports while ``verify_key`` still
+        fails, the fault is in the app-server verify path or in the key
+        metadata — not in LiteLLM itself.
+        """
+        seen_paths = []
+
+        def handler(request):
+            seen_paths.append(request.url.path)
+            return httpx.Response(200, json={'status': 'healthy'})
+
+        self._install_transport(monkeypatch, handler)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-master-key'),
+        ):
+            result = await LiteLlmManager.diagnose_state()
+
+        assert result == {
+            'liveliness_status': 200,
+            'readiness_status': 200,
+            'master_key_health_status': 200,
+        }
+        assert seen_paths == [
+            '/health/liveliness',
+            '/health/readiness',
+            '/health',
+        ]
+
+    @pytest.mark.asyncio
+    async def test_master_key_401_with_healthy_unauth_probes_indicates_drift(
+        self, monkeypatch
+    ):
+        """Master-key drift signature: unauth probes green, master-key probe
+        401. When we see this in a support bundle, the master key configured
+        on the app-server no longer matches what LiteLLM is running with —
+        no amount of app-server rotation will fix it until they are
+        reconciled.
+        """
+
+        def handler(request):
+            if request.url.path == '/health':
+                return httpx.Response(401, json={'error': 'invalid master key'})
+            return httpx.Response(200, json={'status': 'healthy'})
+
+        self._install_transport(monkeypatch, handler)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-master-key'),
+        ):
+            result = await LiteLlmManager.diagnose_state()
+
+        assert result['liveliness_status'] == 200
+        assert result['readiness_status'] == 200
+        assert result['master_key_health_status'] == 401
+
+    @pytest.mark.asyncio
+    async def test_master_key_probe_sends_bearer_header(self, monkeypatch):
+        """Master-key probe must send ``Authorization: Bearer <master_key>`` —
+        anything else and a 401 becomes ambiguous ("did we probe the master
+        key or did we probe unauthenticated?"). The unauth probes must NOT
+        send this header, so a leaked master key does not appear in probe
+        traffic that could otherwise be anonymous.
+        """
+        seen_auth_by_path = {}
+
+        def handler(request):
+            seen_auth_by_path[request.url.path] = request.headers.get('authorization')
+            return httpx.Response(200)
+
+        self._install_transport(monkeypatch, handler)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-master-key'),
+        ):
+            await LiteLlmManager.diagnose_state()
+
+        assert seen_auth_by_path['/health/liveliness'] is None
+        assert seen_auth_by_path['/health/readiness'] is None
+        assert seen_auth_by_path['/health'] == 'Bearer sk-master-key'
+
+    @pytest.mark.asyncio
+    async def test_never_raises_when_litellm_is_unreachable(self, monkeypatch):
+        """LiteLLM down / DNS failure / connection refused must yield a dict,
+        not an exception — the caller (refresh endpoint) treats this as
+        diagnostic data alongside the failed verify, not a route-level 500.
+        """
+
+        def handler(request):
+            raise httpx.ConnectError('connection refused')
+
+        self._install_transport(monkeypatch, handler)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', 'sk-master-key'),
+        ):
+            result = await LiteLlmManager.diagnose_state()
+
+        assert 'liveliness_error' in result
+        assert 'ConnectError' in result['liveliness_error']
+        assert 'readiness_error' in result
+        assert 'master_key_health_error' in result
+
+    @pytest.mark.asyncio
+    async def test_missing_master_key_reported_without_probing_health(
+        self, monkeypatch
+    ):
+        """No master key configured: the master-key probe MUST be skipped
+        entirely (not sent with an empty Authorization header, which would
+        return a misleading 401). The error field distinguishes "we didn't
+        even try" from "we tried and it returned 401".
+        """
+        seen_paths = []
+
+        def handler(request):
+            seen_paths.append(request.url.path)
+            return httpx.Response(200)
+
+        self._install_transport(monkeypatch, handler)
+        with (
+            patch('storage.lite_llm_manager.LITE_LLM_API_URL', 'http://litellm.test'),
+            patch('storage.lite_llm_manager.LITE_LLM_API_KEY', None),
+        ):
+            result = await LiteLlmManager.diagnose_state()
+
+        assert '/health' not in seen_paths
+        assert (
+            result.get('master_key_health_error') == 'LITE_LLM_API_KEY not configured'
+        )
+        assert 'master_key_health_status' not in result
+
+    @pytest.mark.asyncio
+    async def test_no_url_configured_short_circuits(self, monkeypatch):
+        """If LiteLLM isn't configured at all, we don't attempt any probes;
+        we surface a single config_error so triage doesn't chase phantom
+        network failures.
+        """
+        # No transport install: any real network attempt would fail loudly.
+        with patch('storage.lite_llm_manager.LITE_LLM_API_URL', None):
+            result = await LiteLlmManager.diagnose_state()
+
+        assert result == {'config_error': 'LITE_LLM_API_URL not configured'}

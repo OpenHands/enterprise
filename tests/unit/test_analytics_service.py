@@ -312,6 +312,30 @@ class TestCommonProperties:
         assert 'is_feature_env' in props
         assert props['is_feature_env'] is False
 
+    def test_capture_defaults_saas_deployment_kind_to_remote(self, saas_service):
+        """SaaS analytics events default to remote deployment_kind."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user123')
+        service.capture(ctx=ctx, event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['deployment_kind'] == 'remote'
+
+    def test_capture_accepts_local_deployment_kind(self, mock_posthog):
+        """Self-hosted SaaS analytics events can be tagged local."""
+        _, mock_client = mock_posthog
+        service = DirectService(
+            api_key='test-key',
+            host='https://posthog.example.com',
+            app_mode=AppMode.SAAS,
+            is_feature_env=False,
+            deployment_kind='local',
+        )
+        service.capture(ctx=make_ctx(user_id='user123'), event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['deployment_kind'] == 'local'
+
     def test_capture_includes_org_id_when_provided(self, saas_service):
         """capture() includes org_id when provided."""
         service, mock_client = saas_service

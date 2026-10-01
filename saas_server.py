@@ -40,7 +40,6 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
-from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -55,6 +54,7 @@ from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
+from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
 )
@@ -84,11 +84,26 @@ from server.sharing.shared_conversation_router import (  # noqa: E402
 from server.sharing.shared_event_router import (  # noqa: E402
     router as shared_event_router,
 )
+from server.utils.litellm_interactive_login_guard import (  # noqa: E402
+    install_litellm_interactive_login_guard,
+)
 from server.verified_models.verified_model_router import (  # noqa: E402
     api_router as verified_models_router,
 )
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
+# Agent Canvas SPA, built into the frontend output by scripts/build-agent-canvas.sh.
+# Cloud serves /canvas from a separate service behind an ingress rule; locally it
+# is served from this app so `make run-saas` exercises the same URLs.
+canvas_directory = os.getenv(
+    'AGENT_CANVAS_DIRECTORY', os.path.join(directory, 'canvas')
+)
+
+
+# A server must never launch LiteLLM's interactive device login (chatgpt/
+# github_copilot). Any request that validates agent settings referencing such a
+# model would otherwise block the worker for ~15 min (OpenHands/enterprise#565).
+install_litellm_interactive_login_guard()
 
 
 @base_app.get('/saas')
@@ -100,6 +115,7 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
     billing_router
@@ -163,6 +179,7 @@ if AZURE_DEVOPS_CLIENT_ID:
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
+base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(
@@ -171,9 +188,6 @@ base_app.include_router(
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
-base_app.include_router(
-    admin_user_router
-)  # Add routes for instance-level user lifecycle management
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -198,7 +212,6 @@ base_app.include_router(
 # This replaces the OSS endpoint with a SAAS version that adds org_id, org_name, role, permissions
 override_users_me_endpoint(base_app)
 
-base_app.include_router(invitation_router)  # Add routes for org invitation management
 base_app.include_router(invitation_accept_router)  # Add route for accepting invitations
 add_github_proxy_routes(base_app)
 base_app.include_router(slack_router)
@@ -241,8 +254,14 @@ base_app.add_middleware(
 base_app.add_middleware(CacheControlMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
 
+if os.path.isdir(canvas_directory):
+    # Mounted before the '/' catch-all so /canvas is matched first.
+    base_app.mount(
+        '/canvas',
+        SPAStaticFiles(directory=canvas_directory, html=True),
+        name='canvas',
+    )
 base_app.mount('/', SPAStaticFiles(directory=directory, html=True), name='dist')
-
 
 setup_rate_limit_handler(base_app)
 
