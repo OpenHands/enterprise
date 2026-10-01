@@ -70,10 +70,12 @@ dependencies = [
   "pillow==12.3.0",
   "playwright==1.58.0",
   "posthog==7.9.12",
+  "procrastinate==3.10.0",
   "prometheus-client==0.24.1",
   "prompt-toolkit==3.0.52",
   "protobuf==5.29.6",                               # Updated to fix CVE-2026-0994
   "psutil==7.2.2",
+  "psycopg[binary,pool]==3.3.6",
   "psycopg2-binary==2.9.11",
   "pybase62==1.0.0",
   "pygithub>=2.5",
@@ -207,4 +209,4 @@ omit = [ "tests/*", "**/test_*" ]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false }
+exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" }

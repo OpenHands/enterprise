@@ -732,3 +732,42 @@ class TestSaasSecretsStoreOrgSharedMerge:
         """load_personal() returns None when user_id is empty, like load()."""
         secrets_store.user_id = ''
         assert await secrets_store.load_personal() is None
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_includes_shared_secret_without_description(
+        self, mock_get_user, secrets_store, mock_user
+    ):
+        """An org-shared secret created without a description is still loaded.
+
+        OrgSecretsStore.create_shared stores a NULL description when the
+        form field is left blank. load() must surface that secret to the
+        runtime like any other, with an empty description.
+        """
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        async with secrets_store.a_session_maker() as session:
+            shared = StoredCustomSecrets(
+                keycloak_user_id='admin-user-id',
+                org_id=org_id,
+                secret_name='SHARED_NO_DESC',
+                secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                description=None,
+                is_org_shared=True,
+            )
+            session.add(shared)
+            await session.commit()
+
+        loaded = await secrets_store.load()
+
+        assert loaded is not None
+        assert 'SHARED_NO_DESC' in loaded.custom_secrets
+        assert (
+            loaded.custom_secrets['SHARED_NO_DESC'].secret.get_secret_value()
+            == 'shared_val'
+        )
+        assert loaded.custom_secrets['SHARED_NO_DESC'].description == ''
