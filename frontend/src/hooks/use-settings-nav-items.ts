@@ -127,7 +127,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   }
 
   // Everyone in a team org has their own budget; personal workspaces do not.
-  if (canHaveOwnBudget) {
+  if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
