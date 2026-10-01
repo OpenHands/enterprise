@@ -79,7 +79,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -134,7 +134,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = litellm_data
 
             # Act
@@ -150,13 +150,14 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             assert result.items[0].current_budget == 350.0
 
     @pytest.mark.asyncio
-    async def test_returns_defaults_when_litellm_data_missing(
+    async def test_member_absent_from_litellm_response_has_unknown_spend(
         self, org_id, mock_org_member
     ):
         """
-        GIVEN: Organization with members but no LiteLLM data for them
+        GIVEN: A successful LiteLLM read that carries no entry for the member
         WHEN: get_org_members_financial_data is called
-        THEN: Returns financial data with default values (spend=0, budget=None)
+        THEN: Reports the spend as unknown rather than as an observed zero, while
+              still marking the read itself as live
         """
         # Arrange
         with (
@@ -169,7 +170,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -183,16 +184,18 @@ class TestOrgMemberFinancialServiceGetFinancialData:
 
             # Assert
             assert len(result.items) == 1
-            assert result.items[0].lifetime_spend == 0
+            assert result.items[0].lifetime_spend is None
+            assert result.items[0].current_budget is None
             assert result.items[0].max_budget is None
-            assert result.items[0].current_budget == 0
+            # The read succeeded; only this member was missing from it.
+            assert result.spend_status == 'live'
 
     @pytest.mark.asyncio
     async def test_handles_litellm_failure_gracefully(self, org_id, mock_org_member):
         """
         GIVEN: LiteLLM service throws an exception
         WHEN: get_org_members_financial_data is called
-        THEN: Returns financial data with default values (doesn't fail)
+        THEN: Degrades rather than raising, reporting the spend as unknown
         """
         # Arrange
         with (
@@ -205,7 +208,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.side_effect = Exception('LiteLLM unavailable')
 
             # Act
@@ -213,9 +216,12 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 org_id=org_id,
             )
 
-            # Assert - should not raise, returns defaults
+            # Assert - should not raise; the spend is reported as unknown rather
+            # than as an observed zero.
             assert len(result.items) == 1
-            assert result.items[0].lifetime_spend == 0
+            assert result.items[0].lifetime_spend is None
+            assert result.items[0].current_budget is None
+            assert result.spend_status == 'unavailable'
             assert result.items[0].max_budget is None
 
     @pytest.mark.asyncio
@@ -236,7 +242,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 25)  # 25 total
+            mock_get_paginated.return_value = ([mock_org_member], True)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -272,7 +278,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 5)  # 5 total
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -294,14 +300,14 @@ class TestOrgMemberFinancialServiceGetFinancialData:
         """
         GIVEN: Organization with no members
         WHEN: get_org_members_financial_data is called
-        THEN: Returns empty items list
+        THEN: Returns empty items list with spend_status 'unavailable'
         """
         # Arrange
         with patch(
             'server.services.org_member_financial_service.OrgMemberStore.get_org_members_paginated',
             new_callable=AsyncMock,
         ) as mock_get_paginated:
-            mock_get_paginated.return_value = ([], 0)
+            mock_get_paginated.return_value = ([], False)
 
             # Act
             result = await OrgMemberFinancialService.get_org_members_financial_data(
@@ -311,6 +317,8 @@ class TestOrgMemberFinancialServiceGetFinancialData:
             # Assert
             assert len(result.items) == 0
             assert result.next_page_id is None
+            # No rows means no spend was read, so the page must not claim a live figure.
+            assert result.spend_status == 'unavailable'
 
     @pytest.mark.asyncio
     async def test_invalid_page_id_raises_value_error(self, org_id):
@@ -362,7 +370,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([mock_org_member], 1)
+            mock_get_paginated.return_value = ([mock_org_member], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -404,7 +412,7 @@ class TestOrgMemberFinancialServiceGetFinancialData:
                 new_callable=AsyncMock,
             ) as mock_get_financial,
         ):
-            mock_get_paginated.return_value = ([member_no_user], 1)
+            mock_get_paginated.return_value = ([member_no_user], False)
             mock_get_financial.return_value = {
                 'team_max_budget': None,
                 'team_spend': 0,
@@ -422,10 +430,6 @@ class TestOrgMemberFinancialServiceGetFinancialData:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='reproduces obs:member_spend_reported_zero_after_read_failure '
-    '— fails on current code'
-)
 async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_member):
     # GET /orgs/{org_id}/members/financial. Only a 401/403 from LiteLLM is re-raised;
     # every other failure is swallowed into financial_data = {}, and each row is then
@@ -441,27 +445,20 @@ async def test_failed_spend_read_is_not_reported_as_zero_spend(org_id, mock_org_
             new_callable=AsyncMock,
         ) as mock_get_financial,
     ):
-        mock_get_paginated.return_value = ([mock_org_member], 1)
+        mock_get_paginated.return_value = ([mock_org_member], False)
         mock_get_financial.side_effect = TimeoutError('timed out')
 
-        try:
-            result = await OrgMemberFinancialService.get_org_members_financial_data(
-                org_id=org_id,
-                page_id=None,
-                limit=10,
-            )
-        except Exception:
-            # Surfacing the failed read to the caller is a correct outcome.
-            return
+        result = await OrgMemberFinancialService.get_org_members_financial_data(
+            org_id=org_id,
+            page_id=None,
+            limit=10,
+        )
 
     # A spend the proxy never reported must not be presented as an observed zero.
     assert result.items[0].lifetime_spend is None
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins paged_listing_offers_the_remaining_rows — fails on current code'
-)
 async def test_paged_member_listing_offers_the_remaining_rows(async_session_maker):
     # OrgMemberStore.get_org_members_paginated returns (rows, has_more: bool), but the
     # service binds the flag as `total_count` and then computes
@@ -532,9 +529,6 @@ async def test_paged_member_listing_offers_the_remaining_rows(async_session_make
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='pins search_never_matches_beyond_literal_term — fails on current code'
-)
 async def test_member_search_never_matches_beyond_the_literal_term(
     async_session_maker,
 ):

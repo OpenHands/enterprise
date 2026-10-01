@@ -182,7 +182,7 @@ class TestRenameProfileRequest:
 
 # ── Integration tests ──────────────────────────────────────────────────────
 #
-# Exercise the route handlers end-to-end against a real SQLite-backed Org +
+# Exercise the route handlers end-to-end against a real Org +
 # OrgMember row. They verify the new ``SELECT FOR UPDATE`` transaction helper
 # round-trips correctly, the activate handler writes both the org marker and
 # the member diff atomically, and the exception-to-HTTP mapping for the
@@ -232,7 +232,7 @@ def seeded_org(session_maker):
 @pytest.fixture
 def patch_route_db(async_session_maker, seeded_org):
     """Wire the router's db session + OrgService.get_org_by_id to the test
-    SQLite fixture so direct handler calls hit the real schema. ``get_org_by_id``
+    database fixture so direct handler calls hit the real schema. ``get_org_by_id``
     is patched (rather than seeding the full membership graph) because its
     inner OrgMemberStore call opens sessions outside ``async_session_maker``.
     """
@@ -263,8 +263,7 @@ async def _read_org(async_session_maker, org_id):
 
 
 async def _read_member(async_session_maker, org_id, user_id):
-    # ``user_id`` accepts either str or UUID — coerce so the SQLite test
-    # backend's strict Uuid binding doesn't error on str inputs.
+    # ``user_id`` accepts either str or UUID — coerce so the uuid column gets a UUID.
     user_uuid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
     async with async_session_maker() as session:
         result = await session.execute(
@@ -277,6 +276,107 @@ async def _read_member(async_session_maker, org_id, user_id):
 
 class TestProfileLifecycleIntegration:
     """Round-trip CRUD against a real Org row."""
+
+    @pytest.mark.parametrize('route', ['proxy', 'direct'])
+    @pytest.mark.parametrize('stored_default', [False, True])
+    @pytest.mark.parametrize('activated', ['Default', 'pinned'])
+    async def test_activation_keeps_deployment_default_live(
+        self,
+        async_session_maker,
+        patch_route_db,
+        monkeypatch,
+        route,
+        stored_default,
+        activated,
+    ):
+        from server import constants
+
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000')
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', route)
+        monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/old')
+        monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/old')
+        monkeypatch.setattr(
+            constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', 'https://old.example/v1'
+        )
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            profiles = {
+                'pinned': {
+                    'model': 'openai/pinned',
+                    'base_url': 'https://pinned.example/v1',
+                }
+            }
+            if stored_default:
+                profiles['Default'] = {'model': 'openhands/old'}
+            org.llm_profiles = {'profiles': profiles, 'active': 'pinned'}
+            await session.commit()
+
+        with patch(
+            'storage.org_store.OrgStore._ensure_managed_llm_key_for_user', AsyncMock()
+        ):
+            activation = await activate_profile(
+                org_id=org_id, name=activated, user_id=str(ADMIN_USER_ID)
+            )
+        assert activation.llm['model'] == (
+            'openai/pinned'
+            if activated == 'pinned'
+            else 'openhands/old'
+            if route == 'proxy'
+            else 'openai/old'
+        )
+
+        monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/new')
+        monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/new')
+        monkeypatch.setattr(
+            constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', 'https://new.example/v1'
+        )
+        default = await get_profile(
+            org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+        )
+        assert default.llm['model'] == (
+            'openhands/new' if route == 'proxy' else 'openai/new'
+        )
+        assert default.llm['base_url'] == (
+            'http://litellm.test:4000' if route == 'proxy' else 'https://new.example/v1'
+        )
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        assert listing.active_profile == activated
+        pinned = await get_profile(
+            org_id=org_id, name='pinned', user_id=str(ADMIN_USER_ID)
+        )
+        assert pinned.llm['model'] == 'openai/pinned'
+
+    async def test_explicit_default_edit_without_url_preserves_the_selected_model(
+        self,
+        patch_route_db,
+        monkeypatch,
+    ):
+        from server import constants
+
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'proxy')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000')
+        monkeypatch.setattr(
+            constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/deployment'
+        )
+        org_id = patch_route_db
+        await save_profile(
+            org_id=org_id,
+            name='Default',
+            user_id=str(ADMIN_USER_ID),
+            request=SaveProfileRequest(
+                llm=StrictLLM(model='openhands/chosen', temperature=0.3)
+            ),
+        )
+        monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/changed')
+        default = await get_profile(
+            org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+        )
+        assert default.llm['model'] == 'openhands/chosen'
+        assert default.llm['base_url'] == 'http://litellm.test:4000'
+        assert default.llm['temperature'] == 0.3
 
     @pytest.mark.asyncio
     async def test_save_then_list_persists_profile(
@@ -412,6 +512,45 @@ class TestProfileLifecycleIntegration:
         models = {profile.name: profile.model for profile in listing.profiles}
         assert 'Default' not in models
         assert models['Pinned'] == 'anthropic/claude-3-5-sonnet'
+
+    @pytest.mark.asyncio
+    async def test_bundled_proxy_default_listed_by_openhands_name(
+        self, async_session_maker, patch_route_db, monkeypatch
+    ):
+        """Self-hosted: a stored ``litellm_proxy/<route>`` Default on the
+        bundled proxy lists as ``openhands/<route>`` even with no DB-backed
+        OpenHands default, and keeps its base_url.
+        """
+        from server import constants
+
+        proxy_url = 'http://litellm.test:4000'
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org is not None
+            org.llm_profiles = {
+                'profiles': {
+                    'Default': {
+                        'model': 'litellm_proxy/claude-sonnet-4-5-20250929',
+                        'base_url': proxy_url,
+                    },
+                },
+                'active': 'Default',
+            }
+            await session.commit()
+
+        listing = await list_profiles(org_id=org_id, user_id=str(ADMIN_USER_ID))
+        models = {profile.name: profile.model for profile in listing.profiles}
+        assert models == {'Default': 'openhands/claude-sonnet-4-5-20250929'}
+        assert listing.active_profile == 'Default'
+
+        detail = await get_profile(
+            org_id=org_id, name='Default', user_id=str(ADMIN_USER_ID)
+        )
+        assert detail.llm['model'] == 'openhands/claude-sonnet-4-5-20250929'
+        assert detail.llm['base_url'] == proxy_url
 
     @pytest.mark.asyncio
     async def test_default_profile_cleared_when_db_default_disabled(

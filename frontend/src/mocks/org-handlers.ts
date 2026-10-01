@@ -608,6 +608,114 @@ export const ORG_HANDLERS = [
     );
   }),
 
+  http.get("/api/organizations/:orgId/budgets/me", ({ params, request }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    if (new URL(request.url).searchParams.get("include_spend") === "false") {
+      return HttpResponse.json({ enabled: true });
+    }
+
+    const now = new Date();
+    return HttpResponse.json({
+      enabled: true,
+      monthly_limit: 500,
+      is_disabled: false,
+      is_override: true,
+      limit_updated_at: "2026-08-15T00:00:00Z",
+      current_spend: 347.82,
+      cycle_start_at: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      ).toISOString(),
+      cycle_end_at: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+      ).toISOString(),
+      spend_status: "live",
+      spend_observed_at: now.toISOString(),
+    });
+  }),
+
+  http.get(
+    "/api/organizations/:orgId/conversations/my-usage",
+    ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const dayMs = 86_400_000;
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const timeWindow = new URL(request.url).searchParams.get("time_window");
+      let days = 30;
+      if (timeWindow === "7d") {
+        days = 7;
+      } else if (timeWindow === "ytd") {
+        const startOfYear = Date.UTC(today.getUTCFullYear(), 0, 1);
+        days = Math.round((today.getTime() - startOfYear) / dayMs) + 1;
+      }
+
+      const modelCosts: [string, number][] = [
+        ["claude-sonnet-4-5", 142.5],
+        ["claude-opus-4", 89.2],
+        ["gpt-5", 62.3],
+        ["gpt-5-mini", 35.4],
+        ["gemini-2.5-pro", 18.42],
+      ];
+      const totalSpend = modelCosts.reduce((sum, [, cost]) => sum + cost, 0);
+
+      // Spread the total over the window so the daily series and the model
+      // breakdown reconcile, as they do on the real endpoint.
+      const weekPattern = [18.5, 32.2, 45.8, 22.4, 38.9, 15.3, 12.6];
+      const weights = Array.from(
+        { length: days },
+        (_, index) => weekPattern[index % weekPattern.length],
+      );
+      const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+      const dailySpend = weights.map((weight, index) => ({
+        date: new Date(today.getTime() - (days - 1 - index) * dayMs)
+          .toISOString()
+          .slice(0, 10),
+        cost: (weight / weightTotal) * totalSpend,
+      }));
+
+      return HttpResponse.json({
+        total_spend: totalSpend,
+        previous_period_spend: totalSpend / 0.88,
+        daily_spend: dailySpend,
+        model_usage: modelCosts.map(([modelName, totalCost]) => ({
+          model_name: modelName,
+          conversation_count: 1,
+          total_tokens: 0,
+          total_cost: totalCost,
+        })),
+        recent_usage: [
+          ["Refactoring auth module", 2, 2.34],
+          ["Fixing pagination bug", 18, 4.82],
+          ["Review PR #847 authentication", 45, 1.92],
+          ["Implementing user dashboard", 60, 8.45],
+          ["API docs update", 120, 1.23],
+          ["Review PR #846 database schema", 180, 2.67],
+        ].map(([title, minutesAgo, cost], index) => ({
+          conversation_id: `mock-recent-usage-${index}`,
+          title,
+          updated_at: new Date(
+            Date.now() - Number(minutesAgo) * 60_000,
+          ).toISOString(),
+          accumulated_cost: cost,
+        })),
+      });
+    },
+  ),
+
   http.get("/api/organizations/:orgId/budgets", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !orgs.has(orgId)) {
@@ -625,6 +733,9 @@ export const ORG_HANDLERS = [
       litellm_last_sync_error: null,
       reconciliation_state: "healthy",
       reconciliation_error: null,
+      email_alerts_available: true,
+      slack_integration_configured: true,
+      slack_workspace_connected: true,
       desired_team_max_budget: 1000,
       applied_team_max_budget: 1000,
       budget_policy_matches: true,
@@ -1201,6 +1312,9 @@ export const ORG_HANDLERS = [
       enabled: true,
       monthly_limit: 1000,
       reset_day: 1,
+      email_alerts_available: true,
+      slack_integration_configured: true,
+      slack_workspace_connected: true,
       slack_channel: "budget-alerts",
       slack_team_id: "T123",
       default_user_monthly_limit: 250,

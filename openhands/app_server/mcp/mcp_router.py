@@ -43,7 +43,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 mcp_server = FastMCP('mcp', mask_error_details=True)
 
 HOST = f'https://{os.getenv("WEB_HOST", "app.all-hands.dev").strip()}'
-CONVERSATION_URL = HOST + '/conversations/{}'
+CONVERSATION_URL = HOST + '/canvas/conversations/{}'
 
 
 def init_tavily_proxy() -> None:

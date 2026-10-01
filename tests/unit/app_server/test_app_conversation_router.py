@@ -951,6 +951,51 @@ class TestSearchAppConversations:
         assert call_kwargs.get('limit') == 50
         assert call_kwargs.get('include_sub_conversations') is True
 
+    async def test_search_with_tags_filter(self):
+        """Test that tags__contains items are parsed into key/value pairs.
+
+        Arrange: Create mock service and key=value filter items
+        Act: Call search_app_conversations with tags__contains
+        Assert: Service receives the parsed dict, keeping '=' inside values
+        """
+        # Arrange
+        mock_service = _make_mock_service()
+
+        # Act
+        await search_app_conversations(
+            tags__contains=['environmenturl=https://env/a?x=1', 'team=platform'],
+            app_conversation_service=mock_service,
+        )
+
+        # Assert
+        call_kwargs = mock_service.search_app_conversations.call_args[1]
+        assert call_kwargs.get('tags__contains') == {
+            'environmenturl': 'https://env/a?x=1',
+            'team': 'platform',
+        }
+
+    @pytest.mark.parametrize('item', ['environmenturl', '=value'])
+    async def test_search_with_malformed_tags_filter(self, item):
+        """Test that a tags__contains item without a key=value shape is rejected.
+
+        Arrange: Create mock service and a malformed filter item
+        Act: Call search_app_conversations with the malformed item
+        Assert: HTTPException is raised with 400 status and the service is not called
+        """
+        # Arrange
+        mock_service = _make_mock_service()
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await search_app_conversations(
+                tags__contains=[item],
+                app_conversation_service=mock_service,
+            )
+
+        # Assert
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        mock_service.search_app_conversations.assert_not_called()
+
 
 @pytest.mark.asyncio
 class TestCountAppConversations:
@@ -1024,6 +1069,27 @@ class TestCountAppConversations:
         assert call_kwargs.get('sandbox_id__eq') == sandbox_id
         assert call_kwargs.get('title__contains') == 'test'
         assert result == 3
+
+    async def test_count_with_tags_filter(self):
+        """Test that tags__contains items are parsed and passed to the service.
+
+        Arrange: Create mock service with count return value
+        Act: Call count_app_conversations with tags__contains
+        Assert: Service receives the parsed dict
+        """
+        # Arrange
+        mock_service = _make_mock_service(count_return=2)
+
+        # Act
+        result = await count_app_conversations(
+            tags__contains=['team=platform'],
+            app_conversation_service=mock_service,
+        )
+
+        # Assert
+        call_kwargs = mock_service.count_app_conversations.call_args[1]
+        assert call_kwargs.get('tags__contains') == {'team': 'platform'}
+        assert result == 2
 
 
 # ─── switch_conversation_profile ────────────────────────────────────────────

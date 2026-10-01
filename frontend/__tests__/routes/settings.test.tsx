@@ -252,6 +252,26 @@ describe("Settings Screen", () => {
     });
   });
 
+  it("should link to the Agent Profiles library in the saas navbar", async () => {
+    // Arrange
+    mockQueryClient.clear();
+    mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+    seedActiveUser({ role: "member" });
+
+    // Act
+    renderSettingsScreen();
+
+    // Assert
+    const navbar = await screen.findByTestId("settings-navbar");
+    const agentProfilesLink = await within(navbar).findByRole("link", {
+      name: "SETTINGS$NAV_AGENT_PROFILES",
+    });
+    expect(agentProfilesLink).toHaveAttribute(
+      "href",
+      "/canvas/settings/agents",
+    );
+  });
+
   it("should not be able to access saas-only routes in oss mode", async () => {
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
     // @ts-expect-error - only return app mode
@@ -489,6 +509,56 @@ describe("Settings Screen", () => {
         ).not.toBeInTheDocument();
       });
     });
+
+    const seedTeamOrgUser = (role: OrganizationMember["role"]) => {
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: MOCK_TEAM_ORG_ACME.id }),
+      );
+    };
+
+    it("should group User under an Account settings header for an admin in a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("admin");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
+      const labelsInOrder = within(navbar)
+        .getAllByText(/^(USER\$ACCOUNT_SETTINGS|User)$/)
+        .map((element) => element.textContent);
+      expect(labelsInOrder).toEqual(["USER$ACCOUNT_SETTINGS", "User"]);
+    });
+
+    it("should not show the Account settings header to a member of a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("member");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("User");
+      expect(
+        within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("enable_billing feature flag", () => {
@@ -653,6 +723,80 @@ describe("Settings Screen", () => {
       const response = result as Response;
       expect(response.status).toBe(302);
       expect(response.headers.get("Location")).toBe("/settings/user");
+    });
+  });
+
+  describe("Your Budget route access", () => {
+    beforeEach(() => {
+      mockQueryClient.clear();
+      useSelectedOrganizationStore.setState({ organizationId: null });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const selectOrg = (
+      org: typeof MOCK_TEAM_ORG_ACME,
+      role: OrganizationMember["role"],
+    ) => {
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [org],
+        currentOrgId: org.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: org.id });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: org.id }),
+      );
+    };
+
+    const openYourBudget = () => {
+      const request = new Request("http://localhost/settings/your-budget");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      return clientLoader({ request, params: {} });
+    };
+
+    it.each(["member", "admin", "owner"] as const)(
+      "should let a %s open Your Budget in a team org",
+      async (role) => {
+        // Arrange
+        mockQueryClient.setQueryData(["web-client-config"], {
+          app_mode: "saas",
+        });
+        selectOrg(MOCK_TEAM_ORG_ACME, role);
+
+        // Act
+        const result = await openYourBudget();
+
+        // Assert
+        expect(result).not.toBeInstanceOf(Response);
+      },
+    );
+
+    it("should redirect away from Your Budget in a personal workspace", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      selectOrg(MOCK_PERSONAL_ORG, "owner");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+
+    it("should redirect away from Your Budget in OSS mode", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "oss" });
+      selectOrg(MOCK_TEAM_ORG_ACME, "member");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
     });
   });
 

@@ -74,6 +74,7 @@ async def test_middleware_with_cookie_no_refresh(
         mock_user_auth = MagicMock(spec=SaasUserAuth)
         mock_user_auth.refreshed = False
         mock_user_auth.auth_type = AuthType.COOKIE
+        mock_user_auth.oauth_v2_cookie = False
 
         with patch(
             'server.middleware.SetAuthCookieMiddleware._get_user_auth',
@@ -101,6 +102,7 @@ async def test_middleware_with_cookie_and_refresh(
         mock_user_auth.refresh_token = SecretStr('new_refresh_token')
         mock_user_auth.accepted_tos = True
         mock_user_auth.auth_type = AuthType.COOKIE
+        mock_user_auth.oauth_v2_cookie = False
 
         with (
             patch(
@@ -362,6 +364,7 @@ async def test_logout_invokes_keycloak_for_cookie_auth():
     cookie_user_auth = MagicMock(spec=SaasUserAuth)
     cookie_user_auth.auth_type = AuthType.COOKIE
     cookie_user_auth.refresh_token = SecretStr('cookie-refresh-token')
+    cookie_user_auth.oauth_v2_cookie = False
 
     with (
         patch(

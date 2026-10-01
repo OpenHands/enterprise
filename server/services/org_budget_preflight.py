@@ -21,6 +21,7 @@ from server.services.org_budget_service import (
     LiteLlmFinancialSnapshot,
     _budget_sync_readback_errors,
     _effective_user_budget_limit,
+    _member_cap,
 )
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_user_budget_override import OrgUserBudgetOverride
@@ -229,7 +230,9 @@ def evaluate_org(
                 if is_disabled or effective_limit is None:
                     desired_members[user_id] = None
                 else:
-                    desired_members[user_id] = baselines[user_id] + effective_limit
+                    desired_members[user_id] = _member_cap(
+                        baselines[user_id], effective_limit
+                    )
             cap_drift = _budget_sync_readback_errors(
                 snapshot, desired_team_cap, desired_members
             )

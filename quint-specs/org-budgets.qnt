@@ -11,8 +11,9 @@
 // _get_or_create_settings, or directly by OrgBudgetStore.create_settings with
 // an unconstrained reset_day); _current_cycle_start / _next_cycle_start
 // including the reset_day values that name a day the month does not have;
-// _roll_cycle_if_needed and the concurrent second roll the code has no lock
-// against; _get_financial_snapshot's live / stale / unavailable outcomes over a
+// _roll_cycle_if_needed under the row lock it takes before re-reading the anchor,
+// including the second maintenance run that reads the pre-roll cycle and backs out;
+// _get_financial_snapshot's live / stale / unavailable outcomes over a
 // failable LiteLLM read (retryable-transient, retryable-persistent, fatal,
 // malformed) with _cached_financial_snapshot as the stale fallback;
 // _repair_missing_members_for_cycle; _sync_litellm_budgets end to end including
@@ -21,8 +22,8 @@
 // as the once-per-cycle latch and the email/Slack fan-out; the override
 // upsert/delete on both the service and the store; the users_search term reaching
 // ILIKE through _escape_ilike; and OrgMemberFinancialService.get_org_members_financial_data
-// with its page_id contract, its unescaped email_filter, its swallow-and-report-zero
-// fallback and its next_page_id.
+// with its page_id contract, its escaped email_filter, the spend_status 'unavailable'
+// it reports when the read fails, and its next_page_id.
 //
 // DOES NOT COVER: _budget_row_matches_status' eight status filters and the
 // users_page / users_per_page slicing (the route pins both to ge=1, and neither
@@ -35,14 +36,21 @@
 // depends on. Money is modelled in whole units, so _budget_values_match's 1e-6
 // tolerance is exact equality.
 //
-// The known behaviours are MIRRORED, not fixed: a roll re-anchors to
-// _current_cycle_start(now) and so can skip more than one reset period at once;
-// OrgBudgetStore.replace_thresholds drops the rows that carry
-// last_triggered_cycle_start, re-arming every alert inside the live cycle; and
-// get_user_budget_row never calls _reject_personal_org, so it creates budget
-// settings for a personal workspace that every other entry point refuses. So is the
-// member financial listing's next_page_id, which compares the offset against the
-// has_more boolean the caller bound as `total_count`.
+// The one known behaviour still MIRRORED, not fixed: a roll re-anchors to
+// _current_cycle_start(now) and so can skip more than one reset period at once,
+// forgiving everything spent in the periods it skipped. The code settles the
+// anchor there deliberately -- advancing one period per run would leave the anchor
+// behind and re-anchor on every later run, renewing the cap each time -- so the
+// model mirrors it. Preserving the skipped spend was considered and deliberately
+// not pursued, so no property asserts it -- the roll property below checks only
+// where the anchor lands, not what the gap forgave.
+//
+// Read paths (get_budget_state, get_user_budget_row, get_reconciliation_state)
+// go through _get_settings_for_read, which returns the persisted row or transient
+// defaults and never inserts. A read therefore cannot create a settings row -- for
+// a personal workspace or any org -- so the guard is no longer load-bearing on
+// those paths; only the write paths (update_budget_settings, the override writes
+// and run_budget_maintenance) create the row.
 module org_budgets {
   import basicSpells.* from "./spells/basicSpells"
 
@@ -71,7 +79,8 @@ module org_budgets {
   /// calendar month: an invalid date in this model means the reset_day itself
   /// names a day the month does not have, never a missing table entry.
   pure val DAYS_IN_MONTH: int -> int =
-    Map(-1 -> 31, 0 -> 31, 1 -> 28, 2 -> 31, 3 -> 30, 4 -> 31, 5 -> 30)
+    Map(-2 -> 30, -1 -> 31, 0 -> 31, 1 -> 28, 2 -> 31, 3 -> 30, 4 -> 31, 5 -> 30,
+        6 -> 31, 7 -> 31, 8 -> 30)
 
   type Date = { mi: int, d: int }
 
@@ -91,15 +100,22 @@ module org_budgets {
         acc.union(Set(1, 14, 15, 16, 28, 29, 30, 31).map(d => { mi: m, d: d })))
       .filter(dt => valid_date(dt))
 
-  /// _current_cycle_start: this month's reset day if it has already passed,
-  /// otherwise last month's.
-  pure def current_cycle_start(nw: Date, reset_day: int): Date =
-    if (nw.d >= reset_day) { mi: nw.mi, d: reset_day }
-    else { mi: nw.mi - 1, d: reset_day }
+  /// _cycle_day: the reset day the month can actually hold. reset_day has no CHECK
+  /// constraint, so a stored 29-31 is clamped here rather than raising in a short month.
+  pure def cycle_day(mi: int, reset_day: int): int =
+    if (DAYS_IN_MONTH.has(mi) and reset_day > DAYS_IN_MONTH.get(mi))
+      DAYS_IN_MONTH.get(mi)
+    else reset_day
 
-  /// _next_cycle_start: one month on from the cycle start, at reset_day.
+  /// _current_cycle_start: this month's reset day if it has already passed,
+  /// otherwise last month's, each clamped to that month's length.
+  pure def current_cycle_start(nw: Date, reset_day: int): Date =
+    if (nw.d >= cycle_day(nw.mi, reset_day)) { mi: nw.mi, d: cycle_day(nw.mi, reset_day) }
+    else { mi: nw.mi - 1, d: cycle_day(nw.mi - 1, reset_day) }
+
+  /// _next_cycle_start: one month on from the cycle start, at the clamped reset day.
   pure def next_cycle_start(cs: Date, reset_day: int): Date =
-    { mi: cs.mi + 1, d: reset_day }
+    { mi: cs.mi + 1, d: cycle_day(cs.mi + 1, reset_day) }
 
   // -- money and the values a caller can supply --------------------------------
 
@@ -197,10 +213,10 @@ module org_budgets {
     if (t.metas.exclude(ESCAPED_METAS) == Set()) t.hits else USERS
 
   /// OrgMemberStore.get_org_members_paginated interpolates email_filter straight into
-  /// `ilike(f'%{email_filter}%')` -- no _escape_ilike, no escape= -- so every wildcard
-  /// the caller sends keeps its wildcard meaning.
+  /// get_org_members_paginated now escapes backslash, percent and underscore and
+  /// passes escape='\\', so a metacharacter matches itself here too.
   pure def raw_ilike_rows(t: Term): Set[str] =
-    if (t.metas.intersect(Set(Pct, Under)) == Set()) t.hits else USERS
+    if (t.metas.exclude(ESCAPED_METAS) == Set()) t.hits else USERS
 
   /// The member listing's `order_by(OrgMember.user_id)`.
   pure val USER_LIST: List[str] = List("u1", "u2", "u3")
@@ -212,14 +228,6 @@ module org_budgets {
 
   /// An absent email_filter: `if email_filter:` is falsy, so no filter is applied.
   pure val NO_FILTER: Term = { lit: "", metas: Set(), hits: USERS }
-
-  /// The second element of get_org_members_paginated's tuple, as the caller binds it.
-  /// The store declares it `has_more: bool`, so in production it only ever arrives as
-  /// False or True -- 0 or 1 once the caller compares an offset against it. A larger
-  /// value is what a caller gets only when the collaborator returns a real row count.
-  /// 0 and 1 are the two values the declared `bool` can arrive as; 5 and 25 are the
-  /// real row counts a collaborator returning an actual count supplies.
-  pure val TOTAL_COUNTS: Set[int] = Set(0, 1, 5, 25)
 
   /// The documented ValueError: page_id must parse as an integer, and be non-negative.
   pure def page_id_ok(p: PageId): bool =
@@ -233,6 +241,25 @@ module org_budgets {
     l.foldl({ i: 0, out: List() }, (a, u) =>
       if (a.i >= offset and a.out.length() < lim + 1) { i: a.i + 1, out: a.out.append(u) }
       else { i: a.i + 1, out: a.out }).out
+
+  /// The rows `.filter(OrgMember.org_id == org_id)` joined with the unescaped ILIKE
+  /// leaves, in `order_by(OrgMember.user_id)`.
+  pure def matched_members(st: State, filt: Term): List[str] =
+    USER_LIST.select(u =>
+      st.org_members.contains(u) and raw_ilike_rows(filt).contains(u))
+
+  /// The has_more OrgMemberStore.get_org_members_paginated hands back
+  /// (storage/org_member_store.py:223): it over-fetches one row past the page and
+  /// reports whether that row came back.
+  pure def store_has_more(matched: List[str], offset: int, lim: int): bool =
+    page_window(matched, offset, lim).length() > lim
+
+  /// Whether rows are left behind this page, counted off the whole ordered result
+  /// rather than through the store's over-fetch. Agreeing with `store_has_more` on
+  /// every input is the point: it is the same question asked without the windowing, so
+  /// a page_window that stops mirroring `.limit(limit + 1)` breaks the comparison.
+  pure def rows_left_behind(matched: List[str], offset: int, lim: int): bool =
+    matched.length() > offset + lim
 
   // -- persisted rows --------------------------------------------------------------
 
@@ -309,7 +336,11 @@ module org_budgets {
 
   /// One committed cycle roll, recorded where it happens so a property can
   /// compare the new cycle start against a recomputation from the old one.
-  type Roll = { from_key: int, to_key: int, reset_day: int }
+  /// The pre-roll anchor is kept as the date, not as its dkey: dkey is a total order,
+  /// and reconstructing a date from it breaks for a month index below zero.
+  /// `at` is the clock the roll committed on: the anchor it settles on is only the
+  /// current period as of that moment, and time keeps moving afterwards.
+  type Roll = { from: Date, at: Date, to_key: int, reset_day: int }
 
   /// One spend figure handed back to a caller, with the label the code put on it.
   /// `real` records whether a LiteLLM read actually produced the numbers, or whether
@@ -318,7 +349,7 @@ module org_budgets {
 
   /// One page of the member financial listing: whether more rows remained, and
   /// whether the response offered a next_page_id for them.
-  type PageTrace = { has_more: bool, next_offered: bool }
+  type PageTrace = { rows_remain: bool, next_offered: bool }
 
   /// One finished _sync_litellm_budgets: the caps it meant to write, the snapshot
   /// it read back, and whether it reported success.
@@ -681,23 +712,21 @@ module org_budgets {
       (a, u) => {
         val info = snapshot.members.get(u)
         val has_base = baselines.has(u)
-        if (not(has_base) and sg.enabled and not(new_ids.contains(u)))
-          // member_cycle_baseline_missing: skipped entirely, cap left as it is
-          { ...a, base_missing: true }
-        else {
-          val baseline = if (has_base) baselines.get(u) else info.spend
-          val ov = opt_of(st.overrides, u)
-          val eff = effective_limit(ov, sg.default_user_monthly_limit)
-          val cap =
-            if (is_disabled_for(ov)) None
-            else match eff { | None => None | Some(l) => Some(baseline + l) }
-          { ll: apply_member_write(a.ll, st.write_mode, u, cap),
-            active: a.active.put(u, baseline),
-            exp: a.exp.put(u, cap),
-            below: a.below or (match cap { | None => false | Some(c) => c < baseline }),
-            base_missing: a.base_missing,
-            user_err: a.user_err or st.write_mode == WriteRaises }
-        }
+        val baseline = if (has_base) baselines.get(u) else info.spend
+        val ov = opt_of(st.overrides, u)
+        val eff = effective_limit(ov, sg.default_user_monthly_limit)
+        // The allowance is clamped at zero, so the cap never lands below the
+        // member's cycle baseline -- such a cap is exceeded the moment it is written.
+        val cap =
+          if (is_disabled_for(ov)) None
+          else match eff { | None => None | Some(l) => Some(baseline + max(l, 0)) }
+        { ll: apply_member_write(a.ll, st.write_mode, u, cap),
+          active: a.active.put(u, baseline),
+          exp: a.exp.put(u, cap),
+          below: a.below or (match cap { | None => false | Some(c) => c < baseline }),
+          base_missing: a.base_missing or
+            (not(has_base) and sg.enabled and not(new_ids.contains(u))),
+          user_err: a.user_err or st.write_mode == WriteRaises }
       })
 
     // Baselines for members outside the governed set survive only if they already
@@ -711,7 +740,7 @@ module org_budgets {
 
     val rb = get_financial_snapshot({ ...st, litellm: acc.ll }, sg1, false, false)
     val errors =
-      team_err or acc.user_err or acc.base_missing or missing != Set() or
+      team_err or acc.user_err or missing != Set() or
       (match rb.snap {
         | None => true
         | Some(r) => readback_mismatch(r, exp_team, acc.exp)
@@ -775,6 +804,13 @@ module org_budgets {
 
   // -- alerts ---------------------------------------------------------------------
 
+  /// replace_thresholds: a percentage that survives the edit keeps its row, and with it
+  /// the once-per-cycle latch; one being added starts unlatched.
+  pure def replaced_thresholds(existing: int -> Threshold, wanted: Set[int]): int -> Threshold =
+    wanted.mapBy(p =>
+      if (existing.has(p)) { ...existing.get(p), email: true, slack: false }
+      else { email: true, slack: false, last_cycle: None })
+
   /// _maybe_send_alerts' selection: every threshold the spend has reached that has
   /// not already fired for this cycle_start.
   pure def due_thresholds(
@@ -822,7 +858,8 @@ module org_budgets {
       settings: Some(sg1),
       thresholds: st.thresholds.keys().mapBy(p =>
         { ...st.thresholds.get(p), last_cycle: None }),
-      last_roll: Some({ from_key: dkey(sg.cycle_start_at),
+      last_roll: Some({ from: sg.cycle_start_at,
+                        at: st.now,
                         to_key: dkey(new_start),
                         reset_day: sg.reset_day }),
       rolled: true,
@@ -965,9 +1002,8 @@ module org_budgets {
         }
         val st1 = match up.thresholds {
           | None => st
-          | Some(ps) => { ...st,
-              thresholds: ps.mapBy(p => { email: true, slack: false, last_cycle: None }),
-              thresholds_replaced: true }
+          | Some(ps) => { ...st, thresholds: replaced_thresholds(st.thresholds, ps),
+                          thresholds_replaced: true }
         }
         val st2 = { ...st1, settings: Some(sg2) }
         val sy = sync_litellm_budgets(st2, sg2, sg0.enabled and not(sg2.enabled), baseline)
@@ -995,48 +1031,48 @@ module org_budgets {
 
   /// The read half of get_budget_state / get_user_budget_row: a stale-tolerant
   /// snapshot handed straight to the caller alongside its status label.
+  /// _get_settings_for_read: the read computes over the persisted row or transient
+  /// defaults and never inserts, so an org with no settings row keeps state.settings
+  /// None and its threshold rows untouched. The cached snapshot is only kept when a
+  /// row already exists; on a defaults read the store flush inserts nothing, so it is
+  /// discarded rather than written back.
   pure def do_present(st0: State, term: Option[Term], cache_override: Option[bool]): State = {
     val sg0 = settings_or_default(st0)
     val sg = match cache_override {
       | None => sg0
       | Some(present) => cache_for(sg0, st0.now, present)
     }
-    val created = st0.settings == None
-    val st = { ...st0,
-      settings: Some(sg),
-      thresholds: if (created) DEFAULT_THRESHOLDS else st0.thresholds,
-      settings_created: st0.settings_created or created }
+    val existed = st0.settings != None
     if (not(valid_date(next_cycle_start(sg.cycle_start_at, sg.reset_day))))
       { ...st0, date_crash: true }
     else {
-      val r = get_financial_snapshot(st, sg, true, false)
-      val st1 = note_read({ ...st, settings: Some(r.settings) }, r)
+      val r = get_financial_snapshot(st0, sg, true, false)
+      val st1 = note_read(
+        { ...st0, settings: if (existed) Some(r.settings) else st0.settings }, r)
       { ...st1,
-        last_presented: Some(presented_of(r, st.now)),
+        last_presented: Some(presented_of(r, st0.now)),
         last_search: match term
           { | None => st1.last_search
-            | Some(t) => Some({ hits: t.hits, rows: ilike_rows(t).intersect(st.org_members) }) },
+            | Some(t) => Some({ hits: t.hits, rows: ilike_rows(t).intersect(st0.org_members) }) },
         unmapped_reported: st1.unmapped_reported or
           (match r.snap
-            { | None => false | Some(sn) => unmapped_count(sn, st.org_members) > 0 }) }
+            { | None => false | Some(sn) => unmapped_count(sn, st0.org_members) > 0 }) }
     }
   }
 
   /// OrgMemberFinancialService.get_org_members_financial_data
   /// (server/services/org_member_financial_service.py:21). Three things happen here
   /// that nothing else in this component does: a LiteLLM read that is not a 401/403 is
-  /// swallowed and every member's spend is reported as a plain zero; the email filter
-  /// reaches ILIKE with no escaping at all; and get_org_members_paginated returns
-  /// (rows, has_more) while the caller binds the flag as `total_count`, so next_page_id
-  /// compares an offset against a boolean.
+  /// swallowed and the page reports spend_status 'unavailable' rather than a spend
+  /// figure, while a 401/403 is re-raised instead; the email filter
+  /// reaches ILIKE with no escaping at all; and next_page_id is derived from the
+  /// store's has_more flag rather than from a row count the caller never receives.
   pure def do_member_financial_page(
-    st: State, page: PageId, lim: int, filt: Term, total_count: int
+    st: State, page: PageId, lim: int, filt: Term
   ): State = {
     val offset = page_offset(page)
-    val matched = USER_LIST.select(u =>
-      st.org_members.contains(u) and raw_ilike_rows(filt).contains(u))
+    val matched = matched_members(st, filt)
     val window = page_window(matched, offset, lim)
-    val has_more = window.length() > lim
     val shown = window.foldl({ i: 0, out: Set() }, (a, u) =>
       if (a.i < lim) { i: a.i + 1, out: a.out.union(Set(u)) }
       else { i: a.i + 1, out: a.out }).out
@@ -1044,21 +1080,22 @@ module org_budgets {
       // the empty-members early return: LiteLLM is never read at all
       { ...st,
         last_search: Some({ hits: filt.hits, rows: Set() }),
-        last_page: Some({ has_more: false, next_offered: false }) }
+        last_page: Some({ rows_remain: false, next_offered: false }) }
     else if (st.read_fault == FatalError)
       // a 401/403 is deliberately re-raised: the request dies, nothing is reported
       { ...st, financial_auth_raised: true }
     else {
-      val zeroed = not(st.read_fault == NoFault or st.read_fault == Malformed)
+      // A failed read is now reported as such: the row's spend is left unknown and
+      // the page carries spend_status 'unavailable', so it is never read as a zero.
+      val unread = not(st.read_fault == NoFault or st.read_fault == Malformed)
       { ...st,
         last_search: Some({ hits: filt.hits, rows: shown }),
-        // next_page_id compares the offset against whatever the caller bound as
-        // `total_count` -- the store's has_more flag in production, a real count only
-        // when a collaborator supplies one.
-        last_page: Some({ has_more: has_more, next_offered: offset + lim < total_count }),
-        financial_zeroed: st.financial_zeroed or zeroed,
-        last_presented: Some({ status: Live, observed_key: dkey(st.now),
-                               at_key: dkey(st.now), real: not(zeroed) }) }
+        last_page: Some({ rows_remain: rows_left_behind(matched, offset, lim),
+                          next_offered: store_has_more(matched, offset, lim) }),
+        financial_zeroed: st.financial_zeroed,
+        last_presented: Some({
+          status: if (unread) Unavailable else Live,
+          observed_key: dkey(st.now), at_key: dkey(st.now), real: true }) }
     }
   }
 
@@ -1176,11 +1213,13 @@ module org_budgets {
   }
 
   /// The per-user row the override endpoints return. Call site:
-  /// server/routes/orgs.py:1305 -> get_user_budget_row (org_budget_service.py:868).
-  /// It is the one budget entry point that never calls _reject_personal_org.
-  action get_user_budget_row(org_id: str, user_id: str): bool =
-    if (is_personal(org_id)) s' = { ...s, personal_settings_created: true }
-    else s' = do_present(s, None, None)
+  /// server/routes/orgs.py:1305 -> get_user_budget_row. It now begins with
+  /// _reject_personal_org like the other four entry points, so it can no longer
+  /// create the settings row a personal workspace must not have.
+  action get_user_budget_row(org_id: str, user_id: str): bool = all {
+    not(is_personal(org_id)),
+    s' = do_present(s, None, None),
+  }
 
   /// The maintenance task's per-org call. Call site:
   /// server/maintenance_task_processor/org_budget_maintenance_processor.py:14 ->
@@ -1316,13 +1355,12 @@ module org_budgets {
       settings_created: true },
   }
 
-  /// OrgBudgetStore.replace_thresholds (storage/org_budget_store.py:66): a whole-region
-  /// write that deletes every threshold row for the org and inserts the new set. The
-  /// deleted rows carry last_triggered_cycle_start, so every alert is re-armed inside
-  /// the live cycle.
+  /// OrgBudgetStore.replace_thresholds: the rows for percentages that survive the edit
+  /// are updated in place, so they keep last_triggered_cycle_start and the once-per-cycle
+  /// latch holds across a settings edit. A percentage being added starts unlatched.
   action OrgBudgetStore_replace_thresholds(percentages: Set[int]): bool =
     s' = { ...s,
-      thresholds: percentages.mapBy(p => { email: true, slack: false, last_cycle: None }),
+      thresholds: replaced_thresholds(s.thresholds, percentages),
       thresholds_replaced: true }
 
   /// OrgBudgetStore.upsert_override (storage/org_budget_store.py:100) reached directly:
@@ -1340,17 +1378,20 @@ module org_budgets {
   /// OrgMemberFinancialService.get_org_members_financial_data
   /// (server/services/org_member_financial_service.py:21). page_id must parse as a
   /// non-negative integer or the call raises ValueError.
-  /// `total_count` is the second element get_org_members_paginated handed back, logged
-  /// because the caller cannot derive it. Conformance fact: `has_next`, whether the
-  /// page handed back a next_page_id.
+  /// `has_more` is the flag get_org_members_paginated handed back, logged because the
+  /// caller cannot derive it, and guarded against the flag the model derives from the
+  /// same over-fetch. Conformance fact: `has_next`, whether the page handed back a
+  /// next_page_id.
   action OrgMemberFinancialService_get_org_members_financial_data(
     org_id: str, page_id: PageId, limit: int, email_filter: Term,
-    total_count: int, has_next: bool
+    has_more: bool, has_next: bool
   ): bool = all {
     page_id_ok(page_id),
     {
-      val post = do_member_financial_page(s, page_id, limit, email_filter, total_count)
+      val post = do_member_financial_page(s, page_id, limit, email_filter)
       all {
+        has_more == store_has_more(
+          matched_members(s, email_filter), page_offset(page_id), limit),
         has_next == next_offered_of(post),
         s' = post,
       }
@@ -1360,9 +1401,10 @@ module org_budgets {
   // -- adversary surface: sim-side machinery with no code call site ----------------
 
   /// A second maintenance run that read OrgBudgetSettings before the first committed
-  /// its roll. Nothing locks the row and nothing compares-and-sets cycle_start_at, so
-  /// it still sees the pre-roll cycle and rolls a second time: baselines re-anchor to
-  /// the newer spend and every threshold latch is cleared again.
+  /// its roll. _roll_cycle_if_needed locks the row and re-reads cycle_start_at before
+  /// rolling (org_budget_service.py:977), so the anchor this run holds no longer
+  /// matches the committed one: it refreshes its copy and returns without rolling.
+  /// The interleaving is still reachable; the re-anchoring it used to cause is not.
   action concurrent_maintenance_roll: bool = all {
     s.last_roll != None,
     s.settings != None,
@@ -1370,14 +1412,16 @@ module org_budgets {
       val sg = settings_or_default(s)
       val stale_start = match s.last_roll {
         | None => sg.cycle_start_at
-        | Some(r) => { mi: r.from_key / 32, d: r.from_key % 32 }
+        | Some(r) => r.from
       }
       val as_read = { ...sg, cycle_start_at: stale_start }
       val r = get_financial_snapshot(s, sg, false, false)
       match r.snap {
         | None => s' = note_read(s, r)
         | Some(snap) =>
-          if (not(roll_is_due(as_read, s.now)) or
+          // The locked re-read: the anchor this run holds against the committed one.
+          if (dkey(stale_start) != dkey(sg.cycle_start_at) or
+              not(roll_is_due(as_read, s.now)) or
               not(valid_date(current_cycle_start(s.now, sg.reset_day))))
             s' = note_read(s, r)
           else {
@@ -1502,20 +1546,22 @@ module org_budgets {
     {
       nondet org_id = ORG_IDS.oneOf()
       nondet page_id = PAGE_IDS.oneOf()
-      nondet total_count = TOTAL_COUNTS.oneOf()
+      nondet has_more = Set(store_has_more(
+        matched_members(s, NO_FILTER), page_offset(page_id), 1)).oneOf()
       nondet has_next = Set(next_offered_of(
-        do_member_financial_page(s, page_id, 1, NO_FILTER, total_count))).oneOf()
+        do_member_financial_page(s, page_id, 1, NO_FILTER))).oneOf()
       OrgMemberFinancialService_get_org_members_financial_data(
-        org_id, page_id, 1, NO_FILTER, total_count, has_next)
+        org_id, page_id, 1, NO_FILTER, has_more, has_next)
     },
     {
       nondet org_id = ORG_IDS.oneOf()
       nondet email_filter = TERMS.oneOf()
-      nondet total_count2 = TOTAL_COUNTS.oneOf()
+      nondet has_more_b = Set(store_has_more(
+        matched_members(s, email_filter), 0, 10)).oneOf()
       nondet has_next2 = Set(next_offered_of(
-        do_member_financial_page(s, NoPage, 10, email_filter, total_count2))).oneOf()
+        do_member_financial_page(s, NoPage, 10, email_filter))).oneOf()
       OrgMemberFinancialService_get_org_members_financial_data(
-        org_id, NoPage, 10, email_filter, total_count2, has_next2)
+        org_id, NoPage, 10, email_filter, has_more_b, has_next2)
     },
     concurrent_maintenance_roll,
     {
@@ -1550,17 +1596,17 @@ module org_budgets {
 
   // ------------------------------------------------------ correctness properties
 
-  /// A committed roll moves the cycle start forward by exactly one reset period.
-  /// A roll that jumps two periods at once silently forgives a month of spend --
-  /// the baseline is re-anchored to today's total, so everything spent in the
-  /// month nobody rolled is never counted against any cap.
+  /// A committed roll settles the cycle anchor on the period containing `now`:
+  /// it moves the anchor forward, and lands exactly there, so a later run inside
+  /// that period is a no-op. Landing short would leave the anchor behind after a
+  /// multi-period gap, and every later run would roll again and re-anchor
+  /// cycle_start_spend to the newer cumulative total, renewing the cap each time.
   val cycle_advances_by_one_reset_period: bool =
     match s.last_roll {
       | None => true
       | Some(r) =>
-        r.to_key > r.from_key and
-        r.to_key == dkey(next_cycle_start({ mi: r.from_key / 32, d: r.from_key % 32 },
-                                          r.reset_day))
+        r.to_key > dkey(r.from) and
+        r.to_key == dkey(current_cycle_start(r.at, r.reset_day))
     }
 
   /// A spend figure labelled `live` came from a read that happened, and happened now.
@@ -1579,7 +1625,7 @@ module org_budgets {
   val paged_listing_offers_the_remaining_rows: bool =
     match s.last_page {
       | None => true
-      | Some(p) => p.has_more implies p.next_offered
+      | Some(p) => p.rows_remain implies p.next_offered
     }
 
   /// Each threshold alerts once per cycle. A second alert for the same threshold in
@@ -1618,13 +1664,17 @@ module org_budgets {
 
   // ---------------------------------------------------------------- observations
 
-  /// A budget settings row was created on demand by a read or a maintenance run.
+  /// A budget settings row was created on demand by a write path -- a settings
+  /// update, an override write or a maintenance run. Reads go through
+  /// _get_settings_for_read and never set this.
   val settings_created_on_demand: bool = s.settings_created
 
   /// A maintenance run rolled the cycle to a new period.
   val cycle_rolled: bool = s.rolled
 
   /// A second concurrent maintenance run rolled the same cycle again off a stale read.
+  /// The row lock and its compare-and-set have closed that path, so this witness is now
+  /// unreachable; it is kept as a regression tripwire.
   val concurrent_roll_reanchored_cycle: bool = s.concurrent_rolled
 
   /// A maintenance run returned skipped=personal_org instead of refusing.
@@ -1671,7 +1721,8 @@ module org_budgets {
   /// A sync found an org member absent from the LiteLLM team.
   val member_missing_from_litellm_reported: bool = s.member_missing_reported
 
-  /// A sync found a governed member with no cycle baseline and skipped their cap.
+  /// A sync found a governed member with no cycle baseline, anchored them to live
+  /// cumulative spend and wrote their cap normally.
   val member_cycle_baseline_missing_reported: bool = s.baseline_missing_reported
 
   /// A threshold alert was handed off for delivery.
@@ -1686,8 +1737,9 @@ module org_budgets {
   /// A Slack-enabled threshold fired with no slack_channel set, so nothing was posted.
   val threshold_alert_slack_suppressed: bool = s.alert_slack_suppressed
 
-  /// A stored reset_day named a day the month does not have, so the cycle arithmetic
-  /// raised and the whole request died.
+  /// A stored reset_day named a day the month does not have. _cycle_day clamps both
+  /// ends before datetime() sees it, so the arithmetic no longer raises; this witness
+  /// is kept as a regression tripwire.
   val invalid_reset_day_crashed_cycle_math: bool = s.date_crash
 
   /// A search term carrying an ILIKE metacharacter was escaped to a literal match.
@@ -1697,8 +1749,10 @@ module org_budgets {
       | Some(t) => t.rows != USERS and t.rows.subseteq(t.hits) and t.hits != USERS
     }
 
-  /// get_user_budget_row created budget settings for a personal workspace that every
-  /// other entry point refuses.
+  /// Historically get_user_budget_row created budget settings for a personal
+  /// workspace that every other entry point refuses. The #413 guard and the
+  /// _get_settings_for_read split have both closed that path, so this witness is
+  /// now unreachable; it is kept as a regression tripwire.
   val personal_org_settings_created_by_user_row_read: bool = s.personal_settings_created
 
   /// A delete hit no override row and returned early, leaving LiteLLM unsynced.
@@ -1707,7 +1761,8 @@ module org_budgets {
   /// An override row was written through the store, so LiteLLM still holds the old cap.
   val override_written_without_litellm_sync: bool = s.store_write_unsynced
 
-  /// The threshold rows were bulk-replaced, dropping every once-per-cycle latch.
+  /// The threshold rows were bulk-replaced. A percentage that survives the edit keeps
+  /// its row and its once-per-cycle latch; only a percentage being added starts unlatched.
   val thresholds_replaced_clearing_alert_latches: bool = s.thresholds_replaced
 
   /// Enabling a budget was refused with 503 because no complete, fresh LiteLLM read
@@ -1715,7 +1770,8 @@ module org_budgets {
   val enable_rejected_without_fresh_spend: bool = s.enable_needed_fresh_spend
 
   /// The member financial listing swallowed a LiteLLM read failure and reported every
-  /// member's spend as zero.
+  /// member's spend as zero. The listing labels the page spend_status 'unavailable'
+  /// instead, so this witness is unreachable; it is kept as a regression tripwire.
   val member_spend_reported_zero_after_read_failure: bool = s.financial_zeroed
 
   /// A LiteLLM 401/403 was re-raised out of the member financial listing rather than
@@ -1724,5 +1780,5 @@ module org_budgets {
 
   /// A member financial page had more rows behind it than it returned.
   val member_listing_page_had_more_rows: bool =
-    match s.last_page { | None => false | Some(p) => p.has_more }
+    match s.last_page { | None => false | Some(p) => p.rows_remain }
 }

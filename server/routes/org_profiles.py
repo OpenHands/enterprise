@@ -38,10 +38,12 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from server.constants import LITE_LLM_API_URL
+from server import constants
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from server.routes.org_models import OrgNotFoundError
 from server.routes.org_provider_connections import _load_connections
 from server.verified_models.default_profile import (
+    DEFAULT_LLM_PROFILE_NAME,
     get_openhands_default_model_name,
     materialize_default_llm_profile,
 )
@@ -187,8 +189,17 @@ def _load_profiles(org: Org) -> LLMProfiles:
     """Load LLMProfiles from org row, defaulting to empty if not set."""
     if org.llm_profiles is None:
         return LLMProfiles()
+    data = dict(org.llm_profiles)
+    raw_profiles = data.get('profiles')
+    if isinstance(raw_profiles, dict):
+        data['profiles'] = {
+            name: canonicalize_bundled_proxy_llm(prof)
+            if isinstance(prof, dict)
+            else prof
+            for name, prof in raw_profiles.items()
+        }
     try:
-        return LLMProfiles.model_validate(org.llm_profiles)
+        return LLMProfiles.model_validate(data)
     except ValidationError as exc:
         # Schema drift / partially-invalid stored profiles: degrade to empty
         # rather than 500-ing. Other exceptions (DB decrypt failures, etc.)
@@ -312,6 +323,15 @@ async def save_profile(
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
+        if (
+            name == DEFAULT_LLM_PROFILE_NAME
+            and constants.uses_bundled_litellm_proxy()
+            and llm.model.startswith('openhands/')
+            and not llm.base_url
+            and not getattr(llm, 'provider_connection_id', None)
+        ):
+            # An explicit save is a concrete choice, even when Canvas omits the URL.
+            llm = llm.model_copy(update={'base_url': constants.LITE_LLM_API_URL})
         include_secrets = request.include_secrets and (
             managed_llm_key_config_from_model(llm.model, llm.base_url) is None
         )
@@ -392,11 +412,12 @@ async def activate_profile(
         _org,
         profiles,
     ):
-        materialize_default_llm_profile(
-            profiles, await get_openhands_default_model_name(session)
+        resolved = materialize_default_llm_profile(
+            profiles.model_copy(deep=True),
+            await get_openhands_default_model_name(session),
         )
 
-        llm = profiles.get(name)
+        llm = resolved.get(name)
         if llm is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -405,12 +426,13 @@ async def activate_profile(
         # Resolve a linked provider connection into concrete credentials before
         # the key is masked/snapshotted below. No-op for unlinked profiles.
         llm = _resolve_provider_connection(_org, llm)
+        if name not in profiles.profiles:
+            # Persist the logical Default, not the deployment route resolved above.
+            profiles.profiles[name] = LLM(model='openhands/default')
         profiles.active = name
 
         # Same session as the org write so both side-effects commit atomically.
-        # Cast ``user_id`` explicitly: Postgres' UUID type tolerates string
-        # coercion, but SQLAlchemy's generic Uuid binding (used under SQLite
-        # in tests) doesn't.
+        # Cast ``user_id``: the column is a real uuid, so bind a UUID.
         member_result = await session.execute(
             select(OrgMember).filter(
                 OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)

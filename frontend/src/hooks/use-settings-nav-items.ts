@@ -2,6 +2,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
   OSS_NAV_ITEMS,
+  YOUR_BUDGET_NAV_ITEM,
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
@@ -33,6 +34,7 @@ export type SettingsNavRenderedItem =
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  user: I18nKey.USER$ACCOUNT_SETTINGS,
 };
 
 const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
@@ -56,6 +58,9 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+
+  // Every role has its own budget; personal workspaces have none.
+  const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
 
   const shouldHideBilling = isBillingHidden(
     config,
@@ -114,6 +119,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
   }
 
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget) {
+    items = [...items, YOUR_BUDGET_NAV_ITEM];
+  }
+
   const PERSONAL_LLM_PATHS = new Set([
     "/settings",
     "/settings/condenser",
@@ -168,7 +178,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org and personal sections (admins/owners only)
+      // Add section header for org, personal and user sections (admins/owners only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",

@@ -117,7 +117,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
         return await self._apply_user_and_org_filter(query)
 
@@ -130,7 +133,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
         return await self._apply_user_and_org_filter(query)
 
@@ -142,6 +148,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -165,6 +172,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         # Add sort order
@@ -223,6 +231,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         """Count conversations matching the given filters with SAAS metadata."""
         query = (
@@ -232,7 +241,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
 
         # Apply user and organization filtering
@@ -246,6 +258,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         result = await self.db_session.execute(query)
@@ -261,6 +274,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ):
         """Apply filters to query that includes SAAS metadata."""
         # Apply the same filters as the base class
@@ -288,6 +302,12 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
 
         if sandbox_id__eq is not None:
             conditions.append(StoredConversationMetadata.sandbox_id == sandbox_id__eq)
+
+        if tags__contains:
+            for key, value in tags__contains.items():
+                conditions.append(
+                    StoredConversationMetadata.tags[key].as_string() == value
+                )
 
         if conditions:
             query = query.where(*conditions)

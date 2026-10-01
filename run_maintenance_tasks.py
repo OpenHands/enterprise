@@ -22,6 +22,16 @@ def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
 
 
 async def main():
+    # A headless CronJob must never launch LiteLLM's interactive device login
+    # (chatgpt/github_copilot). Otherwise validating an org whose agent settings
+    # reference such a model blocks the run for ~15 min per model and wedges the
+    # whole schedule (OpenHands/enterprise#565).
+    from server.utils.litellm_interactive_login_guard import (
+        install_litellm_interactive_login_guard,
+    )
+
+    install_litellm_interactive_login_guard()
+
     # Imported lazily so the generic task runner remains usable in tooling
     # that stubs database initialization while importing this module.
     from server.maintenance_task_processor.managed_llm_key_ownership_processor import (
