@@ -202,20 +202,26 @@ export const useProvisionUserToGroups = () => {
 
   return useMutation({
     mutationFn: ({
-      orgIds,
-      payload,
+      assignments,
+      email,
+      password,
     }: {
-      orgIds: string[];
-      payload: ProvisionUserRequest;
+      assignments: { orgId: string; role: "member" | "admin" | "owner" }[];
+      email: string;
+      password?: string;
     }) =>
       // Provision one organization at a time. The first call creates the
       // account; later calls attach that same user to the other groups.
-      orgIds.reduce<Promise<ProvisionUserResponse[]>>(
-        (chain, orgId) =>
+      assignments.reduce<Promise<ProvisionUserResponse[]>>(
+        (chain, assignment) =>
           chain.then(async (results) => {
             const next = await superAdminService.provisionUser({
-              orgId,
-              payload,
+              orgId: assignment.orgId,
+              payload: {
+                email,
+                role: assignment.role,
+                ...(password ? { password } : {}),
+              },
             });
             return [...results, next];
           }),

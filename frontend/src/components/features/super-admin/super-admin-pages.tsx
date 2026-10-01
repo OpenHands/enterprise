@@ -39,7 +39,7 @@ import {
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import {
-  SuperAdminOrgChecklist,
+  SuperAdminProvisionOrgList,
   SuperAdminUserGroupsModal,
 } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
@@ -280,9 +280,10 @@ export function SuperAdminUsers() {
   const [query, setQuery] = useState("");
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [orgIds, setOrgIds] = useState<string[]>([]);
+  const [orgRoles, setOrgRoles] = useState<
+    Record<string, "member" | "admin" | "owner">
+  >({});
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"member" | "admin" | "owner">("member");
   const [provisionResult, setProvisionResult] =
     useState<ProvisionUserResponse | null>(null);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
@@ -334,24 +335,24 @@ export function SuperAdminUsers() {
 
   const handleProvision = () => {
     const trimmedEmail = email.trim();
-    if (!trimmedEmail || orgIds.length === 0) {
+    const assignments = Object.entries(orgRoles).map(([orgId, role]) => ({
+      orgId,
+      role,
+    }));
+    if (!trimmedEmail || assignments.length === 0) {
       return;
     }
     provision.mutate(
       {
-        orgIds,
-        payload: {
-          email: trimmedEmail,
-          role,
-          ...(password.trim() ? { password: password.trim() } : {}),
-        },
+        assignments,
+        email: trimmedEmail,
+        ...(password.trim() ? { password: password.trim() } : {}),
       },
       {
         onSuccess: (responses) => {
           setEmail("");
-          setOrgIds([]);
+          setOrgRoles({});
           setPassword("");
-          setRole("member");
           setProvisionResult(
             responses.find((response) => response.password) ?? responses[0],
           );
@@ -364,9 +365,8 @@ export function SuperAdminUsers() {
     setProvisionOpen(false);
     setProvisionResult(null);
     setEmail("");
-    setOrgIds([]);
+    setOrgRoles({});
     setPassword("");
-    setRole("member");
   };
 
   const managedUser = users.find((user) => user.id === managedUserId) ?? null;
@@ -489,6 +489,7 @@ export function SuperAdminUsers() {
       {provisionOpen && (
         <OrgModal
           testId="super-admin-provision-form"
+          className="w-[36rem] max-w-[calc(100vw-2rem)]"
           title={
             provisionResult
               ? t(I18nKey.SUPER_ADMIN$PROVISION_CREDENTIALS_TITLE)
@@ -508,6 +509,7 @@ export function SuperAdminUsers() {
           onClose={closeProvision}
           isLoading={provision.isPending}
           hideSecondaryButton={!!provisionResult}
+          showCloseButton
         >
           {provisionResult ? (
             <div
@@ -572,45 +574,29 @@ export function SuperAdminUsers() {
                 onChange={setPassword}
               />
               <div className="flex flex-col gap-1.5 text-sm">
-                <span className="text-[var(--oh-muted)]">
-                  {t(I18nKey.SUPER_ADMIN$PROVISION_ORGS)}
-                </span>
-                <SuperAdminOrgChecklist
+                <span>{t(I18nKey.SUPER_ADMIN$PROVISION_ORGS)}</span>
+                <SuperAdminProvisionOrgList
                   items={teamOrgs.map((org) => ({
                     id: org.id,
                     label: org.name,
                   }))}
-                  selectedIds={orgIds}
-                  onToggle={(id) =>
-                    setOrgIds((current) =>
-                      current.includes(id)
-                        ? current.filter((item) => item !== id)
-                        : [...current, id],
-                    )
+                  roles={orgRoles}
+                  onRoleChange={(id, nextRole) =>
+                    setOrgRoles((current) => {
+                      if (!nextRole) {
+                        const next = { ...current };
+                        delete next[id];
+                        return next;
+                      }
+                      return { ...current, [id]: nextRole };
+                    })
                   }
-                  testIdPrefix="super-admin-provision-org"
+                  disabled={provision.isPending}
                   emptyMessage={t(
                     I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER,
                   )}
                 />
               </div>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-[var(--oh-muted)]">
-                  {t(I18nKey.SUPER_ADMIN$PROVISION_ROLE)}
-                </span>
-                <select
-                  data-testid="super-admin-provision-role"
-                  className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
-                  value={role}
-                  onChange={(event) =>
-                    setRole(event.target.value as "member" | "admin" | "owner")
-                  }
-                >
-                  <option value="member">{t(I18nKey.ORG$ROLE_MEMBER)}</option>
-                  <option value="admin">{t(I18nKey.ORG$ROLE_ADMIN)}</option>
-                  <option value="owner">{t(I18nKey.ORG$ROLE_OWNER)}</option>
-                </select>
-              </label>
             </div>
           )}
         </OrgModal>

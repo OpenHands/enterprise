@@ -143,12 +143,16 @@ function AddRoleButton({
   open,
   onOpenChange,
   onSelect,
+  testId,
+  menuTestId,
 }: {
   orgId: string;
   disabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (role: SuperAdminOrgRole) => void;
+  testId?: string;
+  menuTestId?: string;
 }) {
   const { t } = useTranslation();
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -215,7 +219,7 @@ function AddRoleButton({
         ref={buttonRef}
         type="button"
         variant="primary"
-        testId={`super-admin-group-add-${orgId}`}
+        testId={testId ?? `super-admin-group-add-${orgId}`}
         isDisabled={disabled}
         className="h-7 min-h-7 px-2.5 text-xs"
         onClick={() => onOpenChange(!open)}
@@ -227,7 +231,7 @@ function AddRoleButton({
             <div
               ref={menuRef}
               role="menu"
-              data-testid={`super-admin-group-add-role-${orgId}`}
+              data-testid={menuTestId ?? `super-admin-group-add-role-${orgId}`}
               style={menuStyle}
               className={cn(
                 "flex flex-col bg-tertiary text-white rounded-[6px] context-menu-box-shadow",
@@ -239,7 +243,7 @@ function AddRoleButton({
                   key={option.value}
                   type="button"
                   role="menuitem"
-                  data-testid={`super-admin-group-add-role-${orgId}-${option.value}`}
+                  data-testid={`${menuTestId ?? `super-admin-group-add-role-${orgId}`}-${option.value}`}
                   className={dropdownMenuRowClassName}
                   onClick={() => onSelect(option.value as SuperAdminOrgRole)}
                 >
@@ -251,6 +255,114 @@ function AddRoleButton({
           )
         : null}
     </>
+  );
+}
+
+function ProvisionRoleSelect({
+  value,
+  testId,
+  disabled,
+  onChange,
+  onRemove,
+}: {
+  value: SuperAdminOrgRole;
+  testId: string;
+  disabled?: boolean;
+  onChange: (role: SuperAdminOrgRole) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useTranslation();
+  const options = roleOptions(t);
+  return (
+    <div className="relative w-[6.25rem] shrink-0">
+      <Dropdown
+        key={value}
+        testId={testId}
+        searchable={false}
+        className="h-7 min-h-7 pr-1"
+        inputClassName="text-xs"
+        menuMinWidth={148}
+        showSelectionCheck
+        disabled={disabled}
+        options={options}
+        defaultValue={options.find((option) => option.value === value)}
+        onChange={(item) => {
+          if (!item || item.value === value) {
+            return;
+          }
+          onChange(item.value as SuperAdminOrgRole);
+        }}
+        footer={
+          <button
+            type="button"
+            data-testid={`${testId}-remove`}
+            className={dropdownMenuRowClassName}
+            onClick={onRemove}
+          >
+            {optionLabel(t(I18nKey.SUPER_ADMIN$REMOVE))}
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+export function SuperAdminProvisionOrgList({
+  items,
+  roles,
+  onRoleChange,
+  disabled,
+  emptyMessage,
+}: {
+  items: { id: string; label: string }[];
+  roles: Record<string, SuperAdminOrgRole | undefined>;
+  onRoleChange: (id: string, role: SuperAdminOrgRole | null) => void;
+  disabled?: boolean;
+  emptyMessage?: string;
+}) {
+  const [openOrgId, setOpenOrgId] = useState<string | null>(null);
+  if (items.length === 0) {
+    return emptyMessage ? (
+      <p className="text-sm text-[var(--oh-muted)]">{emptyMessage}</p>
+    ) : null;
+  }
+
+  return (
+    <ul className="divide-y divide-[var(--oh-border)] overflow-visible rounded-lg border border-[var(--oh-border)]">
+      {items.map((item) => {
+        const role = roles[item.id];
+        return (
+          <li
+            key={item.id}
+            className="flex items-center gap-3 px-3 py-2 text-sm"
+          >
+            <span className="min-w-0 flex-1 truncate">{item.label}</span>
+            {role ? (
+              <ProvisionRoleSelect
+                value={role}
+                testId={`super-admin-provision-org-role-${item.id}`}
+                disabled={disabled}
+                onChange={(nextRole) => onRoleChange(item.id, nextRole)}
+                onRemove={() => onRoleChange(item.id, null)}
+              />
+            ) : (
+              <AddRoleButton
+                orgId={item.id}
+                disabled={disabled}
+                open={openOrgId === item.id}
+                onOpenChange={(next) => setOpenOrgId(next ? item.id : null)}
+                onSelect={(nextRole) => {
+                  setOpenOrgId(null);
+                  onRoleChange(item.id, nextRole);
+                }}
+                testId={`super-admin-provision-org-add-${item.id}`}
+                menuTestId={`super-admin-provision-org-menu-${item.id}`}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
