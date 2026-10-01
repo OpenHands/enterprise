@@ -183,7 +183,7 @@ describe("ApiKeysManager", () => {
       } as never,
     } as never);
     mockUseLlmApiKey.mockReturnValue({
-      data: undefined,
+      data: { key: "sk-byor-key" },
       error: null,
       isLoading: false,
       isPaymentRequired: false,
