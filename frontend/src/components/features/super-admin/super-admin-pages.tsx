@@ -38,6 +38,7 @@ import {
   USER_TABLE_CELL_CLASS_NAME,
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
+import { InstanceLogoSetting } from "./instance-logo-setting";
 import {
   SuperAdminProvisionOrgList,
   SuperAdminUserGroupsModal,
@@ -755,6 +756,7 @@ export function SuperAdminInstance() {
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
+      <InstanceLogoSetting />
       <p className="text-sm text-[var(--oh-muted)]">
         {t(I18nKey.SUPER_ADMIN$INSTANCE_HINT)}
       </p>

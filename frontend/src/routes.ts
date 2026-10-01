@@ -13,6 +13,8 @@ export default [
     index("routes/super-admin-install-welcome.tsx"),
     route("tos", "routes/super-admin-install-tos.tsx"),
     route("account", "routes/super-admin-install-account.tsx"),
+    route("company", "routes/super-admin-install-company.tsx"),
+    route("org", "routes/super-admin-install-org.tsx"),
   ]),
   route("automations/*", "routes/automations-redirect.tsx"),
   route("canvas/*", "routes/cross-app-redirect.tsx", {

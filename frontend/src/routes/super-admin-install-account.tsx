@@ -35,7 +35,7 @@ export default function SuperAdminInstallAccount() {
     setError(null);
     // Frontend NUX only — persists profile locally until Keycloak/bootstrap API exists.
     markSuperAdminNuxAccountDone({ name, email });
-    navigate("/super-admin/setup");
+    navigate("/install/company");
   };
 
   return (

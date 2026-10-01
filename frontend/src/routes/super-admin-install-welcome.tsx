@@ -24,11 +24,14 @@ export default function SuperAdminInstallWelcome() {
         className="oh-welcome-icon-enter"
         label={t(I18nKey.BRANDING$OPENHANDS_LOGO)}
       />
-      <div className="oh-welcome-blur-in oh-welcome-blur-in--delay-1 flex flex-col gap-3">
+      <div className="oh-welcome-blur-in oh-welcome-blur-in--delay-1 flex flex-col gap-4">
         <h1 className="text-3xl font-normal leading-tight text-white sm:text-4xl">
           {t(I18nKey.SA_NUX$WELCOME_TITLE)}
         </h1>
-        <p className="text-base leading-6 text-[var(--oh-muted)]">
+        <p
+          className="max-w-md text-base leading-6"
+          style={{ color: "var(--cool-grey-400, #979797)" }}
+        >
           {t(I18nKey.SA_NUX$WELCOME_BODY)}
         </p>
       </div>

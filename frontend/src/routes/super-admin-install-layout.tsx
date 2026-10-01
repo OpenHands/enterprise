@@ -1,6 +1,8 @@
 import { useLocation, useNavigate, useOutlet } from "react-router";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { InstallFooter } from "#/components/features/super-admin/install-footer";
+import { InstallStepBar } from "#/components/features/super-admin/install-step-bar";
 import {
   getSuperAdminNuxPath,
   getSuperAdminNuxStep,
@@ -73,8 +75,11 @@ function InstallStepLayer({
       }}
       data-testid="super-admin-install-crossfade"
     >
-      <div className="flex min-h-full items-center justify-center px-6 py-10">
-        <FrozenInstallOutlet />
+      <div className="flex min-h-full flex-col">
+        <div className="flex flex-1 items-center justify-center px-6 pb-10 pt-28">
+          <FrozenInstallOutlet />
+        </div>
+        <InstallFooter />
       </div>
     </motion.div>
   );
@@ -83,9 +88,9 @@ function InstallStepLayer({
 /**
  * Full-bleed blank shell for first-install Super Admin NUX (no settings chrome).
  *
- * Welcome, terms, and account creation stay mounted together for one beat so
- * the outgoing step can fade out while the next step fades in over the same
- * background.
+ * Welcome, terms, account, company, and the first organization stay mounted together
+ * for one beat so the outgoing step can fade out while the next step fades
+ * in over the same background.
  */
 export default function SuperAdminInstallLayout() {
   const navigate = useNavigate();
@@ -109,12 +114,18 @@ export default function SuperAdminInstallLayout() {
     const expected = getSuperAdminNuxPath(step);
     // Keep user on the correct step; allow forward-only paths that match.
     if (step === "done") {
-      navigate("/super-admin/setup", { replace: true });
+      navigate(expected, { replace: true });
       return;
     }
     if (pathname !== expected && !pathname.startsWith(expected)) {
       // If they're ahead of progress, send them back to the next incomplete step.
-      const order = ["/install", "/install/tos", "/install/account"];
+      const order = [
+        "/install",
+        "/install/tos",
+        "/install/account",
+        "/install/company",
+        "/install/org",
+      ];
       const currentIdx = order.indexOf(pathname);
       const expectedIdx = order.indexOf(expected);
       if (currentIdx < 0 || currentIdx > expectedIdx) {
@@ -137,6 +148,7 @@ export default function SuperAdminInstallLayout() {
           reduceMotion={reduceMotion}
         />
       </AnimatePresence>
+      <InstallStepBar pathname={pathname} />
     </div>
   );
 }

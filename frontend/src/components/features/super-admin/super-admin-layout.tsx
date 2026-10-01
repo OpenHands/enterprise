@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { FaChevronLeft } from "react-icons/fa6";
 import { SettingsNavLink } from "#/components/features/settings/settings-nav-link";
 import { SettingsNavUserMenu } from "#/components/features/settings/settings-nav-user-menu";
+import { InstanceLogoMark } from "#/components/features/super-admin/instance-logo-mark";
 import OpenHandsLogoSidebar from "#/assets/branding/openhands-logo-sidebar.svg?react";
 import CloseIcon from "#/icons/close.svg?react";
 import { useMe } from "#/hooks/query/use-me";
@@ -52,13 +53,16 @@ function SuperAdminNavBrand({ className }: { className?: string }) {
         className,
       )}
     >
-      <div className="mr-3 flex h-9 w-[18px] shrink-0 items-center justify-center overflow-visible">
-        <OpenHandsLogoSidebar
-          width={SIDEBAR_LOGO_WIDTH}
-          height={SIDEBAR_LOGO_HEIGHT}
-          className="max-w-none shrink-0"
-          aria-hidden
-        />
+      <div className="mr-3 flex shrink-0 items-center gap-6">
+        <div className="flex h-9 w-[18px] items-center justify-center overflow-visible">
+          <OpenHandsLogoSidebar
+            width={SIDEBAR_LOGO_WIDTH}
+            height={SIDEBAR_LOGO_HEIGHT}
+            className="max-w-none shrink-0"
+            aria-hidden
+          />
+        </div>
+        <InstanceLogoMark />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-white">
         {t(I18nKey.SUPER_ADMIN$TITLE)}

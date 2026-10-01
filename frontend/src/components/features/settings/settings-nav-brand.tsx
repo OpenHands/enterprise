@@ -1,5 +1,6 @@
 import { FaChevronLeft } from "react-icons/fa6";
 import { useTranslation } from "react-i18next";
+import { InstanceLogoMark } from "#/components/features/super-admin/instance-logo-mark";
 import OpenHandsLogoSidebar from "#/assets/branding/openhands-logo-sidebar.svg?react";
 import { getAgentCanvasBannerLink } from "#/components/features/home/home-header/agent-canvas-banner";
 import { I18nKey } from "#/i18n/declaration";
@@ -29,13 +30,16 @@ export function SettingsNavBrand({ className }: SettingsNavBrandProps) {
       )}
     >
       {/* 18px column + overflow-visible — same as agent-canvas sidebar logo. */}
-      <div className="mr-3 flex h-9 w-[18px] shrink-0 items-center justify-center overflow-visible">
-        <OpenHandsLogoSidebar
-          width={SIDEBAR_LOGO_WIDTH}
-          height={SIDEBAR_LOGO_HEIGHT}
-          className="max-w-none shrink-0"
-          aria-hidden
-        />
+      <div className="mr-3 flex shrink-0 items-center gap-6">
+        <div className="flex h-9 w-[18px] items-center justify-center overflow-visible">
+          <OpenHandsLogoSidebar
+            width={SIDEBAR_LOGO_WIDTH}
+            height={SIDEBAR_LOGO_HEIGHT}
+            className="max-w-none shrink-0"
+            aria-hidden
+          />
+        </div>
+        <InstanceLogoMark />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-white">
         {t(I18nKey.ORG$ACCOUNT)}
