@@ -1,8 +1,20 @@
 """Tests for SaasAppLifespanService."""
 
+import asyncio
+import logging
+import os
+import sys
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.pool import NullPool
+
+from tests import postgres_testdb
 
 
 @pytest.fixture
@@ -42,6 +54,222 @@ async def test_aenter_runs_org_condenser_reconciliation():
         await svc.__aenter__()
 
     mock_reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', [None, 'false', '0'])
+async def test_aenter_does_not_migrate_unless_enabled(monkeypatch, flag):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    if flag is None:
+        monkeypatch.delenv('RUN_MIGRATIONS_ON_STARTUP', raising=False)
+    else:
+        monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', flag)
+
+    with (
+        patch('server.app_lifespan.saas_app_lifespan_service.init_analytics_service'),
+        patch.object(
+            SaasAppLifespanService, '_run_migrations', new_callable=AsyncMock
+        ) as mock_migrate,
+    ):
+        await SaasAppLifespanService().__aenter__()
+
+    mock_migrate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['true', '1', 'TRUE'])
+async def test_aenter_migrates_before_anything_else_when_enabled(monkeypatch, flag):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    monkeypatch.setenv('RUN_MIGRATIONS_ON_STARTUP', flag)
+    order: list[str] = []
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service',
+            side_effect=lambda **_: order.append('analytics'),
+        ),
+        patch.object(
+            SaasAppLifespanService,
+            '_run_migrations',
+            new=AsyncMock(side_effect=lambda: order.append('migrate')),
+        ),
+        patch.object(
+            SaasAppLifespanService,
+            '_reconcile_org_condenser_defaults',
+            new=AsyncMock(side_effect=lambda: order.append('reconcile')),
+        ),
+    ):
+        await SaasAppLifespanService().__aenter__()
+
+    assert order == ['migrate', 'analytics', 'reconcile']
+
+
+@pytest.fixture
+def point_migrations_at(monkeypatch, postgres_server):
+    """Point alembic at a database on the test server."""
+
+    def _point(database: str) -> None:
+        for key in list(os.environ):
+            if key.startswith(('DB_', 'GCP_', 'PG')):
+                monkeypatch.delenv(key)
+        monkeypatch.setenv('DB_HOST', postgres_server.host)
+        monkeypatch.setenv('DB_PORT', str(postgres_server.port))
+        monkeypatch.setenv('DB_USER', postgres_server.user)
+        monkeypatch.setenv('DB_PASS', postgres_server.password)
+        monkeypatch.setenv('DB_NAME', database)
+        # Migrations branch on these, so pin them as the test template does.
+        monkeypatch.setenv('WEB_HOST', '')
+        monkeypatch.delenv('STRIPE_API_KEY', raising=False)
+        monkeypatch.delenv('CREATE_DATABASE_IF_MISSING', raising=False)
+
+    return _point
+
+
+@pytest.fixture
+def empty_database(postgres_server):
+    name = postgres_testdb.create_test_database(postgres_server, 'template0')
+    try:
+        yield name
+    finally:
+        postgres_testdb.drop_test_database(postgres_server, name)
+
+
+@pytest.fixture
+def missing_database(postgres_server):
+    """A name with no database behind it. The capital and hyphen need quoting."""
+    name = f'{postgres_testdb.TEST_DB_PREFIX}Missing-{uuid.uuid4().hex[:12]}'
+    try:
+        yield name
+    finally:
+        engine = create_engine(
+            postgres_server.sync_url(postgres_testdb.ADMIN_DB),
+            isolation_level='AUTOCOMMIT',
+            poolclass=NullPool,
+        )
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        finally:
+            engine.dispose()
+
+
+async def _upgrade_in_another_process() -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        '-m',
+        'alembic',
+        '-c',
+        str(postgres_testdb.ALEMBIC_INI),
+        'upgrade',
+        'head',
+        cwd=postgres_testdb.REPO_ROOT,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+def _assert_at_head_and_released(postgres_server, database: str) -> None:
+    config = Config(str(postgres_testdb.ALEMBIC_INI))
+    config.set_main_option('script_location', str(postgres_testdb.MIGRATIONS_DIR))
+    heads = set(ScriptDirectory.from_config(config).get_heads())
+    engine = create_engine(postgres_server.sync_url(database), poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            applied = set(
+                conn.execute(text('SELECT version_num FROM alembic_version')).scalars()
+            )
+            lock_free = conn.execute(
+                text('SELECT pg_try_advisory_lock(3617572382373537863)')
+            ).scalar()
+    finally:
+        engine.dispose()
+    assert applied == heads
+    assert lock_free
+
+
+@pytest.mark.asyncio
+async def test_run_migrations_brings_an_empty_database_to_head(
+    point_migrations_at, empty_database, postgres_server
+):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(empty_database)
+    root_handlers = list(logging.getLogger().handlers)
+
+    await SaasAppLifespanService()._run_migrations()
+
+    # A connection left open would keep the advisory lock and block other replicas.
+    _assert_at_head_and_released(postgres_server, empty_database)
+    # alembic.ini's logging config must not replace the app's.
+    assert logging.getLogger().handlers == root_handlers
+    assert not logging.getLogger('openhands').disabled
+
+
+@pytest.mark.asyncio
+async def test_app_and_another_replica_can_migrate_at_once(
+    point_migrations_at, empty_database, postgres_server
+):
+    """The advisory lock makes one wait for the other, then find head."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(empty_database)
+    other_replica = await _upgrade_in_another_process()
+
+    _, returncode = await asyncio.gather(
+        SaasAppLifespanService()._run_migrations(), other_replica.wait()
+    )
+
+    assert returncode == 0
+    _assert_at_head_and_released(postgres_server, empty_database)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['true', '1'])
+async def test_run_migrations_creates_a_missing_database(
+    monkeypatch, point_migrations_at, missing_database, postgres_server, flag
+):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(missing_database)
+    monkeypatch.setenv('CREATE_DATABASE_IF_MISSING', flag)
+
+    await SaasAppLifespanService()._run_migrations()
+    # This run finds the database. It would hang if the first run still held
+    # the create lock.
+    await SaasAppLifespanService()._run_migrations()
+
+    _assert_at_head_and_released(postgres_server, missing_database)
+
+
+@pytest.mark.asyncio
+async def test_app_and_another_replica_can_create_the_database_at_once(
+    monkeypatch, point_migrations_at, missing_database, postgres_server
+):
+    """The create lock makes one wait for the other, then find the database."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at(missing_database)
+    monkeypatch.setenv('CREATE_DATABASE_IF_MISSING', 'true')
+    other_replica = await _upgrade_in_another_process()
+
+    _, returncode = await asyncio.gather(
+        SaasAppLifespanService()._run_migrations(), other_replica.wait()
+    )
+
+    assert returncode == 0
+    _assert_at_head_and_released(postgres_server, missing_database)
+
+
+@pytest.mark.asyncio
+async def test_run_migrations_raises_the_database_error(point_migrations_at):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    point_migrations_at('no_such_database')
+
+    with pytest.raises(DBAPIError, match='no_such_database'):
+        await SaasAppLifespanService()._run_migrations()
 
 
 @pytest.mark.asyncio

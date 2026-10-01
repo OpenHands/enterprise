@@ -1,6 +1,5 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
 import type {
   OrgMyBudget,
   OrgMyUsageStats,
@@ -237,29 +236,48 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
 }
 
 function DailySpendChart({ days }: { days: OrgMyUsageStats["daily_spend"] }) {
+  const [hoveredDate, setHoveredDate] = React.useState<string | null>(null);
   const maxCost = Math.max(...days.map((day) => day.cost), 0);
   const labelEvery = Math.ceil(days.length / 7);
 
   return (
+    // Cleared on the chart rather than per bar so the tooltip does not flicker
+    // while the pointer crosses the gaps between bars.
     <div
       className={cn(
         "flex h-40 items-end",
         days.length > 31 ? "gap-px" : "gap-1",
       )}
       data-testid="your-budget-daily-chart"
+      onMouseLeave={() => setHoveredDate(null)}
     >
       {days.map((day, index) => (
         <div
           key={day.date}
           className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1"
-          title={`${formatShortDate(day.date)}: ${formatCost(day.cost)}`}
+          data-testid="your-budget-daily-bar"
+          onMouseEnter={() => setHoveredDate(day.date)}
         >
           <div
-            className="min-h-[2px] w-full rounded-t bg-primary"
+            className="relative min-h-[2px] w-full rounded-t bg-primary"
             style={{
               height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
             }}
-          />
+          >
+            {hoveredDate === day.date && (
+              <div
+                className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                data-testid="your-budget-daily-tooltip"
+              >
+                <div className="text-sm font-medium text-foreground">
+                  {formatShortDate(day.date)}
+                </div>
+                <div className="mt-0.5 text-xs tabular-nums text-muted">
+                  {formatCost(day.cost)}
+                </div>
+              </div>
+            )}
+          </div>
           <span className="h-4 whitespace-nowrap text-[10px] text-muted">
             {index % labelEvery === 0 ? formatShortDate(day.date) : ""}
           </span>
@@ -274,14 +292,26 @@ function ModelUsageList({
 }: {
   models: OrgMyUsageStats["model_usage"];
 }) {
+  const [hoveredModel, setHoveredModel] = React.useState<string | null>(null);
   const total = models.reduce((sum, model) => sum + model.total_cost, 0);
 
   return (
-    <ul className="flex flex-col gap-3" data-testid="your-budget-models">
+    // Cleared on the list rather than per row so the tooltip does not flicker
+    // while the pointer crosses the gaps between rows.
+    <ul
+      className="flex flex-col gap-3"
+      data-testid="your-budget-models"
+      onMouseLeave={() => setHoveredModel(null)}
+    >
       {models.map((model, index) => {
         const color = AGENT_COLORS[index % AGENT_COLORS.length];
+        const percent = total > 0 ? (model.total_cost / total) * 100 : 0;
         return (
-          <li key={model.model_name} className="flex items-center gap-3">
+          <li
+            key={model.model_name}
+            className="relative flex items-center gap-3"
+            onMouseEnter={() => setHoveredModel(model.model_name)}
+          >
             <span
               className="size-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: color }}
@@ -293,17 +323,26 @@ function ModelUsageList({
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-tertiary">
                 <div
                   className="h-full rounded-full"
-                  style={{
-                    backgroundColor: color,
-                    width:
-                      total > 0 ? `${(model.total_cost / total) * 100}%` : 0,
-                  }}
+                  style={{ backgroundColor: color, width: `${percent}%` }}
                 />
               </div>
             </div>
             <span className="shrink-0 text-sm font-medium text-foreground">
               {formatCost(model.total_cost)}
             </span>
+            {hoveredModel === model.model_name && (
+              <div
+                className="pointer-events-none absolute bottom-full right-0 z-10 mb-2 w-max max-w-xs rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                data-testid="your-budget-model-tooltip"
+              >
+                <div className="break-all text-sm font-medium text-foreground">
+                  {model.model_name}
+                </div>
+                <div className="mt-0.5 text-xs tabular-nums text-muted">
+                  {`${formatCost(model.total_cost)} · ${percent.toFixed(1)}%`}
+                </div>
+              </div>
+            )}
           </li>
         );
       })}
@@ -322,8 +361,8 @@ function RecentUsageList({
     <ul className="flex flex-col gap-0.5" data-testid="your-budget-recent">
       {items.map((item) => (
         <li key={item.conversation_id}>
-          <Link
-            to={`/conversations/${item.conversation_id}`}
+          <a
+            href={`/canvas/conversations/${item.conversation_id}`}
             className="flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-[var(--oh-interactive-hover-low)]"
           >
             <div className="min-w-0 flex-1">
@@ -340,7 +379,7 @@ function RecentUsageList({
             <span className="shrink-0 text-sm font-medium text-foreground">
               {formatCost(item.accumulated_cost)}
             </span>
-          </Link>
+          </a>
         </li>
       ))}
     </ul>
@@ -459,15 +498,11 @@ export function YourBudget() {
       </p>
     );
   } else if (!isLoading && budget) {
-    content = budget.enabled ? (
+    content = (
       <>
         <BudgetSummary budget={budget} />
         <UsageBreakdown timeWindow={timeWindow} />
       </>
-    ) : (
-      <p className="text-sm text-muted" data-testid="your-budget-not-enabled">
-        {t(I18nKey.SETTINGS$YOUR_BUDGET_NOT_ENABLED)}
-      </p>
     );
   }
 
@@ -485,7 +520,7 @@ export function YourBudget() {
             })}
           </p>
         </header>
-        {budget?.enabled && (
+        {budget && (
           <div
             className="inline-flex shrink-0 rounded-lg border border-border-subtle bg-base-secondary p-0.5"
             data-testid="your-budget-period-selector"

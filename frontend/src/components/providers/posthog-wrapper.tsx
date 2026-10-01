@@ -1,5 +1,5 @@
 import React from "react";
-import type { CaptureResult } from "posthog-js";
+import type { BootstrapConfig, CaptureResult } from "posthog-js";
 import { PostHogProvider } from "posthog-js/react";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
@@ -37,37 +37,353 @@ function addDeploymentKind(
 }
 
 const POSTHOG_BOOTSTRAP_KEY = "posthog_bootstrap";
+const POSTHOG_HANDOFF_PARAM = "oh_ph_handoff";
+const CONSUMED_HANDOFF_NONCES_KEY = `${POSTHOG_BOOTSTRAP_KEY}:consumed_nonces`;
+const ENTERPRISE_APPLIED_HANDOFFS_KEY = `${POSTHOG_BOOTSTRAP_KEY}:enterprise_applied`;
+const MAX_CONSUMED_HANDOFF_NONCES = 100;
+const consumedHandoffNonces = new Set<string>();
 
-function getBootstrapIds() {
-  // Try to extract from URL hash (e.g. #distinct_id=abc&session_id=xyz)
-  const hash = window.location.hash.substring(1);
-  const params = new URLSearchParams(hash);
-  const distinctId = params.get("distinct_id");
-  const sessionId = params.get("session_id");
+const ATTRIBUTION_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "landing_page_category",
+  "cta_id",
+  "cta_surface",
+  "referring_domain_category",
+] as const;
 
-  if (distinctId && sessionId) {
-    const bootstrap = { distinctID: distinctId, sessionID: sessionId };
+type WebsiteHandoffAttribution = Partial<
+  Record<(typeof ATTRIBUTION_KEYS)[number], string>
+>;
 
-    // Persist to sessionStorage so IDs survive full-page OAuth redirects
-    sessionStorage.setItem(POSTHOG_BOOTSTRAP_KEY, JSON.stringify(bootstrap));
+type PostHogHandoff = {
+  bootstrap: BootstrapConfig;
+  attribution?: WebsiteHandoffAttribution;
+};
 
-    // Clean the hash from the URL
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + window.location.search,
-    );
-    return bootstrap;
+type StoredHandoff = PostHogHandoff & {
+  exp?: number;
+  nonce?: string;
+};
+
+type UrlHandoff = PostHogHandoff & {
+  storageValue: StoredHandoff | BootstrapConfig;
+};
+
+function safeSessionStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isBootstrapConfig(value: unknown): value is BootstrapConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.distinctID === "string" &&
+    typeof candidate.sessionID === "string"
+  );
+}
+
+function base64UrlDecode(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const decoded = atob(padded);
+  const encoded = Array.from(
+    decoded,
+    (char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  ).join("");
+  return decodeURIComponent(encoded);
+}
+
+function sanitizeAttribution(
+  value: unknown,
+): WebsiteHandoffAttribution | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const source = value as Record<string, unknown>;
+  const attribution: WebsiteHandoffAttribution = {};
+
+  for (const key of ATTRIBUTION_KEYS) {
+    const candidate = source[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      attribution[key] = candidate.trim().slice(0, 80);
+    }
   }
 
-  // Fallback: check sessionStorage (covers return from OAuth redirect)
-  const stored = sessionStorage.getItem(POSTHOG_BOOTSTRAP_KEY);
-  if (stored) {
-    sessionStorage.removeItem(POSTHOG_BOOTSTRAP_KEY);
-    return JSON.parse(stored) as { distinctID: string; sessionID: string };
+  return Object.keys(attribution).length > 0 ? attribution : undefined;
+}
+
+function pruneConsumedNonceMap(
+  nonces: Record<string, number>,
+  now = Date.now(),
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(nonces)
+      .filter(([, exp]) => Number.isFinite(exp) && exp >= now)
+      .sort(([, leftExp], [, rightExp]) => rightExp - leftExp)
+      .slice(0, MAX_CONSUMED_HANDOFF_NONCES),
+  );
+}
+
+function getNonceMap(
+  storage: Storage | null,
+  key: string,
+): Record<string, number> {
+  if (!storage) return {};
+
+  try {
+    const stored = storage.getItem(key);
+    if (!stored) return {};
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed !== "object" || parsed === null) return {};
+    return pruneConsumedNonceMap(parsed as Record<string, number>);
+  } catch {
+    return {};
+  }
+}
+
+function setNonceMap(
+  storage: Storage | null,
+  key: string,
+  nonces: Record<string, number>,
+): void {
+  if (!storage) return;
+
+  try {
+    storage.setItem(key, JSON.stringify(pruneConsumedNonceMap(nonces)));
+  } catch {
+    // Best effort only; in-memory and current-render guards still apply.
+  }
+}
+
+function getConsumedNonceMap(): Record<string, number> {
+  return getNonceMap(safeLocalStorage(), CONSUMED_HANDOFF_NONCES_KEY);
+}
+
+function isHandoffNonceConsumed(nonce: string): boolean {
+  if (consumedHandoffNonces.has(nonce)) return true;
+  return Object.prototype.hasOwnProperty.call(getConsumedNonceMap(), nonce);
+}
+
+function markHandoffNonceConsumed(nonce: string, exp: number): void {
+  consumedHandoffNonces.add(nonce);
+  setNonceMap(safeLocalStorage(), CONSUMED_HANDOFF_NONCES_KEY, {
+    ...getConsumedNonceMap(),
+    [nonce]: exp,
+  });
+}
+
+function getEnterpriseAppliedHandoffMap(): Record<string, number> {
+  return getNonceMap(safeSessionStorage(), ENTERPRISE_APPLIED_HANDOFFS_KEY);
+}
+
+function getStoredHandoffApplicationKey(handoff: StoredHandoff): string {
+  return (
+    handoff.nonce ??
+    JSON.stringify([handoff.bootstrap.distinctID, handoff.bootstrap.sessionID])
+  );
+}
+
+function isStoredHandoffAlreadyApplied(handoff: StoredHandoff): boolean {
+  return Object.prototype.hasOwnProperty.call(
+    getEnterpriseAppliedHandoffMap(),
+    getStoredHandoffApplicationKey(handoff),
+  );
+}
+
+function markStoredHandoffApplied(handoff: StoredHandoff): void {
+  const exp =
+    typeof handoff.exp === "number" ? handoff.exp : Number.MAX_SAFE_INTEGER;
+  setNonceMap(safeSessionStorage(), ENTERPRISE_APPLIED_HANDOFFS_KEY, {
+    ...getEnterpriseAppliedHandoffMap(),
+    [getStoredHandoffApplicationKey(handoff)]: exp,
+  });
+}
+
+function removeHandoffFromUrl(
+  searchParams: URLSearchParams,
+  hashParams: URLSearchParams,
+): void {
+  const hashHadHandoffParams =
+    hashParams.has(POSTHOG_HANDOFF_PARAM) ||
+    hashParams.has("distinct_id") ||
+    hashParams.has("session_id");
+
+  for (const params of [searchParams, hashParams]) {
+    params.delete(POSTHOG_HANDOFF_PARAM);
+    params.delete("distinct_id");
+    params.delete("session_id");
   }
 
-  return undefined;
+  const nextSearch = searchParams.toString();
+  const nextHash = hashParams.toString();
+  let nextHashFragment = window.location.hash;
+  if (hashHadHandoffParams) {
+    nextHashFragment = nextHash ? `#${nextHash}` : "";
+  }
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${nextHashFragment}`,
+  );
+}
+
+function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
+  try {
+    const parsed: unknown = JSON.parse(base64UrlDecode(encoded));
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+
+    const candidate = parsed as Record<string, unknown>;
+    if (candidate.v !== 1) return undefined;
+    if (typeof candidate.exp !== "number" || candidate.exp < Date.now())
+      return undefined;
+    if (typeof candidate.nonce !== "string" || !candidate.nonce)
+      return undefined;
+    if (isHandoffNonceConsumed(candidate.nonce)) return undefined;
+    if (typeof candidate.distinct_id !== "string" || !candidate.distinct_id)
+      return undefined;
+    if (typeof candidate.session_id !== "string" || !candidate.session_id)
+      return undefined;
+
+    const storageValue: StoredHandoff = {
+      bootstrap: {
+        distinctID: candidate.distinct_id.slice(0, 256),
+        sessionID: candidate.session_id.slice(0, 256),
+      },
+      attribution: sanitizeAttribution(candidate.attribution),
+      exp: candidate.exp,
+      nonce: candidate.nonce,
+    };
+    markHandoffNonceConsumed(candidate.nonce, candidate.exp);
+    markStoredHandoffApplied(storageValue);
+    return {
+      bootstrap: storageValue.bootstrap,
+      attribution: storageValue.attribution,
+      storageValue,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function getHandoffFromUrl(): PostHogHandoff | null | undefined {
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const searchParams = new URLSearchParams(window.location.search);
+  const structured =
+    hashParams.get(POSTHOG_HANDOFF_PARAM) ??
+    searchParams.get(POSTHOG_HANDOFF_PARAM);
+  const distinctID =
+    hashParams.get("distinct_id") ?? searchParams.get("distinct_id");
+  const sessionID =
+    hashParams.get("session_id") ?? searchParams.get("session_id");
+  if (!structured && !(distinctID && sessionID)) return undefined;
+
+  const legacyBootstrap =
+    distinctID && sessionID ? { distinctID, sessionID } : undefined;
+  let handoff: UrlHandoff | undefined;
+  if (structured) {
+    handoff = parseStructuredHandoff(structured);
+  } else if (legacyBootstrap) {
+    handoff = { bootstrap: legacyBootstrap, storageValue: legacyBootstrap };
+  }
+
+  if (handoff) {
+    try {
+      safeSessionStorage()?.setItem(
+        POSTHOG_BOOTSTRAP_KEY,
+        JSON.stringify(handoff.storageValue),
+      );
+    } catch {
+      // OAuth continuity is best effort when browser storage is unavailable.
+    }
+  }
+
+  try {
+    removeHandoffFromUrl(searchParams, hashParams);
+  } catch {
+    // Analytics must never block app rendering.
+  }
+  return handoff ?? null;
+}
+
+function isStoredHandoff(value: unknown): value is StoredHandoff {
+  if (isBootstrapConfig(value)) return true;
+  if (typeof value !== "object" || value === null) return false;
+  return isBootstrapConfig((value as Record<string, unknown>).bootstrap);
+}
+
+function getStoredHandoff(): PostHogHandoff | undefined {
+  const storage = safeSessionStorage();
+  if (!storage) return undefined;
+
+  try {
+    const stored = storage.getItem(POSTHOG_BOOTSTRAP_KEY);
+    if (!stored) return undefined;
+
+    const parsed: unknown = JSON.parse(stored);
+    if (!isStoredHandoff(parsed)) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+      return undefined;
+    }
+    if (isBootstrapConfig(parsed)) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+      return { bootstrap: parsed };
+    }
+    if (typeof parsed.exp === "number" && parsed.exp < Date.now()) {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+      return undefined;
+    }
+
+    if (isStoredHandoffAlreadyApplied(parsed)) return undefined;
+    markStoredHandoffApplied(parsed);
+
+    // Keep valid handoffs for adjacent apps on the same origin, especially
+    // Agent Canvas after the Cloud root redirects to /canvas.
+    return {
+      bootstrap: parsed.bootstrap,
+      attribution: sanitizeAttribution(parsed.attribution),
+    };
+  } catch {
+    try {
+      storage.removeItem(POSTHOG_BOOTSTRAP_KEY);
+    } catch {
+      // Ignore storage failures.
+    }
+    return undefined;
+  }
+}
+
+function getPostHogHandoff(): PostHogHandoff | undefined {
+  const urlHandoff = getHandoffFromUrl();
+  return urlHandoff === undefined
+    ? getStoredHandoff()
+    : (urlHandoff ?? undefined);
+}
+
+function registerWebsiteAttribution(
+  posthog: {
+    register: (properties: WebsiteHandoffAttribution) => void;
+    register_for_session?: (properties: WebsiteHandoffAttribution) => void;
+  },
+  attribution?: WebsiteHandoffAttribution,
+): void {
+  if (!attribution || Object.keys(attribution).length === 0) return;
+  if (posthog.register_for_session) {
+    posthog.register_for_session(attribution);
+    return;
+  }
+  posthog.register(attribution);
 }
 
 export function PostHogWrapper({ children }: { children: React.ReactNode }) {
@@ -77,7 +393,7 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
   const [deploymentKind, setDeploymentKind] =
     React.useState<DeploymentKind>("local");
   const [isLoading, setIsLoading] = React.useState(true);
-  const bootstrapIds = React.useMemo(() => getBootstrapIds(), []);
+  const handoff = React.useMemo(() => getPostHogHandoff(), []);
 
   React.useEffect(() => {
     (async () => {
@@ -112,14 +428,17 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
       apiKey={posthogClientKey}
       options={{
         api_host: "https://us.i.posthog.com",
+        autocapture: false,
         person_profiles: "identified_only",
         capture_performance: {
           network_timing: true,
           web_vitals: true,
         },
         capture_exceptions: true,
-        bootstrap: bootstrapIds,
+        bootstrap: handoff?.bootstrap,
         before_send: (event) => addDeploymentKind(event, deploymentKind),
+        loaded: (posthog) =>
+          registerWebsiteAttribution(posthog, handoff?.attribution),
         __add_tracing_headers: [window.location.hostname],
       }}
     >

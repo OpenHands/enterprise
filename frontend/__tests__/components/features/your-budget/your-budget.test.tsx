@@ -39,6 +39,16 @@ const createUsage = (
   ...overrides,
 });
 
+type ModelUsage = OrgMyUsageStats["model_usage"][number];
+
+const createModelUsage = (overrides: Partial<ModelUsage> = {}): ModelUsage => ({
+  model_name: "claude-sonnet-4-5",
+  conversation_count: 1,
+  total_tokens: 0,
+  total_cost: 0,
+  ...overrides,
+});
+
 const renderYourBudget = (
   budget: OrgMyBudget = createBudget(),
   usage: OrgMyUsageStats = createUsage(),
@@ -200,17 +210,19 @@ describe("YourBudget", () => {
   });
 
   describe("when there is no budget to show", () => {
-    it("should say budgets are not enabled and skip loading usage", async () => {
+    it("should still show the budget cards and load usage when the org has not enabled budgets", async () => {
       // Arrange & Act
-      const { getMyUsageSpy } = renderYourBudget(
-        createBudget({ enabled: false }),
-      );
+      const { getMyUsageSpy } = renderYourBudget({ enabled: false });
 
       // Assert
       expect(
-        await screen.findByTestId("your-budget-not-enabled"),
-      ).toBeInTheDocument();
-      expect(getMyUsageSpy).not.toHaveBeenCalled();
+        await screen.findByTestId("your-budget-allocation"),
+      ).toHaveTextContent("SETTINGS$YOUR_BUDGET_NO_LIMIT");
+      expect(screen.getByTestId("your-budget-spent")).toHaveTextContent(
+        "SETTINGS$YOUR_BUDGET_SPEND_UNAVAILABLE",
+      );
+      expect(screen.queryByTestId("your-budget-meter")).not.toBeInTheDocument();
+      await waitFor(() => expect(getMyUsageSpy).toHaveBeenCalled());
     });
 
     it("should show an error when the budget cannot be loaded", async () => {
@@ -276,8 +288,9 @@ describe("YourBudget", () => {
       },
     );
 
-    it("should chart the spend of each day in the period", async () => {
-      // Arrange & Act
+    it("should show the date and spend of a day when its bar is hovered", async () => {
+      // Arrange
+      const user = userEvent.setup();
       renderYourBudget(
         createBudget(),
         createUsage({
@@ -288,11 +301,42 @@ describe("YourBudget", () => {
           ],
         }),
       );
+      const chart = await screen.findByTestId("your-budget-daily-chart");
+      const bars = within(chart).getAllByTestId("your-budget-daily-bar");
+
+      // Act
+      await user.hover(bars[1]);
 
       // Assert
+      const tooltip = within(chart).getByTestId("your-budget-daily-tooltip");
+      expect(tooltip).toHaveTextContent("Sep 20");
+      expect(tooltip).toHaveTextContent("$2.00");
+    });
+
+    it("should hide the day's details when the pointer leaves the chart", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({
+          total_spend: 5,
+          daily_spend: [
+            { date: "2026-09-19", cost: 3 },
+            { date: "2026-09-20", cost: 2 },
+          ],
+        }),
+      );
       const chart = await screen.findByTestId("your-budget-daily-chart");
-      expect(within(chart).getByTitle("Sep 19: $3.00")).toBeInTheDocument();
-      expect(within(chart).getByTitle("Sep 20: $2.00")).toBeInTheDocument();
+      const bars = within(chart).getAllByTestId("your-budget-daily-bar");
+      await user.hover(bars[0]);
+
+      // Act
+      await user.unhover(bars[0]);
+
+      // Assert
+      expect(
+        screen.queryByTestId("your-budget-daily-tooltip"),
+      ).not.toBeInTheDocument();
     });
 
     it.each([
@@ -347,6 +391,68 @@ describe("YourBudget", () => {
       expect(models).toHaveTextContent("$142.50");
     });
 
+    it("should show the name, cost and share of a model when its row is hovered", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({
+          model_usage: [
+            createModelUsage({ total_cost: 3 }),
+            createModelUsage({ model_name: "claude-opus-4", total_cost: 1 }),
+          ],
+        }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+      const rows = within(models).getAllByRole("listitem");
+
+      // Act
+      await user.hover(rows[1]);
+
+      // Assert
+      const tooltip = within(models).getByTestId("your-budget-model-tooltip");
+      expect(tooltip).toHaveTextContent("claude-opus-4");
+      expect(tooltip).toHaveTextContent("$1.00 · 25.0%");
+    });
+
+    it("should hide the model's details when the pointer leaves the list", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({ model_usage: [createModelUsage({ total_cost: 3 })] }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+      const row = within(models).getByRole("listitem");
+      await user.hover(row);
+
+      // Act
+      await user.unhover(row);
+
+      // Assert
+      expect(
+        screen.queryByTestId("your-budget-model-tooltip"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should report a zero share for a model when nothing was spent", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderYourBudget(
+        createBudget(),
+        createUsage({ model_usage: [createModelUsage({ total_cost: 0 })] }),
+      );
+      const models = await screen.findByTestId("your-budget-models");
+
+      // Act
+      await user.hover(within(models).getByRole("listitem"));
+
+      // Assert
+      expect(
+        within(models).getByTestId("your-budget-model-tooltip"),
+      ).toHaveTextContent("$0.00 · 0.0%");
+    });
+
     it("should link each recent conversation to its page with its cost", async () => {
       // Arrange & Act
       renderYourBudget(
@@ -365,7 +471,7 @@ describe("YourBudget", () => {
 
       // Assert
       const link = await screen.findByRole("link", { name: /Fix login/ });
-      expect(link).toHaveAttribute("href", "/conversations/conv-1");
+      expect(link).toHaveAttribute("href", "/canvas/conversations/conv-1");
       expect(link).toHaveTextContent("$2.34");
     });
 

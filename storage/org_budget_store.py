@@ -22,10 +22,15 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 class OrgBudgetStore:
     db_session: AsyncSession
 
-    async def get_settings(self, org_id: UUID) -> OrgBudgetSettings | None:
-        result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
+    async def get_settings(
+        self, org_id: UUID, *, for_update: bool = False
+    ) -> OrgBudgetSettings | None:
+        statement = select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        if for_update:
+            statement = statement.with_for_update().execution_options(
+                populate_existing=True
+            )
+        result = await self.db_session.execute(statement)
         return result.scalar_one_or_none()
 
     async def create_settings(

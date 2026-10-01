@@ -1,5 +1,7 @@
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from logging.config import fileConfig
 
 # Suppress alembic.runtime.plugins INFO logs during import to prevent non-JSON logs in production
@@ -14,7 +16,8 @@ logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
 
 from alembic import context  # noqa: E402
 from google.cloud.sql.connector import Connector  # noqa: E402
-from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy import Engine, create_engine, text  # noqa: E402
+from sqlalchemy.pool import NullPool  # noqa: E402
 
 from openhands.db.ssl import build_db_url_query, build_pg8000_connect_args  # noqa: E402
 from storage.base import Base  # noqa: E402
@@ -37,59 +40,92 @@ GCP_DB_INSTANCE = os.getenv('GCP_DB_INSTANCE')
 GCP_PROJECT = os.getenv('GCP_PROJECT')
 GCP_REGION = os.getenv('GCP_REGION')
 
-POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '25'))
-MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', '10'))
+# Create DB_NAME before migrating if it does not exist. The database user needs
+# the CREATEDB privilege.
+CREATE_DATABASE_IF_MISSING = os.getenv(
+    'CREATE_DATABASE_IF_MISSING', 'false'
+).lower() in ('true', '1')
+# CREATE DATABASE runs from here. Every PostgreSQL server has this database.
+MAINTENANCE_DB_NAME = 'postgres'
+
+logger = logging.getLogger('alembic.env')
 
 
-def get_engine(database_name=DB_NAME):
-    """Create SQLAlchemy engine with optional database name."""
+@contextmanager
+def migration_engine(database: str = DB_NAME) -> Iterator[Engine]:
+    """Yield an engine for one migration run, then close everything it opened.
+
+    The app can run migrations inside its own process on startup, so nothing may
+    outlive the run. A pooled connection would keep holding the advisory lock.
+    """
+    connector = None
     if GCP_DB_INSTANCE:
+        connector = Connector()
+        instance_string = f'{GCP_PROJECT}:{GCP_REGION}:{GCP_DB_INSTANCE}'
 
         def get_db_connection():
-            connector = Connector()
-            instance_string = f'{GCP_PROJECT}:{GCP_REGION}:{GCP_DB_INSTANCE}'
             return connector.connect(
                 instance_string,
                 'pg8000',
                 user=DB_USER,
                 password=DB_PASS.strip(),
-                db=database_name,
+                db=database,
             )
 
-        return create_engine(
-            'postgresql+pg8000://',
-            creator=get_db_connection,
-            pool_size=POOL_SIZE,
-            max_overflow=MAX_OVERFLOW,
-            pool_pre_ping=True,
-            pool_use_lifo=True,
+        engine = create_engine(
+            'postgresql+pg8000://', creator=get_db_connection, poolclass=NullPool
         )
     else:
         scheme = f'postgresql+{DB_DRIVER}' if DB_DRIVER else 'postgresql'
-        url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{database_name}'
+        url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{database}'
         if DB_DRIVER != 'pg8000':
             url += build_db_url_query(DB_SSL_MODE)
-        return create_engine(
+        engine = create_engine(
             url,
-            pool_size=POOL_SIZE,
-            max_overflow=MAX_OVERFLOW,
-            pool_pre_ping=True,
-            pool_use_lifo=True,
+            poolclass=NullPool,
             connect_args=(
                 build_pg8000_connect_args(DB_SSL_MODE) if DB_DRIVER == 'pg8000' else {}
             ),
         )
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        if connector is not None:
+            connector.close()
 
 
-engine = get_engine()
+def create_database_if_missing() -> None:
+    """Create DB_NAME if it does not exist yet."""
+    with (
+        migration_engine(MAINTENANCE_DB_NAME) as engine,
+        engine.connect() as connection,
+    ):
+        # CREATE DATABASE cannot run inside a transaction.
+        connection.execution_options(isolation_level='AUTOCOMMIT')
+        # Replicas that start together take turns, so only the first one creates
+        # the database. Lock number is the md5 hash of
+        # 'openhands_enterprise_create_database'.
+        connection.execute(text('SELECT pg_advisory_lock(1655053006352720504)'))
+        exists = connection.execute(
+            text('SELECT 1 FROM pg_database WHERE datname = :name'),
+            {'name': DB_NAME},
+        ).scalar()
+        if not exists:
+            logger.info('Creating database %s', DB_NAME)
+            name = connection.dialect.identifier_preparer.quote(DB_NAME)
+            connection.exec_driver_sql(f'CREATE DATABASE {name}')
+
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
+# Interpret the config file for Python logging, unless the caller keeps its own
+# (the app sets configure_logger=False when it migrates on startup).
+if config.config_file_name is not None and config.attributes.get(
+    'configure_logger', True
+):
     fileConfig(config.config_file_name)
 
 # Re-apply SQLAlchemy engine log suppression after fileConfig, which may override
@@ -128,9 +164,10 @@ def run_migrations_online() -> None:
     In this scenario we need to create an Engine
     and associate a connection with the context.
     """
-    connectable = engine
+    if CREATE_DATABASE_IF_MISSING:
+        create_database_if_missing()
 
-    with connectable.connect() as connection:
+    with migration_engine() as engine, engine.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -138,7 +175,7 @@ def run_migrations_online() -> None:
         )
 
         # Lock number must be unique — md5 hash of 'openhands_enterprise_migrations'
-        # Lock is released when the connection context manager exits
+        # Lock is released when the connection closes
         connection.execute(text('SELECT pg_advisory_lock(3617572382373537863)'))
 
         with context.begin_transaction():

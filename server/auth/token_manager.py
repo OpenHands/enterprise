@@ -272,7 +272,8 @@ class TokenManager:
             refresh_expires_in = int(
                 data.get('refresh_token_expires_in', data.get('refresh_expires_in', 0))
             )
-            access_token_expires_at = (
+            # Broker responses may contain the original, already-aged expires_in.
+            access_token_expires_at = int(data.get('accessTokenExpiration', 0)) or (
                 0 if expires_in == 0 else current_time + expires_in
             )
             refresh_token_expires_at = (

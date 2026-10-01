@@ -155,6 +155,12 @@ async def test_partial_failure_resumes_without_double_credit(
     await adapter.run_maintenance()
     pre_spend = (await adapter.financial_data())['team_spend']
 
+    # Introduce drift so maintenance must repair policy instead of taking a no-op.
+    await LiteLlmManager.update_user_in_team(
+        keycloak_user_id=str(adapter.user_ids[0]),
+        team_id=str(adapter.org_id),
+        max_budget=USER_OVERRIDE / 2,
+    )
     await adapter.fail_next_management_call('/team/member_update')
     await adapter.run_maintenance()
     degraded_settings = await adapter.get_settings()
@@ -179,6 +185,9 @@ async def test_partial_failure_resumes_without_double_credit(
     financial = await adapter.financial_data()
     expected_team = repaired_settings.cycle_start_spend + ORG_LIMIT
     assert abs(financial['team_max_budget'] - expected_team) <= 1e-6
+    user_id = str(adapter.user_ids[0])
+    expected_member = repaired_settings.user_cycle_start_spend[user_id] + USER_OVERRIDE
+    assert abs(financial['members'][user_id]['max_budget'] - expected_member) <= 1e-6
 
 
 @pytest.mark.asyncio

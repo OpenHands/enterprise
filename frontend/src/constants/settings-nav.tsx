@@ -104,6 +104,15 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "personal",
   },
   {
+    // The Agent Profiles library lives in agent-canvas, which unlists it when
+    // deployed next to this app and leaves the entry to this shell.
+    icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/canvas/settings/agents",
+    text: "SETTINGS$NAV_AGENT_PROFILES",
+    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
+    section: "personal",
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
@@ -193,8 +202,8 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   },
 ];
 
-// Kept out of SAAS_NAV_ITEMS: it is only shown in a team org that has budgets
-// enabled, which `useSettingsNavItems` decides at runtime.
+// Kept out of SAAS_NAV_ITEMS: it is only shown in a SaaS team org, which
+// `useSettingsNavItems` decides at runtime.
 export const YOUR_BUDGET_NAV_ITEM: SettingsNavItem = {
   icon: <Wallet className="size-4" strokeWidth={2} aria-hidden />,
   to: "/settings/your-budget",

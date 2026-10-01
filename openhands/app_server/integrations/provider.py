@@ -89,7 +89,7 @@ class CustomSecret(BaseModel):
             return secret_value
         elif isinstance(secret_value, dict):
             secret = secret_value.get('secret', '')
-            description = secret_value.get('description', '')
+            description = secret_value.get('description') or ''
             return cls(secret=SecretStr(secret), description=description)
 
         else:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.integration.budgets import run_readiness
+from tests.integration.budgets.adapter import BudgetTestAdapter
 from tests.integration.budgets.services import ProviderState, create_provider_app
 
 
@@ -111,3 +114,25 @@ def test_missing_report_cannot_pass(tmp_path, monkeypatch) -> None:
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
     )
     assert run_readiness.main() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'team_spend,member_spend', [(1.0, 2.0), (2.0, 1.0), (2.0, None)]
+)
+async def test_spend_wait_requires_team_and_member_accounting(team_spend, member_spend):
+    user_id = uuid4()
+    partial = {
+        'team_spend': team_spend,
+        'members': {str(user_id): {'spend': member_spend}},
+    }
+    settled = {'team_spend': 2.0, 'members': {str(user_id): {'spend': 2.0}}}
+    adapter = MagicMock(spec=BudgetTestAdapter)
+    adapter.financial_data = AsyncMock(side_effect=[partial, settled])
+
+    result = await BudgetTestAdapter.wait_for_spend(
+        adapter, 2.0, expected_member_spend={user_id: 2.0}
+    )
+
+    assert result == settled
+    assert adapter.financial_data.await_count == 2
