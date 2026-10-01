@@ -22,6 +22,28 @@ from storage.role import Role
 from storage.user import User
 
 
+@pytest.fixture(autouse=True)
+def mock_member_auth_metadata():
+    with (
+        patch(
+            'server.services.org_member_service.PasswordAuthService.get_password_statuses',
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        patch(
+            'server.services.org_member_service.OrgMemberService._is_superadmin',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            'server.services.org_member_service.RoleStore.get_role_by_name',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def org_id():
     """Create a test organization ID."""

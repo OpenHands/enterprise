@@ -176,6 +176,9 @@ function ManageOrganizationMembers() {
     (!member.is_superadmin || isCurrentUserSuperadmin);
   const canAssignUserRole = (member: OrganizationMember) =>
     canManageMember(member) && hasPermission(`change_user_role:${member.role}`);
+  const canRemoveMember = (member: OrganizationMember) =>
+    canAssignUserRole(member) ||
+    (isCurrentUserSuperadmin && canManageMember(member));
 
   const handlePasswordReset = (member: OrganizationMember) => {
     issuePasswordReset.mutate(
@@ -316,7 +319,7 @@ function ManageOrganizationMembers() {
                       handleRoleSelectionClick(member, role)
                     }
                     onRemove={
-                      canManageMember(member)
+                      canRemoveMember(member)
                         ? () => handleRemoveMember(member)
                         : undefined
                     }
