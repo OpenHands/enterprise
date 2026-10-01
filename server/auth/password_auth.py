@@ -13,7 +13,7 @@ from email_validator import EmailNotValidError, validate_email
 
 from server.constants import DEPLOYMENT_MODE
 
-PASSWORD_MIN_LENGTH = 15
+PASSWORD_MIN_LENGTH = 8
 PASSWORD_LINK_TTL_HOURS = 72
 PASSWORD_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 

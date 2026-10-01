@@ -34,7 +34,7 @@ export default function SetPasswordPage() {
         email: "",
         purpose: "setup",
         expires_at: null,
-        minimum_password_length: 15,
+        minimum_password_length: 8,
       });
       return;
     }
@@ -47,7 +47,7 @@ export default function SetPasswordPage() {
           email: "",
           purpose: "setup",
           expires_at: null,
-          minimum_password_length: 15,
+          minimum_password_length: 8,
         }),
       );
   }, []);
@@ -57,7 +57,7 @@ export default function SetPasswordPage() {
     if (!inspection || password.length < inspection.minimum_password_length) {
       setError(
         t(I18nKey.AUTH$PASSWORD_MIN_LENGTH, {
-          count: inspection?.minimum_password_length ?? 15,
+          count: inspection?.minimum_password_length ?? 8,
         }),
       );
       return;
