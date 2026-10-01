@@ -88,7 +88,10 @@ from server.utils.litellm_interactive_login_guard import (  # noqa: E402
     install_litellm_interactive_login_guard,
 )
 from server.verified_models.verified_model_router import (  # noqa: E402
-    api_router as verified_models_router,
+    api_router as model_catalog_router,
+)
+from server.verified_models.verified_model_router import (  # noqa: E402
+    legacy_api_router as legacy_model_catalog_router,
 )
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
@@ -204,9 +207,10 @@ base_app.include_router(
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
+base_app.include_router(model_catalog_router)  # Add routes for model catalog management
 base_app.include_router(
-    verified_models_router
-)  # Add routes for verified models management
+    legacy_model_catalog_router
+)  # Deprecated alias at the legacy /api/admin/verified-models path
 
 # Override the /api/v1/users/me endpoint to include organization info
 # This replaces the OSS endpoint with a SAAS version that adds org_id, org_name, role, permissions
