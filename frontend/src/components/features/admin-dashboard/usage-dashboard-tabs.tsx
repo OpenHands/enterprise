@@ -8,20 +8,22 @@ import {
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
+import { useProviderHost } from "#/hooks/use-provider-host";
+import { Provider } from "#/types/settings";
 import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
   formatAgentLabel,
-  formatAssociatedPr,
   formatBudget,
   formatCost,
   formatDateTimeOrDash,
   formatDuration,
   formatMergedStatus,
+  formatPrLabel,
   formatTokens,
   rowsToCsv,
 } from "./usage-dashboard-utils";
-import { cn, downloadBlob } from "#/utils/utils";
+import { cn, constructPullRequestUrl, downloadBlob } from "#/utils/utils";
 import {
   formControlFilterTriggerClassName,
   formControlInlineInputClassName,
@@ -240,6 +242,7 @@ export type ConversationRow = {
   updated_at?: string | null;
   pr_number?: number[];
   selected_repository?: string | null;
+  git_provider?: Provider | null;
   pr_merged?: boolean | null;
   agent_kind?: string | null;
   llm_model?: string | null;
@@ -247,6 +250,47 @@ export type ConversationRow = {
   execution_status?: string | null;
   title?: string | null;
 };
+
+export function AssociatedPrCell({
+  conversation,
+}: {
+  conversation: Pick<
+    ConversationRow,
+    "pr_number" | "selected_repository" | "git_provider"
+  >;
+}) {
+  const repository = conversation.selected_repository;
+  const provider = conversation.git_provider;
+  const host = useProviderHost(provider);
+  const prNumbers = conversation.pr_number ?? [];
+
+  if (prNumbers.length === 0) return "-";
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {prNumbers.map((prNumber) => {
+        const label = formatPrLabel(prNumber, repository);
+        const href =
+          repository && provider
+            ? constructPullRequestUrl(provider, repository, prNumber, host)
+            : "";
+        return href ? (
+          <a
+            key={prNumber}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:underline"
+          >
+            {label}
+          </a>
+        ) : (
+          <span key={prNumber}>{label}</span>
+        );
+      })}
+    </div>
+  );
+}
 
 export type ConversationsResponse = {
   items: ConversationRow[];
@@ -552,7 +596,7 @@ export function ConversationsTab({
                       {formatDateTimeOrDash(conversation.updated_at)}
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
-                      {formatAssociatedPr(conversation)}
+                      <AssociatedPrCell conversation={conversation} />
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatMergedStatus(conversation.pr_merged)}
