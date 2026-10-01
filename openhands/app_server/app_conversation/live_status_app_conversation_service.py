@@ -1823,10 +1823,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Apply server-only fields that have no place in ``AgentSettings``.
 
         * System prompt: an inline ``system_prompt`` from the start request,
-          else the filename / kwargs (planning vs default agent).
+          else one already on the agent (from its Agent Profile), else the
+          filename / kwargs (planning vs default agent).
         * LLM tracing metadata for SaaS analytics.
         """
         overrides: dict[str, Any] = {}
+        if system_prompt is None:
+            system_prompt = agent.system_prompt
         if system_prompt is not None:
             # The inline prompt replaces the built-in static prompt verbatim;
             # the SDK still appends the dynamic block (skills, suffix, secrets).
