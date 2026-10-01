@@ -319,6 +319,58 @@ export const constructBranchUrl = (
   }
 };
 
+/**
+ * Construct the pull/merge request URL for different providers
+ * @param provider The git provider
+ * @param repositoryName The repository name in format "owner/repo" ("org/project/repo" for Azure DevOps)
+ * @param prNumber The pull/merge request number
+ * @param host The provider host (see useProviderHost)
+ * @returns The pull request URL, or "" when it cannot be built
+ *
+ * @example
+ * constructPullRequestUrl("github", "owner/repo", 42, "github.com") // "https://github.com/owner/repo/pull/42"
+ * constructPullRequestUrl("gitlab", "group/repo", 42, "gitlab.com") // "https://gitlab.com/group/repo/-/merge_requests/42"
+ */
+export const constructPullRequestUrl = (
+  provider: Provider,
+  repositoryName: string,
+  prNumber: number,
+  host?: string | null,
+): string => {
+  const baseUrl = ensureHttpsPrefix(host);
+  // Without a host the URL would resolve relative to this app.
+  if (!baseUrl) return "";
+
+  switch (provider) {
+    case "github":
+      return `${baseUrl}/${repositoryName}/pull/${prNumber}`;
+    case "forgejo":
+      return `${baseUrl}/${repositoryName}/pulls/${prNumber}`;
+    case "gitlab":
+      return `${baseUrl}/${repositoryName}/-/merge_requests/${prNumber}`;
+    case "bitbucket":
+      return `${baseUrl}/${repositoryName}/pull-requests/${prNumber}`;
+    case "bitbucket_data_center": {
+      const parts = repositoryName.split("/");
+      if (parts.length >= 2) {
+        const [project, repo] = parts;
+        return `${baseUrl}/projects/${project}/repos/${repo}/pull-requests/${prNumber}`;
+      }
+      return "";
+    }
+    case "azure_devops": {
+      const parts = repositoryName.split("/");
+      if (parts.length === 3) {
+        const [org, project, repo] = parts;
+        return `${baseUrl}/${org}/${project}/_git/${repo}/pullrequest/${prNumber}`;
+      }
+      return "";
+    }
+    default:
+      return "";
+  }
+};
+
 // Git Action Prompts
 
 /**

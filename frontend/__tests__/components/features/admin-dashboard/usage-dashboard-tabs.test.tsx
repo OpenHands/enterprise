@@ -2,10 +2,14 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { renderWithProviders } from "test-utils";
+import OptionService from "#/api/option-service/option-service.api";
 import {
+  AssociatedPrCell,
   ModelsTab,
   OverviewTab,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import * as utilsModule from "#/utils/utils";
 
 // jsdom's Blob polyfill doesn't implement text()/arrayBuffer(); FileReader
@@ -115,5 +119,96 @@ describe("Usage & Monitoring Export CSV buttons", () => {
     );
 
     expect(screen.getByRole("button", { name: /export csv/i })).toBeDisabled();
+  });
+});
+
+describe("AssociatedPrCell", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("links each PR to its provider page in a new tab, labeled org/repo #N", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        provider_default_hosts: { github: "github.com" },
+      }),
+    );
+
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pr_number: [295, 301],
+          selected_repository: "acme/widgets",
+          git_provider: "github",
+        }}
+      />,
+    );
+
+    const first = await screen.findByRole("link", {
+      name: "acme/widgets #295",
+    });
+    expect(first).toHaveAttribute(
+      "href",
+      "https://github.com/acme/widgets/pull/295",
+    );
+    expect(first).toHaveAttribute("target", "_blank");
+    expect(first).toHaveAttribute("rel", "noopener noreferrer");
+    expect(
+      screen.getByRole("link", { name: "acme/widgets #301" }),
+    ).toHaveAttribute("href", "https://github.com/acme/widgets/pull/301");
+  });
+
+  it("uses the deployment's self-hosted provider host", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        provider_default_hosts: { gitlab: "gitlab.acme.dev" },
+      }),
+    );
+
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pr_number: [7],
+          selected_repository: "platform/api",
+          git_provider: "gitlab",
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("link", { name: "platform/api #7" }),
+    ).toHaveAttribute(
+      "href",
+      "https://gitlab.acme.dev/platform/api/-/merge_requests/7",
+    );
+  });
+
+  it("shows the PR number as plain text when the repository is unknown", () => {
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pr_number: [295],
+          selected_repository: null,
+          git_provider: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("#295")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("shows a dash when there are no PRs", () => {
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pr_number: [],
+          selected_repository: "acme/widgets",
+          git_provider: "github",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("-")).toBeInTheDocument();
   });
 });
