@@ -272,6 +272,7 @@ async def keycloak_callback(
         org_id=user.current_org_id,
         slack_user_id=slack_user_id,
         slack_display_name=slack_display_name,
+        team_id=team_id,
     )
 
     async with a_session_maker(expire_on_commit=False) as session:
