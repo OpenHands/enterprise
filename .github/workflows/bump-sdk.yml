@@ -1,0 +1,136 @@
+# Opens a PR bumping openhands-sdk, openhands-agent-server and openhands-tools to
+# a released SDK version. Triggered within minutes of an SDK release by a
+# `bump-sdk` repository_dispatch from OpenHands/software-agent-sdk's
+# version-bump-prs.yml, which authenticates with the enterprise-dispatcher-sdk
+# App (contents:write on this repo only). Can also be run manually.
+#
+# The dispatch payload is untrusted: only `version` is used, and only after it
+# validates as X.Y.Z. The PR is opened with the release App so its CI runs; that
+# key never leaves this repo.
+
+name: Bump SDK
+
+on:
+  repository_dispatch:
+    types: [bump-sdk]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SDK version to bump to (X.Y.Z)"
+        required: true
+        type: string
+
+concurrency:
+  group: bump-sdk
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate version
+        env:
+          VERSION: ${{ github.event.client_payload.version || inputs.version }}
+          SOURCE_REPO: ${{ github.event.client_payload['source-repo'] }}
+          SOURCE_SHA: ${{ github.event.client_payload['source-sha'] }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid SDK version '$VERSION' (expected X.Y.Z)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Bumping SDK to $VERSION (requested by ${SOURCE_REPO:-manual run} ${SOURCE_SHA})"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Read pinned uv version
+        id: uv-version
+        # uv.lock must be regenerated with the uv pinned in the app image (AGENTS.md).
+        run: |
+          echo "version=$(grep -oE 'astral-sh/uv:[0-9.]+' containers/app/Dockerfile | cut -d: -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          version: ${{ steps.uv-version.outputs.version }}
+          enable-cache: false
+
+      - name: Wait for packages on PyPI
+        # The dispatch is sent right after the SDK publish; the Simple API that
+        # uv resolves against can lag behind it.
+        run: |
+          for pkg in openhands-sdk openhands-agent-server openhands-tools; do
+            for attempt in $(seq 1 60); do
+              if uv pip compile --no-config --no-cache --python-version 3.12 - <<< "$pkg==$VERSION" > /dev/null 2>&1; then
+                echo "$pkg==$VERSION is resolvable"
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "::error::Timed out waiting for $pkg==$VERSION on PyPI"
+                exit 1
+              fi
+              sleep 20
+            done
+          done
+
+      - name: Bump pins and regenerate uv.lock
+        run: |
+          for pkg in openhands-sdk openhands-agent-server openhands-tools; do
+            grep -qE "\"$pkg==[^\"]*\"" pyproject.toml || { echo "::error::No exact $pkg pin in pyproject.toml"; exit 1; }
+            sed -i -E "s/\"$pkg==[^\"]*\"/\"$pkg==$VERSION\"/" pyproject.toml
+          done
+          grep -qE 'AGENT_SERVER_IMAGE_TAG:-[^}]+' containers/dev/compose.yml || { echo "::error::No AGENT_SERVER_IMAGE_TAG default in containers/dev/compose.yml"; exit 1; }
+          sed -i -E "s/AGENT_SERVER_IMAGE_TAG:-[^}]+/AGENT_SERVER_IMAGE_TAG:-$VERSION-python/" containers/dev/compose.yml
+          uv lock --no-cache
+          git --no-pager diff --stat
+
+      # Minted only after uv has resolved and locked, so no third-party code runs
+      # while a write-capable token exists.
+      - name: Mint release App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: OpenHands
+          repositories: enterprise
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create or update pull request
+        id: cpr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          add-paths: |
+            pyproject.toml
+            uv.lock
+            containers/dev/compose.yml
+          base: main
+          branch: bump-sdk-${{ env.VERSION }}
+          delete-branch: true
+          # chore(deps) so release-please does not cut a release from the bump.
+          commit-message: "chore(deps): bump SDK to ${{ env.VERSION }}"
+          title: "chore(deps): bump SDK to ${{ env.VERSION }}"
+          body: |
+            Bumps `openhands-sdk`, `openhands-agent-server` and `openhands-tools` to **${{ env.VERSION }}**, regenerates `uv.lock`, and points the dev compose `AGENT_SERVER_IMAGE_TAG` default at `${{ env.VERSION }}-python`.
+
+            Triggered by the [software-agent-sdk v${{ env.VERSION }} release](https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ env.VERSION }}).
+
+            _Opened automatically by the `Bump SDK` workflow._
+
+      - name: Summary
+        env:
+          URL: ${{ steps.cpr.outputs.pull-request-url }}
+          OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
+        run: |
+          if [ -n "$URL" ]; then
+            echo "SDK bump to $VERSION ($OPERATION): $URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "SDK already at $VERSION; no PR needed." >> "$GITHUB_STEP_SUMMARY"
+          fi
