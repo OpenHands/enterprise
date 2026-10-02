@@ -69,7 +69,11 @@ export function SetupTestHarnessPanel() {
   );
 
   // UI only in mock SaaS/dev — never in production builds.
-  if (!isMockApiBoot() || !isSetupTestHarnessEnabled()) {
+  if (
+    !isMockApiBoot() ||
+    !isSetupTestHarnessEnabled() ||
+    new URLSearchParams(window.location.search).get("catalogPreview") === "1"
+  ) {
     return null;
   }
 
@@ -202,6 +206,18 @@ export function SetupTestHarnessPanel() {
               )}
             >
               Open Getting Started
+            </button>
+            <button
+              type="button"
+              data-testid="setup-test-ui-catalog"
+              onClick={() => navigate("/ui-catalog")}
+              className={cn(
+                "rounded border border-[var(--oh-border)] px-2 py-1.5 text-left",
+                "text-[11px] font-medium text-[var(--oh-muted)]",
+                "hover:border-amber-500/40 hover:text-white",
+              )}
+            >
+              Pages and modals
             </button>
             <button
               type="button"

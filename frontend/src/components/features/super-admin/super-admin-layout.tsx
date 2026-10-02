@@ -172,8 +172,10 @@ export function SuperAdminLayout() {
     return <Navigate to="/settings" replace />;
   }
 
+  const catalogPreview =
+    new URLSearchParams(location.search).get("catalogPreview") === "1";
   const nuxStep = getSuperAdminNuxStep(nux);
-  if (nuxStep !== "done") {
+  if (!catalogPreview && nuxStep !== "done") {
     return <Navigate to={getSuperAdminNuxPath(nuxStep)} replace />;
   }
 

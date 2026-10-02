@@ -9,6 +9,8 @@ export default [
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
+  route("ui-catalog", "routes/ui-catalog.tsx"),
+  route("ui-catalog/frame/:frameId", "routes/ui-catalog-frame.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),
     route("tos", "routes/super-admin-install-tos.tsx"),

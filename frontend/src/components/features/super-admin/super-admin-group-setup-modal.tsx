@@ -44,7 +44,12 @@ const STARTER_STEPS: {
  * First visit to org LLM settings after install. Explains the basic setup
  * for the organization that was just created.
  */
-export function SuperAdminGroupSetupModal() {
+export function SuperAdminGroupSetupModal({
+  forceOpen = false,
+}: {
+  /** Show the modal without the install localStorage flag. Catalog only. */
+  forceOpen?: boolean;
+} = {}) {
   const { t } = useTranslation();
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>("llm");
@@ -54,7 +59,7 @@ export function SuperAdminGroupSetupModal() {
     readSuperAdminNux,
   );
 
-  if (!nux.starterModalPending) {
+  if (!forceOpen && !nux.starterModalPending) {
     return null;
   }
 
@@ -77,8 +82,10 @@ export function SuperAdminGroupSetupModal() {
       secondaryButtonText={t(I18nKey.SA_NUX$STARTER_SKIP)}
       secondaryButtonTestId="sa-nux-starter-skip"
       secondaryButtonClassName="bg-transparent hover:bg-transparent hover:border-white"
-      onPrimaryClick={clearSuperAdminNuxStarterModal}
-      onClose={clearSuperAdminNuxStarterModal}
+      onPrimaryClick={
+        forceOpen ? undefined : clearSuperAdminNuxStarterModal
+      }
+      onClose={forceOpen ? () => undefined : clearSuperAdminNuxStarterModal}
     >
       <div
         className="relative -mx-6 -mt-6 h-56 overflow-hidden"

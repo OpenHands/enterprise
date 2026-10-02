@@ -109,7 +109,13 @@ export default function SuperAdminInstallLayout() {
     zIndexByPath.current[pathname] = layerRef.current;
   }
 
+  const catalogPreview =
+    new URLSearchParams(location.search).get("catalogPreview") === "1";
+
   useEffect(() => {
+    if (catalogPreview) {
+      return;
+    }
     const step = getSuperAdminNuxStep(state);
     const expected = getSuperAdminNuxPath(step);
     // Keep user on the correct step; allow forward-only paths that match.
@@ -132,7 +138,7 @@ export default function SuperAdminInstallLayout() {
         navigate(expected, { replace: true });
       }
     }
-  }, [state, pathname, navigate]);
+  }, [catalogPreview, state, pathname, navigate]);
 
   const reduceMotion = prefersReducedMotion();
 
