@@ -1090,16 +1090,159 @@ class TestResolveFlag:
             app_mode = AppMode.SAAS
 
         with (
-            self._fake_service_module(_FakeService()),
-            patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            # Outermost: patch.dict(sys.modules) would otherwise evict the module this caches.
             patch(
                 'openhands.app_server.config.get_global_config',
                 return_value=_FakeGlobalConfig(),
             ),
+            patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            self._fake_service_module(_FakeService()),
         ):
             injector = mod.DefaultWebClientConfigInjector()
             config = await injector.get_web_client_config()
         assert config.feature_flags.enable_billing is True
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_forces_byok_when_litellm_off(self):
+        """ENABLE_LITELLM off forces allow_user_llm_configuration on, even
+        when OH_ALLOW_USER_LLM_CONFIGURATION is false: otherwise an install
+        with both off has no LLM source at all."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LITELLM': 'false',
+                    'OH_ALLOW_USER_LLM_CONFIGURATION': 'false',
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is True
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_keeps_byok_off_when_litellm_on(self):
+        """ENABLE_LITELLM on leaves OH_ALLOW_USER_LLM_CONFIGURATION=false
+        unchanged (unchanged behavior)."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LITELLM': 'true',
+                    'OH_ALLOW_USER_LLM_CONFIGURATION': 'false',
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_keeps_byok_off_when_litellm_unset(self):
+        """ENABLE_LITELLM unset defaults to enabled, so
+        OH_ALLOW_USER_LLM_CONFIGURATION=false stays false (unchanged
+        behavior for existing installs)."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        env = {k: v for k, v in os.environ.items() if k != 'ENABLE_LITELLM'}
+        env['OH_ALLOW_USER_LLM_CONFIGURATION'] = 'false'
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(os.environ, env, clear=True),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_resolves_litellm_from_structured_env(self):
+        """A structured OH_WEB_CLIENT_FEATURE_FLAGS_* env var (e.g. the
+        Replicated chart) builds feature_flags field-by-field, so an untouched
+        enable_litellm field would otherwise fall back to the pydantic
+        default (True) and miss plain ENABLE_LITELLM=false. get_web_client_config
+        must still see it off, and BYOK must still be forced on."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LITELLM': 'false',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING': 'false',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ALLOW_USER_LLM_CONFIGURATION': (
+                        'false'
+                    ),
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_litellm is False
+        assert config.feature_flags.allow_user_llm_configuration is True
 
 
 class TestSurfacedACPProviders:
