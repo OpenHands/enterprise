@@ -83,10 +83,25 @@ async def test_processed_pr_is_not_reprocessed_by_a_stale_scan():
 
     save = AsyncMock()
     with patch.object(job.data_collector, 'save_full_pr', save):
-        await job.process_pr(stale)
+        processed = await job.process_pr(stale)
 
+    assert processed is False
     save.assert_not_awaited()
     assert await _attempts(1) == 0
+
+
+async def test_process_pr_reports_a_successful_claim():
+    """process_pr returns True only when it claimed the PR and enriched it."""
+    await _insert_pr(1)
+    [pr] = await job.get_unprocessed_prs()
+
+    save = AsyncMock()
+    with patch.object(job.data_collector, 'save_full_pr', save):
+        processed = await job.process_pr(pr)
+
+    assert processed is True
+    save.assert_awaited_once()
+    assert await _attempts(1) == 1
 
 
 async def test_processing_uses_the_claimed_row_not_the_stale_scan():
