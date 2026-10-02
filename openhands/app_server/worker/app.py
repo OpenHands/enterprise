@@ -3,6 +3,7 @@
 from procrastinate import App, PsycopgConnector
 from pydantic import BaseModel, Field
 
+from openhands.app_server.sandbox.lifecycle.tasks import lifecycle
 from openhands.app_server.worker.housekeeping import housekeeping
 
 
@@ -23,3 +24,4 @@ class WorkerConfig(BaseModel):
 # already in the queue.
 app = App(connector=PsycopgConnector())
 app.add_tasks_from(housekeeping, namespace='worker')
+app.add_tasks_from(lifecycle, namespace='sandbox_lifecycle')
