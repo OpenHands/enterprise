@@ -1,4 +1,4 @@
-"""Tests for OrgGitClaimStore with real in-memory SQLite database.
+"""Tests for OrgGitClaimStore against the test database.
 
 Covers CRUD operations and unique constraint enforcement.
 """

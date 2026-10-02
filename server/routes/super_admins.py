@@ -18,14 +18,46 @@ admin may demote themselves as long as another super admin still exists.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
+from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.constants import USER_PROVISIONING_ENABLED
 from storage.user_store import SuperAdminRevokeResult, UserStore
 
 super_admin_router = APIRouter(prefix='/api/admin/super-admins', tags=['Admin'])
+
+
+async def _list_access_guard(
+    request: Request,
+    user_id: str | None = Depends(get_user_id),
+) -> str:
+    """Auth guard for ``list_super_admins`` (OHE-3196).
+
+    When ``USER_PROVISIONING_ENABLED`` is on (managed-users / enterprise
+    mode), any authenticated user may list super-admins so non-superadmins
+    can discover who their instance administrators are. When the flag is
+    off, the listing stays superadmin-only via ``MANAGE_SUPER_ADMINS``
+    (unchanged behavior).
+
+    The flag is read at request time (not import time) so tests can flip
+    it by patching this module's ``USER_PROVISIONING_ENABLED``.
+    """
+    if USER_PROVISIONING_ENABLED:
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='User not authenticated',
+            )
+        return user_id
+    # Flag off: defer to the full permission check (handles 401 + 403 and
+    # the org/super-role resolution). ``require_permission`` returns a
+    # closure; call it directly with the already-resolved request/user_id.
+    return await require_permission(Permission.MANAGE_SUPER_ADMINS)(
+        request=request, user_id=user_id
+    )
 
 
 class GrantSuperAdminRequest(BaseModel):
@@ -71,9 +103,15 @@ def _to_response(user) -> SuperAdminResponse:
 
 @super_admin_router.get('', response_model=SuperAdminListResponse)
 async def list_super_admins(
-    _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+    _: str = Depends(_list_access_guard),
 ) -> SuperAdminListResponse:
-    """List all current super admins. Requires ``MANAGE_SUPER_ADMINS``."""
+    """List all current super admins.
+
+    Auth is flag-gated (OHE-3196): when ``USER_PROVISIONING_ENABLED`` is on,
+    any authenticated user may call this so non-superadmins can discover their
+    instance administrators. Otherwise it requires ``MANAGE_SUPER_ADMINS``
+    (superadmin-only), as before.
+    """
     users = await UserStore.list_super_admins()
     return SuperAdminListResponse(super_admins=[_to_response(u) for u in users])
 
@@ -165,3 +203,53 @@ async def revoke_super_admin(
         extra={'caller_user_id': caller_user_id, 'target_user_id': user_id},
     )
     return SuperAdminResponse(user_id=user_id)
+
+
+# ── IDP swap-over: one-time email-match seeding (ALL-5978) ────────────────
+
+
+class BulkAllowMatchByEmailResponse(BaseModel):
+    """Result of bulk-toggling ``allow_match_by_email``."""
+
+    updated: int
+    duplicate_emails: list[str]
+    value: bool
+
+
+@super_admin_router.put(
+    '/allow-match-by-email',
+    response_model=BulkAllowMatchByEmailResponse,
+)
+async def bulk_set_allow_match_by_email(
+    value: bool = True,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> BulkAllowMatchByEmailResponse:
+    """Bulk-set the one-time ``allow_match_by_email`` flag on all users.
+
+    Used at the IDP swap-over moment: an operator enables the flag so that the
+    next login for each user via the *new* IDP binds the new ``sub`` to the
+    existing ``User`` by email. The flag self-clears on each successful link,
+    so the email-match window is exactly one login wide per user.
+
+    Requires ``MANAGE_SUPER_ADMINS`` (super-admin only).
+
+    The response includes ``duplicate_emails`` — emails that appear on more
+    than one user row. These will *not* auto-link at match time (the resolver
+    returns 409 for them); the operator must resolve them manually (e.g. via
+    the separate account-merge operation) before those users log in.
+    """
+    result = await UserStore.bulk_set_allow_match_by_email(value)
+    logger.info(
+        'super_admins:bulk_set_allow_match_by_email',
+        extra={
+            'caller_user_id': caller_user_id,
+            'value': value,
+            'updated': result['updated'],
+            'duplicate_email_count': len(result['duplicate_emails']),
+        },
+    )
+    return BulkAllowMatchByEmailResponse(
+        updated=result['updated'],
+        duplicate_emails=result['duplicate_emails'],
+        value=value,
+    )

@@ -1,7 +1,7 @@
 """Tests for SQLAppConversationStartTaskService.
 
 This module tests the SQL implementation of AppConversationStartTaskService,
-focusing on basic CRUD operations and batch operations using SQLite as a mock database.
+focusing on basic CRUD operations and batch operations against the test database.
 """
 
 from typing import AsyncGenerator

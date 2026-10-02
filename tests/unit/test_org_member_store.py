@@ -54,6 +54,48 @@ def test_get_kwargs_from_user_settings_uses_agent_settings_as_source_of_truth():
     assert kwargs['conversation_settings_diff']['max_iterations'] == 42
 
 
+def test_get_kwargs_from_user_settings_strips_null_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'enabled': False,
+                'max_tokens': None,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'enabled': False}}
+
+
+def test_get_kwargs_from_user_settings_drops_empty_condenser_after_null_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={'condenser': {'max_tokens': None}},
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {}
+
+
+def test_get_kwargs_from_user_settings_preserves_explicit_condenser_max_tokens():
+    user_settings = UserSettings(
+        agent_settings={
+            'condenser': {
+                'max_tokens': 123456,
+            },
+        },
+        conversation_settings={},
+    )
+
+    kwargs = OrgMemberStore.get_kwargs_from_user_settings(user_settings)
+
+    assert kwargs['agent_settings_diff'] == {'condenser': {'max_tokens': 123456}}
+
+
 def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides():
     settings = Settings()
     settings.update(
@@ -837,6 +879,75 @@ async def test_get_org_members_count_with_email_filter(async_session_maker):
 
     # Assert
     assert count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'email_filter,expected',
+    [
+        ('%', set()),
+        ('_', {'bob_smith@example.com'}),
+        ('\\', {'dave\\ops@example.com'}),
+        ('%_\\', set()),
+        ('alice', {'alice@example.com'}),
+        ('ALICE', {'alice@example.com'}),
+    ],
+)
+async def test_member_email_filter_treats_metacharacters_literally(
+    async_session_maker, email_filter, expected
+):
+    """The members search box feeds the same term to the count and listing queries.
+
+    Both must treat ILIKE metacharacters as literal text, or a term like '%' widens
+    the filter to the whole org instead of narrowing it — and if only one of them
+    escapes, the page shows an empty table beside a non-zero total.
+    """
+    emails = [
+        'alice@example.com',
+        'bob_smith@example.com',
+        'dave\\ops@example.com',
+    ]
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        session.add(org)
+        await session.flush()
+
+        role = Role(name='admin', rank=1)
+        session.add(role)
+        await session.flush()
+
+        users = [
+            User(id=uuid.uuid4(), current_org_id=org.id, email=email)
+            for email in emails
+        ]
+        session.add_all(users)
+        await session.flush()
+
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    llm_api_key=f'test-key-{i}',
+                    status='active',
+                )
+                for i, user in enumerate(users)
+            ]
+        )
+        await session.commit()
+        org_id = org.id
+
+    with patch('storage.org_member_store.a_session_maker', async_session_maker):
+        count = await OrgMemberStore.get_org_members_count(
+            org_id=org_id, email_filter=email_filter
+        )
+        members, _ = await OrgMemberStore.get_org_members_paginated(
+            org_id=org_id, email_filter=email_filter
+        )
+
+    assert {member.user.email for member in members} == expected
+    assert count == len(expected)
 
 
 @pytest.mark.asyncio

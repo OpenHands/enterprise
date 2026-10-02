@@ -1,5 +1,4 @@
 /** @type {import('tailwindcss').Config} */
-import { heroui } from "@heroui/react";
 import typography from "@tailwindcss/typography";
 export default {
   darkMode: "class",
@@ -7,18 +6,18 @@ export default {
     extend: {
       colors: {
         modal: {
-          background: "#171717",
-          input: "#27272A",
-          primary: "#F3CE49",
-          secondary: "#737373",
-          muted: "#A3A3A3",
+          background: "var(--cool-grey-975)",
+          input: "var(--cool-grey-900)",
+          primary: "var(--oh-color-primary)",
+          secondary: "var(--cool-grey-500)",
+          muted: "var(--cool-grey-400)",
         },
         org: {
-          border: "#171717",
-          background: "#262626",
-          divider: "#525252",
-          button: "#737373",
-          text: "#A3A3A3",
+          border: "var(--cool-grey-975)",
+          background: "var(--cool-grey-900)",
+          divider: "var(--cool-grey-600)",
+          button: "var(--cool-grey-500)",
+          text: "var(--cool-grey-400)",
         },
       },
     },

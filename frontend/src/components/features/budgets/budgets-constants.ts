@@ -1,6 +1,6 @@
 export const BUDGET_TABS = [
   { value: "organization", label: "Organization budget" },
-  { value: "defaults", label: "Default budgets" },
+  { value: "defaults", label: "Default budget for users" },
   { value: "overrides", label: "User overrides" },
 ] as const;
 

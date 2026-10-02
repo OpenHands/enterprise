@@ -21,6 +21,7 @@ export interface Organization {
   credits: number | null;
   credits_available?: boolean;
   is_personal?: boolean;
+  is_visible?: boolean;
 }
 
 export interface OrganizationMember {

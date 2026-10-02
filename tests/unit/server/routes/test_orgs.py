@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
@@ -29,6 +30,7 @@ from server.routes.org_models import (
     OrgMemberPage,
     OrgMemberResponse,
     OrgMemberUpdate,
+    OrgMyUsageStats,
     OrgNameExistsError,
     OrgNotFoundError,
     OrgUpdate,
@@ -39,6 +41,8 @@ from server.routes.orgs import (
     get_me,
     get_org_defaults_settings,
     get_org_members,
+    org_budget_service_dependency,
+    org_conversation_service_dependency,
     org_router,
     remove_org_member,
     update_org_defaults_settings,
@@ -78,7 +82,7 @@ def grant_create_organization():
     ``require_permission(Permission.CREATE_ORGANIZATION)``, which is only
     granted via a super role. ``require_permission`` always looks up the
     org-scoped role first via ``get_user_org_role`` -- without a patch
-    that call hits ``OrgMemberStore`` against a bare in-memory SQLite DB
+    that call hits ``OrgMemberStore`` against the test database
     that has no ``org_member`` table. This fixture short-circuits the
     org-role lookup to ``None`` and stacks a ``superadmin`` patch over
     the conftest-level ``get_user_super_role -> None`` default so the
@@ -932,6 +936,66 @@ async def test_list_user_orgs_empty(mock_app_list):
 
 
 @pytest.mark.asyncio
+async def test_list_user_orgs_filters_by_name(mock_app_list):
+    """
+    GIVEN: User is a member of an organization named 'Acme'
+    WHEN: GET /api/organizations?name=Acme is called
+    THEN: The name filter reaches the service and the matching org is returned
+    """
+    # Arrange
+    org_id = uuid.uuid4()
+    mock_org = Org(
+        id=org_id,
+        name='Acme',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = org_id
+    mock_get_user_orgs = AsyncMock(return_value=([mock_org], None))
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            mock_get_user_orgs,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        # Act
+        response = client.get('/api/organizations', params={'name': 'Acme'})
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert mock_get_user_orgs.await_args.kwargs['name'] == 'Acme'
+    response_data = response.json()
+    assert len(response_data['items']) == 1
+    assert response_data['items'][0]['id'] == str(org_id)
+    assert response_data['items'][0]['name'] == 'Acme'
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_empty_name_rejected(mock_app_list):
+    """
+    GIVEN: An empty name filter
+    WHEN: GET /api/organizations?name= is called
+    THEN: 422 validation error is returned
+    """
+    # Arrange
+    client = TestClient(mock_app_list)
+
+    # Act
+    response = client.get('/api/organizations?name=')
+
+    # Assert
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
 async def test_list_user_orgs_invalid_limit_negative(mock_app_list):
     """
     GIVEN: Invalid limit parameter (negative)
@@ -1167,6 +1231,153 @@ async def test_list_user_orgs_mixed_personal_and_team(mock_app_list):
 
 
 @pytest.mark.asyncio
+async def test_list_user_orgs_hides_personal_when_flag_enabled(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is on and the user has a team org
+    WHEN: GET /api/organizations is called
+    THEN: The personal org is marked is_visible=False and the team org True
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    team_org = Org(
+        id=uuid.uuid4(),
+        name='Team Organization',
+        contact_name='Jane Doe',
+        contact_email='jane@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = team_org.id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org, team_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=True,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        items = {item['id']: item for item in response.json()['items']}
+
+        # Hidden orgs stay in the list so existing members can still address
+        # them; only the visibility marker changes.
+        assert len(items) == 2
+        assert items[str(personal_org_id)]['is_personal'] is True
+        assert items[str(personal_org_id)]['is_visible'] is False
+        assert items[str(team_org.id)]['is_visible'] is True
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_personal_only_stays_visible(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is on but the personal workspace is the
+        user's only org (e.g. the default org has not been created yet)
+    WHEN: GET /api/organizations is called
+    THEN: The personal org is still visible, so the client is never left
+        with zero selectable workspaces
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = personal_org_id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=True,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        items = response.json()['items']
+        assert len(items) == 1
+        assert items[0]['is_visible'] is True
+
+
+@pytest.mark.asyncio
+async def test_list_user_orgs_personal_visible_when_flag_disabled(mock_app_list):
+    """
+    GIVEN: HIDE_PERSONAL_WORKSPACES is off
+    WHEN: GET /api/organizations is called
+    THEN: Every org, including the personal one, is marked visible
+    """
+    user_id = mock_app_list.state.test_user_id
+    personal_org_id = uuid.UUID(user_id)
+
+    personal_org = Org(
+        id=personal_org_id,
+        name=f'user_{user_id}_org',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    team_org = Org(
+        id=uuid.uuid4(),
+        name='Team Organization',
+        contact_name='Jane Doe',
+        contact_email='jane@example.com',
+    )
+    mock_user = MagicMock()
+    mock_user.current_org_id = personal_org_id
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([personal_org, team_org], None)),
+        ),
+        patch(
+            'server.routes.orgs._hide_personal_workspaces',
+            return_value=False,
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        response = client.get('/api/organizations')
+
+        assert response.status_code == status.HTTP_200_OK
+        for item in response.json()['items']:
+            assert item['is_visible'] is True
+
+
+@pytest.mark.asyncio
 async def test_list_user_orgs_all_fields_present(mock_app_list):
     """
     GIVEN: Organization with all fields populated
@@ -1249,7 +1460,7 @@ async def test_list_user_orgs_all_fields_present(mock_app_list):
 
 
 @pytest.fixture
-def mock_app_with_get_user_id():
+def mock_app_with_get_user_id(app_db_session):
     """Create a test FastAPI app with organization routes and mocked get_user_id auth."""
     app = FastAPI()
     app.include_router(org_router)
@@ -4119,3 +4330,200 @@ class TestGetOrgMemberEndpoint:
         # Assert
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         mock_get_member.assert_not_awaited()
+
+
+# =============================================================================
+# Tests for the caller's own budget and usage (GET .../budgets/me, .../my-usage)
+# =============================================================================
+
+
+@pytest.fixture
+def own_budget_api(mock_app):
+    """A plain ``member`` caller, with the budget and usage services faked."""
+    budget_service = AsyncMock()
+    budget_service.get_my_budget.return_value = {'enabled': True, 'monthly_limit': 50.0}
+    usage_service = AsyncMock()
+    usage_service.get_my_usage_stats.return_value = OrgMyUsageStats(total_spend=3.0)
+    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = (
+        lambda: budget_service
+    )
+    mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
+        lambda: usage_service
+    )
+    member_role = MagicMock()
+    member_role.name = 'member'
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=member_role),
+    ):
+        yield TestClient(mock_app), budget_service, usage_service
+
+
+@pytest.mark.asyncio
+async def test_member_reads_own_budget_without_admin_privileges(own_budget_api, org_id):
+    """
+    GIVEN: A caller whose only role in the organization is ``member``
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: Their own budget is returned
+    """
+    # Arrange
+    client, _, _ = own_budget_api
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['monthly_limit'] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_own_budget_is_always_read_for_the_authenticated_user(
+    own_budget_api, org_id, target_user_id
+):
+    """
+    GIVEN: A caller who names another user in the request
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: The budget is still read for the authenticated caller only
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/budgets/me', params={'user_id': target_user_id}
+    )
+
+    # Assert
+    budget_service.get_my_budget.assert_awaited_once_with(
+        uuid.UUID(org_id), uuid.UUID(TEST_USER_ID), include_spend=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_own_budget_enabled_check_does_not_request_spend(own_budget_api, org_id):
+    """
+    GIVEN: A caller that only needs to know whether budgets are enabled
+    WHEN: GET .../budgets/me?include_spend=false is called
+    THEN: The budget is read without spend
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/budgets/me', params={'include_spend': 'false'}
+    )
+
+    # Assert
+    budget_service.get_my_budget.assert_awaited_once_with(
+        uuid.UUID(org_id), uuid.UUID(TEST_USER_ID), include_spend=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_own_budget_is_forbidden_for_non_members(own_budget_api, org_id):
+    """
+    GIVEN: A caller who is not a member of the organization
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: 403 Forbidden is returned and no budget is read
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+
+    # Act
+    with patch(
+        'server.auth.authorization.get_user_org_role', AsyncMock(return_value=None)
+    ):
+        response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    budget_service.get_my_budget.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_reads_own_usage_without_admin_privileges(own_budget_api, org_id):
+    """
+    GIVEN: A caller whose only role in the organization is ``member``
+    WHEN: GET /api/organizations/{org_id}/conversations/my-usage is called
+    THEN: Their own last-30-days usage is returned, rather than the request
+          being routed to the admin-only conversation detail endpoint
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/conversations/my-usage')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['total_spend'] == 3.0
+    usage_service.get_my_usage_stats.assert_awaited_once_with(
+        org_id=uuid.UUID(org_id), user_id=uuid.UUID(TEST_USER_ID), days=30
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('time_window', 'days'), [('7d', 7), ('90d', 90)])
+async def test_own_usage_covers_the_requested_time_window(
+    own_budget_api, org_id, time_window, days
+):
+    """
+    GIVEN: A member asking for a specific time window
+    WHEN: GET .../conversations/my-usage?time_window=... is called
+    THEN: Usage is read for that many days
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    client.get(
+        f'/api/organizations/{org_id}/conversations/my-usage',
+        params={'time_window': time_window},
+    )
+
+    # Assert
+    assert usage_service.get_my_usage_stats.await_args.kwargs['days'] == days
+
+
+@pytest.mark.asyncio
+async def test_own_usage_year_to_date_starts_on_january_first(own_budget_api, org_id):
+    """
+    GIVEN: A member asking for year-to-date usage on March 1st
+    WHEN: GET .../conversations/my-usage?time_window=ytd is called
+    THEN: Usage is read for the 60 days since January 1st
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    with freeze_time('2026-03-01 12:00:00'):
+        client.get(
+            f'/api/organizations/{org_id}/conversations/my-usage',
+            params={'time_window': 'ytd'},
+        )
+
+    # Assert
+    assert usage_service.get_my_usage_stats.await_args.kwargs['days'] == 60
+
+
+@pytest.mark.asyncio
+async def test_own_usage_rejects_an_unknown_time_window(own_budget_api, org_id):
+    """
+    GIVEN: A member asking for a time window that is not supported
+    WHEN: GET .../conversations/my-usage?time_window=1h is called
+    THEN: 400 Bad Request is returned and no usage is read
+    """
+    # Arrange
+    client, _, usage_service = own_budget_api
+
+    # Act
+    response = client.get(
+        f'/api/organizations/{org_id}/conversations/my-usage',
+        params={'time_window': '1h'},
+    )
+
+    # Assert
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    usage_service.get_my_usage_stats.assert_not_awaited()

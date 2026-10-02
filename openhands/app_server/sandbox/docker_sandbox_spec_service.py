@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
 from typing import AsyncGenerator
 
 import docker
+from docker.context import ContextAPI
 from fastapi import Request
 from pydantic import Field
 
@@ -25,10 +27,56 @@ _global_docker_client: docker.DockerClient | None = None
 _logger = logging.getLogger(__name__)
 
 
+def _current_docker_context_host() -> str | None:
+    """Endpoint of the active Docker CLI context, if there is one."""
+    try:
+        context = ContextAPI.get_current_context()
+    except Exception as exc:
+        _logger.debug(f'Unable to read the active Docker context: {exc}')
+        return None
+    return context.Host if context else None
+
+
+def _connect_to_docker() -> docker.DockerClient:
+    """Connect to the Docker daemon.
+
+    ``DOCKER_HOST`` wins when it is set. Otherwise the endpoint of the active
+    Docker CLI context is used, which is what makes OrbStack, Colima, Rancher
+    Desktop and rootless Docker work — none of them serve
+    ``/var/run/docker.sock``.
+    """
+    failures = []
+
+    if os.environ.get('DOCKER_HOST'):
+        try:
+            return docker.from_env()
+        except docker.errors.DockerException as exc:
+            failures.append(f'DOCKER_HOST: {exc}')
+    else:
+        context_host = _current_docker_context_host()
+        if context_host:
+            try:
+                return docker.DockerClient(base_url=context_host)
+            except docker.errors.DockerException as exc:
+                failures.append(f'docker context endpoint {context_host}: {exc}')
+        try:
+            return docker.from_env()
+        except docker.errors.DockerException as exc:
+            failures.append(f'default docker socket: {exc}')
+
+    raise SandboxError(
+        'Could not connect to the Docker daemon ('
+        + '; '.join(failures)
+        + '). Check that Docker is running, or set DOCKER_HOST to the daemon '
+        'endpoint (for example '
+        'DOCKER_HOST=unix:///Users/me/.orbstack/run/docker.sock).'
+    )
+
+
 def get_docker_client() -> docker.DockerClient:
     global _global_docker_client
     if _global_docker_client is None:
-        _global_docker_client = docker.from_env()
+        _global_docker_client = _connect_to_docker()
     return _global_docker_client
 
 
