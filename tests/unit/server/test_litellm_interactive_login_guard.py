@@ -17,34 +17,6 @@ import pytest
 from server.utils import litellm_interactive_login_guard as guard
 
 
-@pytest.fixture
-def installed_guard():
-    """Install the guard, then restore the original methods afterwards.
-
-    The guard patches LiteLLM authenticator classes process-wide; restoring keeps
-    the change from leaking into other tests in the session.
-    """
-    originals: list[tuple[type, str, object]] = []
-    for _prefix, module_path, method_name in guard._INTERACTIVE_LOGIN_AUTHENTICATORS:
-        try:
-            module = importlib.import_module(module_path)
-        except Exception:
-            continue
-        authenticator_cls = module.Authenticator
-        originals.append(
-            (authenticator_cls, method_name, getattr(authenticator_cls, method_name))
-        )
-
-    guard._installed = False
-    guard.install_litellm_interactive_login_guard()
-    try:
-        yield guard
-    finally:
-        for authenticator_cls, method_name, original in originals:
-            setattr(authenticator_cls, method_name, original)
-        guard._installed = False
-
-
 def test_is_interactive_login_model():
     assert guard.is_interactive_login_model('chatgpt/gpt-5-codex')
     assert guard.is_interactive_login_model('github_copilot/gpt-4o')
@@ -54,6 +26,22 @@ def test_is_interactive_login_model():
     assert not guard.is_interactive_login_model('anthropic/claude-sonnet-4-5')
     assert not guard.is_interactive_login_model(None)
     assert not guard.is_interactive_login_model('')
+
+
+def test_reject_interactive_login_model():
+    for model in ('chatgpt/gpt-5-codex', 'github_copilot/gpt-4o', 'CHATGPT/gpt-5'):
+        with pytest.raises(ValueError) as excinfo:
+            guard.reject_interactive_login_model(model)
+        assert model in str(excinfo.value)
+
+    # Non-interactive providers and empty values are accepted (no raise).
+    for model in (
+        'anthropic/claude-sonnet-4-5',
+        'openhands/deepseek-v4-flash',
+        None,
+        '',
+    ):
+        guard.reject_interactive_login_model(model)
 
 
 def test_guard_blocks_chatgpt_device_login(installed_guard, monkeypatch):

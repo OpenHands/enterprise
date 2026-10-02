@@ -1,3 +1,4 @@
+import importlib
 import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -23,6 +24,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_start_task_servi
 )
 from server.auth.token_manager import KeycloakUserInfo
 from server.constants import ORG_SETTINGS_VERSION
+from server.utils import litellm_interactive_login_guard as guard
 from server.verified_models.verified_model_service import (
     StoredVerifiedModel,  # noqa: F401
 )
@@ -71,6 +73,53 @@ def allow_short_context_windows():
             os.environ.pop('ALLOW_SHORT_CONTEXT_WINDOWS', None)
         else:
             os.environ['ALLOW_SHORT_CONTEXT_WINDOWS'] = old
+
+
+@pytest.fixture
+def installed_guard():
+    """Install the guard, then restore the original methods afterwards.
+
+    The guard patches LiteLLM authenticator classes process-wide; restoring keeps
+    the change from leaking into other tests in the session.
+    """
+    originals: list[tuple[type, str, object]] = []
+    for _prefix, module_path, method_name in guard._INTERACTIVE_LOGIN_AUTHENTICATORS:
+        try:
+            module = importlib.import_module(module_path)
+        except Exception:
+            continue
+        authenticator_cls = module.Authenticator
+        originals.append(
+            (authenticator_cls, method_name, getattr(authenticator_cls, method_name))
+        )
+
+    guard._installed = False
+    guard.install_litellm_interactive_login_guard()
+    try:
+        yield guard
+    finally:
+        for authenticator_cls, method_name, original in originals:
+            setattr(authenticator_cls, method_name, original)
+        guard._installed = False
+
+
+@pytest.fixture
+def no_device_login(monkeypatch):
+    """Fail fast instead of starting a real ChatGPT/Copilot device login."""
+    from litellm.llms.chatgpt.authenticator import Authenticator as ChatGPTAuth
+    from litellm.llms.github_copilot.authenticator import (
+        Authenticator as CopilotAuth,
+    )
+
+    reached: list[str] = []
+
+    def _tripwire(self, *args, **kwargs):
+        reached.append(type(self).__module__)
+        raise AssertionError('interactive device login reached')
+
+    monkeypatch.setattr(ChatGPTAuth, 'get_access_token', _tripwire)
+    monkeypatch.setattr(CopilotAuth, 'get_api_key', _tripwire)
+    return reached
 
 
 @pytest.fixture
