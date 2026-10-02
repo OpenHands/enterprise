@@ -91,7 +91,7 @@ async def test_processed_pr_is_not_reprocessed_by_a_stale_scan():
 
 
 async def test_process_pr_reports_a_successful_claim():
-    """process_pr returns True only when it claimed the PR and enriched it."""
+    """process_pr returns True when it claimed the PR."""
     await _insert_pr(1)
     [pr] = await job.get_unprocessed_prs()
 
