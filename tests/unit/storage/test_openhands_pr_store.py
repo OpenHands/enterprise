@@ -101,6 +101,33 @@ class TestClaimPrForProcessing:
         assert (await _load()).process_attempts == MAX_RETRIES
         assert await store.get_unprocessed_prs(max_retries=MAX_RETRIES) == []
 
+    async def test_claim_touches_only_the_named_pr(self, store):
+        await _insert_pr(store)
+        await _insert_pr(store, repo_id='other-repo')
+        await _insert_pr(store, pr_number=PR_NUMBER + 1)
+
+        claimed = await store.claim_pr_for_processing(REPO_ID, PR_NUMBER, MAX_RETRIES)
+
+        assert claimed is not None
+        assert (claimed.repo_id, claimed.pr_number) == (REPO_ID, PR_NUMBER)
+        async with a_session_maker() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        OpenhandsPR.repo_id,
+                        OpenhandsPR.pr_number,
+                        OpenhandsPR.process_attempts,
+                    )
+                )
+            ).all()
+        assert sorted(rows) == sorted(
+            [
+                (REPO_ID, PR_NUMBER, 1),
+                ('other-repo', PR_NUMBER, 0),
+                (REPO_ID, PR_NUMBER + 1, 0),
+            ]
+        )
+
 
 class TestUpdatePrOpenhandsStats:
     @pytest.mark.parametrize('winner', ['first', 'second'])
@@ -134,6 +161,26 @@ class TestUpdatePrOpenhandsStats:
         winner = results.index(True) + 1
         assert pr.num_openhands_commits == winner
         assert pr.num_openhands_general_comments == winner * 100
+
+    async def test_write_waits_for_a_finisher_holding_the_row(self, store):
+        """A run that already holds the row and commits first must win."""
+        await _insert_pr(store)
+        original = (await _load()).updated_at
+
+        async with a_session_maker() as holder:
+            row = (
+                (await holder.execute(select(OpenhandsPR).with_for_update()))
+                .scalars()
+                .one()
+            )
+            late = asyncio.create_task(_record(store, original, commits=2))
+            await asyncio.sleep(0.2)
+            row.processed = True
+            row.num_openhands_commits = 1
+            await holder.commit()
+
+        assert await late is False
+        assert (await _load()).num_openhands_commits == 1
 
     async def test_refuses_row_replaced_by_insert_pr(self, store):
         """insert_pr replaces the row; a run that read the old row must not write."""

@@ -103,7 +103,7 @@ class OpenhandsPRStore:
 
             if not pr:
                 # Current PR snapshot is stale
-                logger.warning('Did not find PR {pr_number} for repo {repo_id}')
+                logger.warning(f'Did not find PR {pr_number} for repo {repo_id}')
                 return False
 
             if pr.processed or pr.updated_at != original_updated_at:

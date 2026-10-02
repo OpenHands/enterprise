@@ -3,6 +3,7 @@
 Only the GitHub collector is replaced; it is the external dependency.
 """
 
+import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
@@ -86,3 +87,21 @@ async def test_processed_pr_is_not_reprocessed_by_a_stale_scan():
 
     save.assert_not_awaited()
     assert await _attempts(1) == 0
+
+
+async def test_processing_uses_the_claimed_row_not_the_stale_scan():
+    """insert_pr replaced the row after the scan; enrichment must see the current one."""
+    await _insert_pr(1)
+    [stale] = await job.get_unprocessed_prs()
+    await asyncio.sleep(0.01)
+    await _insert_pr(1)
+    async with a_session_maker() as session:
+        current = (await session.execute(select(OpenhandsPR))).scalars().one()
+    assert current.updated_at != stale.updated_at
+
+    save = AsyncMock()
+    with patch.object(job.data_collector, 'save_full_pr', save):
+        await job.process_pr(stale)
+
+    [saved] = save.await_args.args
+    assert saved.updated_at == current.updated_at
