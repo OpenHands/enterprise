@@ -1563,4 +1563,10 @@ export const ORG_HANDLERS = [
       return new HttpResponse(null, { status: 204 });
     },
   ),
+
+  // Provider connections — default to an empty list so org-defaults LLM
+  // settings tests can render the connection manager without extra setup.
+  http.get("/api/organizations/:orgId/provider-connections", () =>
+    HttpResponse.json({ connections: [] }),
+  ),
 ];
