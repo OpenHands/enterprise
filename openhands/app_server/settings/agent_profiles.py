@@ -26,16 +26,17 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, Self, TypeAlias
 from uuid import UUID
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
     SerializationInfo,
     field_serializer,
-    field_validator,
     model_validator,
 )
 
@@ -72,9 +73,9 @@ class AgentProfiles(BaseModel):
 
     Invariants (enforced on validate + assignment):
     - ``active`` is either ``None`` or a key (id) of ``profiles``.
-    - Individual profiles that fail to parse (schema drift) are dropped with a
-      warning rather than failing the whole ``Settings`` load — mirrors
-      ``LLMProfiles._skip_invalid_profiles``.
+    - Individual profiles that fail to parse (schema drift) are hidden with a
+      warning rather than failing the whole ``Settings`` load, and are written
+      back verbatim so a reader on an older schema never deletes them.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -83,31 +84,39 @@ class AgentProfiles(BaseModel):
     # ``LaunchedAgentProfile.agent_profile_id`` reference.
     profiles: dict[str, _AgentProfile] = Field(default_factory=dict)
     active: str | None = None
+    _unreadable_profiles: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     # ── Validation ─────────────────────────────────────────────────
 
-    @field_validator('profiles', mode='before')
+    @model_validator(mode='wrap')
     @classmethod
-    def _skip_invalid_profiles(cls, value: Any) -> Any:
-        """Best-effort per-profile load: skip entries that fail to validate.
-
-        Guards against schema drift — one stored profile going invalid after an
-        SDK upgrade must not fail the whole ``Settings`` load. Delegates parsing
-        to the SDK's :func:`validate_agent_profile` (never re-validated here).
-        """
-        if not isinstance(value, dict):
-            return value
-        valid: dict[str, Any] = {}
-        for key, raw in value.items():
-            try:
-                valid[key] = validate_agent_profile(raw)
-            except Exception as exc:  # noqa: BLE001 - schema drift is non-fatal
-                logger.warning('Skipping invalid agent profile %r: %s', key, exc)
-        return valid
+    def _keep_unreadable_profiles(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        unreadable: dict[str, Any] = {}
+        if isinstance(data, dict) and isinstance(data.get('profiles'), dict):
+            readable: dict[str, Any] = {}
+            for key, raw in data['profiles'].items():
+                try:
+                    readable[key] = validate_agent_profile(raw)
+                except Exception as exc:  # noqa: BLE001 - schema drift is non-fatal
+                    logger.warning('Skipping invalid agent profile %r: %s', key, exc)
+                    unreadable[key] = raw
+            data = {**data, 'profiles': readable}
+        model = handler(data)
+        if unreadable:
+            model._unreadable_profiles = unreadable
+            if isinstance(data, dict) and data.get('active') in unreadable:
+                object.__setattr__(model, 'active', data['active'])
+        return model
 
     @model_validator(mode='after')
     def _reconcile_active(self) -> AgentProfiles:
-        if self.active is not None and self.active not in self.profiles:
+        if (
+            self.active is not None
+            and self.active not in self.profiles
+            and self.active not in self._unreadable_profiles
+        ):
             # Bypass validate_assignment to avoid re-entering this validator.
             object.__setattr__(self, 'active', None)
         return self
@@ -119,6 +128,12 @@ class AgentProfiles(BaseModel):
             if profile.name == name:
                 return pid, profile
         return None
+
+    def _name_taken_by_unreadable(self, name: str) -> bool:
+        return any(
+            isinstance(raw, dict) and raw.get('name') == name
+            for raw in self._unreadable_profiles.values()
+        )
 
     # ── AgentProfileStoreProtocol ──────────────────────────────────
 
@@ -167,12 +182,14 @@ class AgentProfiles(BaseModel):
         boundary regardless (parity with ``org.llm_profiles``).
         """
         pid = str(profile.id)
-        if (
-            max_profiles is not None
-            and pid not in self.profiles
-            and len(self.profiles) >= max_profiles
-        ):
-            raise ProfileLimitExceeded(f'Profile limit reached ({max_profiles}).')
+        if pid not in self.profiles:
+            if self._name_taken_by_unreadable(profile.name):
+                raise FileExistsError(f'Agent profile {profile.name!r} already exists')
+            if (
+                max_profiles is not None
+                and len(self.profiles) + len(self._unreadable_profiles) >= max_profiles
+            ):
+                raise ProfileLimitExceeded(f'Profile limit reached ({max_profiles}).')
         self.profiles[pid] = profile
 
     def load(self, name: str) -> _AgentProfile:
@@ -198,7 +215,9 @@ class AgentProfiles(BaseModel):
             raise FileNotFoundError(f'Agent profile {old_name!r} not found')
         if old_name == new_name:
             return
-        if self._entry_for_name(new_name) is not None:
+        if self._entry_for_name(new_name) is not None or self._name_taken_by_unreadable(
+            new_name
+        ):
             raise FileExistsError(f'Agent profile {new_name!r} already exists')
         pid, profile = entry
         # Preserve the id (and thus the slot + active pointer): rename is a
@@ -231,6 +250,9 @@ class AgentProfiles(BaseModel):
         # today (secret-free since #4017), kept for parity with LLMProfiles'
         # write-back pattern.
         return {
-            pid: profile.model_dump(mode='json', context=info.context)
-            for pid, profile in profiles.items()
+            **self._unreadable_profiles,
+            **{
+                pid: profile.model_dump(mode='json', context=info.context)
+                for pid, profile in profiles.items()
+            },
         }

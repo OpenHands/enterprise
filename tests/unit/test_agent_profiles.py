@@ -8,6 +8,7 @@ Mirrors the harness in ``test_org_profiles.py``: handlers are called directly
 """
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -140,6 +141,50 @@ class TestAgentProfilesContainer:
             {'profiles': {'bad': {'agent_kind': 'nonsense'}}, 'active': None}
         )
         assert store.list_summaries() == []
+
+    @staticmethod
+    def _with_unreadable(name: str) -> AgentProfiles:
+        return AgentProfiles.model_validate(
+            {
+                'profiles': {
+                    str(uuid.uuid4()): {
+                        'name': name,
+                        'agent_kind': 'openhands',
+                        'schema_version': 99,
+                    }
+                }
+            }
+        )
+
+    def test_save_rejects_the_name_of_an_unreadable_profile(self):
+        store = self._with_unreadable('future')
+        with pytest.raises(FileExistsError):
+            save_profile_preserving_identity(
+                store, OpenHandsAgentProfile(name='future', llm_profile_ref='gpt')
+            )
+
+    def test_rename_rejects_the_name_of_an_unreadable_profile(self):
+        store = self._with_unreadable('future')
+        save_profile_preserving_identity(
+            store, OpenHandsAgentProfile(name='a', llm_profile_ref='gpt')
+        )
+        with pytest.raises(FileExistsError):
+            store.rename('a', 'future')
+
+    def test_limit_counts_unreadable_profiles(self):
+        from openhands.sdk.profiles import ProfileLimitExceeded
+
+        store = self._with_unreadable('future')
+        for i in range(MAX_AGENT_PROFILES - 1):
+            save_profile_preserving_identity(
+                store, OpenHandsAgentProfile(name=f'p{i}', llm_profile_ref='gpt')
+            )
+        with pytest.raises(ProfileLimitExceeded):
+            save_profile_preserving_identity(
+                store,
+                OpenHandsAgentProfile(name='over', llm_profile_ref='gpt'),
+                max_profiles=MAX_AGENT_PROFILES,
+            )
 
 
 def test_load_agent_profiles_defaults_empty_and_degrades():
@@ -1081,15 +1126,15 @@ class TestPersistedVsResolvedSettingsView:
             settings = await store.load()
             assert settings is not None
             settings.agent_settings = settings.agent_settings.model_copy(
-                update={'enable_sub_agents': True}
+                update={'tool_concurrency_limit': 4}
             )
             await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
-        assert member.agent_settings_diff.get('enable_sub_agents') is True
+        assert member.agent_settings_diff.get('tool_concurrency_limit') == 4
 
         org = await _read_org_raw(async_session_maker, org_id)
-        assert (org.agent_settings or {}).get('enable_sub_agents') is not True
+        assert (org.agent_settings or {}).get('tool_concurrency_limit') != 4
 
     @pytest.mark.asyncio
     async def test_resolved_load_is_launch_view_and_store_refuses_it(
@@ -1118,6 +1163,32 @@ class TestPersistedVsResolvedSettingsView:
 
             with pytest.raises(ValueError, match='resolved Agent-Profile'):
                 await store.store(settings)
+
+    @pytest.mark.asyncio
+    async def test_resolved_default_tools_keep_the_browser(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        await self._setup_active_profile(async_session_maker, org_id, ['a'])
+
+        from openhands.sdk.profiles import resolve_agent_profile
+        from storage.saas_settings_store import SaasSettingsStore
+
+        seen: dict[str, Any] = {}
+
+        def resolver(profile, *, browser_available=False, **kwargs):
+            seen['browser_available'] = browser_available
+            return resolve_agent_profile(profile, **kwargs)
+
+        with (
+            self._store_patches(async_session_maker),
+            patch('storage.saas_settings_store.resolve_agent_profile', resolver),
+        ):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
+            settings = await store.load(resolve_agent_profile=True)
+
+        assert settings is not None
+        assert seen == {'browser_available': True}
 
     @pytest.mark.asyncio
     async def test_resolver_crash_falls_back_to_composed_settings(
@@ -1174,7 +1245,7 @@ class TestNoWriteBackWithoutMutation:
         valid_id = listing.profiles[0].id
 
         # Simulate schema drift: a stored entry the current model rejects
-        # (name violates min_length) — _skip_invalid_profiles drops it on load.
+        # (name violates min_length); it is hidden on load.
         invalid_id = str(uuid.uuid4())
         org = await _read_org_raw(async_session_maker, org_id)
         blob_before = dict(org.agent_profiles)
@@ -1202,6 +1273,50 @@ class TestNoWriteBackWithoutMutation:
         # The blob is byte-for-byte untouched: the unparseable entry survives.
         assert org.agent_profiles == blob_before
         assert invalid_id in org.agent_profiles['profiles']
+
+    @pytest.mark.asyncio
+    async def test_save_keeps_a_newer_schema_profile_and_its_active_pointer(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await save_agent_profile(
+            name='reviewer',
+            body={'llm_profile_ref': 'Default'},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+        future_id = str(uuid.uuid4())
+        future = {
+            'id': future_id,
+            'name': 'future',
+            'agent_kind': 'openhands',
+            'schema_version': 99,
+        }
+        async with async_session_maker() as session:
+            org = (
+                (await session.execute(select(Org).where(Org.id == org_id)))
+                .scalars()
+                .first()
+            )
+            blob = dict(org.agent_profiles)
+            blob['profiles'] = {**blob['profiles'], future_id: future}
+            blob['active'] = future_id
+            org.agent_profiles = blob
+            await session.commit()
+
+        await save_agent_profile(
+            name='writer',
+            body={'llm_profile_ref': 'Default'},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        org = await _read_org_raw(async_session_maker, org_id)
+        assert org.agent_profiles['profiles'][future_id] == future
+        assert org.agent_profiles['active'] == future_id
+        names = {p['name'] for p in org.agent_profiles['profiles'].values()}
+        assert names == {'reviewer', 'writer', 'future'}
 
     @pytest.mark.asyncio
     async def test_materialize_survives_dry_run_crash(

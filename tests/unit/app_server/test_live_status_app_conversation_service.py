@@ -76,7 +76,10 @@ from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ConversationSettings,
     OpenHandsAgentSettings,
+    validate_agent_settings,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -1780,12 +1783,8 @@ class TestLiveStatusAppConversationService:
         assert 'branch:main' in metadata['tags']
         assert 'git_provider:github' in metadata['tags']
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_with_skills(self, _mock_tools):
+    async def test_build_request_with_skills(self):
         """Skills are loaded when a remote_workspace is provided."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -1817,12 +1816,8 @@ class TestLiveStatusAppConversationService:
         assert result.conversation_id == conversation_id
         self.service._load_skills_and_update_agent.assert_called_once()
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_passes_title_llm_profile(self, _mock_tools):
+    async def test_build_request_passes_title_llm_profile(self):
         profiles = LLMProfiles()
         profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
         self.mock_user.llm_profiles = profiles
@@ -1851,14 +1846,76 @@ class TestLiveStatusAppConversationService:
 
         assert request.title_llm_profile == 'Titles'
 
+    @pytest.mark.asyncio
+    async def test_build_request_honours_a_profiles_tool_selection(self):
+        """A resolved profile's tools reach the launch instead of the default set."""
+        self.mock_user.agent_settings = OpenHandsAgentSettings(
+            llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+            tools=[Tool(name='glob'), Tool(name='grep')],
+        )
+        self.mock_user.active_agent_profile_id = 'profile-1'
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            selected_repository='test_repo',
+        )
+
+        assert [t.name for t in result.agent.tools] == ['glob', 'grep']
+
     @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions',
         return_value=[],
     )
     @pytest.mark.asyncio
-    async def test_build_request_passes_profile_and_member_disabled_skills(
-        self, _mock_tools
+    async def test_build_request_registers_sub_agents_for_a_selected_tool_set(
+        self, mock_definitions
     ):
+        """Selecting the delegation tool set registers the sub-agents."""
+        self.mock_user.agent_settings = OpenHandsAgentSettings(
+            llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+            tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+        )
+        self.mock_user.active_agent_profile_id = 'profile-1'
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+
+        await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+            selected_repository='test_repo',
+        )
+
+        mock_definitions.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_build_request_passes_profile_and_member_disabled_skills(self):
         """Skill loading gets member ∪ launched-profile disabled_skills (#4017)."""
         # Member disables one skill; the launched profile (resolved agent_context)
         # disables another. Both must reach _load_skills_and_update_agent.
@@ -1893,13 +1950,9 @@ class TestLiveStatusAppConversationService:
         kwargs = self.service._load_skills_and_update_agent.call_args.kwargs
         assert set(kwargs['disabled_skills']) == {'member-skill', 'profile-skill'}
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
     async def test_build_request_unions_request_disabled_skills_into_skill_loading(
-        self, _mock_tools
+        self,
     ):
         """A per-request deny-list joins member ∪ profile before skill loading."""
         self.mock_user.disabled_skills = ['member-skill']
@@ -1938,14 +1991,8 @@ class TestLiveStatusAppConversationService:
             'request-skill',
         ]
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_applies_inline_system_prompt_to_agent(
-        self, _mock_tools
-    ):
+    async def test_build_request_applies_inline_system_prompt_to_agent(self):
         """The request's system_prompt replaces the built-in static prompt on the
         outgoing agent; the suffix still rides agent_context (dynamic block)."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -1970,12 +2017,8 @@ class TestLiveStatusAppConversationService:
         assert result.agent.static_system_message == 'You are a helper.'
         assert 'Custom suffix' in result.agent.agent_context.system_message_suffix
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_without_remote_workspace(self, _mock_tools):
+    async def test_build_request_without_remote_workspace(self):
         """Skills loading is skipped when no remote_workspace is provided."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -2000,12 +2043,8 @@ class TestLiveStatusAppConversationService:
         assert isinstance(result, StartConversationRequest)
         assert result.conversation_id == conversation_id
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_skills_loading_fails_gracefully(self, _mock_tools):
+    async def test_build_request_skills_loading_fails_gracefully(self):
         """Conversation still starts when skills loading raises."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -2101,14 +2140,8 @@ class TestLiveStatusAppConversationService:
         # Non-openhands model: main LLM unchanged, but condenser still gets usage_id
         assert updated.condenser.llm.usage_id == 'condenser'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_start_conversation_request_for_user_integration(
-        self, _mock_tools
-    ):
+    async def test_build_start_conversation_request_for_user_integration(self):
         """Test the main _build_start_conversation_request_for_user method integration."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -2160,12 +2193,8 @@ class TestLiveStatusAppConversationService:
             self.mock_user, 'gpt-4', test_conversation_id
         )
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_populates_observability_metadata(self, _mock_tools):
+    async def test_build_request_populates_observability_metadata(self):
         """Repo / branch / provider land on the request's observability_metadata
         so the agent-server attaches them to the Laminar trace. With no
         remote_workspace the commit can't be resolved, so it is omitted."""
@@ -2199,12 +2228,8 @@ class TestLiveStatusAppConversationService:
             'git_provider': 'github',
         }
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_forwards_api_observability_fields(self, _mock_tools):
+    async def test_build_request_forwards_api_observability_fields(self):
         self.mock_user_context.get_user_info.return_value = self.mock_user
         self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
         self.service._configure_llm_and_mcp = AsyncMock(
@@ -2253,14 +2278,8 @@ class TestLiveStatusAppConversationService:
             'attempt': 1,
         }
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_observability_metadata_includes_commit(
-        self, _mock_tools
-    ):
+    async def test_build_request_observability_metadata_includes_commit(self):
         """The post-clone HEAD sha is resolved from the workspace and added."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
         real_llm = LLM(model='gpt-4', api_key=SecretStr('k'))
@@ -2304,12 +2323,8 @@ class TestLiveStatusAppConversationService:
             'git rev-parse --verify --quiet HEAD', '/test/dir/repo', timeout=10.0
         )
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_commit_resolution_is_best_effort(self, _mock_tools):
+    async def test_build_request_commit_resolution_is_best_effort(self):
         """A failed HEAD lookup leaves commit out without breaking the build."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
         real_llm = LLM(model='gpt-4', api_key=SecretStr('k'))
@@ -2343,14 +2358,8 @@ class TestLiveStatusAppConversationService:
             'repo': 'test/repo',
         }
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_no_repo_keeps_context_observability_metadata(
-        self, _mock_tools
-    ):
+    async def test_build_request_no_repo_keeps_context_observability_metadata(self):
         """A repo-less conversation keeps non-repo trace context metadata."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
         self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
@@ -2425,14 +2434,8 @@ class TestLiveStatusAppConversationService:
             'commit': 'def456sha',
         }
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_forwards_observability_to_acp_builder(
-        self, _mock_tools
-    ):
+    async def test_build_request_forwards_observability_to_acp_builder(self):
         from openhands.sdk.settings import ACPAgentSettings
 
         self.mock_user.agent_settings = ACPAgentSettings(
@@ -2554,12 +2557,8 @@ class TestLiveStatusAppConversationService:
             'request-skill',
         ]
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_appends_shallow_clone_context(self, _mock_tools):
+    async def test_build_request_appends_shallow_clone_context(self):
         self.mock_user.git_full_clone = False
         self.mock_user_context.get_user_info.return_value = self.mock_user
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
@@ -2582,14 +2581,8 @@ class TestLiveStatusAppConversationService:
         assert '<GIT_WORKSPACE_CONTEXT>' in suffix
         assert 'git fetch --unshallow' in suffix
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_omits_shallow_clone_context_for_full_clone(
-        self, _mock_tools
-    ):
+    async def test_build_request_omits_shallow_clone_context_for_full_clone(self):
         self.mock_user.git_full_clone = True
         self.mock_user_context.get_user_info.return_value = self.mock_user
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
@@ -2611,43 +2604,19 @@ class TestLiveStatusAppConversationService:
         assert 'Existing integration instructions.' in suffix
         assert '<GIT_WORKSPACE_CONTEXT>' not in suffix
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.register_builtins_agents'
-    )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
-    @pytest.mark.asyncio
-    async def test_build_request_passes_enable_sub_agents_true(
-        self, mock_tools, mock_register_builtins, mock_get_agent_definitions
+    async def _build_request_with_agent_settings(
+        self, agent_settings, *, from_profile=True, **kwargs
     ):
-        """Built-in sub-agents are registered when the user setting is on."""
-        from openhands.sdk.settings import OpenHandsAgentSettings
-        from openhands.sdk.subagent.schema import AgentDefinition
-
-        agent_definition = AgentDefinition(
-            name='general-purpose',
-            description='General-purpose subagent',
-            tools=['terminal'],
-        )
-        mock_get_agent_definitions.return_value = [agent_definition]
-
-        agent_settings = OpenHandsAgentSettings(
-            llm={'model': 'gpt-4', 'api_key': 'test-key'},
-            enable_sub_agents=True,
-        )
         self.mock_user.agent_settings = agent_settings
+        self.mock_user.active_agent_profile_id = 'profile-1' if from_profile else None
         self.mock_user_context.get_user_info.return_value = self.mock_user
-
         real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
         self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
-
-        result = await self.service._build_start_conversation_request_for_user(
+        self.service._load_skills_and_update_agent = AsyncMock(
+            side_effect=lambda agent, **_: agent
+        )
+        return await self.service._build_start_conversation_request_for_user(
             user=self.mock_user,
             sandbox=self.mock_sandbox,
             conversation_id=uuid4(),
@@ -2656,12 +2625,180 @@ class TestLiveStatusAppConversationService:
             git_provider=None,
             working_dir='/test/dir',
             remote_workspace=None,
+            **kwargs,
         )
 
-        mock_register_builtins.assert_called_once_with(enable_browser=True)
-        mock_get_agent_definitions.assert_called_once_with()
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=True)
-        assert result.agent_definitions == [agent_definition]
+    @pytest.mark.asyncio
+    async def test_build_request_without_a_profile_launches_the_default_set(self):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=None
+            ),
+            from_profile=False,
+        )
+
+        tool_names = [t.name for t in result.agent.tools]
+        assert 'terminal' in tool_names
+        assert 'browser_tool_set' in tool_names
+        assert 'SwitchLLMTool' in result.agent.include_default_tools
+
+    @pytest.mark.asyncio
+    async def test_build_request_keeps_switch_llm_off_when_deselected(self):
+        profiles = LLMProfiles()
+        profiles.save('One', LLM(model='openai/gpt-4o'))
+        profiles.save('Two', LLM(model='anthropic/claude-haiku-3-5'))
+        self.mock_user.llm_profiles = profiles
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal')],
+            )
+        )
+
+        names = {t.name for t in result.agent.tools} | set(
+            result.agent.include_default_tools
+        )
+        assert not names & {'switch_llm', 'SwitchLLMTool'}
+
+    @pytest.mark.asyncio
+    async def test_build_request_without_a_profile_honours_settings_tools(self):
+        runner = AgentDefinition(
+            name='bash-runner', description='runs bash', tools=['terminal']
+        )
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions',
+            return_value=[runner],
+        ):
+            result = await self._build_request_with_agent_settings(
+                OpenHandsAgentSettings(
+                    llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                    tools=[Tool(name='terminal'), Tool(name='task_tool_set')],
+                ),
+                from_profile=False,
+            )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert 'task_tool_set' in names
+        assert 'file_editor' not in names
+        assert not set(names) & {'switch_llm', 'SwitchLLMTool'}
+        assert result.agent_definitions == [runner]
+
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    @pytest.mark.asyncio
+    async def test_launch_honours_migrated_tool_switches(self, agent_type):
+        agent_settings = validate_agent_settings(
+            {
+                'schema_version': 6,
+                'agent_kind': 'openhands',
+                'llm': {'model': 'gpt-4', 'api_key': 'test-key'},
+                'tools': None,
+                'enable_sub_agents': True,
+                'enable_switch_llm_tool': False,
+            }
+        )
+
+        result = await self._build_request_with_agent_settings(
+            agent_settings, from_profile=False, agent_type=agent_type
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert not set(names) & {'switch_llm', 'SwitchLLMTool'}
+        if agent_type == AgentType.DEFAULT:
+            assert 'task_tool_set' in names
+
+    @pytest.mark.asyncio
+    async def test_plan_launch_keeps_a_profiles_switch_llm(self):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='switch_llm')],
+            ),
+            agent_type=AgentType.PLAN,
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert 'terminal' not in names
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+
+    @pytest.mark.parametrize('from_profile', [False, True])
+    @pytest.mark.asyncio
+    async def test_plan_launch_with_default_tools_keeps_switch_llm(self, from_profile):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')), tools=None
+            ),
+            from_profile=from_profile,
+            agent_type=AgentType.PLAN,
+        )
+
+        names = [t.name for t in result.agent.tools] + list(
+            result.agent.include_default_tools
+        )
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    @pytest.mark.asyncio
+    async def test_build_request_resolves_a_selected_switch_llm_once(self, agent_type):
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), Tool(name='switch_llm')],
+            ),
+            agent_type=agent_type,
+        )
+
+        spec_names = [t.name for t in result.agent.tools]
+        names = spec_names + list(result.agent.include_default_tools)
+        assert len([n for n in names if n in {'switch_llm', 'SwitchLLMTool'}]) == 1
+        assert 'switch_llm' not in spec_names
+
+    @pytest.mark.asyncio
+    async def test_build_request_keeps_a_parameterised_builtin_over_its_default(self):
+        finish = Tool(name='finish', params={'response_schema': {'type': 'object'}})
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), finish],
+            )
+        )
+
+        assert [t.name for t in result.agent.tools] == ['terminal', 'FinishTool']
+        assert result.agent.tools[1].params == finish.params
+        assert 'FinishTool' not in result.agent.include_default_tools
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_forwards_every_sub_agent_for_a_selected_tool_set(
+        self, mock_definitions
+    ):
+        runner = AgentDefinition(
+            name='bash-runner', description='runs bash', tools=['terminal']
+        )
+        researcher = AgentDefinition(
+            name='web-researcher', description='browses', tools=['browser_tool_set']
+        )
+        mock_definitions.return_value = [runner, researcher]
+        task_tool_set = Tool(name='task_tool_set')
+
+        result = await self._build_request_with_agent_settings(
+            OpenHandsAgentSettings(
+                llm=LLM(model='gpt-4', api_key=SecretStr('test-key')),
+                tools=[Tool(name='terminal'), task_tool_set],
+            )
+        )
+
+        assert result.agent_definitions == [runner, researcher]
+        assert task_tool_set in result.agent.tools
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
@@ -2669,20 +2806,14 @@ class TestLiveStatusAppConversationService:
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.register_builtins_agents'
     )
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_passes_enable_sub_agents_false(
-        self, mock_tools, mock_register_builtins, mock_get_agent_definitions
+    async def test_build_request_with_default_tools_forwards_no_sub_agents(
+        self, mock_register_builtins, mock_get_agent_definitions
     ):
-        """Built-in sub-agents are registered but not forwarded when disabled."""
         from openhands.sdk.settings import OpenHandsAgentSettings
 
         agent_settings = OpenHandsAgentSettings(
             llm={'model': 'gpt-4', 'api_key': 'test-key'},
-            enable_sub_agents=False,
         )
         self.mock_user.agent_settings = agent_settings
         self.mock_user_context.get_user_info.return_value = self.mock_user
@@ -2704,15 +2835,10 @@ class TestLiveStatusAppConversationService:
 
         mock_register_builtins.assert_called_once_with(enable_browser=True)
         mock_get_agent_definitions.assert_not_called()
-        mock_tools.assert_called_once_with(enable_browser=True, enable_sub_agents=False)
         assert result.agent_definitions == []
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_start_conversation_request_with_api_secrets(self, _mock_tools):
+    async def test_build_start_conversation_request_with_api_secrets(self):
         """Test _build_start_conversation_request_for_user with API-provided secrets."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -2766,14 +2892,8 @@ class TestLiveStatusAppConversationService:
         assert secrets['MY_API_KEY'].value.get_secret_value() == 'my_api_key_value'
         assert secrets['ANOTHER_SECRET'].value.get_secret_value() == 'another_value'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_start_conversation_request_api_secrets_override_existing(
-        self, _mock_tools
-    ):
+    async def test_build_start_conversation_request_api_secrets_override_existing(self):
         """Test that API-provided secrets override existing secrets with the same name."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -2816,12 +2936,8 @@ class TestLiveStatusAppConversationService:
         secrets = result.agent.agent_context.secrets
         assert secrets['SHARED_SECRET'].value.get_secret_value() == 'overridden_value'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_start_conversation_request_no_api_secrets(self, _mock_tools):
+    async def test_build_start_conversation_request_no_api_secrets(self):
         """Test _build_start_conversation_request_for_user without API-provided secrets."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -4533,12 +4649,8 @@ class TestLiveStatusAppConversationService:
         assert get_project_dir('/workspace/project', None) == '/workspace/project'
         assert get_project_dir('/workspace/project', '') == '/workspace/project'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_workspace_uses_project_dir(self, _mock_tools):
+    async def test_build_request_workspace_uses_project_dir(self):
         """workspace.working_dir in StartConversationRequest must equal project_dir.
 
         This is the root cause of the V1 hook-stop bug: if workspace.working_dir
@@ -4568,12 +4680,8 @@ class TestLiveStatusAppConversationService:
             result.workspace.working_dir == '/workspace/project/software-agent-sdk'
         ), 'workspace.working_dir must point to the repo root, not the sandbox mount'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_no_repo_workspace_unchanged(self, _mock_tools):
+    async def test_build_request_no_repo_workspace_unchanged(self):
         """Without selected_repository, workspace.working_dir == sandbox working_dir."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -4942,11 +5050,7 @@ class TestPluginHandling:
         assert 'key2: value2' in text
 
     @pytest.mark.asyncio
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
-    async def test_build_request_with_plugins(self, _mock_tools):
+    async def test_build_request_with_plugins(self):
         """Plugins are converted to PluginSource and included in the request."""
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
@@ -5016,13 +5120,9 @@ class TestPluginHandling:
         mock_resolve.assert_awaited_once_with(self.mock_user_context, self.mock_user)
         assert result == marketplaces
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
     async def test_build_request_includes_registered_marketplaces_in_agent_context(
-        self, _mock_tools
+        self,
     ):
         """Registered marketplaces are available to runtime plugin loading."""
         from openhands.app_server.settings.settings_models import (
@@ -5067,12 +5167,8 @@ class TestPluginHandling:
             == 'team'
         )
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_without_plugins(self, _mock_tools):
+    async def test_build_request_without_plugins(self):
         """Without plugins, result.plugins is None."""
         self.mock_user_context.get_user_info.return_value = self.mock_user
 
@@ -5094,12 +5190,8 @@ class TestPluginHandling:
         assert isinstance(result, StartConversationRequest)
         assert result.plugins is None
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_plugin_with_repo_path(self, _mock_tools):
+    async def test_build_request_plugin_with_repo_path(self):
         """repo_path is propagated through to PluginSource."""
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
@@ -5137,12 +5229,8 @@ class TestPluginHandling:
         assert result.plugins[0].ref == 'main'
         assert result.plugins[0].repo_path == 'plugins/city-weather'
 
-    @patch(
-        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
-        return_value=[],
-    )
     @pytest.mark.asyncio
-    async def test_build_request_multiple_plugins(self, _mock_tools):
+    async def test_build_request_multiple_plugins(self):
         """Multiple plugins are all converted correctly."""
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,

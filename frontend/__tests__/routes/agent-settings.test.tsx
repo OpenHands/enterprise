@@ -283,7 +283,6 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     agent_settings: {
       ...MOCK_DEFAULT_USER_SETTINGS.agent_settings,
       agent_kind: "openhands",
-      enable_sub_agents: false,
       tool_concurrency_limit: toolConcurrencyLimit,
     },
   });
@@ -346,7 +345,6 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     agent_settings: {
       ...MOCK_DEFAULT_USER_SETTINGS.agent_settings,
       agent_kind: "openhands",
-      enable_sub_agents: false,
     },
   });
 

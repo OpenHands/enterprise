@@ -128,7 +128,7 @@ from openhands.app_server.utils.redis_lock import (
     refresh_lock_periodically,
     try_acquire_redis_lock,
 )
-from openhands.sdk import Agent, AgentContext, LocalWorkspace
+from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -140,17 +140,19 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import (
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    canonical_tool_name,
+    launch_tool_specs,
+)
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.preset.default import (
-    get_default_tools,
-    register_builtins_agents,
-)
+from openhands.tools.preset.default import register_builtins_agents
 from openhands.tools.preset.planning import (
     format_plan_structure,
     get_planning_tools,
@@ -160,6 +162,10 @@ _conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+
+
+def _selects_tool(tools: Sequence[Tool], name: str) -> bool:
+    return any(canonical_tool_name(tool.name) == name for tool in tools)
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -2246,18 +2252,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- tools ----------------------------------------------------------
         agent_definitions: list[Any] = []
+        selected_tools = user.agent_settings.tools
         if agent_type == AgentType.PLAN:
             plan_path = None
             if project_dir:
                 plan_path = self._compute_plan_path(project_dir, git_provider)
             tools = get_planning_tools(plan_path=plan_path)
+            if selected_tools is None or _selects_tool(
+                selected_tools, SWITCH_LLM_TOOL_NAME
+            ):
+                tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
         else:
             register_builtins_agents(enable_browser=True)
-            tools = get_default_tools(
-                enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
-            )
-            if user.agent_settings.enable_sub_agents:
+            tools = launch_tool_specs(selected_tools, browser_available=True)
+            if _selects_tool(tools, SUB_AGENT_TOOL_NAME):
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
@@ -2283,29 +2291,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             }
         )
         agent = configured_agent_settings.create_agent()
-
-        # SaaS profiles live on the user/org record, not the sandbox
-        # filesystem, so we attach the agent's built-in switch_llm tool
-        # ourselves rather than relying on create_agent()'s gating. Enabled
-        # whenever there are at least two valid saved profiles (a switch needs
-        # a target).
-        valid_profile_names = [
-            name
-            for name in user.llm_profiles.profiles
-            if PROFILE_NAME_REGEX.match(name)
-        ]
-        if (
-            len(valid_profile_names) >= 2
-            and SwitchLLMTool.__name__ not in agent.include_default_tools
-        ):
-            agent = agent.model_copy(
-                update={
-                    'include_default_tools': [
-                        *agent.include_default_tools,
-                        SwitchLLMTool.__name__,
-                    ]
-                }
-            )
 
         agent = self._apply_server_agent_overrides(
             agent,

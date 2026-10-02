@@ -174,10 +174,6 @@ async def _agent_profiles_transaction(
     re-entrant no-op ``lock()``.
 
     The collection is written back ONLY when the caller actually changed it.
-    Loading is best-effort (``_skip_invalid_profiles`` drops entries that fail
-    to validate, e.g. after schema drift), so an unconditional write-back would
-    let a mutation-free call such as ``/activate`` silently erase a stored
-    profile it merely failed to parse.
     """
     await _get_org(org_id, user_id)
     async with a_session_maker() as session:
@@ -301,6 +297,11 @@ async def save_agent_profile(
                     f'Agent profile limit reached ({MAX_AGENT_PROFILES}). '
                     'Delete a profile before saving a new one.'
                 ),
+            )
+        except FileExistsError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Agent profile '{name}' already exists",
             )
 
     logger.info("Saved agent profile '%s' for org %s", name, effective_org_id)
@@ -467,6 +468,8 @@ async def materialize_agent_profile(
             mcp_config=mcp_config,
             available_skills=None,
             cipher=None,
+            browser_available=True,
+            check_usable=False,
         )
     except Exception as exc:
         # The dry-run is contractually total, but SDK contract drift (e.g. a
