@@ -13,6 +13,7 @@ runtimes reference ``${OH_SESSION_API_KEYS_0}``; remote runtimes reference
 
 import json
 import os
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -134,3 +135,61 @@ async def test_remote_init_environment_skips_base_urls_without_managed_url():
         == f'{WEB_URL}/api/keys/llm/managed/current'
     )
     assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env
+
+
+# --- enterprise#632 regression guard -------------------------------------------
+# The original bug shipped green because the unit test monkeypatched the same
+# variable the header referenced -- it validated the code against its own
+# assumption, so it could never notice that the *remote runtime* actually sets a
+# different variable. These literals are the ground truth of what each runtime
+# provides inside the sandbox, deliberately NOT imported from sandbox_service so a
+# wrong assumption in the code (e.g. remote pointing back at OH_SESSION_API_KEYS_0)
+# fails here:
+#   - docker runtimes export OH_SESSION_API_KEYS_0 (docker_sandbox_service sets it
+#     in the env it builds)
+#   - remote runtimes export SESSION_API_KEY inside the sandbox (verified live on
+#     SaaS prod, enterprise#632); OH_SESSION_API_KEYS_0 is unset there.
+RUNTIME_PROVIDES_SESSION_KEY_VAR = {
+    'docker': 'OH_SESSION_API_KEYS_0',
+    'remote': 'SESSION_API_KEY',
+}
+HEADER_VALUE_BY_RUNTIME = {
+    'docker': LLM_API_KEY_REFRESH_HEADERS_VALUE,
+    'remote': LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE,
+}
+# Byte-for-byte header the warm pool is created with (OpenHands-Cloud
+# replicated/openhands.yaml and the saas-deploy runtime-api values). It must equal
+# the app-injected remote header exactly: OH_LLM_API_KEY_REFRESH_HEADERS is not in
+# runtime-api's KEYS_TO_CLEAN, so any drift breaks warm claiming (enterprise#632
+# Bug #1).
+WARM_POOL_REMOTE_REFRESH_HEADER = '{"X-Session-API-Key": "${SESSION_API_KEY}"}'
+
+
+@pytest.mark.parametrize('runtime_kind', ['docker', 'remote'])
+def test_refresh_header_references_var_the_runtime_actually_sets(runtime_kind):
+    """Each runtime's refresh header must reference the session-key variable that
+    runtime provides in the sandbox; otherwise the agent-server expands it to an
+    empty X-Session-API-Key and the refresh call 401s (enterprise#632).
+    """
+    header = json.loads(HEADER_VALUE_BY_RUNTIME[runtime_kind])
+    match = re.fullmatch(r'\$\{(\w+)\}', header['X-Session-API-Key'])
+    assert match, f'X-Session-API-Key must be a single ${{VAR}}, got {header!r}'
+    assert match.group(1) == RUNTIME_PROVIDES_SESSION_KEY_VAR[runtime_kind]
+
+
+def test_docker_and_remote_use_different_session_key_vars():
+    """Pin the asymmetry so a refactor cannot collapse both paths onto one
+    variable (which would re-break whichever runtime does not set it).
+    """
+    assert (
+        RUNTIME_PROVIDES_SESSION_KEY_VAR['docker']
+        != RUNTIME_PROVIDES_SESSION_KEY_VAR['remote']
+    )
+
+
+def test_remote_refresh_header_is_byte_identical_to_warm_pool():
+    """Warm claims match env exactly and this header key is not cleaned, so the
+    app-injected remote header must equal the warm-pool header byte-for-byte
+    (enterprise#632 Bug #1).
+    """
+    assert LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE == WARM_POOL_REMOTE_REFRESH_HEADER
