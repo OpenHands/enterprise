@@ -23,10 +23,17 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
-import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
+import {
+  Settings,
+  SettingsSchema,
+  SettingsScope,
+  SettingsValue,
+} from "#/types/settings";
 import { extractModelAndProvider } from "#/utils/extract-model-and-provider";
 import {
+  getVisibleSettingsSections,
   inferInitialView,
+  normalizeFieldValue,
   type SettingsView,
 } from "#/utils/sdk-settings-schema";
 import { DEFAULT_SETTINGS } from "#/services/settings";
@@ -48,6 +55,7 @@ import { OrgLlmProfilesManager } from "#/components/features/settings/org-llm-pr
 import { ProfileNameInput } from "#/components/features/settings/profile-name-input";
 import { Typography } from "#/ui/typography";
 import { providerModelsQueryOptions } from "#/hooks/query/use-provider-models";
+import { orgLlmProfileQueryOptions } from "#/hooks/query/use-org-llm-profiles";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { useMe } from "#/hooks/query/use-me";
@@ -115,6 +123,12 @@ const isProviderDefaultBaseUrl = (model: string, baseUrl: string) => {
 
 type ProfileFormMode = "create" | "edit";
 
+// On org defaults the list summary is joined by the profile's stored LLM
+// config, so the edit form can hydrate every field from the profile itself.
+type EditingProfile = LlmProfileSummary & {
+  llm?: Record<string, SettingsValue>;
+};
+
 export function LlmSettingsScreen({
   scope = "personal",
 }: {
@@ -176,7 +190,7 @@ export function LlmSettingsScreen({
   // The profile summary the edit form was opened with — the source of truth
   // for the form's initial model/base_url instead of the active settings.
   const [editingProfile, setEditingProfile] =
-    React.useState<LlmProfileSummary | null>(null);
+    React.useState<EditingProfile | null>(null);
   // Snapshotted on form open so we can flag the form dirty when the user
   // edits *only* the name — the SDK section page tracks the LLM fields but
   // not the profile-name input that lives outside its schema.
@@ -205,6 +219,45 @@ export function LlmSettingsScreen({
   // at runtime, and the managed model dropdown stays fully functional.
   const allowUserLlmConfiguration =
     config?.feature_flags?.allow_user_llm_configuration !== false;
+
+  // The "llm" key exists under both the openhands and acp union variants;
+  // this page targets openhands.
+  const llmFields = React.useMemo(
+    () =>
+      schema?.sections
+        .filter(
+          (section) =>
+            section.key === "llm" &&
+            (section.variant == null || section.variant === "openhands"),
+        )
+        .flatMap((section) => section.fields) ?? [],
+    [schema],
+  );
+
+  // Org defaults are saved as a merge patch into plain JSON settings: only
+  // the API key is encrypted, and object values merge instead of replacing.
+  // Secret and object fields can't be stored faithfully, so don't offer them.
+  const excludedKeys = React.useMemo(
+    () =>
+      scope === "org"
+        ? new Set([
+            ...LLM_EXCLUDED_KEYS,
+            ...llmFields
+              .filter((field) => field.secret || field.value_type === "object")
+              .map((field) => field.key),
+          ])
+        : LLM_EXCLUDED_KEYS,
+    [llmFields, scope],
+  );
+
+  // What an org profile form starts from: the profile's own config, or
+  // schema defaults for a new one. Undefined keeps the settings-derived values.
+  const profileLlm = React.useMemo<
+    Record<string, SettingsValue> | undefined
+  >(() => {
+    if (scope !== "org") return undefined;
+    return profileFormMode === "create" ? {} : editingProfile?.llm;
+  }, [editingProfile, profileFormMode, scope]);
 
   React.useEffect(() => {
     // An open profile form owns the provider selection (blank for create,
@@ -257,6 +310,26 @@ export function LlmSettingsScreen({
       // Edit opens on the tier the clicked profile needs — its values, not
       // the active settings, are what the form is hydrated with.
       if (profileFormMode === "edit" && editingProfile) {
+        // Saving from a lower tier resets minor fields, so a profile that
+        // overrides any must open where they are visible.
+        if (
+          profileLlm &&
+          inferInitialView(
+            { ...currentSettings, agent_settings: { llm: profileLlm } },
+            {
+              ...filteredSchema,
+              sections: getVisibleSettingsSections(
+                filteredSchema,
+                {},
+                "all",
+                excludedKeys,
+              ),
+            },
+          ) === "all"
+        ) {
+          return "all";
+        }
+
         const profileModel = editingProfile.model ?? "";
         const profileBaseUrl = editingProfile.base_url?.trim() ?? "";
         const hasCustomProfileBaseUrl =
@@ -301,9 +374,11 @@ export function LlmSettingsScreen({
     [
       allowUserLlmConfiguration,
       editingProfile,
+      excludedKeys,
       initialViewHint,
       isSaasMode,
       profileFormMode,
+      profileLlm,
       scope,
     ],
   );
@@ -549,6 +624,19 @@ export function LlmSettingsScreen({
         agentSettings.llm = llm;
       }
 
+      // Untouched fields aren't in the diff, so the profile snapshot would
+      // take them from whatever the org settings last held. Write what the
+      // form was hydrated from instead.
+      if (profileLlm) {
+        llmFields.forEach((field) => {
+          const name = field.key.slice("llm.".length);
+          if (!excludedKeys.has(field.key) && !(name in llm)) {
+            llm[name] = profileLlm[name] ?? field.default ?? null;
+          }
+        });
+        agentSettings.llm = llm;
+      }
+
       // Remember the model currently shown in the form — this is what the
       // user is saving regardless of whether `llm.model` was toggled dirty
       // this turn. ``defaultPayload`` only includes dirty fields, so
@@ -566,7 +654,16 @@ export function LlmSettingsScreen({
 
       return { agent_settings_diff: agentSettings };
     },
-    [isSaasMode, profileFormMode, schema, scope, selectedProvider],
+    [
+      excludedKeys,
+      isSaasMode,
+      llmFields,
+      profileFormMode,
+      profileLlm,
+      schema,
+      scope,
+      selectedProvider,
+    ],
   );
 
   const handleSaveSuccess = React.useCallback(async () => {
@@ -674,7 +771,7 @@ export function LlmSettingsScreen({
   ) => {
     // The profiles list passes the profile only when editing; Add Profile
     // opens a blank create form.
-    let editProfile = profile;
+    let editProfile: EditingProfile | null = profile;
     if (editProfile?.model) {
       // Resolved *before* the form opens: SdkSectionPage re-hydrates (and
       // resets dirty state) whenever the initial-value overrides change, so
@@ -682,6 +779,25 @@ export function LlmSettingsScreen({
       const canonicalModel = await resolveCanonicalModel(editProfile.model);
       if (canonicalModel !== editProfile.model) {
         editProfile = { ...editProfile, model: canonicalModel };
+      }
+    }
+    // Only the BYOK tiers show fields beyond the list summary.
+    if (
+      editProfile &&
+      scope === "org" &&
+      organizationId &&
+      allowUserLlmConfiguration
+    ) {
+      try {
+        const { llm } = await queryClient.fetchQuery(
+          orgLlmProfileQueryOptions(organizationId, editProfile.name),
+        );
+        editProfile = {
+          ...editProfile,
+          llm: llm as Record<string, SettingsValue>,
+        };
+      } catch {
+        // Profile unavailable — open from the list summary, exactly as before.
       }
     }
     const isEdit = editProfile !== null;
@@ -702,9 +818,23 @@ export function LlmSettingsScreen({
   // Create starts from a clean slate; edit hydrates from the clicked
   // profile rather than from the active settings.
   const profileFormInitialValueOverrides = React.useMemo(() => {
+    const profileLlmValues = profileLlm
+      ? Object.fromEntries(
+          llmFields
+            .filter((field) => !excludedKeys.has(field.key))
+            .map((field) => [
+              field.key,
+              normalizeFieldValue(
+                field,
+                profileLlm[field.key.slice("llm.".length)],
+              ),
+            ]),
+        )
+      : {};
     if (profileFormMode === "create") {
       return {
         agent_settings: {
+          ...profileLlmValues,
           "llm.model": "",
           "llm.api_key": "",
           "llm.base_url": "",
@@ -716,6 +846,7 @@ export function LlmSettingsScreen({
         String(getSchemaFieldDefaultValue(schema, fieldKey) ?? "");
       return {
         agent_settings: {
+          ...profileLlmValues,
           "llm.model": editingProfile.model ?? fieldDefault("llm.model"),
           // The stored key can't be fetched; the profile's api_key_set
           // drives the <hidden> placeholder instead.
@@ -726,7 +857,14 @@ export function LlmSettingsScreen({
       };
     }
     return undefined;
-  }, [editingProfile, profileFormMode, schema]);
+  }, [
+    editingProfile,
+    excludedKeys,
+    llmFields,
+    profileFormMode,
+    profileLlm,
+    schema,
+  ]);
 
   if (isProfilesView) {
     if (isOrgProfileMode) {
@@ -786,7 +924,7 @@ export function LlmSettingsScreen({
           {
             settingsSource: "agent_settings",
             sectionKeys: ["llm"],
-            excludeKeys: LLM_EXCLUDED_KEYS,
+            excludeKeys: excludedKeys,
             // The "llm" key exists under both the openhands and acp union
             // variants; target openhands so the acp duplicate is dropped.
             variant: "openhands",
@@ -818,7 +956,11 @@ export function LlmSettingsScreen({
         // toggle on it so Basic/Advanced aren't identical when BYOK is off.
         forceShowAdvancedView={allowUserLlmConfiguration}
         allowAdvancedView={allowUserLlmConfiguration}
-        allowAllView={!isSaasMode}
+        // SaaS/OHE hide the All tier, except on org defaults: only admins
+        // reach that form, and BYOK must be on for it to mean anything.
+        allowAllView={
+          !isSaasMode || (scope === "org" && allowUserLlmConfiguration)
+        }
         testId="llm-settings-screen"
       />
     </div>
