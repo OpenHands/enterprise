@@ -38,6 +38,7 @@ from storage.lite_llm_manager import (
     LiteLlmManager,
     get_openhands_cloud_key_alias,
     get_org_team_alias,
+    is_litellm_enabled,
 )
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -1034,6 +1035,19 @@ class OrgStore:
 
         config = managed_llm_key_config_from_model(llm_model, llm_base_url)
         if config is None or not config.openhands_type:
+            return None
+
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # verify/rotate/generate a key against. A managed openhands/*
+            # model is virtually every existing org's default, so without
+            # this guard any org-defaults save would otherwise
+            # unconditionally try to mint a key and raise ``ValueError``
+            # out of ``LiteLlmManager.generate_key``.
+            logger.info(
+                'ensure_managed_llm_key_for_user:skipped_litellm_disabled',
+                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
+            )
             return None
 
         # _get_effective_llm_api_key checks org.llm_api_key before the member
