@@ -51,6 +51,12 @@ export interface WebClientFeatureFlags {
    *  page can distinguish "export disabled on this deployment" from "buy credits
    *  to enable" when billing is off. */
   enable_byor_export?: boolean;
+  /** Deployment-wide switch for the bundled/external LiteLLM gateway.
+   *  Defaults to true for backward compatibility with existing installs.
+   *  When false, hide every feature that depends on LiteLLM (Budgets,
+   *  managed/OpenHands models, managed LLM key create/refresh) and show a
+   *  "Please enable LiteLLM to use this feature" placeholder instead. */
+  enable_litellm?: boolean;
 }
 
 export interface ACPModelOption {
