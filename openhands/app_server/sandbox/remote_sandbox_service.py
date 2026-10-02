@@ -36,7 +36,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_service import (
     ALLOW_CORS_ORIGINS_VARIABLE,
     LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
-    LLM_API_KEY_REFRESH_HEADERS_VALUE,
+    LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
@@ -296,13 +296,14 @@ class RemoteSandboxService(SandboxService):
             # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and
             # retry in place (#5189). The agent-server GETs the refresh URL and
             # authenticates with this sandbox's session key, referenced as
-            # ${OH_SESSION_API_KEYS_0} in the header value (the runtime assigns
-            # that key inside the sandbox, so it is not known here).
+            # ${SESSION_API_KEY} in the header value -- remote runtimes assign that
+            # key inside the sandbox (OH_SESSION_API_KEYS_0 is unset here), so the
+            # value is not known when we build this environment (enterprise#632).
             environment[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
                 f'{self.web_url}/api/keys/llm/managed/current'
             )
             environment[LLM_API_KEY_REFRESH_HEADERS_VARIABLE] = (
-                LLM_API_KEY_REFRESH_HEADERS_VALUE
+                LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE
             )
             from server.constants import LITE_LLM_API_URL
 
