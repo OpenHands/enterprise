@@ -38,6 +38,20 @@ jobs:
           errors = []
           direct_ref = re.compile(r"@\s*(git\+|https?://|file:)")
 
+          # Transitional allowlist: packages that are intentionally pinned to an
+          # unreleased git branch while waiting for an upstream release. Each entry
+          # MUST reference the tracking issue so the exemption is auditable and can
+          # be removed once the dependency is published to PyPI.
+          GIT_PIN_ALLOWLIST = {
+              # org Model Router needs meta_profile_store, which is not yet released.
+              # Remove once software-agent-sdk#4287 ships openhands-sdk to PyPI.
+              "openhands-sdk": "software-agent-sdk#4287",
+          }
+
+          def _pkg_name(req: str) -> str:
+              # Extract the distribution name from a PEP 508 requirement string.
+              return re.split(r"\s*[@<>=!~;\s]", req, maxsplit=1)[0].strip().lower()
+
           print("🔍 Checking for dependencies pinned to git refs or URLs...\n")
 
           # PEP 508 requirement strings: [project].dependencies and [dependency-groups].*
@@ -47,6 +61,10 @@ jobs:
           for section, reqs in requirement_lists.items():
               for req in reqs:
                   if direct_ref.search(req):
+                      pkg = _pkg_name(req)
+                      if pkg in GIT_PIN_ALLOWLIST:
+                          print(f"  ⚠ {req!r} in [{section}] is a direct git/URL reference, allowed for {pkg} (tracking {GIT_PIN_ALLOWLIST[pkg]})")
+                          continue
                       msg = f"  ✖ {req!r} in [{section}] is a direct git/URL reference (NOT ALLOWED)"
                       print(msg)
                       errors.append(msg)
@@ -59,6 +77,9 @@ jobs:
               cfgs = cfg if isinstance(cfg, list) else [cfg]
               for c in cfgs:
                   if isinstance(c, dict) and ({"git", "url", "rev", "branch", "tag"} & set(c)):
+                      if pkg.lower() in GIT_PIN_ALLOWLIST:
+                          print(f"  ⚠ {pkg} in [tool.uv.sources] uses {c}, allowed (tracking {GIT_PIN_ALLOWLIST[pkg.lower()]})")
+                          continue
                       msg = f"  ✖ {pkg} in [tool.uv.sources] uses {c} (NOT ALLOWED)"
                       print(msg)
                       errors.append(msg)

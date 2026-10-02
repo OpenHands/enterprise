@@ -92,6 +92,10 @@ class Org(Base):
     provider_connections: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Org-scoped Model Router configurations. Meta-profiles contain prompts and
+    # saved LLM-profile references but no credentials, so plain JSON is the
+    # appropriate persistence boundary.
+    meta_profiles: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Marks the bootstrapped default org on OHE installs; a partial unique
     # index allows at most one default org per install.
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)
