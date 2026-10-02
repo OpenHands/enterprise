@@ -515,6 +515,55 @@ class TestByokUnion:
         assert response.verified_models == []
 
 
+@pytest.fixture
+def litellm_off(monkeypatch):
+    import storage.lite_llm_manager as lite_llm_manager
+
+    monkeypatch.setattr(lite_llm_manager, 'ENABLE_LITELLM', False)
+
+
+class TestLiteLLMDisabled:
+    async def test_never_contacts_proxy(self, monkeypatch, litellm_off):
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models == []
+        assert response.verified_models == []
+
+    async def test_byok_on_serves_only_catalogue(self, monkeypatch, litellm_off):
+        byok_on(monkeypatch)
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models
+        assert not any(m.startswith('openhands/') for m in response.models)
+
+    async def test_warm_cache_is_not_served(self, monkeypatch):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+        warm = await LiteLLMProxyModelService()._get_models_response()
+        assert warm.models
+
+        import storage.lite_llm_manager as lite_llm_manager
+
+        monkeypatch.setattr(lite_llm_manager, 'ENABLE_LITELLM', False)
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert response.models == []
+
+    async def test_search_llm_models_has_no_managed_models(
+        self, monkeypatch, litellm_off
+    ):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        page = await LiteLLMProxyModelService().search_llm_models(limit=100)
+
+        assert page.items == []
+
+
 class TestInjector:
     async def test_injector_yields_service(self):
         injector = LiteLLMProxyModelServiceInjector()
