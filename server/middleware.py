@@ -131,14 +131,14 @@ class SetAuthCookieMiddleware:
             if v2_cookie:
                 response.delete_cookie(
                     OAUTH_V2_COOKIE_NAME,
-                    domain=get_cookie_domain(),
+                    domain=get_cookie_domain(request),
                     samesite=get_cookie_samesite(),
                 )
             if keycloak_auth_cookie:
                 delete_chunked_cookie(
                     response,
                     'keycloak_auth',
-                    domain=get_cookie_domain(),
+                    domain=get_cookie_domain(request),
                     samesite=get_cookie_samesite(),
                 )
             return response
@@ -229,6 +229,10 @@ class SetAuthCookieMiddleware:
             '/oauth/device/authorize',
             '/oauth/device/token',
             '/api/v1/web-client/config',
+            '/api/auth/password/status',
+            '/api/auth/password/login',
+            '/api/auth/password/inspect',
+            '/api/auth/password/complete',
             # OAuth providers redirect the user's browser here after an MCP
             # server install consent; the cross-site navigation carries no
             # session cookie and the route validates its single-use state.

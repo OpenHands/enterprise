@@ -12,6 +12,7 @@ import {
 interface PendingInvitationListItemProps {
   invitation: OrganizationInvitation;
   onRevoke: () => void;
+  onRequestInviteUrl?: () => Promise<string>;
   isRevoking: boolean;
 }
 
@@ -23,6 +24,7 @@ interface PendingInvitationListItemProps {
 export function PendingInvitationListItem({
   invitation,
   onRevoke,
+  onRequestInviteUrl,
   isRevoking,
 }: PendingInvitationListItemProps) {
   const { t } = useTranslation();
@@ -45,8 +47,11 @@ export function PendingInvitationListItem({
         <span className="text-xs font-normal leading-4 text-muted capitalize">
           {invitation.role}
         </span>
-        {invitation.invite_url && (
-          <CopyInviteLinkButton inviteUrl={invitation.invite_url} />
+        {(invitation.invite_url || onRequestInviteUrl) && (
+          <CopyInviteLinkButton
+            inviteUrl={invitation.invite_url ?? undefined}
+            onRequestInviteUrl={onRequestInviteUrl}
+          />
         )}
         <button
           type="button"

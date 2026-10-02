@@ -31,6 +31,7 @@ import {
 } from "#/utils/settings-utils";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useConfig } from "#/hooks/query/use-config";
+import { getIsAuthedQueryOptions } from "#/hooks/query/use-is-authed";
 import { useMe } from "#/hooks/query/use-me";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
@@ -85,6 +86,17 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
+
+  if (config?.app_mode === "saas") {
+    try {
+      const isAuthed = await queryClient.fetchQuery(
+        getIsAuthedQueryOptions(config.app_mode),
+      );
+      if (!isAuthed) return SETTINGS_LOADER_OK;
+    } catch {
+      return SETTINGS_LOADER_OK;
+    }
+  }
 
   // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
   // switch the current org before any settings guard runs, then strip the

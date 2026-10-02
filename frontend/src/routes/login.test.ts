@@ -27,4 +27,13 @@ describe("getSafeReturnTo", () => {
       getSafeReturnTo(new URLSearchParams({ redirect: "//example.com" })),
     ).toBe("/");
   });
+
+  it("rejects encoded and backslash redirect targets", () => {
+    expect(
+      getSafeReturnTo(new URLSearchParams("returnTo=%2F%2Fevil.example")),
+    ).toBe("/");
+    expect(
+      getSafeReturnTo(new URLSearchParams({ returnTo: "/\\evil.example" })),
+    ).toBe("/");
+  });
 });

@@ -186,6 +186,10 @@ class OrgInvitationService:
         )
 
         try:
+            from server.auth.password_auth import is_password_auth_enabled
+
+            if is_password_auth_enabled():
+                return invitation
             inviter_user = await UserStore.get_user_by_id(str(inviter_id))
             inviter_name = 'A team member'
             if inviter_user and inviter_user.email:

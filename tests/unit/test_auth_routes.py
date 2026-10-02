@@ -71,6 +71,7 @@ def test_set_response_cookie(mock_response, mock_request):
         patch('server.utils.url_utils.get_global_config') as get_global_config,
     ):
         get_global_config.return_value = MagicMock(web_url='https://example.com')
+        mock_request.url.hostname = 'example.com'
 
         set_response_cookie(
             request=mock_request,

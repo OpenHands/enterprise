@@ -17,15 +17,23 @@ def get_web_url(request: Request):
     return web_url
 
 
-def get_cookie_domain() -> str | None:
+def get_cookie_domain(request: Request | None = None) -> str | None:
     config = get_global_config()
     web_url = config.web_url
-    # for now just use the full hostname except for staging stacks.
-    return (
+    cookie_domain = (
         URL(web_url).hostname
         if web_url and not (IS_FEATURE_ENV or IS_STAGING_ENV or IS_LOCAL_ENV)
         else None
     )
+    if request is None or cookie_domain is None:
+        return cookie_domain
+
+    request_hostname = request.url.hostname
+    if request_hostname == cookie_domain or (
+        request_hostname and request_hostname.endswith(f'.{cookie_domain}')
+    ):
+        return cookie_domain
+    return None
 
 
 def get_cookie_samesite() -> Literal['lax', 'strict']:

@@ -553,6 +553,8 @@ class OrgMemberResponse(BaseModel):
     role: str
     role_rank: int
     status: str | None
+    is_superadmin: bool = False
+    has_password: bool = False
 
 
 class OrgMemberPage(BaseModel):

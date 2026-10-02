@@ -311,7 +311,7 @@ def _set_oauth_v2_cookie(
         key='openhands_auth',
         value=signed,
         max_age=max_age_seconds,
-        domain=get_cookie_domain(),
+        domain=get_cookie_domain(request),
         secure=web_url.startswith('https'),
         httponly=True,
         samesite=get_cookie_samesite(),

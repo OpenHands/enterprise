@@ -121,6 +121,25 @@ class TestGetCookieDomain:
 
         assert result == 'app.all-hands.dev'
 
+    def test_request_host_mismatch_returns_none(self):
+        """A mismatched request host should use a host-only cookie."""
+        from server.utils.url_utils import get_cookie_domain
+
+        mock_config = MagicMock()
+        mock_config.web_url = 'http://127.0.0.1:3000'
+        mock_request = MagicMock()
+        mock_request.url.hostname = 'localhost'
+
+        with (
+            patch('server.utils.url_utils.get_global_config', return_value=mock_config),
+            patch('server.utils.url_utils.IS_FEATURE_ENV', False),
+            patch('server.utils.url_utils.IS_STAGING_ENV', False),
+            patch('server.utils.url_utils.IS_LOCAL_ENV', False),
+        ):
+            result = get_cookie_domain(mock_request)
+
+        assert result is None
+
     def test_production_without_web_url_returns_none(self):
         """In production without web_url configured, should return None."""
         from server.utils.url_utils import get_cookie_domain
