@@ -471,9 +471,17 @@ class LiteLlmManager:
                         )
                         return None
 
-                    await LiteLlmManager._add_user_to_team(
-                        client, keycloak_user_id, org_id, team_budget
+                    # Provisioning uses this manager; defer to avoid a circular import.
+                    from storage.org_budget_provisioning import (
+                        provision_budget_member,
                     )
+
+                    if not await provision_budget_member(
+                        client, org_id, keycloak_user_id
+                    ):
+                        await LiteLlmManager._add_user_to_team(
+                            client, keycloak_user_id, org_id, team_budget
+                        )
 
                     # We delete the key if it already exists. In environments where multiple
                     # installations are using the same keycloak and litellm instance, this
@@ -1067,6 +1075,39 @@ class LiteLlmManager:
                 },
             )
         response.raise_for_status()
+
+    @staticmethod
+    async def _set_team_blocked(
+        client: httpx.AsyncClient,
+        team_id: str,
+        blocked: bool,
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise RuntimeError('LiteLLM API configuration not found')
+
+        # LiteLLM 1.94 refreshes team auth caches here; /team/block does not.
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/update',
+            json={'team_id': team_id, 'blocked': blocked},
+        )
+        response.raise_for_status()
+
+    @staticmethod
+    async def _block_team(
+        client: httpx.AsyncClient,
+        team_id: str,
+    ) -> None:
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise RuntimeError('LiteLLM API configuration not found')
+
+        # This endpoint needs user_api_key_cache_ttl=0 to block warm keys immediately.
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/team/block', json={'team_id': team_id}
+        )
+        response.raise_for_status()
+        result = response.json()
+        if result.get('team_id') != team_id or result.get('blocked') is not True:
+            raise RuntimeError('LiteLLM did not confirm the team admission block')
 
     @staticmethod
     async def _user_exists(
@@ -1805,6 +1846,69 @@ class LiteLlmManager:
             return True
 
     @staticmethod
+    async def diagnose_state() -> dict[str, Any]:
+        """Cheap LiteLLM state probe for support-bundle triage.
+
+        Intended to be called only when a rotation just yielded a key that
+        failed ``verify_key`` — the goal is to distinguish LiteLLM-side
+        systemic failures (LiteLLM down, master-key drift, DB unreachable)
+        from app-server-side bugs, without adding a per-request cost to the
+        happy path.
+
+        Never raises. Any probe failure is captured as an ``<probe>_error``
+        field so the caller can log it and continue.
+
+        Returned fields:
+        - ``liveliness_status`` (int) or ``liveliness_error`` (str): unauth
+          probe of ``/health/liveliness`` — coarsest "is LiteLLM up".
+        - ``readiness_status`` (int) or ``readiness_error`` (str): unauth
+          probe of ``/health/readiness`` — includes DB reachability.
+        - ``master_key_health_status`` (int) or ``master_key_health_error``
+          (str): probe of ``/health`` with the configured LiteLLM master
+          key. A 200 means the master key still authenticates against
+          LiteLLM; a 401 means the master key configured on this
+          app-server no longer matches the one LiteLLM is running with
+          (typically drift across an upgrade).
+        """
+        out: dict[str, Any] = {}
+        if not LITE_LLM_API_URL:
+            out['config_error'] = 'LITE_LLM_API_URL not configured'
+            return out
+
+        async def _record_probe(
+            prefix: str, path: str, headers: dict[str, str] | None = None
+        ) -> None:
+            """Record a probe outcome as ``<prefix>_status`` on success or
+            ``<prefix>_error`` on failure. Errors are truncated to bound
+            log/response growth on long stack traces.
+            """
+            try:
+                async with httpx.AsyncClient(
+                    verify=httpx_verify_option(),
+                    timeout=KEY_VERIFICATION_TIMEOUT,
+                ) as client:
+                    r = await client.get(
+                        f'{LITE_LLM_API_URL}{path}', headers=headers or {}
+                    )
+                    out[f'{prefix}_status'] = r.status_code
+            except Exception as e:
+                out[f'{prefix}_error'] = f'{type(e).__name__}: {str(e)[:160]}'
+
+        await _record_probe('liveliness', '/health/liveliness')
+        await _record_probe('readiness', '/health/readiness')
+
+        if LITE_LLM_API_KEY:
+            await _record_probe(
+                'master_key_health',
+                '/health',
+                headers={'Authorization': f'Bearer {LITE_LLM_API_KEY}'},
+            )
+        else:
+            out['master_key_health_error'] = 'LITE_LLM_API_KEY not configured'
+
+        return out
+
+    @staticmethod
     async def _get_key_info(
         client: httpx.AsyncClient,
         org_id: str,
@@ -1927,7 +2031,6 @@ class LiteLlmManager:
 
         Returns True if the key is found and valid, False otherwise.
         """
-        found = False
         keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
         if keys is None:
             logger.warning(
@@ -1938,6 +2041,22 @@ class LiteLlmManager:
                 },
             )
             return True
+        return LiteLlmManager._key_belongs_to_user_org(
+            keys,
+            key_value,
+            keycloak_user_id,
+            org_id,
+            openhands_type,
+        )
+
+    @staticmethod
+    def _key_belongs_to_user_org(
+        keys: list[dict],
+        key_value: str,
+        keycloak_user_id: str,
+        org_id: str,
+        openhands_type: bool,
+    ) -> bool:
         for key_info in keys:
             metadata = key_info.get('metadata') or {}
             team_id = key_info.get('team_id')
@@ -1954,8 +2073,7 @@ class LiteLlmManager:
                 if token and key_value.endswith(
                     token
                 ):  # check if this is our current key
-                    found = True
-                    break
+                    return True
             if (
                 not openhands_type
                 and team_id == org_id
@@ -1970,10 +2088,31 @@ class LiteLlmManager:
                 if token and key_value.endswith(
                     token
                 ):  # check if this is our current key
-                    found = True
-                    break
+                    return True
 
-        return found
+        return False
+
+    @staticmethod
+    async def _verify_existing_key_strict(
+        client: httpx.AsyncClient,
+        key_value: str,
+        keycloak_user_id: str,
+        org_id: str,
+        openhands_type: bool = False,
+    ) -> bool:
+        """Verify ownership without treating an unavailable lookup as healthy."""
+        keys = await LiteLlmManager._get_all_keys_for_user(client, keycloak_user_id)
+        if keys is None:
+            raise RuntimeError(
+                'Unable to inspect LiteLLM keys for managed-key ownership repair'
+            )
+        return LiteLlmManager._key_belongs_to_user_org(
+            keys,
+            key_value,
+            keycloak_user_id,
+            org_id,
+            openhands_type,
+        )
 
     @staticmethod
     async def _delete_key_by_alias(
@@ -2008,6 +2147,22 @@ class LiteLlmManager:
                     'text': response.text,
                 },
             )
+
+    @staticmethod
+    async def _delete_key_by_alias_strict(
+        client: httpx.AsyncClient,
+        key_alias: str,
+    ) -> None:
+        """Delete a deterministic alias or fail without rotating the DB row."""
+        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+            raise ValueError('LiteLLM API configuration not found')
+        response = await client.post(
+            f'{LITE_LLM_API_URL}/key/delete',
+            json={'key_aliases': [key_alias]},
+        )
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
 
     @staticmethod
     async def _delete_key(
@@ -2048,6 +2203,8 @@ class LiteLlmManager:
     async def _get_team_members_financial_data(
         client: httpx.AsyncClient,
         team_id: str,
+        *,
+        unkeyed_member_id: str | None = None,
     ) -> dict:
         """
         Get financial data for all members in a team.
@@ -2167,6 +2324,10 @@ class LiteLlmManager:
                 key_count_by_user[user_id] = key_count_by_user.get(user_id, 0) + 1
 
             missing_key_spend = role_only_member_ids - key_count_by_user.keys()
+            if unkeyed_member_id is not None and unkeyed_member_id in missing_key_spend:
+                # Provisioning reads back a new roster member before issuing its first key.
+                role_only_spend[unkeyed_member_id] = 0.0
+                missing_key_spend.remove(unkeyed_member_id)
             if missing_key_spend:
                 raise ValueError(
                     'LiteLLM role-only members have no validated key spend: '
@@ -2240,6 +2401,8 @@ class LiteLlmManager:
     create_team = staticmethod(with_http_client(_create_team))
     get_team = staticmethod(with_http_client(_get_team))
     update_team = staticmethod(with_http_client(_update_team))
+    set_team_blocked = staticmethod(with_http_client(_set_team_blocked))
+    block_team = staticmethod(with_http_client(_block_team))
     user_exists = staticmethod(with_http_client(_user_exists))
     create_user = staticmethod(with_http_client(_create_user))
     get_user = staticmethod(with_http_client(_get_user))
@@ -2253,9 +2416,15 @@ class LiteLlmManager:
     generate_key = staticmethod(with_http_client(_generate_key))
     get_key_info = staticmethod(with_http_client(_get_key_info))
     verify_existing_key = staticmethod(with_http_client(_verify_existing_key))
+    verify_existing_key_strict = staticmethod(
+        with_http_client(_verify_existing_key_strict)
+    )
     delete_key = staticmethod(with_http_client(_delete_key))
     get_user_keys = staticmethod(with_http_client(_get_user_keys))
     delete_key_by_alias = staticmethod(with_http_client(_delete_key_by_alias))
+    delete_key_by_alias_strict = staticmethod(
+        with_http_client(_delete_key_by_alias_strict)
+    )
     update_user_keys = staticmethod(with_http_client(_update_user_keys))
     get_team_members_financial_data = staticmethod(
         with_http_client(_get_team_members_financial_data)

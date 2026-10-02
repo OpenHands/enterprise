@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from storage.user import User
 
 
+MANAGED_LLM_KEY_OWNERSHIP_VERSION = 1
+
+
 class OrgMember(Base):
     """Junction table for organization-member relationships with roles."""
 
@@ -29,6 +32,14 @@ class OrgMember(Base):
     _llm_api_key: Mapped[str] = mapped_column(String, nullable=False)
     _llm_api_key_for_byor: Mapped[str | None] = mapped_column(String, nullable=True)
     has_custom_llm_api_key: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Existing rows are marked stale by migration 161 and reconciled by the
+    # daily maintenance runner. New rows start current because their managed
+    # key is minted for this exact member/org pair.
+    managed_llm_key_ownership_version: Mapped[int] = mapped_column(
+        nullable=False,
+        default=MANAGED_LLM_KEY_OWNERSHIP_VERSION,
+        server_default=str(MANAGED_LLM_KEY_OWNERSHIP_VERSION),
+    )
     agent_settings_diff: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )

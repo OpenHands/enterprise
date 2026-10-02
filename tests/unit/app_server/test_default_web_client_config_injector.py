@@ -724,8 +724,8 @@ class TestGetSlackEnabled:
 
     def test_returns_true_when_all_slack_env_vars_are_configured(self):
         """Slack is enabled only when all required env vars are configured."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -738,12 +738,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is True
+            assert is_slack_configured() is True
 
     def test_returns_false_when_webhooks_are_disabled(self):
         """Slack stays disabled when the webhook feature flag is off."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -756,12 +756,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is False
+            assert is_slack_configured() is False
 
     def test_returns_true_when_webhooks_enabled_is_set_to_1(self):
         """Slack is enabled when SLACK_WEBHOOKS_ENABLED is '1' (older chart format)."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -774,12 +774,12 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is True
+            assert is_slack_configured() is True
 
     def test_returns_false_when_a_required_slack_secret_is_missing(self):
         """Slack stays disabled when one of the required credentials is missing."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_slack_enabled,
+        from openhands.app_server.utils.slack_config import (
+            is_slack_configured,
         )
 
         with patch.dict(
@@ -792,7 +792,7 @@ class TestGetSlackEnabled:
             },
             clear=True,
         ):
-            assert _get_slack_enabled() is False
+            assert is_slack_configured() is False
 
 
 class TestGetEmailEnabled:
@@ -1078,3 +1078,28 @@ class TestResolveFlag:
             injector = mod.DefaultWebClientConfigInjector()
             config = await injector.get_web_client_config()
         assert config.feature_flags.enable_billing is True
+
+
+class TestSurfacedACPProviders:
+    """The web-client config emits exactly the harnesses Cloud offers.
+
+    The SDK registry widens with every harness it adds upstream; a bump must
+    not change what Settings -> Agent renders.
+    """
+
+    def test_config_emits_exactly_the_declared_set(self):
+        from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        injector = DefaultWebClientConfigInjector()
+
+        assert [p.key for p in injector.acp_providers] == list(SURFACED_ACP_PROVIDERS)
+
+    def test_declared_set_is_a_subset_of_the_sdk_registry(self):
+        """An upstream rename or removal breaks loudly; an addition is a no-op."""
+        from openhands.app_server.acp_providers import SURFACED_ACP_PROVIDERS
+        from openhands.sdk.settings import ACP_PROVIDERS
+
+        assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)

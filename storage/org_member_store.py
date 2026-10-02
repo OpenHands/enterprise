@@ -17,9 +17,11 @@ from server.routes.org_models import (
 )
 from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
+from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
+from utils.sql import escape_ilike
 
 _MISSING = object()
 
@@ -178,6 +180,7 @@ class OrgMemberStore:
         """Return kwargs for OrgMember construction (keys match column names)."""
         agent_settings_diff = dict(user_settings.agent_settings or {})
         nested_mcp_config = _pop_mcp_config(agent_settings_diff)
+        strip_unset_condenser_max_tokens(agent_settings_diff)
         mcp_config = (
             nested_mcp_config
             if nested_mcp_config is not _MISSING
@@ -211,7 +214,7 @@ class OrgMemberStore:
 
             if email_filter:
                 query = query.join(User, User.id == OrgMember.user_id).filter(
-                    User.email.ilike(f'%{email_filter}%')
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
                 )
 
             result = await session.execute(query)
@@ -247,7 +250,9 @@ class OrgMemberStore:
 
             # Apply email filter if provided
             if email_filter:
-                query = query.filter(User.email.ilike(f'%{email_filter}%'))
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
+                )
 
             query = query.order_by(OrgMember.user_id).offset(offset).limit(limit + 1)
 

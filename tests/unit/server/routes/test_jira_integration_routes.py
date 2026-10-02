@@ -307,6 +307,47 @@ async def test_get_current_workspace_link_found(
 @pytest.mark.asyncio
 @patch('server.routes.integration.jira.get_user_auth')
 @patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+async def test_get_current_workspace_link_returns_service_account_email_without_secrets(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    """The edit form pre-fills the non-secret email and reflects the stored
+    status; the stored secrets are never returned to the browser."""
+    mock_get_auth.return_value = mock_user_auth
+    mock_user = MagicMock(
+        id=1,
+        keycloak_user_id='test_user_id',
+        jira_workspace_id=10,
+        status='active',
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    mock_workspace = MagicMock(
+        id=10,
+        status='inactive',
+        admin_user_id='test_user_id',
+        jira_cloud_id='test-cloud-id',
+        svc_acc_email='service@test.com',
+        svc_acc_api_key='encrypted-key',
+        webhook_secret='encrypted-secret',
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    mock_workspace.name = 'test-space'
+    mock_manager.integration_store.get_user_by_active_workspace.return_value = mock_user
+    mock_manager.integration_store.get_workspace_by_id.return_value = mock_workspace
+
+    response = await get_current_workspace_link(mock_request)
+
+    assert response.workspace.svc_acc_email == 'service@test.com'
+    assert response.workspace.status == 'inactive'
+    payload = response.workspace.model_dump()
+    assert 'svc_acc_api_key' not in payload
+    assert 'webhook_secret' not in payload
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
 async def test_unlink_workspace_admin(
     mock_manager, mock_get_auth, mock_request, mock_user_auth
 ):
@@ -1619,6 +1660,196 @@ async def test_create_jira_workspace_oauth_disabled_updates_existing_workspace(
     update_kwargs = mock_manager.integration_store.update_workspace.call_args.kwargs
     assert update_kwargs['id'] == 10
     assert update_kwargs['org_id'] == org_id
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', False)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_service_account',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._resolve_jira_cloud_id',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_workspace_update_permissions',
+    new_callable=AsyncMock,
+)
+async def test_create_jira_workspace_oauth_disabled_keeps_stored_secrets_when_omitted(
+    mock_validate_update,
+    mock_resolve_cloud_id,
+    mock_validate_svc,
+    mock_handle_link,
+    mock_manager,
+    mock_get_auth,
+    mock_request,
+    mock_user_auth,
+):
+    """Editing without re-entering secrets keeps the stored webhook secret and
+    API token, validates the changed email against the stored token, and still
+    applies the new active state."""
+    mock_get_auth.return_value = mock_user_auth
+    mock_resolve_cloud_id.return_value = 'cloud-123'
+    existing = MagicMock(
+        id=10, webhook_secret='enc_old-secret', svc_acc_api_key='enc_old-key'
+    )
+    existing.name = 'test.atlassian.net'
+    mock_manager.integration_store.get_workspace_by_name.return_value = existing
+    mock_manager.integration_store.update_workspace.return_value = existing
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        svc_acc_email='new-svc@test.com',
+        is_active=False,
+    )
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        mock_token_manager.decrypt_text.side_effect = lambda x: x.removeprefix('enc_')
+        mock_token_manager.encrypt_text.side_effect = lambda x: f'enc_{x}'
+        await create_jira_workspace(mock_request, workspace_data)
+
+    mock_validate_svc.assert_awaited_once_with(
+        'cloud-123', 'new-svc@test.com', 'old-key'
+    )
+    update_kwargs = mock_manager.integration_store.update_workspace.call_args.kwargs
+    assert update_kwargs['encrypted_webhook_secret'] == 'enc_old-secret'
+    assert update_kwargs['encrypted_svc_acc_api_key'] == 'enc_old-key'
+    assert update_kwargs['svc_acc_email'] == 'new-svc@test.com'
+    assert update_kwargs['status'] == 'inactive'
+    mock_manager.integration_store.create_workspace.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', False)
+@patch(
+    'server.routes.integration.jira._handle_workspace_link_creation',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_service_account',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._resolve_jira_cloud_id',
+    new_callable=AsyncMock,
+)
+@patch(
+    'server.routes.integration.jira._validate_workspace_update_permissions',
+    new_callable=AsyncMock,
+)
+async def test_create_jira_workspace_oauth_disabled_replaces_only_submitted_secret(
+    mock_validate_update,
+    mock_resolve_cloud_id,
+    mock_validate_svc,
+    mock_handle_link,
+    mock_manager,
+    mock_get_auth,
+    mock_request,
+    mock_user_auth,
+):
+    """A newly entered API token replaces the stored one while the omitted
+    webhook secret is preserved."""
+    mock_get_auth.return_value = mock_user_auth
+    mock_resolve_cloud_id.return_value = 'cloud-123'
+    existing = MagicMock(
+        id=10, webhook_secret='enc_old-secret', svc_acc_api_key='enc_old-key'
+    )
+    existing.name = 'test.atlassian.net'
+    mock_manager.integration_store.get_workspace_by_name.return_value = existing
+    mock_manager.integration_store.update_workspace.return_value = existing
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        svc_acc_email='svc@test.com',
+        svc_acc_api_key='new-key',
+        is_active=True,
+    )
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        mock_token_manager.decrypt_text.side_effect = lambda x: x.removeprefix('enc_')
+        mock_token_manager.encrypt_text.side_effect = lambda x: f'enc_{x}'
+        await create_jira_workspace(mock_request, workspace_data)
+
+    mock_validate_svc.assert_awaited_once_with('cloud-123', 'svc@test.com', 'new-key')
+    update_kwargs = mock_manager.integration_store.update_workspace.call_args.kwargs
+    assert update_kwargs['encrypted_webhook_secret'] == 'enc_old-secret'
+    assert update_kwargs['encrypted_svc_acc_api_key'] == 'enc_new-key'
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+async def test_create_jira_workspace_requires_secrets_for_new_workspace(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    """Secrets are only optional when editing: a new workspace without them is
+    rejected before anything is created."""
+    mock_get_auth.return_value = mock_user_auth
+    mock_manager.integration_store.get_workspace_by_name.return_value = None
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        svc_acc_email='svc@test.com',
+        is_active=True,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_jira_workspace(mock_request, workspace_data)
+
+    assert exc_info.value.status_code == 400
+    assert 'required when configuring a new workspace' in exc_info.value.detail
+    mock_manager.integration_store.create_workspace.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira.get_user_auth')
+@patch('server.routes.integration.jira.redis_client')
+@patch('server.routes.integration.jira.jira_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira.JIRA_ENABLE_OAUTH', True)
+@patch(
+    'server.routes.integration.jira._validate_workspace_update_permissions',
+    new_callable=AsyncMock,
+)
+async def test_create_jira_workspace_oauth_session_keeps_stored_secrets_when_omitted(
+    mock_validate_update,
+    mock_manager,
+    mock_redis,
+    mock_get_auth,
+    mock_request,
+    mock_user_auth,
+):
+    """In OAuth mode an edit that omits a secret carries the stored value into
+    the OAuth session, after the admin permission check, so the callback keeps
+    it."""
+    mock_get_auth.return_value = mock_user_auth
+    mock_redis.setex.return_value = True
+    existing = MagicMock(
+        id=10, webhook_secret='enc_old-secret', svc_acc_api_key='enc_old-key'
+    )
+    existing.name = 'test.atlassian.net'
+    mock_manager.integration_store.get_workspace_by_name.return_value = existing
+    workspace_data = JiraWorkspaceCreate(
+        workspace_name='test.atlassian.net',
+        webhook_secret='new-secret',
+        svc_acc_email='svc@test.com',
+        is_active=True,
+    )
+
+    with patch('server.routes.integration.jira.token_manager') as mock_token_manager:
+        mock_token_manager.decrypt_text.side_effect = lambda x: x.removeprefix('enc_')
+        response = await create_jira_workspace(mock_request, workspace_data)
+
+    assert json.loads(response.body)['redirect'] is True
+    mock_validate_update.assert_awaited_once_with('test_user_id', 'test.atlassian.net')
+    session = json.loads(mock_redis.setex.call_args.args[2])
+    assert session['webhook_secret'] == 'new-secret'
+    assert session['svc_acc_api_key'] == 'old-key'
 
 
 @pytest.mark.asyncio

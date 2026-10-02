@@ -33,6 +33,9 @@ async def _conversation(
     *,
     created_at=None,
     agent_kind=None,
+    user_id=USER_ID,
+    last_updated_at=None,
+    parent_conversation_id=None,
 ):
     session.add(
         StoredConversationMetadata(
@@ -44,12 +47,14 @@ async def _conversation(
             completion_tokens=completion,
             created_at=created_at or datetime.now(UTC) - timedelta(days=1),
             agent_kind=agent_kind,
+            last_updated_at=last_updated_at,
+            parent_conversation_id=parent_conversation_id,
         )
     )
     session.add(
         StoredConversationMetadataSaas(
             conversation_id=conversation_id,
-            user_id=USER_ID,
+            user_id=user_id,
             org_id=ORG_ID,
         )
     )
@@ -336,3 +341,173 @@ async def test_usage_stats_follow_spend_time_across_window_boundaries(
     assert sum(row.total_cost for row in stats.model_usage) == pytest.approx(0.75)
     assert sum(row.total_tokens for row in stats.model_usage) == 154
     assert sum(row.conversation_count for row in stats.model_usage) == 3
+
+
+def _cost_event(conversation_id, cost, occurred_at, llm_model='model-a'):
+    return StoredConversationCostEvent(
+        conversation_id=conversation_id,
+        cost_delta=cost,
+        occurred_at=occurred_at,
+        llm_model=llm_model,
+    )
+
+
+@pytest.mark.asyncio
+async def test_my_usage_counts_only_the_callers_spend(async_session_maker, create_user):
+    # Arrange
+    teammate_id = uuid4()
+    create_user(id=teammate_id, current_org_id=ORG_ID)
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        await _conversation(session, 'mine', 'label', 3.0, 0, 0)
+        await _conversation(
+            session, 'theirs', 'label', 500.0, 0, 0, user_id=teammate_id
+        )
+        session.add_all(
+            [
+                _cost_event('mine', 2.0, now - timedelta(hours=1), 'model-a'),
+                _cost_event('mine', 1.0, now - timedelta(days=1), 'model-b'),
+                _cost_event('theirs', 500.0, now - timedelta(hours=1), 'model-c'),
+            ]
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_my_usage_stats(
+            org_id=ORG_ID, user_id=USER_ID, days=7
+        )
+
+    # Assert
+    assert stats.total_spend == pytest.approx(3.0)
+    assert {row.model_name: row.total_cost for row in stats.model_usage} == {
+        'model-a': pytest.approx(2.0),
+        'model-b': pytest.approx(1.0),
+    }
+
+
+@pytest.mark.asyncio
+async def test_my_usage_reports_one_entry_per_day_ending_today(async_session_maker):
+    # Arrange
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        await _conversation(session, 'mine', 'label', 2.0, 0, 0)
+        session.add(_cost_event('mine', 2.0, now - timedelta(days=2)))
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_my_usage_stats(
+            org_id=ORG_ID, user_id=USER_ID, days=7
+        )
+
+    # Assert
+    daily = {row.date: row.cost for row in stats.daily_spend}
+    assert [row.date for row in stats.daily_spend] == [
+        (now - timedelta(days=offset)).strftime('%Y-%m-%d')
+        for offset in range(6, -1, -1)
+    ]
+    assert daily[(now - timedelta(days=2)).strftime('%Y-%m-%d')] == pytest.approx(2.0)
+    assert daily[now.strftime('%Y-%m-%d')] == 0
+
+
+@pytest.mark.asyncio
+async def test_my_usage_compares_against_the_equally_long_previous_period(
+    async_session_maker,
+):
+    # Arrange
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        await _conversation(
+            session, 'mine', 'label', 5.0, 0, 0, created_at=now - timedelta(days=20)
+        )
+        session.add_all(
+            [
+                _cost_event('mine', 1.0, now - timedelta(days=1)),
+                _cost_event('mine', 4.0, now - timedelta(days=9)),
+            ]
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_my_usage_stats(
+            org_id=ORG_ID, user_id=USER_ID, days=7
+        )
+
+    # Assert
+    assert stats.total_spend == pytest.approx(1.0)
+    assert stats.previous_period_spend == pytest.approx(4.0)
+
+
+@pytest.mark.asyncio
+async def test_my_usage_counts_conversations_that_predate_the_cost_ledger(
+    async_session_maker,
+):
+    # Arrange: a cost but no ledger rows, as for conversations older than the ledger
+    async with async_session_maker() as session:
+        await _conversation(session, 'legacy', 'old-model', 0.55, 0, 0)
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_my_usage_stats(
+            org_id=ORG_ID, user_id=USER_ID, days=7
+        )
+
+    # Assert
+    assert stats.total_spend == pytest.approx(0.55)
+
+
+@pytest.mark.asyncio
+async def test_my_usage_lists_own_six_most_recent_top_level_conversations(
+    async_session_maker, create_user
+):
+    # Arrange
+    teammate_id = uuid4()
+    create_user(id=teammate_id, current_org_id=ORG_ID)
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        for age in range(7):
+            await _conversation(
+                session,
+                f'mine-{age}',
+                'label',
+                float(age),
+                0,
+                0,
+                last_updated_at=now - timedelta(hours=age + 1),
+            )
+        await _conversation(
+            session,
+            'mine-sub',
+            'label',
+            1.0,
+            0,
+            0,
+            last_updated_at=now,
+            parent_conversation_id='mine-0',
+        )
+        await _conversation(
+            session,
+            'theirs',
+            'label',
+            9.0,
+            0,
+            0,
+            user_id=teammate_id,
+            last_updated_at=now,
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_my_usage_stats(
+            org_id=ORG_ID, user_id=USER_ID, days=7
+        )
+
+    # Assert
+    assert [row.conversation_id for row in stats.recent_usage] == [
+        f'mine-{age}' for age in range(6)
+    ]
+    assert stats.recent_usage[1].accumulated_cost == pytest.approx(1.0)
