@@ -2060,6 +2060,31 @@ class TestLiveStatusAppConversationService:
         revalidated = Agent.model_validate(updated.model_dump(mode='json'))
         assert revalidated.static_system_message == 'You are a helper.'
 
+    @pytest.mark.parametrize('agent_type', [AgentType.DEFAULT, AgentType.PLAN])
+    def test_apply_server_overrides_keeps_profile_system_prompt(self, agent_type):
+        llm = LLM(model='gpt-4', api_key='k')
+        agent = Agent(llm=llm, tools=[], system_prompt='You triage issues.')
+
+        updated = self.service._apply_server_agent_overrides(
+            agent, agent_type, uuid4(), 'user-1'
+        )
+
+        assert updated.system_prompt == 'You triage issues.'
+        assert updated.system_prompt_filename == 'system_prompt.j2'
+        revalidated = Agent.model_validate(updated.model_dump(mode='json'))
+        assert revalidated.static_system_message == 'You triage issues.'
+
+    def test_apply_server_overrides_request_prompt_beats_profile_prompt(self):
+        llm = LLM(model='gpt-4', api_key='k')
+        agent = Agent(llm=llm, tools=[], system_prompt='You triage issues.')
+
+        updated = self.service._apply_server_agent_overrides(
+            agent, AgentType.PLAN, uuid4(), 'user-1', system_prompt='You review PRs.'
+        )
+
+        assert updated.system_prompt == 'You review PRs.'
+        assert updated.system_prompt_filename == 'system_prompt.j2'
+
     def test_apply_server_overrides_plan_without_inline_prompt_keeps_template(self):
         llm = LLM(model='gpt-4', api_key='k')
         agent = Agent(llm=llm, tools=[])
