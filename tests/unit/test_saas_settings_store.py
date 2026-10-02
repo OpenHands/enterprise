@@ -2828,6 +2828,34 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     assert active.base_url == 'http://x:4000'
 
 
+@pytest.mark.asyncio
+async def test_member_diff_without_tools_keeps_the_org_tool_selection(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        assert org is not None
+        org.agent_settings = {'tools': [{'name': 'terminal', 'params': {}}]}
+        admin = next(
+            m for m in org.org_members if m.user_id == fixture['admin_user_id']
+        )
+        admin.agent_settings_diff = {
+            'schema_version': 1,
+            'llm': {'model': 'openhands/claude-opus-4-5-20251101'},
+        }
+        session.commit()
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert [tool.name for tool in loaded.agent_settings.tools or []] == ['terminal']
+
+
 async def _seed_admin_diff(session_maker, fixture, diff):
     from storage.org import Org
 

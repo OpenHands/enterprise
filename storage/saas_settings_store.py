@@ -417,6 +417,12 @@ class SaasSettingsStore(SettingsStore):
             and member_agent_settings_diff.get('tools') == []
         ):
             del member_agent_settings_diff['tools']
+        # A stale version would re-run the tool-switch fold over the org's tools.
+        if not any(
+            key in member_agent_settings_diff
+            for key in ('tools', *RETIRED_TOOL_SWITCHES)
+        ):
+            member_agent_settings_diff.pop('schema_version', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
