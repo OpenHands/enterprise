@@ -140,4 +140,37 @@ describe("OrgLlmProfilesManager", () => {
       screen.getByTestId("provider-connections-manager"),
     ).toBeInTheDocument();
   });
+
+  it("groups profiles under their linked provider connection's name", () => {
+    profilesState.data = {
+      profiles: [
+        {
+          name: "gpt",
+          model: "openai/gpt-4o",
+          base_url: null,
+          api_key_set: true,
+          provider_connection_id: "conn-1",
+        },
+        {
+          name: "sonnet",
+          model: "openhands/claude-sonnet-4-5-20250929",
+          base_url: null,
+          api_key_set: true,
+        },
+      ],
+      active_profile: "gpt",
+    };
+    connectionsState.data = [{ id: "conn-1", display_name: "OpenAI key" }];
+
+    renderManager({ canManage: true });
+
+    const headers = screen.getAllByTestId("profile-group-header");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toHaveTextContent("OpenAI key");
+    expect(headers[1]).toHaveTextContent("SETTINGS$PROFILES_UNGROUPED");
+
+    const rows = screen.getAllByTestId("profile-row");
+    expect(rows[0]).toHaveTextContent("gpt");
+    expect(rows[1]).toHaveTextContent("sonnet");
+  });
 });

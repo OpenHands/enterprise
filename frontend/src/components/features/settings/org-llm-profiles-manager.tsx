@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { OrgRenameProfileModal } from "#/components/features/settings/org-rename-profile-modal";
@@ -7,6 +7,7 @@ import { ProfilesBody } from "#/components/features/settings/profiles-body";
 import { ProviderConnectionsManager } from "#/components/features/settings/provider-connections/provider-connections-manager";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { useOrgLlmProfiles } from "#/hooks/query/use-org-llm-profiles";
+import { useProviderConnections } from "#/hooks/query/use-provider-connections";
 import { useActivateOrgLlmProfile } from "#/hooks/mutation/use-org-llm-profile-mutations";
 import { mutateWithToast } from "#/utils/mutate-with-toast";
 import { extractErrorMessage } from "#/utils/extract-error-message";
@@ -35,6 +36,10 @@ export function OrgLlmProfilesManager({
   const { t } = useTranslation();
   const { data, isLoading, error } = useOrgLlmProfiles(orgId);
   const activateProfile = useActivateOrgLlmProfile(orgId);
+  // Connection display names drive the profile grouping. Fetched regardless of
+  // `showProviderConnections` — profiles stay grouped even for members who
+  // can't manage the connections themselves.
+  const { data: connections } = useProviderConnections(orgId);
 
   const [profileToRename, setProfileToRename] =
     useState<LlmProfileSummary | null>(null);
@@ -43,6 +48,14 @@ export function OrgLlmProfilesManager({
 
   const profiles = data?.profiles ?? [];
   const active = data?.active_profile ?? null;
+
+  const connectionNamesById = useMemo(
+    () =>
+      Object.fromEntries(
+        (connections ?? []).map((c) => [c.id, c.display_name]),
+      ),
+    [connections],
+  );
 
   const handleActivate = async (name: string) => {
     await mutateWithToast(activateProfile, name, {
@@ -80,6 +93,7 @@ export function OrgLlmProfilesManager({
           loadError={error ?? null}
           profiles={profiles}
           active={active}
+          connectionNamesById={connectionNamesById}
           onActivate={handleActivate}
           onEdit={handleEdit}
           onRename={setProfileToRename}

@@ -27199,6 +27199,23 @@
     "tr": "Henüz kayıtlı profil yok. LLM sayfasında bir model yapılandırın — otomatik olarak buraya kaydedilecektir.",
     "uk": "Ще немає збережених профілів. Налаштуйте модель на сторінці LLM — вона буде автоматично збережена тут."
   },
+  "SETTINGS$PROFILES_UNGROUPED": {
+    "en": "Not linked",
+    "ja": "未リンク",
+    "zh-CN": "未关联",
+    "zh-TW": "未關聯",
+    "ko-KR": "연결 안 됨",
+    "no": "Ikke koblet",
+    "ar": "غير مرتبط",
+    "de": "Nicht verknüpft",
+    "fr": "Non lié",
+    "it": "Non collegato",
+    "pt": "Não vinculado",
+    "es": "Sin vincular",
+    "ca": "No enllaçat",
+    "tr": "Bağlı değil",
+    "uk": "Не пов'язано"
+  },
   "SETTINGS$PROFILES_LOAD_ERROR": {
     "en": "Failed to load profiles. Please try again.",
     "ja": "プロファイルの読み込みに失敗しました。もう一度お試しください。",
