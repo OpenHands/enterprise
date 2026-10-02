@@ -4980,23 +4980,6 @@
     "uk": "API ключі",
     "ca": "Claus d'API"
   },
-  "SETTINGS$NAV_AGENT_PROFILES": {
-    "en": "Agent profiles",
-    "ja": "エージェントプロファイル",
-    "zh-CN": "代理配置文件",
-    "zh-TW": "代理設定檔",
-    "ko-KR": "에이전트 프로필",
-    "no": "Agentprofiler",
-    "it": "Profili agente",
-    "pt": "Perfis de agente",
-    "es": "Perfiles de agente",
-    "ar": "ملفات تعريف الوكيل",
-    "fr": "Profils d'agent",
-    "tr": "Ajan profilleri",
-    "de": "Agentenprofile",
-    "uk": "Профілі агента",
-    "ca": "Perfils d'agent"
-  },
   "SETTINGS$NAV_ORGANIZATION": {
     "en": "Organization",
     "ja": "組織",
@@ -5132,23 +5115,6 @@
     "de": "Wählen Sie zwischen dem integrierten OpenHands-Agenten und einem externen ACP-Subprozess.",
     "uk": "Оберіть між вбудованим агентом OpenHands і зовнішнім підпроцесом ACP.",
     "ca": "Tria entre l'agent OpenHands integrat i un subprocés ACP extern."
-  },
-  "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE": {
-    "en": "Create and manage reusable agent setups.",
-    "ja": "再利用可能なエージェント設定を作成・管理します。",
-    "zh-CN": "创建和管理可重用的代理设置。",
-    "zh-TW": "建立與管理可重複使用的代理設定。",
-    "ko-KR": "재사용 가능한 에이전트 설정을 만들고 관리합니다.",
-    "no": "Opprett og administrer gjenbrukbare agentoppsett.",
-    "it": "Crea e gestisci configurazioni di agente riutilizzabili.",
-    "pt": "Crie e gerencie configurações de agente reutilizáveis.",
-    "es": "Crea y gestiona configuraciones de agente reutilizables.",
-    "ar": "أنشئ وأدر إعدادات الوكيل القابلة لإعادة الاستخدام.",
-    "fr": "Créez et gérez des configurations d'agent réutilisables.",
-    "tr": "Yeniden kullanılabilir ajan kurulumları oluşturun ve yönetin.",
-    "de": "Erstellen und verwalten Sie wiederverwendbare Agenten-Setups.",
-    "uk": "Створюйте та керуйте багаторазовими налаштуваннями агента.",
-    "ca": "Crea i gestiona configuracions d'agent reutilitzables."
   },
   "SETTINGS$PAGE_LLM_SUBLINE": {
     "en": "Model, API key, and options for the agent.",
