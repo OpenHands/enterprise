@@ -110,42 +110,50 @@ export function OrgSelector({
             navigate("/settings");
           }
         }}
+        startContent={
+          onSuperAdmin && showSuperAdmin ? (
+            <ShieldCheck
+              className="ml-3 size-4 shrink-0 text-[#FFFF8B]"
+              strokeWidth={1.75}
+              aria-hidden
+            />
+          ) : null
+        }
+        inputClassName={onSuperAdmin && showSuperAdmin ? "pl-2" : undefined}
         placeholder={t(I18nKey.ORG$SELECT_ORGANIZATION_PLACEHOLDER)}
         loading={isLoading || isSwitching}
         options={options}
+        header={
+          showSuperAdmin ? (
+            <Link
+              to={SUPER_ADMIN_PATHS.root}
+              data-testid="org-selector-super-admin"
+              className={cn(
+                dropdownMenuRowClassName,
+                "font-medium text-white hover:bg-[#FFFF8B]/10 hover:text-white",
+                onSuperAdmin && "bg-[#FFFF8B]/10",
+              )}
+            >
+              <ShieldCheck
+                className="size-4 shrink-0 text-[#FFFF8B]"
+                strokeWidth={1.75}
+                aria-hidden
+              />
+              {superAdminLabel}
+            </Link>
+          ) : null
+        }
         footer={
-          showSuperAdmin || canCreateOrganization ? (
-            <>
-              {showSuperAdmin ? (
-                <Link
-                  to={SUPER_ADMIN_PATHS.root}
-                  data-testid="org-selector-super-admin"
-                  className={cn(
-                    dropdownMenuRowClassName,
-                    "font-medium text-[#FFFF8B] hover:bg-[#FFFF8B]/10 hover:text-[#FFFF8B]",
-                    onSuperAdmin && "bg-[#FFFF8B]/10",
-                  )}
-                >
-                  <ShieldCheck
-                    className="size-4 shrink-0"
-                    strokeWidth={1.75}
-                    aria-hidden
-                  />
-                  {superAdminLabel}
-                </Link>
-              ) : null}
-              {canCreateOrganization ? (
-                <button
-                  type="button"
-                  data-testid="org-selector-create"
-                  className={dropdownMenuRowClassName}
-                  onClick={() => setCreateOrganizationModalIsOpen(true)}
-                >
-                  <Plus className="size-4 shrink-0" aria-hidden />
-                  {t(I18nKey.ORG$CREATE_ORGANIZATION)}
-                </button>
-              ) : null}
-            </>
+          canCreateOrganization ? (
+            <button
+              type="button"
+              data-testid="org-selector-create"
+              className={dropdownMenuRowClassName}
+              onClick={() => setCreateOrganizationModalIsOpen(true)}
+            >
+              <Plus className="size-4 shrink-0" aria-hidden />
+              {t(I18nKey.ORG$CREATE_ORGANIZATION)}
+            </button>
           ) : null
         }
       />

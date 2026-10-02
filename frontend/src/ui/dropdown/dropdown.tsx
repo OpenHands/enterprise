@@ -29,6 +29,10 @@ interface DropdownProps {
   menuMinWidth?: number;
   /** When false, the trigger is a select (no typeahead filter). */
   searchable?: boolean;
+  /** Icon or mark shown inside the closed trigger, before the value. */
+  startContent?: React.ReactNode;
+  /** Action row pinned above the option list. */
+  header?: React.ReactNode;
   /** Action row pinned under the option list. */
   footer?: React.ReactNode;
 }
@@ -48,6 +52,8 @@ export function Dropdown({
   showSelectionCheck = false,
   menuMinWidth,
   searchable = true,
+  startContent,
+  header,
   footer,
 }: DropdownProps) {
   const [inputValue, setInputValue] = useState(defaultValue?.label ?? "");
@@ -190,6 +196,7 @@ export function Dropdown({
         )}
         onClick={handleShellClick}
       >
+        {startContent}
         <DropdownInput
           placeholder={placeholder}
           isDisabled={isDisabled}
@@ -215,7 +222,9 @@ export function Dropdown({
           emptyMessage={emptyMessage}
           getMenuProps={getMenuProps}
           getItemProps={getItemProps}
+          header={header}
           footer={footer}
+          onHeaderClick={closeMenu}
           onFooterClick={closeMenu}
           style={isOpen ? menuStyle : undefined}
           showSelectionCheck={showSelectionCheck}

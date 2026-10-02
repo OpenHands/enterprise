@@ -38,14 +38,7 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that the table structure is rendered
-    const table = screen.getByRole("table");
-    expect(table).toBeInTheDocument();
-    expect(table).toHaveClass("w-full");
-    expect(table).toHaveClass("table-fixed");
-    expect(table).toHaveStyle({ minWidth: "27.5rem" });
-    expect(screen.getByTestId("table-scroll")).toBeInTheDocument();
-    expect(screen.getByTestId("table-scroll-fade-right")).toBeInTheDocument();
+    expect(screen.getByTestId("mcp-server-list")).toBeInTheDocument();
 
     // Check that server items are rendered
     const serverItems = screen.getAllByTestId("mcp-server-item");
@@ -128,8 +121,12 @@ describe("MCPServerList", () => {
       />,
     );
 
-    expect(screen.getByText("linear")).toBeInTheDocument();
-    expect(screen.getByText("notion")).toBeInTheDocument();
+    expect(screen.getByText("Linear")).toBeInTheDocument();
+    expect(screen.getByText("Notion")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("integration-provider-icon-linear"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("mcp-server-icon-notion")).toBeInTheDocument();
     expect(screen.getByTitle("https://mcp.linear.app/sse")).toHaveTextContent(
       "https://mcp.linear.app/sse",
     );
@@ -182,12 +179,10 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that the server details show the server name as fallback
-    // Both name and details columns will have the same value, so we expect 2 elements
-    const fallbackElements = screen.getAllByTitle("fallback-server");
-    expect(fallbackElements).toHaveLength(2);
-
-    const fallbackTextElements = screen.getAllByText("fallback-server");
-    expect(fallbackTextElements).toHaveLength(2);
+    expect(screen.getByTitle("fallback-server")).toBeInTheDocument();
+    expect(screen.getByText("Fallback Server")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
   });
 });

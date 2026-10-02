@@ -20,7 +20,9 @@ interface DropdownMenuProps {
     index: number;
     className?: string;
   }) => object;
+  header?: ReactNode;
   footer?: ReactNode;
+  onHeaderClick?: () => void;
   onFooterClick?: () => void;
   /** Fixed coordinates when the menu is portaled out of its trigger. */
   style?: CSSProperties;
@@ -35,7 +37,9 @@ export function DropdownMenu({
   emptyMessage,
   getMenuProps,
   getItemProps,
+  header,
   footer,
+  onHeaderClick,
   onFooterClick,
   style,
   showSelectionCheck = false,
@@ -51,6 +55,17 @@ export function DropdownMenu({
         !isOpen && "hidden",
       )}
     >
+      {isOpen && header ? (
+        <div
+          className="mb-1 shrink-0 border-b border-[var(--oh-border)] pb-1"
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
+          onClick={onHeaderClick}
+        >
+          {header}
+        </div>
+      ) : null}
       <ul
         {...getMenuProps({
           className: cn(
