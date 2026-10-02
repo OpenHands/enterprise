@@ -81,7 +81,6 @@ class OrgAppSettingsStore:
             Org: The validated (and potentially updated) organization
         """
         if org.org_version < ORG_SETTINGS_VERSION:
-            org.org_version = ORG_SETTINGS_VERSION
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
@@ -95,6 +94,9 @@ class OrgAppSettingsStore:
                     },
                 )
             await self.db_session.flush()
+            if await OrgStore._repair_free_team_models_for_upgrade(org):
+                org.org_version = ORG_SETTINGS_VERSION
+                await self.db_session.flush()
             await self.db_session.refresh(org)
 
         return org
