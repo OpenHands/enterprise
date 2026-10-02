@@ -266,3 +266,28 @@ async def test_create_work_item_comment_service_hook_posts_expected_payload():
     assert kwargs['params']['publisherInputs'] == {}
     assert kwargs['params']['consumerInputs']['basicAuthUsername'] == 'openhands'
     assert kwargs['params']['consumerInputs']['basicAuthPassword'] == 'secret'
+
+
+@pytest.mark.asyncio
+async def test_membership_discovery_ignores_default_but_legacy_installations_preserve_it():
+    service = SaaSAzureDevOpsService(
+        token=SecretStr('token'), base_domain='configured-org'
+    )
+    with patch.object(service, '_make_request', new_callable=AsyncMock) as request:
+        request.side_effect = [
+            ({'id': 'member-id'}, {}),
+            (
+                {
+                    'value': [
+                        {'accountName': 'Alpha'},
+                        {'accountName': 'Beta'},
+                        {'accountId': 'no-name'},
+                    ]
+                },
+                {},
+            ),
+        ]
+        assert await service.get_installations() == ['configured-org']
+        request.assert_not_awaited()
+        assert await service.get_accessible_organizations() == ['Alpha', 'Beta']
+        assert 'memberId=member-id' in request.await_args.args[0]
