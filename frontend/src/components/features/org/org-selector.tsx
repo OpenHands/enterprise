@@ -1,8 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom";
-import { Plus } from "lucide-react";
+import { Plus, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useSwitchOrganization } from "#/hooks/mutation/use-switch-organization";
 import { useConfig } from "#/hooks/query/use-config";
@@ -14,6 +14,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { Organization } from "#/types/org";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import { dropdownMenuRowClassName } from "#/utils/dropdown-classes";
+import { cn } from "#/utils/utils";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { CreateOrganizationModal } from "./create-organization-modal";
 
@@ -67,21 +68,11 @@ export function OrgSelector({
     return null;
   }
 
-  const orgOptions =
+  const options =
     organizations?.map((org) => ({
       value: org.id,
       label: getOrgDisplayName(org),
     })) || [];
-  const options = showSuperAdmin
-    ? [
-        ...orgOptions,
-        {
-          value: SUPER_ADMIN_OPTION_VALUE,
-          label: superAdminLabel,
-          divider: orgOptions.length > 0,
-        },
-      ]
-    : orgOptions;
   const selectedValue =
     onSuperAdmin && showSuperAdmin
       ? { label: superAdminLabel, value: SUPER_ADMIN_OPTION_VALUE }
@@ -123,16 +114,38 @@ export function OrgSelector({
         loading={isLoading || isSwitching}
         options={options}
         footer={
-          canCreateOrganization ? (
-            <button
-              type="button"
-              data-testid="org-selector-create"
-              className={dropdownMenuRowClassName}
-              onClick={() => setCreateOrganizationModalIsOpen(true)}
-            >
-              <Plus className="size-4 shrink-0" aria-hidden />
-              {t(I18nKey.ORG$CREATE_ORGANIZATION)}
-            </button>
+          showSuperAdmin || canCreateOrganization ? (
+            <>
+              {showSuperAdmin ? (
+                <Link
+                  to={SUPER_ADMIN_PATHS.root}
+                  data-testid="org-selector-super-admin"
+                  className={cn(
+                    dropdownMenuRowClassName,
+                    "font-medium text-[#FFFF8B] hover:bg-[#FFFF8B]/10 hover:text-[#FFFF8B]",
+                    onSuperAdmin && "bg-[#FFFF8B]/10",
+                  )}
+                >
+                  <ShieldCheck
+                    className="size-4 shrink-0"
+                    strokeWidth={1.75}
+                    aria-hidden
+                  />
+                  {superAdminLabel}
+                </Link>
+              ) : null}
+              {canCreateOrganization ? (
+                <button
+                  type="button"
+                  data-testid="org-selector-create"
+                  className={dropdownMenuRowClassName}
+                  onClick={() => setCreateOrganizationModalIsOpen(true)}
+                >
+                  <Plus className="size-4 shrink-0" aria-hidden />
+                  {t(I18nKey.ORG$CREATE_ORGANIZATION)}
+                </button>
+              ) : null}
+            </>
           ) : null
         }
       />
