@@ -31,8 +31,10 @@ async def process_pr(pr: OpenhandsPR) -> bool:
     """
     Process a single PR to enrich its data.
 
-    Returns True when this run claimed the PR and enriched it, False when
-    another run had already processed it or it is out of attempts.
+    Returns True when this run claimed the PR, False when another run had
+    already processed it or it is out of attempts. A claim means this run owns
+    the enrichment; an overlapping run that loses the stats write still returns
+    True from here.
     """
 
     claimed = await store.claim_pr_for_processing(pr.repo_id, pr.pr_number, MAX_RETRIES)
