@@ -24,9 +24,16 @@ export function clientLoader({ request }: Route.ClientLoaderArgs) {
  * redirects there. `location.replace` keeps `/` out of history; a router
  * redirect would bounce through the SPA's own `canvas/*` route instead.
  */
+function getAgentCanvasRedirectUrl(location: Location): string {
+  const url = new URL(getAgentCanvasBannerLink(location).url);
+  url.search = location.search;
+  url.hash = location.hash;
+  return url.toString();
+}
+
 export default function RootLanding() {
   React.useEffect(() => {
-    window.location.replace(getAgentCanvasBannerLink(window.location).url);
+    window.location.replace(getAgentCanvasRedirectUrl(window.location));
   }, []);
 
   return (
