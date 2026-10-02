@@ -12,6 +12,7 @@ import {
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
 import { cn } from "#/utils/utils";
+import "#/routes/super-admin-install-welcome.css";
 
 const STARTER_STEPS: {
   id: string;
@@ -46,8 +47,7 @@ const STARTER_STEPS: {
 export function SuperAdminGroupSetupModal() {
   const { t } = useTranslation();
   const [hoverId, setHoverId] = useState<string | null>(null);
-  const [pinnedId, setPinnedId] = useState<string | null>(null);
-  const openId = hoverId ?? pinnedId;
+  const [pinnedId, setPinnedId] = useState<string | null>("llm");
   const nux = useSyncExternalStore(
     subscribeSuperAdminNux,
     readSuperAdminNux,
@@ -62,7 +62,7 @@ export function SuperAdminGroupSetupModal() {
   const welcomeLine = t(I18nKey.SA_NUX$STARTER_LETS_GO);
   const welcomeBrand = "OpenHands";
   const welcomeRest = welcomeLine.startsWith(welcomeBrand)
-    ? welcomeLine.slice(welcomeBrand.length)
+    ? welcomeLine.slice(welcomeBrand.length).trimStart()
     : null;
 
   return (
@@ -96,24 +96,32 @@ export function SuperAdminGroupSetupModal() {
         <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2">
           <div className="relative size-20">
             <div className="absolute left-1/2 top-1/2 origin-center -translate-x-1/2 -translate-y-1/2 scale-50">
-              <InteractiveOpenHandsIcon
-                label={t(I18nKey.BRANDING$OPENHANDS_LOGO)}
-              />
+              <div className="oh-starter-icon-pulse-in">
+                <InteractiveOpenHandsIcon
+                  label={t(I18nKey.BRANDING$OPENHANDS_LOGO)}
+                />
+              </div>
             </div>
           </div>
           <p
-            className="px-6 text-center text-base font-medium tracking-tight"
+            className="px-6 text-center text-2xl leading-tight tracking-tight"
             style={{
               color: "#fff",
               textShadow: "0 2px 6px rgba(0,0,0,0.95), 0 8px 18px rgba(0,0,0,0.8)",
             }}
           >
             {welcomeRest == null ? (
-              welcomeLine
+              <span className="oh-welcome-blur-in oh-welcome-blur-in--delay-1 inline-block font-medium">
+                {welcomeLine}
+              </span>
             ) : (
               <>
-                <span className="font-bold">{welcomeBrand}</span>
-                {welcomeRest}
+                <span className="oh-welcome-blur-in oh-welcome-blur-in--delay-1 inline-block font-bold">
+                  {welcomeBrand}
+                </span>{" "}
+                <span className="oh-welcome-blur-in oh-welcome-blur-in--delay-2 inline-block font-medium">
+                  {welcomeRest}
+                </span>
               </>
             )}
           </p>
@@ -132,12 +140,20 @@ export function SuperAdminGroupSetupModal() {
         data-testid="sa-nux-starter-steps"
       >
         {STARTER_STEPS.map((step, index) => {
-          const open = openId === step.id;
+          const open = step.id === pinnedId || step.id === hoverId;
           const panelId = `sa-nux-starter-panel-${step.id}`;
           return (
             <li
               key={step.id}
               className="border-b border-[var(--oh-border)] last:border-b-0"
+              style={
+                open
+                  ? {
+                      background:
+                        "linear-gradient(to bottom, #2e2e2e 0%, #202020 100%)",
+                    }
+                  : undefined
+              }
               onMouseEnter={() => {
                 setHoverId(step.id);
                 setPinnedId((current) => current ?? step.id);

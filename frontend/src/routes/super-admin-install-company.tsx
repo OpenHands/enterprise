@@ -155,6 +155,18 @@ export default function SuperAdminInstallCompany() {
         </div>
       </div>
 
+      <p
+        className={cn(
+          "w-full rounded-md border px-3 py-2 text-left text-sm leading-5",
+          hasKey
+            ? "border-[var(--oh-border)] text-[var(--oh-muted)]"
+            : "border-white text-white",
+        )}
+        data-testid="sa-nux-trial-without-key"
+      >
+        {t(I18nKey.SA_NUX$TRIAL_WITHOUT_KEY)}
+      </p>
+
       <section
         className="flex w-full flex-col gap-3 rounded-lg border border-[var(--oh-border)] bg-base-secondary p-4 text-left"
         data-testid="sa-nux-plans"
@@ -190,17 +202,6 @@ export default function SuperAdminInstallCompany() {
           </BrandButton>
         </div>
         <div className="flex flex-col gap-2">
-          <p
-            className={cn(
-              "rounded-md border px-3 py-2 text-sm leading-5",
-              hasKey
-                ? "border-[var(--oh-border)] text-[var(--oh-muted)]"
-                : "border-white text-white",
-            )}
-            data-testid="sa-nux-trial-without-key"
-          >
-            {t(I18nKey.SA_NUX$TRIAL_WITHOUT_KEY)}
-          </p>
           <div
             className={cn(
               "flex flex-col gap-3 rounded-md border px-3 py-3",
