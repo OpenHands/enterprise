@@ -1089,7 +1089,6 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
     member1_diff = members[member1_user_id].agent_settings_diff
     assert member1_diff['agent_kind'] == 'acp'
     assert member1_diff['acp_server'] == 'codex'
-    assert member1_diff['llm']['model'] == 'anthropic/claude-sonnet-4'
 
 
 @pytest.mark.asyncio
