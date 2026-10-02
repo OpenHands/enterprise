@@ -13,6 +13,8 @@ import {
 } from "#/components/features/super-admin/super-admin-setup";
 import {
   markSuperAdminNuxAccountDone,
+  markSuperAdminNuxCompanyDone,
+  markSuperAdminNuxOrgDone,
   markSuperAdminNuxTosDone,
   markSuperAdminNuxWelcomeDone,
   resetSuperAdminNux,
@@ -111,6 +113,8 @@ describe("SuperAdminLayout", () => {
     markSuperAdminNuxWelcomeDone();
     markSuperAdminNuxTosDone();
     markSuperAdminNuxAccountDone({ name: "Neo", email: "neo@example.com" });
+    markSuperAdminNuxCompanyDone({ name: "Acme", hasLicenseKey: false });
+    markSuperAdminNuxOrgDone({ name: "Acme Corp" });
   });
 
   it("renders the standalone Super Admin shell without Org Settings", () => {
@@ -141,7 +145,10 @@ describe("SuperAdminLayout", () => {
     expect(
       screen.queryByText("SETTINGS$ORG_SETTINGS_HEADER"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByTestId("org-selector")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("org-selector").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByDisplayValue("SUPER_ADMIN$ORG_MENU").length,
+    ).toBeGreaterThan(0);
   });
 
   it("opens the Setup guide from the sidebar widget", async () => {

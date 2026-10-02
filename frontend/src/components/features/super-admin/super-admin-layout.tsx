@@ -8,6 +8,7 @@ import {
 } from "react-router";
 import { useTranslation } from "react-i18next";
 import { FaChevronLeft } from "react-icons/fa6";
+import { OrgSelector } from "#/components/features/org/org-selector";
 import { SettingsNavLink } from "#/components/features/settings/settings-nav-link";
 import { SettingsNavUserMenu } from "#/components/features/settings/settings-nav-user-menu";
 import { InstanceLogoMark } from "#/components/features/super-admin/instance-logo-mark";
@@ -94,6 +95,9 @@ function SuperAdminSidebar({ onItemClick }: { onItemClick?: () => void }) {
       )}
     >
       <SuperAdminNavBrand className="shrink-0 pl-2.5 pr-2.5" />
+      <div className="mb-2 shrink-0 pr-2.5">
+        <OrgSelector alwaysVisible />
+      </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-0.5 custom-scrollbar-always">
         <SuperAdminSetupNav onNavigate={onItemClick} className="pr-2.5" />
         {SUPER_ADMIN_NAV_ITEMS.map((item) => (
@@ -234,6 +238,7 @@ export function SuperAdminLayout() {
               <CloseIcon width={32} height={32} />
             </button>
           </div>
+          <OrgSelector alwaysVisible />
           <SuperAdminSetupNav onNavigate={() => setIsMobileMenuOpen(false)} />
           {SUPER_ADMIN_NAV_ITEMS.map((item) => (
             <SettingsNavLink

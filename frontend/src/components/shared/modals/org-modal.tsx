@@ -20,6 +20,7 @@ interface OrgModalProps {
   primaryButtonType?: "button" | "submit";
   primaryButtonTestId?: string;
   secondaryButtonTestId?: string;
+  secondaryButtonClassName?: string;
   ariaLabel?: string;
   asForm?: boolean;
   formAction?: (formData: FormData) => void;
@@ -44,6 +45,7 @@ export function OrgModal({
   primaryButtonType = "button",
   primaryButtonTestId,
   secondaryButtonTestId,
+  secondaryButtonClassName,
   ariaLabel,
   asForm = false,
   formAction,
@@ -92,6 +94,7 @@ export function OrgModal({
         primaryType={primaryButtonType}
         primaryTestId={primaryButtonTestId}
         secondaryTestId={secondaryButtonTestId}
+        secondaryClassName={secondaryButtonClassName}
         hideSecondaryButton={hideSecondaryButton}
         isPrimaryDisabled={isPrimaryDisabled}
       />

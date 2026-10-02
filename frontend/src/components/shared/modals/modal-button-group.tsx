@@ -13,6 +13,7 @@ interface ModalButtonGroupProps {
   primaryType?: "button" | "submit";
   primaryTestId?: string;
   secondaryTestId?: string;
+  secondaryClassName?: string;
   // For single-action modals where the primary button already closes; avoids a
   // redundant second "Close" button next to it.
   hideSecondaryButton?: boolean;
@@ -28,6 +29,7 @@ export function ModalButtonGroup({
   primaryType = "button",
   primaryTestId,
   secondaryTestId,
+  secondaryClassName,
   hideSecondaryButton = false,
   isPrimaryDisabled = false,
 }: ModalButtonGroupProps) {
@@ -42,6 +44,7 @@ export function ModalButtonGroup({
           variant="secondary"
           onClick={onSecondaryClick}
           testId={secondaryTestId}
+          className={secondaryClassName}
           isDisabled={isLoading}
         >
           {closeText}
