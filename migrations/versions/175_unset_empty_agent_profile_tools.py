@@ -3,8 +3,8 @@
 ``[]`` selects no tools while ``null`` selects the standard set; existing
 ``[]`` rows were saved meaning the standard set.
 
-Revision ID: 174
-Revises: 173
+Revision ID: 175
+Revises: 174
 Create Date: 2026-09-30 00:00:00.000000
 """
 
@@ -15,8 +15,8 @@ from typing import Any, Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '174'
-down_revision: str | None = '173'
+revision: str = '175'
+down_revision: str | None = '174'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
