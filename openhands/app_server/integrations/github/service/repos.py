@@ -234,7 +234,7 @@ class GitHubReposMixin(GitHubMixinBase):
             params['q'] = f'in:name {org}/{repo_name} is:public'
 
         # Handle private repository searches
-        if not public and '/' in query:
+        if not public and '/' in query and not query.startswith('/'):
             org, repo_query = query.split('/', 1)
             query_with_user = f'org:{org} in:name {repo_query}'
             params['q'] = query_with_user
