@@ -6,6 +6,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { AxiosError } from "axios";
 import { Budgets } from "#/components/features/budgets/budgets";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 vi.mock("#/api/organization-service/organization-service.api", () => ({
   organizationService: {
@@ -654,6 +655,27 @@ describe("Budgets", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
   });
 
+  it("updates the default budget with the entered amount", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+    const input = screen.getByLabelText("Default amount");
+    await user.clear(input);
+    await user.type(input, "300");
+
+    await user.click(screen.getByRole("button", { name: "Update default" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { default_user_monthly_limit: 300 },
+        }),
+      );
+    });
+  });
+
   it("describes the default budget as applying to users without an override", async () => {
     const user = userEvent.setup();
     await renderBudgets();
@@ -677,5 +699,77 @@ describe("Budgets", () => {
     expect(
       screen.queryByText(/keep their current budgets/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("confirms a successful organization budget save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful default budget save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Update default" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful user override save", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("confirms a successful user override removal", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    await user.click(screen.getByLabelText("Remove override for User One"));
+
+    await waitFor(() =>
+      expect(successToastSpy).toHaveBeenCalledWith("SETTINGS$SAVED"),
+    );
+  });
+
+  it("does not confirm a budget save that failed", async () => {
+    const user = userEvent.setup();
+    const successToastSpy = vi.spyOn(ToastHandlers, "displaySuccessToast");
+    vi.mocked(organizationService.updateBudgetSettings).mockRejectedValueOnce(
+      new Error("503"),
+    );
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2),
+    );
+    expect(successToastSpy).not.toHaveBeenCalled();
   });
 });

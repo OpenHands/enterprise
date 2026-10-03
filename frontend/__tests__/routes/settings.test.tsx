@@ -252,6 +252,23 @@ describe("Settings Screen", () => {
     });
   });
 
+  it("should not link to the Agent Profiles library in the saas navbar", async () => {
+    // Arrange
+    mockQueryClient.clear();
+    mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+    seedActiveUser({ role: "member" });
+
+    // Act
+    renderSettingsScreen();
+
+    // Assert
+    const navbar = await screen.findByTestId("settings-navbar");
+    await within(navbar).findByText("SETTINGS$AGENT");
+    expect(
+      navbar.querySelector('a[href="/canvas/settings/agents"]'),
+    ).not.toBeInTheDocument();
+  });
+
   it("should not be able to access saas-only routes in oss mode", async () => {
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
     // @ts-expect-error - only return app mode

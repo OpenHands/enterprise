@@ -11,7 +11,7 @@ You don't need to do this unless the user asks you to, or if you're trying to ru
 
 ## Running OpenHands with OpenHands:
 To run the full application to debug issues (`make local-db` starts a PostgreSQL container and migrates it;
-the app never migrates on startup):
+the app does not migrate on startup unless `RUN_MIGRATIONS_ON_STARTUP=true`):
 ```bash
 export INSTALL_DOCKER=0
 export RUNTIME=local
