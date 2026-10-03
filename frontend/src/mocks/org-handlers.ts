@@ -692,6 +692,7 @@ export const ORG_HANDLERS = [
       name?: string;
       contact_name?: string;
       contact_email?: string;
+      owner_user_id?: string;
     };
     const name = body.name?.trim();
     const contactName = body.contact_name?.trim();
@@ -721,15 +722,22 @@ export const ORG_HANDLERS = [
       contact_email: contactEmail,
     };
     orgs.set(orgId, org);
-    ORGS_AND_MEMBERS[orgId] = [currentUserMembership(orgId, "owner")];
+    // An org owned by someone else does not include the current user.
+    const isOwnedByOtherUser =
+      !!body.owner_user_id && body.owner_user_id !== MOCK_ME.user_id;
+    ORGS_AND_MEMBERS[orgId] = isOwnedByOtherUser
+      ? []
+      : [currentUserMembership(orgId, "owner")];
     registerMockAdminOrg({
       id: orgId,
       name,
       contact_email: contactEmail,
       contact_name: contactName,
     });
-    // Switch into the new org so org-defaults / setup tour can continue.
-    mockCurrentOrgId = orgId;
+    if (!isOwnedByOtherUser) {
+      // Switch into the new org so org-defaults / setup tour can continue.
+      mockCurrentOrgId = orgId;
+    }
     return HttpResponse.json(org, { status: 201 });
   }),
 

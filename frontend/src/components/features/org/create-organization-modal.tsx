@@ -3,8 +3,11 @@ import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { useCreateOrganization } from "#/hooks/mutation/use-create-organization";
+import { useMe } from "#/hooks/query/use-me";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
+import { Dropdown } from "#/ui/dropdown/dropdown";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -24,11 +27,31 @@ export function CreateOrganizationModal({
 }: CreateOrganizationModalProps) {
   const { t } = useTranslation();
   const { data } = useOrganizations();
+  const { data: me } = useMe();
+  const { data: users } = useSuperAdminUsers();
   const { mutateAsync: createOrganization, isPending } =
     useCreateOrganization();
   const [name, setName] = useState("");
   const [contactName, setContactName] = useState(contactNameProp ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
+  const [ownerUserId, setOwnerUserId] = useState<string>();
+
+  // The caller owns the new organization unless they pick another user.
+  const meOption = me
+    ? {
+        value: me.user_id,
+        label: t(I18nKey.ORG$OWNER_ME, { email: me.email }),
+      }
+    : undefined;
+  const ownerOptions = [
+    ...(meOption ? [meOption] : []),
+    ...(users ?? [])
+      .filter((user) => user.user_id !== me?.user_id)
+      .map((user) => ({
+        value: user.user_id,
+        label: user.email || user.name || user.user_id,
+      })),
+  ];
 
   const inferredContactName =
     contactNameProp?.trim() ||
@@ -55,12 +78,11 @@ export function CreateOrganizationModal({
     try {
       // Await create (+ org switch in the mutation) before signaling the tour,
       // so the next stop can mount on org-defaults for the new org.
-      // The create-org API still stores these as contact fields. In the
-      // product they are the organization owner: the first person in the group.
       await createOrganization({
         name: trimmedName,
         contact_name: trimmedContactName,
         contact_email: trimmedEmail,
+        owner_user_id: ownerUserId ?? me?.user_id,
       });
       displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
       setSuperAdminSetupStepComplete("create-org", true);
@@ -89,20 +111,30 @@ export function CreateOrganizationModal({
           placeholder={t(I18nKey.ORG$ORGANIZATION_NAME_PLACEHOLDER)}
           onChange={setName}
         />
+        <label className="flex flex-col gap-2.5 w-full min-w-0">
+          <span className="text-sm">{t(I18nKey.ORG$OWNER)}</span>
+          <Dropdown
+            key={meOption?.value}
+            testId="create-organization-owner"
+            options={ownerOptions}
+            defaultValue={meOption}
+            onChange={(option) => setOwnerUserId(option?.value)}
+          />
+        </label>
         <SettingsInput
           testId="create-organization-contact-name"
           type="text"
-          label={t(I18nKey.ORG$OWNER_NAME)}
+          label={t(I18nKey.ORG$CONTACT_NAME)}
           value={contactName}
-          placeholder={t(I18nKey.ORG$OWNER_NAME_PLACEHOLDER)}
+          placeholder={t(I18nKey.ORG$CONTACT_NAME_PLACEHOLDER)}
           onChange={setContactName}
         />
         <SettingsInput
           testId="create-organization-contact-email"
           type="email"
-          label={t(I18nKey.ORG$OWNER_EMAIL)}
+          label={t(I18nKey.ORG$CONTACT_EMAIL)}
           value={email}
-          placeholder={t(I18nKey.ORG$OWNER_EMAIL_PLACEHOLDER)}
+          placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
           onChange={setEmail}
         />
       </div>

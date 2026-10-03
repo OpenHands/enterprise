@@ -192,6 +192,146 @@ async def test_create_org_success(mock_app, grant_create_organization):
 
 
 @pytest.mark.asyncio
+async def test_create_org_with_caller_as_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request that names the caller as the owner
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with the caller as its owner
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': TEST_USER_ID,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='John Doe',
+            contact_email='john@example.com',
+            user_id=TEST_USER_ID,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_existing_user_as_owner(
+    mock_app, grant_create_organization
+):
+    """
+    GIVEN: A create request that names another existing user as the owner
+    WHEN: POST /api/organizations is called
+    THEN: That user becomes the owner and the caller is not added
+    """
+    # Arrange
+    owner_user_id = str(uuid.uuid4())
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Jane Owner',
+        contact_email='jane@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Jane Owner',
+        'contact_email': 'jane@example.com',
+        'owner_user_id': owner_user_id,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='Jane Owner',
+            contact_email='jane@example.com',
+            user_id=owner_user_id,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_unknown_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request whose owner does not match an existing user
+    WHEN: POST /api/organizations is called
+    THEN: 404 is returned and no organization is created
+    """
+    # Arrange
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': str(uuid.uuid4()),
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(),
+        ) as create_org_mock,
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        create_org_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_org_invalid_email(mock_app, grant_create_organization):
     """
     GIVEN: Request with invalid email format
