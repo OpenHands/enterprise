@@ -31,6 +31,12 @@ export function useSuperAdminViewOrg() {
     setPendingOrg({ orgId, orgName });
   };
 
+  // A personal workspace shares its owner's user id, so only its owner may
+  // open it. Super Admins cannot join another user's personal workspace.
+  const canViewOrg = (orgId: string) =>
+    orgId === meQuery.data?.user_id ||
+    !usersQuery.data?.some((user) => user.user_id === orgId);
+
   const dismissGrant = () => setPendingOrg(null);
 
   const confirmGrant = () => {
@@ -44,6 +50,7 @@ export function useSuperAdminViewOrg() {
 
   return {
     viewOrg,
+    canViewOrg,
     pendingOrg,
     dismissGrant,
     confirmGrant,

@@ -163,6 +163,13 @@ def _org_status(org: Org) -> OrgStatus:
     return 'suspended' if value == 'suspended' else 'active'
 
 
+async def _is_personal_workspace(org_id: UUID) -> bool:
+    """A personal workspace shares its id with the user who owns it."""
+    async with a_session_maker() as session:
+        result = await session.execute(select(User.id).where(User.id == org_id))
+        return result.scalar_one_or_none() is not None
+
+
 @instance_admin_router.get(
     '/organizations',
     response_model=AdminOrgListResponse,
@@ -225,6 +232,12 @@ async def update_admin_organization_status(
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminOrgResponse:
     """Suspend or resume an organization. Requires ``MANAGE_SUPER_ADMINS``."""
+    if body.status == 'suspended' and await _is_personal_workspace(org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot suspend a personal workspace',
+        )
+
     try:
         org = await OrgStore.set_org_status(org_id, body.status)
     except ValueError as exc:
@@ -320,6 +333,12 @@ async def update_admin_user_status(
     Sets every ``org_member.status`` for the user to ``inactive`` (suspend)
     or ``active`` (resume). Requires ``MANAGE_SUPER_ADMINS``.
     """
+    if body.status == 'inactive' and str(user_id) == caller_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot suspend your own account',
+        )
+
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
         raise HTTPException(
@@ -358,6 +377,12 @@ async def remove_admin_user_from_orgs(
     still sign in. Refuses with ``409`` if the user is the last owner of any
     team org. Requires ``MANAGE_SUPER_ADMINS``.
     """
+    if str(user_id) == caller_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot remove yourself from every team organization',
+        )
+
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
         raise HTTPException(
@@ -406,11 +431,14 @@ async def remove_admin_user_from_orgs(
 async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
     """Remove the user from the selected team orgs, keeping the last owner."""
     selected = set(org_ids)
+    if user.id in selected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot remove a user from their personal workspace',
+        )
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
     team_memberships = [
-        (member, org)
-        for member, org in membership_pairs
-        if org.id in selected and org.id != user.id
+        (member, org) for member, org in membership_pairs if org.id in selected
     ]
     blocked: list[str] = []
     for member, org in team_memberships:
@@ -480,7 +508,7 @@ async def _add_selected_memberships(
             detail=f'Role {role_name!r} not found',
         )
     for org_id in org_ids:
-        if org_id == user.id:
+        if await _is_personal_workspace(org_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail='Cannot add users to a personal workspace',
@@ -579,7 +607,14 @@ async def delete_admin_organization(
 
     Uses the same cleanup path as owner deletion, but authorization is the
     instance-level ``MANAGE_SUPER_ADMINS`` permission rather than org ownership.
+    Personal workspaces are refused: deleting one can delete its user.
     """
+    if await _is_personal_workspace(org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot delete a personal workspace',
+        )
+
     logger.info(
         'admin:organizations:delete',
         extra={'caller_user_id': user_id, 'org_id': str(org_id)},

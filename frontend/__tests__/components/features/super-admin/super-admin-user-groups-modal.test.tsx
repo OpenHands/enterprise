@@ -108,6 +108,55 @@ describe("SuperAdminUserGroupsModal", () => {
     });
   });
 
+  it("does not let a super admin suspend or delete their own account", () => {
+    // Act
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        isSelf
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Assert
+    expect(screen.getByTestId("super-admin-user-suspend")).toBeDisabled();
+    expect(screen.getByTestId("super-admin-user-delete")).toBeDisabled();
+  });
+
+  it("does not list the user's personal workspace among their groups", () => {
+    // Arrange
+    const withPersonalWorkspace: SuperAdminUserRow = {
+      ...user,
+      memberships: [
+        {
+          orgId: user.id,
+          orgName: `user_${user.id}_org`,
+          role: "owner",
+          status: "active",
+        },
+        ...user.memberships,
+      ],
+    };
+
+    // Act
+    render(
+      <SuperAdminUserGroupsModal
+        user={withPersonalWorkspace}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Assert
+    expect(
+      screen.queryByTestId(`super-admin-group-current-${user.id}`),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("super-admin-group-current-2"),
+    ).toBeInTheDocument();
+  });
+
   it("suspends and removes only the checked groups", async () => {
     const events = userEvent.setup();
     render(

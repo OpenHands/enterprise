@@ -300,10 +300,12 @@ export function SuperAdminUserMemberships({
   memberships,
   field,
   onOrgClick,
+  canOpenOrg,
 }: {
   memberships: SuperAdminMembership[];
   field: "orgName" | "role";
   onOrgClick?: (orgId: string, orgName: string) => void;
+  canOpenOrg?: (orgId: string) => boolean;
 }) {
   const { t } = useTranslation();
 
@@ -316,7 +318,7 @@ export function SuperAdminUserMemberships({
         >
           {field === "orgName" ? (
             <span className="flex min-w-0 items-center gap-2">
-              {onOrgClick ? (
+              {onOrgClick && (canOpenOrg?.(membership.orgId) ?? true) ? (
                 <button
                   type="button"
                   data-testid={`super-admin-user-org-${membership.orgId}`}

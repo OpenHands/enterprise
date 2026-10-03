@@ -479,10 +479,13 @@ function AccountStatus({ status }: { status: string }) {
 export function SuperAdminUserGroupsModal({
   user,
   organizations,
+  isSelf = false,
   onClose,
 }: {
   user: SuperAdminUserRow;
   organizations: { id: string; name: string }[];
+  /** The signed-in Super Admin is managing their own account. */
+  isSelf?: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -505,16 +508,20 @@ export function SuperAdminUserGroupsModal({
   const memberIds = new Set(
     user.memberships.map((membership) => membership.orgId),
   );
-  const currentItems: ChecklistItem[] = user.memberships.map((membership) => {
-    const suspended =
-      membership.status === "inactive" || membership.status === "suspended";
-    return {
-      id: membership.orgId,
-      label: membership.orgName,
-      role: membership.role,
-      suspended,
-    };
-  });
+  // The user's personal workspace shares their id. It is not a group the
+  // dashboard manages, so it gets no role, suspend, or remove controls.
+  const currentItems: ChecklistItem[] = user.memberships
+    .filter((membership) => membership.orgId !== user.id)
+    .map((membership) => {
+      const suspended =
+        membership.status === "inactive" || membership.status === "suspended";
+      return {
+        id: membership.orgId,
+        label: membership.orgName,
+        role: membership.role,
+        suspended,
+      };
+    });
   const addItems: ChecklistItem[] = organizations
     .filter((org) => !memberIds.has(org.id))
     .map((org) => ({ id: org.id, label: org.name }));
@@ -815,7 +822,7 @@ export function SuperAdminUserGroupsModal({
                         type="button"
                         variant="secondary"
                         testId="super-admin-user-suspend"
-                        isDisabled={busy}
+                        isDisabled={busy || isSelf}
                         onClick={() => setAccountStatus("inactive")}
                       >
                         {t(I18nKey.SUPER_ADMIN$SUSPEND_ACCOUNT)}
@@ -825,7 +832,7 @@ export function SuperAdminUserGroupsModal({
                       type="button"
                       variant="danger"
                       testId="super-admin-user-delete"
-                      isDisabled={busy}
+                      isDisabled={busy || isSelf}
                       onClick={() => setConfirmDelete(true)}
                     >
                       {t(I18nKey.SUPER_ADMIN$DELETE_USER)}
