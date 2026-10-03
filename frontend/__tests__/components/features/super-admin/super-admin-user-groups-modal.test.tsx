@@ -144,6 +144,7 @@ describe("SuperAdminUserGroupsModal", () => {
       "super-admin-groups-bulk",
       "SUPER_ADMIN$REMOVE",
     );
+    await events.click(screen.getByTestId("super-admin-groups-remove-confirm"));
     expect(mutate).toHaveBeenLastCalledWith(
       {
         userId: "99",
@@ -152,6 +153,89 @@ describe("SuperAdminUserGroupsModal", () => {
       },
       expect.any(Object),
     );
+  });
+
+  it("asks before removing the checked groups", async () => {
+    // Arrange
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+    await events.click(screen.getByTestId("super-admin-group-current-2"));
+
+    // Act
+    await chooseDropdownOption(
+      events,
+      "super-admin-groups-bulk",
+      "SUPER_ADMIN$REMOVE",
+    );
+
+    // Assert
+    expect(
+      screen.getByText("SUPER_ADMIN$REMOVE_MEMBERSHIPS_CONFIRM"),
+    ).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("asks before removing a single group from its role menu", async () => {
+    // Arrange
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+
+    // Act
+    await events.click(
+      screen
+        .getByTestId("super-admin-group-current-role-2")
+        .querySelector("input") as HTMLInputElement,
+    );
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2-remove"),
+    );
+
+    // Assert
+    expect(
+      screen.getByText("SUPER_ADMIN$REMOVE_MEMBERSHIPS_CONFIRM"),
+    ).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the group when the removal is cancelled", async () => {
+    // Arrange
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+
+    // Act
+    await events.click(
+      screen
+        .getByTestId("super-admin-group-current-role-2")
+        .querySelector("input") as HTMLInputElement,
+    );
+    await events.click(
+      screen.getByTestId("super-admin-group-current-role-2-remove"),
+    );
+    await events.click(screen.getByTestId("super-admin-groups-remove-cancel"));
+
+    // Assert
+    expect(
+      screen.queryByText("SUPER_ADMIN$REMOVE_MEMBERSHIPS_CONFIRM"),
+    ).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it("changes one membership role from its dropdown", async () => {
@@ -229,6 +313,7 @@ describe("SuperAdminUserGroupsModal", () => {
     await events.click(
       screen.getByTestId("super-admin-group-current-role-2-remove"),
     );
+    await events.click(screen.getByTestId("super-admin-groups-remove-confirm"));
     expect(mutate).toHaveBeenLastCalledWith(
       {
         userId: "99",
