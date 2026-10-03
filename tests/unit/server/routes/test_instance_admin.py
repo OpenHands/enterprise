@@ -432,6 +432,58 @@ async def test_remove_user_rejects_self(mock_app, grant_manage_super_admins):
 
 
 @pytest.mark.asyncio
+async def test_remove_user_resets_current_org_and_leaves_litellm_team(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    user = MagicMock()
+    user.id = user_id
+    user.current_org_id = org.id
+    member = MagicMock()
+    member.role_id = 1
+    role = MagicMock()
+    role.name = 'member'
+    update_current_org = AsyncMock()
+    remove_from_team = AsyncMock()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            'server.services.org_member_service.UserStore.update_current_org',
+            update_current_org,
+        ),
+        patch(
+            'server.services.org_member_service.LiteLlmManager.remove_user_from_team',
+            remove_from_team,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{user_id}')
+
+    assert resp.status_code == 200
+    update_current_org.assert_awaited_once_with(str(user_id), user_id)
+    remove_from_team.assert_awaited_once_with(str(user_id), str(org.id))
+
+
+@pytest.mark.asyncio
 async def test_update_user_groups_suspends_selected_orgs(
     mock_app, grant_manage_super_admins
 ):
@@ -522,6 +574,64 @@ async def test_update_user_groups_remove_blocks_last_owner(
             )
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_remove_resets_current_org_and_leaves_litellm_team(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    user = MagicMock()
+    user.id = user_id
+    user.email = 'alex@acme.example'
+    user.git_user_name = 'Alex'
+    user.current_org_id = org.id
+    member = MagicMock()
+    member.role_id = 1
+    member.status = 'active'
+    role = MagicMock()
+    role.name = 'member'
+    update_current_org = AsyncMock()
+    remove_from_team = AsyncMock()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            'server.services.org_member_service.UserStore.update_current_org',
+            update_current_org,
+        ),
+        patch(
+            'server.services.org_member_service.LiteLlmManager.remove_user_from_team',
+            remove_from_team,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'remove', 'org_ids': [str(org.id)]},
+            )
+
+    assert resp.status_code == 200
+    update_current_org.assert_awaited_once_with(str(user_id), user_id)
+    remove_from_team.assert_awaited_once_with(str(user_id), str(org.id))
 
 
 @pytest.mark.asyncio
