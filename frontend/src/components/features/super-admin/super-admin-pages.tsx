@@ -22,6 +22,7 @@ import {
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { HelpLink } from "#/ui/help-link";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_PATHS,
@@ -857,18 +858,20 @@ export function SuperAdminAdmins() {
   );
 }
 
+const SAML_SSO_DOCS_URL =
+  "https://docs.openhands.dev/enterprise/integrations/saml-sso";
+
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const emailEnabled = Boolean(config?.email_enabled);
+  const personalWorkspacesHidden =
+    config?.feature_flags?.hide_personal_workspaces === true;
   const { visible: setupVisible } = useSuperAdminSetup();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
       <InstanceLogoSetting />
-      <p className="text-sm text-[var(--oh-muted)]">
-        {t(I18nKey.SUPER_ADMIN$INSTANCE_HINT)}
-      </p>
       <div className="flex flex-col gap-1">
         <SettingsSwitch
           isToggled={emailEnabled}
@@ -882,12 +885,32 @@ export function SuperAdminInstance() {
         </p>
       </div>
       <div className="flex flex-col gap-1">
-        <SettingsSwitch isToggled={false} isDisabled onToggle={() => undefined}>
+        <SettingsSwitch
+          isToggled={!personalWorkspacesHidden}
+          isDisabled
+          onToggle={() => undefined}
+        >
           {t(I18nKey.SUPER_ADMIN$INSTANCE_AUTO_ORG)}
         </SettingsSwitch>
         <p className="text-xs text-[var(--oh-muted)]">
           {t(I18nKey.SUPER_ADMIN$INSTANCE_AUTO_ORG_HINT)}
         </p>
+      </div>
+      <div
+        className="flex flex-col gap-1"
+        data-testid="super-admin-instance-sso"
+      >
+        <p className="text-sm text-white">
+          {t(I18nKey.SUPER_ADMIN$INSTANCE_SSO)}
+        </p>
+        <HelpLink
+          testId="super-admin-instance-sso-docs"
+          text={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_HINT)}
+          linkText={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_DOCS)}
+          href={SAML_SSO_DOCS_URL}
+          linkColor="white"
+          className="text-[var(--oh-muted)]"
+        />
       </div>
       <SettingsSwitch
         testId="super-admin-instance-setup-guide"

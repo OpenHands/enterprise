@@ -139,7 +139,7 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
       checklistId: "optional-saml",
       route: SUPER_ADMIN_PATHS.instance,
       anchor:
-        '[data-testid="super-admin-instance-setup-guide"], [data-testid="super-admin-instance"]',
+        '[data-testid="super-admin-instance-sso"], [data-testid="super-admin-instance"]',
       alsoHighlight: NAV.instance,
       title: "Optional: SAML / instance",
       body: "Harden the installation with SSO and other instance settings when you are ready.",
