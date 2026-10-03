@@ -409,7 +409,7 @@ async def remove_admin_user_from_orgs(
 
     removed: list[str] = []
     for _, org in team_memberships:
-        ok = await OrgMemberStore.remove_user_from_org(org.id, user_id)
+        ok = await OrgMemberService.remove_member_with_cleanup(org.id, user_id)
         if ok:
             removed.append(str(org.id))
 
@@ -452,7 +452,7 @@ async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
             detail=('Cannot remove user: last owner of ' + ', '.join(sorted(blocked))),
         )
     for _, org in team_memberships:
-        await OrgMemberStore.remove_user_from_org(org.id, user.id)
+        await OrgMemberService.remove_member_with_cleanup(org.id, user.id)
 
 
 async def _set_selected_roles(
