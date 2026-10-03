@@ -438,7 +438,8 @@ export function SuperAdminOrgChecklist({
                   onAction={(action) => onMembershipAction?.(item.id, action)}
                 />
               </div>
-            ) : item.meta ? (
+            ) : null}
+            {!(item.role && onRoleChange) && item.meta ? (
               <span className="shrink-0 text-xs capitalize text-[var(--oh-muted)]">
                 {item.meta}
               </span>

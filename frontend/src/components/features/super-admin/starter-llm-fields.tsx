@@ -211,7 +211,8 @@ export function StarterLlmFields() {
   const [apiKey, setApiKey] = useState("");
   const models = PROVIDERS.find((item) => item.key === provider)?.models ?? [];
   const allSelected =
-    models.length > 0 && models.every((item) => modelsSelected.includes(item.key));
+    models.length > 0 &&
+    models.every((item) => modelsSelected.includes(item.key));
 
   const toggleModel = (key: string) => {
     setModelsSelected((current) =>

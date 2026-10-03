@@ -703,7 +703,7 @@ function ScaledFrame({ src, title }: { src: string; title: string }) {
     }
     let cancelled = false;
     let release: (() => void) | undefined;
-    void acquireFrame().then((done) => {
+    acquireFrame().then((done) => {
       if (cancelled) {
         done();
         return;

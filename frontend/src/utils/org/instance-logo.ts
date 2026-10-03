@@ -11,7 +11,7 @@ function parseStored(): string | null {
   }
   try {
     const raw = window.localStorage.getItem(INSTANCE_LOGO_STORAGE_KEY);
-    return raw && raw.startsWith("data:image/") ? raw : null;
+    return raw?.startsWith("data:image/") ? raw : null;
   } catch {
     return null;
   }

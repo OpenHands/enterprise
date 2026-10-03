@@ -2317,6 +2317,16 @@ async def test_switch_org_success():
             new_callable=AsyncMock,
             return_value=mock_updated_user,
         ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         # Act
         result = await OrgService.switch_org(user_id, org_id)
@@ -2374,6 +2384,11 @@ async def test_switch_org_user_not_member():
             return_value=mock_org,
         ),
         patch('storage.org_service.OrgService.is_org_member', return_value=False),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         # Act & Assert
         with pytest.raises(OrgAuthorizationError) as exc_info:
@@ -2408,6 +2423,16 @@ async def test_switch_org_user_not_found():
         patch('storage.org_service.OrgService.is_org_member', return_value=True),
         patch(
             'storage.org_service.UserStore.update_current_org',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
             new_callable=AsyncMock,
             return_value=None,
         ),

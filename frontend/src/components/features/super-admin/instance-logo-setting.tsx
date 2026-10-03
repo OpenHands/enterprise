@@ -15,9 +15,10 @@ export function InstanceLogoSetting() {
   const [error, setError] = useState<string | null>(null);
 
   const onFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !file.type.startsWith("image/")) {
+    const input = event.target;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file?.type.startsWith("image/")) {
       return;
     }
     try {

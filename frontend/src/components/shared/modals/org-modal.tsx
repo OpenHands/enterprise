@@ -85,19 +85,19 @@ export function OrgModal({
         {children}
       </div>
       {hideButtonGroup ? null : (
-      <ModalButtonGroup
-        primaryText={primaryButtonText}
-        secondaryText={secondaryButtonText}
-        onPrimaryClick={onPrimaryClick}
-        onSecondaryClick={onClose}
-        isLoading={isLoading}
-        primaryType={primaryButtonType}
-        primaryTestId={primaryButtonTestId}
-        secondaryTestId={secondaryButtonTestId}
-        secondaryClassName={secondaryButtonClassName}
-        hideSecondaryButton={hideSecondaryButton}
-        isPrimaryDisabled={isPrimaryDisabled}
-      />
+        <ModalButtonGroup
+          primaryText={primaryButtonText}
+          secondaryText={secondaryButtonText}
+          onPrimaryClick={onPrimaryClick}
+          onSecondaryClick={onClose}
+          isLoading={isLoading}
+          primaryType={primaryButtonType}
+          primaryTestId={primaryButtonTestId}
+          secondaryTestId={secondaryButtonTestId}
+          secondaryClassName={secondaryButtonClassName}
+          hideSecondaryButton={hideSecondaryButton}
+          isPrimaryDisabled={isPrimaryDisabled}
+        />
       )}
     </>
   );

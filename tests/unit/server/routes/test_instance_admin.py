@@ -26,11 +26,6 @@ def mock_app():
 
 @pytest.fixture
 def grant_manage_super_admins():
-    """Make ``MANAGE_SUPER_ADMINS`` succeed by faking a ``superadmin`` role.
-
-    ``require_permission`` also looks the target org up to apply the
-    suspension rule; stub that lookup so no database is needed here.
-    """
     superadmin = MagicMock()
     superadmin.name = 'admin'
     with (
@@ -41,10 +36,6 @@ def grant_manage_super_admins():
         patch(
             'server.auth.authorization.get_user_super_role',
             AsyncMock(return_value=superadmin),
-        ),
-        patch(
-            'storage.org_store.OrgStore.get_org_by_id',
-            AsyncMock(return_value=None),
         ),
     ):
         yield

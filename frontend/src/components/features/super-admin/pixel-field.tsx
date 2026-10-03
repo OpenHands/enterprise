@@ -80,15 +80,14 @@ export function PixelField() {
           const ring = Math.exp(-((dist / 28 - wave) ** 2) / 0.35);
           const atten = Math.exp(-age) * Math.exp(-dist / 220);
           const feed = field + ring * atten * 1.4;
-          if (feed <= 0.52) {
-            continue;
+          if (feed > 0.52) {
+            const edge = Math.min(x, y, width - x, height - y) / 28;
+            const alpha = Math.min(1, Math.max(0, feed)) * Math.min(1, edge);
+            context.fillStyle = `rgba(72, 72, 72, ${0.7 + alpha * 0.3})`;
+            context.beginPath();
+            context.arc(x, y, 1.7 + Math.min(feed, 1) * 0.8, 0, Math.PI * 2);
+            context.fill();
           }
-          const edge = Math.min(x, y, width - x, height - y) / 28;
-          const alpha = Math.min(1, Math.max(0, feed)) * Math.min(1, edge);
-          context.fillStyle = `rgba(72, 72, 72, ${0.7 + alpha * 0.3})`;
-          context.beginPath();
-          context.arc(x, y, 1.7 + Math.min(feed, 1) * 0.8, 0, Math.PI * 2);
-          context.fill();
         }
       }
 

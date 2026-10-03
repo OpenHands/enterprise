@@ -1,5 +1,11 @@
 import { useState, useSyncExternalStore } from "react";
-import { Bot, ChevronDown, Layers, Workflow, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  ChevronDown,
+  Layers,
+  Workflow,
+  type LucideIcon,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { InteractiveOpenHandsIcon } from "#/components/features/setup/interactive-openhands-icon";
 import { OrgModal } from "#/components/shared/modals/org-modal";
@@ -82,9 +88,7 @@ export function SuperAdminGroupSetupModal({
       secondaryButtonText={t(I18nKey.SA_NUX$STARTER_SKIP)}
       secondaryButtonTestId="sa-nux-starter-skip"
       secondaryButtonClassName="bg-transparent hover:bg-transparent hover:border-white"
-      onPrimaryClick={
-        forceOpen ? undefined : clearSuperAdminNuxStarterModal
-      }
+      onPrimaryClick={forceOpen ? undefined : clearSuperAdminNuxStarterModal}
       onClose={forceOpen ? () => undefined : clearSuperAdminNuxStarterModal}
     >
       <div
@@ -114,7 +118,8 @@ export function SuperAdminGroupSetupModal({
             className="px-6 text-center text-2xl leading-tight tracking-tight"
             style={{
               color: "#fff",
-              textShadow: "0 2px 6px rgba(0,0,0,0.95), 0 8px 18px rgba(0,0,0,0.8)",
+              textShadow:
+                "0 2px 6px rgba(0,0,0,0.95), 0 8px 18px rgba(0,0,0,0.8)",
             }}
           >
             {welcomeRest == null ? (
@@ -174,7 +179,10 @@ export function SuperAdminGroupSetupModal({
               }}
               onBlur={(event) => {
                 const next = event.relatedTarget;
-                if (next instanceof Node && event.currentTarget.contains(next)) {
+                if (
+                  next instanceof Node &&
+                  event.currentTarget.contains(next)
+                ) {
                   return;
                 }
                 setHoverId((current) => (current === step.id ? null : current));
@@ -231,9 +239,7 @@ export function SuperAdminGroupSetupModal({
                         : { color: "var(--cool-grey-400, #979797)" }
                     }
                     onPointerDown={
-                      step.id === "llm"
-                        ? () => setPinnedId("llm")
-                        : undefined
+                      step.id === "llm" ? () => setPinnedId("llm") : undefined
                     }
                   >
                     <div

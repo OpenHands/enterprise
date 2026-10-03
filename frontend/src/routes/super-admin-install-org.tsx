@@ -18,7 +18,8 @@ const FALLBACK_ORG_NAME = "My Organization";
 export default function SuperAdminInstallOrg() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { mutateAsync: createOrganization, isPending } = useCreateOrganization();
+  const { mutateAsync: createOrganization, isPending } =
+    useCreateOrganization();
   const translatedDefault = t(I18nKey.SA_NUX$ORG_DEFAULT_NAME);
   const defaultName = translatedDefault.startsWith("SA_NUX$")
     ? FALLBACK_ORG_NAME
@@ -42,7 +43,7 @@ export default function SuperAdminInstallOrg() {
       setError(t(I18nKey.SA_NUX$ORG_INVALID));
       return;
     }
-    const account = readSuperAdminNux().account;
+    const { account } = readSuperAdminNux();
     setError(null);
     try {
       await createOrganization({

@@ -87,6 +87,16 @@ function currentInstallStep(pathname: string) {
  * Progress across the first-run screens. LLM setup and the first automation
  * stay ahead until those screens, so they read as the end of the path.
  */
+function getStepStatus(index: number, current: number) {
+  if (index < current) {
+    return "done";
+  }
+  if (index === current) {
+    return "current";
+  }
+  return "upcoming";
+}
+
 export function InstallStepBar({ pathname }: { pathname: string }) {
   const { t } = useTranslation();
   const current = currentInstallStep(pathname);
@@ -100,13 +110,14 @@ export function InstallStepBar({ pathname }: { pathname: string }) {
     >
       <ol className="mx-auto flex w-full max-w-5xl items-start">
         {INSTALL_STEPS.map((step, index) => {
-          const status =
-            index < current ? "done" : index === current ? "current" : "upcoming";
+          const status = getStepStatus(index, current);
           const leftFilled = index > 0 && index <= current;
           const rightFilled = index < current;
           return (
             <li
               key={step.id}
+              // Focusing a step reveals its label for keyboard users.
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
               tabIndex={0}
               data-testid={`install-step-${step.id}`}
               className="group pointer-events-auto relative flex min-w-0 flex-1 flex-col items-center outline-none"
@@ -177,23 +188,23 @@ export function InstallStepBar({ pathname }: { pathname: string }) {
                 )}
               >
                 <div className="rounded-xl border border-[var(--oh-border)] bg-base-secondary px-3 py-2.5 text-left shadow-[0_16px_40px_rgba(0,0,0,0.45)]">
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className="flex size-6 shrink-0 items-center justify-center rounded-md border border-[var(--oh-border)] text-white"
+                  <div className="flex items-center gap-2">
+                    <span
+                      aria-hidden
+                      className="flex size-6 shrink-0 items-center justify-center rounded-md border border-[var(--oh-border)] text-white"
+                    >
+                      <step.icon className="size-3.5" strokeWidth={1.75} />
+                    </span>
+                  </div>
+                  <div className="mt-1 text-sm font-medium text-white">
+                    {t(step.label)}
+                  </div>
+                  <div
+                    className="mt-1 text-xs leading-5"
+                    style={{ color: "var(--cool-grey-400, #979797)" }}
                   >
-                    <step.icon className="size-3.5" strokeWidth={1.75} />
-                  </span>
-                </div>
-                <div className="mt-1 text-sm font-medium text-white">
-                  {t(step.label)}
-                </div>
-                <div
-                  className="mt-1 text-xs leading-5"
-                  style={{ color: "var(--cool-grey-400, #979797)" }}
-                >
-                  {t(step.detail)}
-                </div>
+                    {t(step.detail)}
+                  </div>
                 </div>
               </div>
             </li>

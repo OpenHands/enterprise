@@ -53,9 +53,10 @@ export default function SuperAdminInstallCompany() {
   };
 
   const onLogo = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !file.type.startsWith("image/")) {
+    const input = event.target;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file?.type.startsWith("image/")) {
       return;
     }
     try {
@@ -211,7 +212,9 @@ export default function SuperAdminInstallCompany() {
             )}
             data-testid="sa-nux-trial-with-key"
           >
-            <p className="text-sm leading-5">{t(I18nKey.SA_NUX$TRIAL_WITH_KEY)}</p>
+            <p className="text-sm leading-5">
+              {t(I18nKey.SA_NUX$TRIAL_WITH_KEY)}
+            </p>
             <BrandButton
               type="button"
               variant="secondary"

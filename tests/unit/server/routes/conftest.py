@@ -7,6 +7,9 @@ Most of them only stub ``get_user_org_role`` and predate the user-scoped
 ``no such table: user``. The autouse fixture below defaults the super-role
 lookup to ``None`` for every test in this directory. Tests that want to
 exercise super-role behavior can stack their own ``patch`` over it.
+
+``require_permission`` also looks the target org up to enforce suspension;
+that lookup is defaulted to "not suspended" the same way.
 """
 
 from __future__ import annotations
@@ -22,5 +25,15 @@ def _default_no_super_role():
     with patch(
         'server.auth.authorization.get_user_super_role',
         AsyncMock(return_value=None),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _default_org_not_suspended():
+    """Default ``is_org_suspended`` to ``False`` for all route tests."""
+    with patch(
+        'server.auth.authorization.is_org_suspended',
+        AsyncMock(return_value=False),
     ):
         yield

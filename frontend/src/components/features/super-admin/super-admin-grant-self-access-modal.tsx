@@ -66,9 +66,7 @@ export function SuperAdminGrantSelfAccessModal({
           data-testid="super-admin-grant-self-access-role"
           className="rounded-lg border border-[var(--oh-border)] bg-[var(--oh-surface)] px-3 py-2 text-foreground"
           value={role}
-          onChange={(event) =>
-            setRole(event.target.value as SuperAdminOrgRole)
-          }
+          onChange={(event) => setRole(event.target.value as SuperAdminOrgRole)}
         >
           <option value="admin">{t(I18nKey.ORG$ROLE_ADMIN)}</option>
           <option value="owner">{t(I18nKey.ORG$ROLE_OWNER)}</option>

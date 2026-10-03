@@ -339,6 +339,19 @@ async def is_instance_super_admin(user_id: str) -> bool:
     )
 
 
+async def is_org_suspended(org_id: UUID | None) -> bool:
+    """True when ``org_id`` names an organization whose ``status`` is ``suspended``."""
+    if org_id is None:
+        return False
+    from storage.org_store import OrgStore
+
+    target_org = await OrgStore.get_org_by_id(org_id)
+    return (
+        target_org is not None
+        and getattr(target_org, 'status', 'active') == 'suspended'
+    )
+
+
 def get_role_permissions(role_name: str) -> frozenset[Permission]:
     """Get the org-scoped permissions for a role.
 
@@ -414,15 +427,7 @@ async def authorize_permission(
     org_id = await resolve_target_org_id_for_permission_check(request)
     user_role = await get_user_org_role(user_id, org_id)
 
-    org_suspended = False
-    if org_id is not None:
-        from storage.org_store import OrgStore
-
-        target_org = await OrgStore.get_org_by_id(org_id)
-        org_suspended = (
-            target_org is not None
-            and getattr(target_org, 'status', 'active') == 'suspended'
-        )
+    org_suspended = await is_org_suspended(org_id)
 
     super_role = await get_user_super_role(user_id)
     is_super_admin = bool(
@@ -556,15 +561,7 @@ def require_permission(permission: Permission):
 
         user_role = await get_user_org_role(user_id, org_id)
 
-        org_suspended = False
-        if org_id is not None:
-            from storage.org_store import OrgStore
-
-            target_org = await OrgStore.get_org_by_id(org_id)
-            org_suspended = (
-                target_org is not None
-                and getattr(target_org, 'status', 'active') == 'suspended'
-            )
+        org_suspended = await is_org_suspended(org_id)
 
         super_role = await get_user_super_role(user_id)
         is_super_admin = bool(
