@@ -102,6 +102,14 @@ vi.mock("#/hooks/use-user-providers", () => ({
   useUserProviders: () => useUserProvidersMock(),
 }));
 
+// useSettingsNavItems (rendered via UserContextMenu) polls the quota
+// endpoint on an interval. In saas mode that interval is enabled, so
+// `runAllTimersAsync` below would never drain and abort. These tests do not
+// care about quota, so stub the hook out with a settled value.
+vi.mock("#/hooks/query/use-quota-status", () => ({
+  useQuotaStatus: () => ({ data: { daily_limit: 100 }, isLoading: false }),
+}));
+
 describe("UserActions", () => {
   const user = userEvent.setup();
   const onClickAccountSettingsMock = vi.fn();
