@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
@@ -103,6 +103,10 @@ export function SuperAdminOrganizations() {
   const copy = navCopy(SUPER_ADMIN_PATHS.organizations);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [pendingOrgAction, setPendingOrgAction] = useState<{
+    action: "suspend" | "remove";
+    org: SuperAdminOrgRow;
+  } | null>(null);
   const { data, isLoading, isError } = useSuperAdminOrganizations();
   const deleteOrg = useDeleteSuperAdminOrganization();
   const updateOrgStatus = useUpdateSuperAdminOrganizationStatus();
@@ -129,6 +133,19 @@ export function SuperAdminOrganizations() {
       ),
     [query, orgs],
   );
+
+  const confirmOrgAction = () => {
+    if (!pendingOrgAction) {
+      return;
+    }
+    const orgId = pendingOrgAction.org.id;
+    const onSuccess = () => setPendingOrgAction(null);
+    if (pendingOrgAction.action === "remove") {
+      deleteOrg.mutate({ orgId }, { onSuccess });
+    } else {
+      updateOrgStatus.mutate({ orgId, status: "suspended" }, { onSuccess });
+    }
+  };
 
   return (
     <div
@@ -228,10 +245,7 @@ export function SuperAdminOrganizations() {
                         label: t(I18nKey.SUPER_ADMIN$SUSPEND),
                         testId: `super-admin-org-suspend-${row.id}`,
                         onSelect: () =>
-                          updateOrgStatus.mutate({
-                            orgId: row.id,
-                            status: "suspended",
-                          }),
+                          setPendingOrgAction({ action: "suspend", org: row }),
                       }
                     : {
                         label: t(I18nKey.SUPER_ADMIN$RESUME),
@@ -246,7 +260,8 @@ export function SuperAdminOrganizations() {
                     label: t(I18nKey.SUPER_ADMIN$REMOVE),
                     testId: `super-admin-org-remove-${row.id}`,
                     destructive: true,
-                    onSelect: () => deleteOrg.mutate({ orgId: row.id }),
+                    onSelect: () =>
+                      setPendingOrgAction({ action: "remove", org: row }),
                   },
                 ]}
               />
@@ -260,6 +275,34 @@ export function SuperAdminOrganizations() {
           onClose={() => setCreateOpen(false)}
         />
       )}
+      {pendingOrgAction ? (
+        <OrgModal
+          testId="super-admin-org-confirm"
+          title={
+            pendingOrgAction.action === "remove"
+              ? t(I18nKey.ORG$DELETE_ORGANIZATION)
+              : t(I18nKey.SUPER_ADMIN$SUSPEND_ORG_TITLE)
+          }
+          description={
+            <Trans
+              i18nKey={
+                pendingOrgAction.action === "remove"
+                  ? I18nKey.ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME
+                  : I18nKey.SUPER_ADMIN$SUSPEND_ORG_CONFIRM
+              }
+              values={{ name: pendingOrgAction.org.name }}
+              components={{ name: <span className="text-white" /> }}
+            />
+          }
+          primaryButtonText={t(I18nKey.BUTTON$CONFIRM)}
+          secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
+          primaryButtonTestId="super-admin-org-confirm-submit"
+          secondaryButtonTestId="super-admin-org-confirm-cancel"
+          onPrimaryClick={confirmOrgAction}
+          onClose={() => setPendingOrgAction(null)}
+          isLoading={deleteOrg.isPending || updateOrgStatus.isPending}
+        />
+      ) : null}
       {pendingOrg ? (
         <SuperAdminGrantSelfAccessModal
           orgId={pendingOrg.orgId}
@@ -638,6 +681,9 @@ export function SuperAdminAdmins() {
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [grantOpen, setGrantOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
+    null,
+  );
   const { data, isLoading, isError } = useSuperAdmins();
   const grant = useGrantSuperAdmin();
   const revoke = useRevokeSuperAdmin();
@@ -726,7 +772,7 @@ export function SuperAdminAdmins() {
                     label: t(I18nKey.SUPER_ADMIN$REVOKE),
                     testId: `super-admin-admin-revoke-${row.id}`,
                     destructive: true,
-                    onSelect: () => revoke.mutate({ userId: row.id }),
+                    onSelect: () => setAdminToRevoke(row),
                   },
                 ]}
               />
@@ -752,6 +798,31 @@ export function SuperAdminAdmins() {
           />
         </OrgModal>
       )}
+      {adminToRevoke ? (
+        <OrgModal
+          testId="super-admin-revoke-confirm"
+          title={t(I18nKey.SUPER_ADMIN$REVOKE_ADMIN_TITLE)}
+          description={
+            <Trans
+              i18nKey={I18nKey.SUPER_ADMIN$REVOKE_ADMIN_CONFIRM}
+              values={{ name: adminToRevoke.email || adminToRevoke.name }}
+              components={{ name: <span className="text-white" /> }}
+            />
+          }
+          primaryButtonText={t(I18nKey.BUTTON$CONFIRM)}
+          secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
+          primaryButtonTestId="super-admin-revoke-confirm-submit"
+          secondaryButtonTestId="super-admin-revoke-confirm-cancel"
+          onPrimaryClick={() =>
+            revoke.mutate(
+              { userId: adminToRevoke.id },
+              { onSuccess: () => setAdminToRevoke(null) },
+            )
+          }
+          onClose={() => setAdminToRevoke(null)}
+          isLoading={revoke.isPending}
+        />
+      ) : null}
     </div>
   );
 }

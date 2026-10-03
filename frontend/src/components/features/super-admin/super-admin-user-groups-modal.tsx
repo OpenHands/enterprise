@@ -494,6 +494,9 @@ export function SuperAdminUserGroupsModal({
   const [addingGroup, setAddingGroup] = useState(false);
   const [rolePickerOrgId, setRolePickerOrgId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingRemoveIds, setPendingRemoveIds] = useState<string[] | null>(
+    null,
+  );
   const busy =
     updateGroups.isPending || updateStatus.isPending || removeUser.isPending;
   const accountSuspended =
@@ -551,6 +554,18 @@ export function SuperAdminUserGroupsModal({
       return;
     }
     removeUser.mutate({ userId: user.id }, { onSuccess: onClose });
+  };
+
+  const confirmRemove = () => {
+    if (!pendingRemoveIds) {
+      return;
+    }
+    run("remove", pendingRemoveIds, () => {
+      setPendingRemoveIds(null);
+      setSelectedCurrent((current) =>
+        current.filter((id) => !pendingRemoveIds.includes(id)),
+      );
+    });
   };
 
   return (
@@ -669,11 +684,15 @@ export function SuperAdminUserGroupsModal({
                           if (!item) {
                             return;
                           }
-                          run(
-                            item.value as MembershipAction,
-                            selectedCurrent,
-                            () => setSelectedCurrent([]),
-                          );
+                          if (item.value === "remove") {
+                            setPendingRemoveIds([...selectedCurrent]);
+                          } else {
+                            run(
+                              item.value as MembershipAction,
+                              selectedCurrent,
+                              () => setSelectedCurrent([]),
+                            );
+                          }
                           setBulkMenuKey((key) => key + 1);
                         }}
                       />
@@ -692,6 +711,39 @@ export function SuperAdminUserGroupsModal({
                     </BrandButton>
                   </div>
                 </div>
+                {pendingRemoveIds ? (
+                  <div className="flex flex-col gap-3 rounded-lg bg-[var(--oh-interactive-hover-low)] p-3">
+                    <p className="text-sm">
+                      {t(I18nKey.SUPER_ADMIN$REMOVE_MEMBERSHIPS_CONFIRM, {
+                        name: user.name,
+                        orgs: currentItems
+                          .filter((item) => pendingRemoveIds.includes(item.id))
+                          .map((item) => item.label)
+                          .join(", "),
+                      })}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <BrandButton
+                        type="button"
+                        variant="danger"
+                        testId="super-admin-groups-remove-confirm"
+                        isDisabled={busy}
+                        onClick={confirmRemove}
+                      >
+                        {t(I18nKey.SUPER_ADMIN$REMOVE)}
+                      </BrandButton>
+                      <BrandButton
+                        type="button"
+                        variant="secondary"
+                        testId="super-admin-groups-remove-cancel"
+                        isDisabled={busy}
+                        onClick={() => setPendingRemoveIds(null)}
+                      >
+                        {t(I18nKey.BUTTON$CANCEL)}
+                      </BrandButton>
+                    </div>
+                  </div>
+                ) : null}
                 <SuperAdminOrgChecklist
                   items={currentItems}
                   selectedIds={selectedCurrent}
@@ -702,7 +754,9 @@ export function SuperAdminUserGroupsModal({
                     run("set_role", [id], () => undefined, nextRole)
                   }
                   onMembershipAction={(id, action) =>
-                    run(action, [id], () => undefined)
+                    action === "remove"
+                      ? setPendingRemoveIds([id])
+                      : run(action, [id], () => undefined)
                   }
                   testIdPrefix="super-admin-group-current"
                   emptyMessage={t(I18nKey.SUPER_ADMIN$NO_GROUPS)}
