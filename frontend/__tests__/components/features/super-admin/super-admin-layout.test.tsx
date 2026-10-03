@@ -11,14 +11,7 @@ import {
   resetSuperAdminSetupState,
   setSuperAdminSetupVisible,
 } from "#/components/features/super-admin/super-admin-setup";
-import {
-  markSuperAdminNuxAccountDone,
-  markSuperAdminNuxCompanyDone,
-  markSuperAdminNuxOrgDone,
-  markSuperAdminNuxTosDone,
-  markSuperAdminNuxWelcomeDone,
-  resetSuperAdminNux,
-} from "#/utils/org/super-admin-nux";
+import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
 
 const mockMe = vi.hoisted(() => ({
   data: { permissions: ["create_organization"] } as {
@@ -110,11 +103,13 @@ describe("SuperAdminLayout", () => {
     mockConfig.isLoading = false;
     resetSuperAdminSetupState();
     resetSuperAdminNux();
-    markSuperAdminNuxWelcomeDone();
-    markSuperAdminNuxTosDone();
-    markSuperAdminNuxAccountDone({ name: "Neo", email: "neo@example.com" });
-    markSuperAdminNuxCompanyDone({ name: "Acme", hasLicenseKey: false });
-    markSuperAdminNuxOrgDone({ name: "Acme Corp" });
+  });
+
+  it("opens the dashboard when the install wizard has not been completed", () => {
+    renderSuperAdmin();
+
+    expect(screen.getByTestId("super-admin-dashboard")).toBeInTheDocument();
+    expect(screen.queryByTestId("install-stub")).not.toBeInTheDocument();
   });
 
   it("renders the standalone Super Admin shell without Org Settings", () => {

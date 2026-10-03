@@ -24,12 +24,6 @@ import {
 } from "#/constants/super-admin-nav";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import {
-  getSuperAdminNuxPath,
-  getSuperAdminNuxStep,
-  readSuperAdminNux,
-  subscribeSuperAdminNux,
-} from "#/utils/org/super-admin-nux";
-import {
   getSetupTestSuperAdminAccessOverride,
   readSetupTestPersona,
   subscribeSetupTestPersona,
@@ -127,11 +121,6 @@ export function SuperAdminLayout() {
   const { data: me, isLoading, isPending } = useMe();
   const { data: config, isLoading: isConfigLoading } = useConfig();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const nux = useSyncExternalStore(
-    subscribeSuperAdminNux,
-    readSuperAdminNux,
-    readSuperAdminNux,
-  );
   // Mock persona override must re-render SA access checks.
   useSyncExternalStore(
     subscribeSetupTestPersona,
@@ -170,13 +159,6 @@ export function SuperAdminLayout() {
 
   if (!canAccess) {
     return <Navigate to="/settings" replace />;
-  }
-
-  const catalogPreview =
-    new URLSearchParams(location.search).get("catalogPreview") === "1";
-  const nuxStep = getSuperAdminNuxStep(nux);
-  if (!catalogPreview && nuxStep !== "done") {
-    return <Navigate to={getSuperAdminNuxPath(nuxStep)} replace />;
   }
 
   return (
