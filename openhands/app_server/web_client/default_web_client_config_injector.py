@@ -4,11 +4,13 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
+from openhands.app_server.acp_providers import surfaced_acp_providers
 from openhands.app_server.integrations.jira_dc.config import (
     get_jira_dc_service_account_env_config,
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.slack_config import is_slack_configured
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
@@ -117,16 +119,6 @@ def _get_github_app_slug() -> str | None:
     return slug if slug else None
 
 
-def _get_slack_enabled() -> bool:
-    """Return whether Slack integration is fully configured for the web client."""
-    return (
-        os.getenv('SLACK_WEBHOOKS_ENABLED', 'false').lower() in ('true', '1')
-        and bool(os.getenv('SLACK_CLIENT_ID', '').strip())
-        and bool(os.getenv('SLACK_CLIENT_SECRET', '').strip())
-        and bool(os.getenv('SLACK_SIGNING_SECRET', '').strip())
-    )
-
-
 def _get_email_enabled() -> bool:
     """Return whether transactional email delivery is configured."""
     try:
@@ -163,6 +155,15 @@ def _get_jira_dc_oauth_host() -> str | None:
     return urlparse(base_url).hostname or None
 
 
+def _get_jira_oauth_enabled() -> bool:
+    """Whether Jira Cloud links users via Atlassian OAuth.
+
+    False in email-match mode (``JIRA_ENABLE_OAUTH`` off), where the configure
+    flow saves the workspace directly and users are matched by email.
+    """
+    return os.getenv('JIRA_ENABLE_OAUTH', '1') in ('1', 'true')
+
+
 def _get_jira_dc_service_account_config_error() -> str | None:
     """Return a web-client-safe service-account config error, if any."""
     return get_jira_dc_service_account_env_config().error
@@ -186,14 +187,18 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
-    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING,
-    ENABLE_AGENT_CANVAS_BANNER, and ENABLE_SUPER_ADMIN from environment.
+    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
+    ENABLE_BYOR_EXPORT, and ENABLE_SUPER_ADMIN from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
     BYOK editing UI visible; ENABLE_ACP keeps the ACP agent configuration UI
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
+
+    enable_billing here is only the env-var fallback: ``get_web_client_config``
+    re-resolves it against the DB-backed default flag on every request
+    (see ``_resolve_flag``).
     """
     return WebClientFeatureFlags(
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
@@ -214,8 +219,52 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
+        enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
     )
+
+
+async def _get_db_feature_flags() -> dict[str, bool]:
+    """Return database-backed global feature flags for an anonymous context.
+
+    Only flags with NO targeting rules are returned (see
+    ``FeatureFlagService.get_global_flags``); per-user/per-org/per-email flags
+    require an authenticated context and are intentionally absent here. This
+    endpoint is one of the first invoked and does not require authentication,
+    so it must not leak targeted flag state.
+
+    The import is lazy and best-effort: OSS installs (and SaaS installs that
+    have not applied the feature-flag migration) simply get an empty map, so
+    this path degrades gracefully and never blocks the config endpoint.
+    """
+    try:
+        from server.services.feature_flag_service import (
+            feature_flag_service,
+        )
+    except Exception:
+        return {}
+    try:
+        return await feature_flag_service.get_global_flags()
+    except Exception:
+        # Never let a DB hiccup take down the unauthenticated config
+        # endpoint; fall back to an empty map.
+        return {}
+
+
+async def _resolve_flag(key: str, env_fallback: bool) -> bool:
+    """Resolve a flag via the feature flag service with an env-var fallback.
+
+    Uses the service's fault-tolerant ``resolve`` method (DB row first,
+    registered default on failure). Like ``_get_db_feature_flags``, the import
+    is lazy and best-effort: OSS installs without the enterprise service fall
+    back to ``env_fallback`` so the unauthenticated config endpoint never
+    breaks on the feature-flag import.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+    except Exception:
+        return env_fallback
+    return await feature_flag_service.resolve(key)
 
 
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
@@ -247,7 +296,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
         }
     )
-    slack_enabled: bool = Field(default_factory=_get_slack_enabled)
+    slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
     email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
@@ -260,6 +309,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     jira_dc_service_account_config_error: str | None = Field(
         default_factory=_get_jira_dc_service_account_config_error
     )
+    jira_oauth_enabled: bool = Field(default_factory=_get_jira_oauth_enabled)
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -274,7 +324,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 api_key_env_var=provider.api_key_env_var,
                 base_url_env_var=provider.base_url_env_var,
             )
-            for provider in ACP_PROVIDERS.values()
+            for provider in (ACP_PROVIDERS[key] for key in surfaced_acp_providers())
         ]
     )
 
@@ -282,10 +332,21 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        # enable_billing is a registered default flag (ENABLE_BILLING): the
+        # database overlay wins, the env var baked into self.feature_flags at
+        # init is the fallback.
+        feature_flags = self.feature_flags.model_copy(
+            update={
+                'enable_billing': await _resolve_flag(
+                    'ENABLE_BILLING', self.feature_flags.enable_billing
+                )
+            }
+        )
         result = WebClientConfig(
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
-            feature_flags=self.feature_flags,
+            feature_flags=feature_flags,
+            db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,
             auth_url=self.auth_url,
@@ -305,6 +366,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             jira_dc_service_account_config_error=(
                 self.jira_dc_service_account_config_error
             ),
+            jira_oauth_enabled=self.jira_oauth_enabled,
             acp_providers=self.acp_providers,
         )
         return result

@@ -19,10 +19,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check for any 'rev' fields in pyproject.toml
+      - name: Check for unreleased (git) dependency pins in pyproject.toml
         run: |
           python - <<'PY'
-          import sys, tomllib, pathlib
+          import re, sys, tomllib, pathlib
 
           path = pathlib.Path("pyproject.toml")
           if not path.exists():
@@ -35,31 +35,41 @@ jobs:
               print(f"❌ ERROR: Failed to parse pyproject.toml: {e}")
               sys.exit(1)
 
-          poetry = data.get("tool", {}).get("poetry", {})
-          sections = {
-              "dependencies": poetry.get("dependencies", {}),
-          }
-
           errors = []
+          direct_ref = re.compile(r"@\s*(git\+|https?://|file:)")
 
-          print("🔍 Checking for any dependencies with 'rev' fields...\n")
-          for section_name, deps in sections.items():
-              if not isinstance(deps, dict):
-                  continue
+          print("🔍 Checking for dependencies pinned to git refs or URLs...\n")
 
-              for pkg_name, cfg in deps.items():
-                  if isinstance(cfg, dict) and "rev" in cfg:
-                      msg = f"  ✖ {pkg_name} in [{section_name}] uses rev='{cfg['rev']}' (NOT ALLOWED)"
+          # PEP 508 requirement strings: [project].dependencies and [dependency-groups].*
+          requirement_lists = {"project.dependencies": data.get("project", {}).get("dependencies", [])}
+          for group, reqs in data.get("dependency-groups", {}).items():
+              requirement_lists[f"dependency-groups.{group}"] = [r for r in reqs if isinstance(r, str)]
+          for section, reqs in requirement_lists.items():
+              for req in reqs:
+                  if direct_ref.search(req):
+                      msg = f"  ✖ {req!r} in [{section}] is a direct git/URL reference (NOT ALLOWED)"
                       print(msg)
                       errors.append(msg)
                   else:
-                      print(f"  • {pkg_name}: OK")
+                      print(f"  • {req}: OK")
+
+          # [tool.uv.sources]: git/url overrides (e.g. rev/branch pins to the SDK repo)
+          sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+          for pkg, cfg in sources.items():
+              cfgs = cfg if isinstance(cfg, list) else [cfg]
+              for c in cfgs:
+                  if isinstance(c, dict) and ({"git", "url", "rev", "branch", "tag"} & set(c)):
+                      msg = f"  ✖ {pkg} in [tool.uv.sources] uses {c} (NOT ALLOWED)"
+                      print(msg)
+                      errors.append(msg)
+                  else:
+                      print(f"  • {pkg} in [tool.uv.sources]: OK")
 
           if errors:
-              print("\n❌ FAILED: Found dependencies using 'rev' fields:\n" + "\n".join(errors))
+              print("\n❌ FAILED: Found dependencies pinned to unreleased sources:\n" + "\n".join(errors))
               print("\nPlease use versioned releases instead, e.g.:")
-              print('  my-package = "1.0.0"')
+              print('  "my-package==1.0.0"')
               sys.exit(1)
 
-          print("\n✅ SUCCESS: No 'rev' fields found. All dependencies are using proper versioned releases.")
+          print("\n✅ SUCCESS: No git/URL pins found. All dependencies are using proper versioned releases.")
           PY

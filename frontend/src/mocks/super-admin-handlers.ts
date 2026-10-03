@@ -169,7 +169,9 @@ type MockMembershipAdded = {
   role: string;
 };
 
-const membershipAddedListeners = new Set<(event: MockMembershipAdded) => void>();
+const membershipAddedListeners = new Set<
+  (event: MockMembershipAdded) => void
+>();
 
 /** Lets the org mock record a membership created from the admin groups API. */
 export function onMockAdminMembershipAdded(
@@ -429,7 +431,7 @@ export const SUPER_ADMIN_HANDLERS = [
   http.post("/api/admin/users/:userId/groups", async ({ params, request }) => {
     const { userId } = params;
     const body = (await request.json()) as {
-      action?: "suspend" | "resume" | "remove" | "add";
+      action?: "suspend" | "resume" | "remove" | "add" | "set_role";
       org_ids?: string[];
       role?: string;
     };

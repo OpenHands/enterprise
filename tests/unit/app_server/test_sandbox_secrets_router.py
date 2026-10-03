@@ -820,14 +820,18 @@ class TestProviderTokensInEndpoints:
         assert result[gl_key] == 'glpat-test456'
         ctx.get_latest_token.assert_not_called()  # type: ignore[attr-defined]
 
-    async def test_get_provider_tokens_as_env_vars_prefers_latest_token(self):
+    @pytest.mark.parametrize(
+        'provider_type',
+        (ProviderType.AZURE_DEVOPS, ProviderType.BITBUCKET_DATA_CENTER),
+    )
+    async def test_get_provider_tokens_as_env_vars_prefers_latest_token(
+        self, provider_type: ProviderType
+    ):
         """Provider env vars resolve through the provider service at call time."""
         mock_user_auth = AsyncMock()
         mock_user_auth.get_provider_tokens = AsyncMock(
             return_value={
-                ProviderType.AZURE_DEVOPS: ProviderToken(
-                    token=SecretStr('stale-token')
-                ),
+                provider_type: ProviderToken(token=SecretStr('stale-token')),
             }
         )
         ctx = AuthUserContext(user_auth=mock_user_auth)
@@ -835,8 +839,9 @@ class TestProviderTokensInEndpoints:
 
         result = await ctx.get_provider_tokens(as_env_vars=True)
 
-        azure_key = ProviderHandler.get_provider_env_key(ProviderType.AZURE_DEVOPS)
-        assert result[azure_key] == 'fresh-token'
+        env_key = ProviderHandler.get_provider_env_key(provider_type)
+        assert result[env_key] == 'fresh-token'
+        ctx.get_latest_token.assert_awaited_once_with(provider_type)  # type: ignore[attr-defined]
 
     async def test_get_provider_tokens_as_env_vars_continues_after_refresh_error(
         self,

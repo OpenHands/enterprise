@@ -657,3 +657,18 @@ class TestEncryptDecryptValue:
         ciphertext = jwt_service.encrypt_value('hello')
         # JWE compact serialization has exactly 4 dots
         assert ciphertext.count('.') == 4
+
+    def test_encrypt_decrypt_large_value_over_64kb(self, jwt_service):
+        """Round-trips payloads whose ciphertext exceeds joserfc's 64KB default.
+
+        joserfc's JWERegistry defaults ``max_ciphertext_length`` to 64KB; without
+        overriding it, extract_compact raises ExceededSizeError and the Fernet
+        fallback masks it as 'Failed to decrypt value'. Encrypted DB columns such
+        as ``org.llm_profiles`` can legitimately exceed that, so verify a payload
+        that pushes the ciphertext past the old limit still round-trips.
+        """
+        # ~256KB of plaintext -> ciphertext well above the 64KB default cap.
+        plaintext = 'a' * (256 * 1024)
+        ciphertext = jwt_service.encrypt_value(plaintext)
+        assert len(ciphertext) > 64 * 1024
+        assert jwt_service.decrypt_value(ciphertext) == plaintext

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -23,8 +24,44 @@ from openhands.sdk.utils.paging import page_iterator
 _logger = logging.getLogger(__name__)
 
 SESSION_API_KEY_VARIABLE = 'OH_SESSION_API_KEYS_0'
+# Remote runtimes assign the session credential inside the sandbox as
+# SESSION_API_KEY and leave OH_SESSION_API_KEYS_0 unset, so the remote refresh
+# header must reference this name instead (enterprise#632).
+REMOTE_SESSION_API_KEY_VARIABLE = 'SESSION_API_KEY'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
+
+# Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
+# on a 401 (#5189). These names are the contract consumed by the agent-server's
+# register_managed_llm_key_refresh() (software-agent-sdk#5222): the OH_ prefix
+# matches the env vars it reads via os.environ. The URL is per-sandbox (it embeds
+# this sandbox's host/port), so these are injected directly per sandbox rather
+# than auto-forwarded from the app-server host env.
+LLM_API_KEY_REFRESH_URL_VARIABLE = 'OH_LLM_API_KEY_REFRESH_URL'
+LLM_API_KEY_REFRESH_HEADERS_VARIABLE = 'OH_LLM_API_KEY_REFRESH_HEADERS'
+LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE = 'OH_LLM_API_KEY_REFRESH_BASE_URLS'
+# The refresh endpoint authenticates with this sandbox's session key. Rather than
+# embedding the key, the header references it by name; the agent-server expands the
+# reference from the sandbox environment at request time (software-agent-sdk#5222),
+# because the runtime assigns the key inside the sandbox and the app server cannot
+# know it when it builds the environment.
+#
+# The variable name differs by runtime type: docker runtimes set
+# OH_SESSION_API_KEYS_0, while remote runtimes set SESSION_API_KEY (and leave
+# OH_SESSION_API_KEYS_0 unset). Referencing the wrong name expands to an empty
+# X-Session-API-Key -> the refresh call is unauthenticated -> 401 -> the original
+# token_not_found_in_db surfaces to the user (enterprise#632).
+#
+# NOTE: whichever value is injected MUST stay byte-identical to the warm-pool
+# header runtime-api claims against (OH_LLM_API_KEY_REFRESH_HEADERS is not in
+# runtime-api's KEYS_TO_CLEAN), or the exact-env claim match fails and every
+# conversation cold-starts.
+LLM_API_KEY_REFRESH_HEADERS_VALUE = json.dumps(
+    {'X-Session-API-Key': '${' + SESSION_API_KEY_VARIABLE + '}'}
+)
+LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE = json.dumps(
+    {'X-Session-API-Key': '${' + REMOTE_SESSION_API_KEY_VARIABLE + '}'}
+)
 
 # Known start-failure classes we translate into short, user-safe messages. Raw
 # runtime status_detail (k8s pod/scheduling text) can leak internal registry
@@ -50,6 +87,42 @@ _SCHEDULING_MARKERS = (
     'unbound',  # e.g. "unbound immediate PersistentVolumeClaims"
 )
 
+_INGRESS_FAILURE_PREFIX = 'runtime_ingress:'
+_INGRESS_FAILURE_MESSAGES = {
+    'dns_error': (
+        'The sandbox started, but its runtime hostname could not be resolved. '
+        'Ask your administrator to check the wildcard runtime DNS configuration.'
+    ),
+    'tls_error': (
+        'The sandbox started, but its TLS certificate could not be verified for '
+        'the runtime hostname. Ask your administrator to check the runtime TLS '
+        'certificate and hostname configuration.'
+    ),
+    'timeout': (
+        'The sandbox started, but its runtime ingress did not respond before the '
+        'health-check timeout. Ask your administrator to check ingress and network '
+        'connectivity.'
+    ),
+    'connection_error': (
+        'The sandbox started, but the service could not connect through its runtime '
+        'ingress. Ask your administrator to check ingress routing and network '
+        'connectivity.'
+    ),
+    'request_error': (
+        'The sandbox started, but its runtime ingress readiness check failed before '
+        'receiving a response. Ask your administrator to check runtime ingress.'
+    ),
+    'invalid_response': (
+        'The sandbox started, but its readiness endpoint returned an invalid '
+        'response. Ask your administrator to check runtime routing and sandbox '
+        'image compatibility.'
+    ),
+    'unexpected_status': (
+        'The sandbox started, but its readiness endpoint did not report ready. Ask '
+        'your administrator to check runtime routing and sandbox image compatibility.'
+    ),
+}
+
 _GENERIC_START_FAILURE = (
     'The sandbox failed to start for an unexpected reason. Please try again.'
 )
@@ -65,6 +138,18 @@ def _classify_start_failure(detail: str | None) -> str | None:
     """
     if not detail:
         return None
+    if detail.startswith(_INGRESS_FAILURE_PREFIX):
+        failure_code = detail.removeprefix(_INGRESS_FAILURE_PREFIX)
+        if failure_code.startswith('http_status:'):
+            status_code = failure_code.removeprefix('http_status:')
+            if len(status_code) == 3 and status_code.isdigit():
+                return (
+                    'The sandbox started, but its runtime ingress returned HTTP '
+                    f'{status_code} instead of a ready response. Ask your '
+                    'administrator to check ingress routing and agent-server health.'
+                )
+            return None
+        return _INGRESS_FAILURE_MESSAGES.get(failure_code)
     if any(m in detail for m in _IMAGE_PULL_MARKERS):
         return (
             'The sandbox image could not be pulled. The image tag may be missing, '
@@ -170,6 +255,9 @@ class SandboxService(ABC):
 
         Return True if the sandbox exists and is being resumed or is already running.
         Return False if the sandbox did not exist.
+        Implementations may raise SandboxError with status 409 when the sandbox
+        exists but cannot be resumed from its current state, or 502 when the
+        backing runtime API fails.
         """
 
     async def wait_for_sandbox_running(
@@ -325,8 +413,8 @@ class SandboxService(ABC):
         Returns:
             List of sandbox IDs that were paused
         """
-        if max_num_sandboxes <= 0:
-            raise ValueError('max_num_sandboxes must be greater than 0')
+        if max_num_sandboxes < 0:
+            raise ValueError('max_num_sandboxes must not be negative')
 
         # Get all running sandboxes (iterate through all pages)
         running_sandboxes = []

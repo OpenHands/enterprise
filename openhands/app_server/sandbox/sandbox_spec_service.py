@@ -148,7 +148,7 @@ def is_custom_sandbox_spec(sandbox_spec_id: str) -> bool:
 
 # Prefixes for environment variables that should be auto-forwarded to agent-server
 # These are typically configuration variables that affect the agent's behavior
-AUTO_FORWARD_PREFIXES = ('LLM_', 'LMNR_')
+AUTO_FORWARD_PREFIXES = ('LLM_', 'LMNR_', 'OH_TELEMETRY_')
 
 
 def get_agent_server_env() -> dict[str, str]:
@@ -169,6 +169,7 @@ def get_agent_server_env() -> dict[str, str]:
     Auto-forwarded prefixes:
         - LLM_* : LLM configuration (timeout, retries, model settings, etc.)
         - LMNR_* : Laminar monitoring/analytics configuration
+        - OH_TELEMETRY_* : agent-server product telemetry configuration
 
     Usage:
         # Auto-forwarding (no action needed):

@@ -68,12 +68,14 @@ export function PaymentForm({ isDisabled }: { isDisabled?: boolean }) {
             {t(I18nKey.PAYMENT$AVAILABLE_CREDITS)}
           </span>
         </div>
-        {!isLoading && (
+        {!isLoading && balance !== undefined && (
           <span
             data-testid="user-balance"
             className="shrink-0 text-2xl font-semibold tabular-nums tracking-tight text-foreground"
           >
-            ${Number(balance).toFixed(2)}
+            {balance === null
+              ? t(I18nKey.CONVERSATION$NO_BUDGET_LIMIT)
+              : `$${Number(balance).toFixed(2)}`}
           </span>
         )}
         {isLoading && <LoadingSpinner size="small" />}

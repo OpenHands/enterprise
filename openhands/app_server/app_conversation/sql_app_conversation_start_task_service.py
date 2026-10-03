@@ -72,6 +72,11 @@ class StoredAppConversationStartTask(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         UtcDateTime, onupdate=func.now(), index=True
     )
+    # Soft-delete marker: when set, the start task is hidden from all reads but
+    # the row is retained (kept in lock-step with conversation soft-delete).
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UtcDateTime, nullable=True, index=True
+    )
 
 
 @dataclass
@@ -93,7 +98,9 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         limit: int = 100,
     ) -> AppConversationStartTaskPage:
         """Search for conversation start tasks."""
-        query = select(StoredAppConversationStartTask)
+        query = select(StoredAppConversationStartTask).where(
+            StoredAppConversationStartTask.deleted_at.is_(None)
+        )
 
         # Apply user filter if user_id is set
         if self.user_id:
@@ -161,7 +168,9 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         created_at__gte: datetime | None = None,
     ) -> int:
         """Count conversation start tasks."""
-        query = select(func.count(StoredAppConversationStartTask.id))
+        query = select(func.count(StoredAppConversationStartTask.id)).where(
+            StoredAppConversationStartTask.deleted_at.is_(None)
+        )
 
         # Apply user filter if user_id is set
         if self.user_id:
@@ -194,7 +203,8 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
             return []
 
         query = select(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.id.in_(task_ids)
+            StoredAppConversationStartTask.id.in_(task_ids),
+            StoredAppConversationStartTask.deleted_at.is_(None),
         )
         if self.user_id:
             query = query.where(
@@ -219,7 +229,8 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
     ) -> AppConversationStartTask | None:
         """Get a single start task, returning None if missing."""
         query = select(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.id == task_id
+            StoredAppConversationStartTask.id == task_id,
+            StoredAppConversationStartTask.deleted_at.is_(None),
         )
         if self.user_id:
             query = query.where(
@@ -248,27 +259,96 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
         return task
 
     async def delete_app_conversation_start_tasks(self, conversation_id: UUID) -> bool:
-        """Delete all start tasks associated with a conversation.
+        """Soft-delete all start tasks associated with a conversation.
+
+        Marks ``deleted_at`` (rather than removing rows) to stay in lock-step with
+        conversation soft-delete: rows are retained for audit/reconciliation but
+        hidden from every read path.
 
         Args:
-            conversation_id: The ID of the conversation to delete tasks for.
+            conversation_id: The ID of the conversation to soft-delete tasks for.
         """
-        from sqlalchemy import delete
+        from sqlalchemy import update
 
-        # Build secure delete query with user filter if user_id is set
-        delete_query = delete(StoredAppConversationStartTask).where(
-            StoredAppConversationStartTask.app_conversation_id == conversation_id
+        # Build secure soft-delete query with user filter if user_id is set
+        update_query = (
+            update(StoredAppConversationStartTask)
+            .where(
+                StoredAppConversationStartTask.app_conversation_id == conversation_id,
+                StoredAppConversationStartTask.deleted_at.is_(None),
+            )
+            .values(deleted_at=utc_now())
         )
 
         if self.user_id:
-            delete_query = delete_query.where(
+            update_query = update_query.where(
                 StoredAppConversationStartTask.created_by_user_id == self.user_id
             )
 
-        result = cast(CursorResult, await self.session.execute(delete_query))
+        result = cast(CursorResult, await self.session.execute(update_query))
 
         # Return True if any rows were affected
         return result.rowcount > 0
+
+    async def delete_start_tasks_older_than(
+        self, cutoff: datetime, batch_size: int | None = None
+    ) -> int:
+        """Delete all start tasks older than the given cutoff, regardless of user.
+
+        This is intended for the periodic cleanup CronJob that purges stale
+        start-task rows. It deliberately ignores ``user_id`` so it can run
+        unscoped.
+
+        When ``batch_size`` is set, the delete is performed in batches of that
+        size, each in its own transaction. This bounds the work done per
+        transaction, limits lock-table entry consumption, and allows autovacuum
+        to reclaim dead tuples incrementally — important when purging a large
+        backlog on the first run.
+
+        Args:
+            cutoff: Rows with ``created_at`` strictly before this value are deleted.
+            batch_size: If set, delete in batches of this many rows per commit.
+                If None, delete all matching rows in a single statement.
+
+        Returns:
+            The number of rows deleted.
+        """
+        from sqlalchemy import delete, select
+
+        if batch_size is None:
+            delete_query = delete(StoredAppConversationStartTask).where(
+                StoredAppConversationStartTask.created_at < cutoff
+            )
+            result = cast(CursorResult, await self.session.execute(delete_query))
+            await self.session.commit()
+            return result.rowcount
+
+        total_deleted = 0
+        while True:
+            # Select the IDs of the next batch to delete: postgres has no
+            # DELETE ... LIMIT.
+            id_query = (
+                select(StoredAppConversationStartTask.id)
+                .where(StoredAppConversationStartTask.created_at < cutoff)
+                .order_by(StoredAppConversationStartTask.created_at)
+                .limit(batch_size)
+            )
+            ids = [row[0] for row in (await self.session.execute(id_query)).all()]
+            if not ids:
+                break
+
+            result = cast(
+                CursorResult,
+                await self.session.execute(
+                    delete(StoredAppConversationStartTask).where(
+                        StoredAppConversationStartTask.id.in_(ids)
+                    )
+                ),
+            )
+            await self.session.commit()
+            total_deleted += result.rowcount
+
+        return total_deleted
 
 
 class SQLAppConversationStartTaskServiceInjector(

@@ -345,7 +345,7 @@ describe("UserActions", () => {
       // Arrange - render and wait for queries to settle
       renderUserActionsForMenuCloseDelay();
       await act(async () => {
-        await vi.runAllTimersAsync();
+        await vi.runOnlyPendingTimersAsync();
       });
 
       const userActions = screen.getByTestId("user-actions");
@@ -376,7 +376,7 @@ describe("UserActions", () => {
       // Arrange - render and wait for queries to settle
       renderUserActionsForMenuCloseDelay();
       await act(async () => {
-        await vi.runAllTimersAsync();
+        await vi.runOnlyPendingTimersAsync();
       });
 
       const userActions = screen.getByTestId("user-actions");

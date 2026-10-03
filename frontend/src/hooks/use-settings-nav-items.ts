@@ -2,6 +2,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
   OSS_NAV_ITEMS,
+  YOUR_BUDGET_NAV_ITEM,
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
@@ -15,6 +16,7 @@ import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
+import { useQuotaStatus } from "./query/use-quota-status";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -32,6 +34,7 @@ export type SettingsNavRenderedItem =
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  user: I18nKey.USER$ACCOUNT_SETTINGS,
 };
 
 const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
@@ -50,15 +53,19 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
   const { data: user } = useMe();
   const { data: settings } = useSettings();
+  const isSaasMode = config?.app_mode === "saas";
+  const { data: quota } = useQuotaStatus({ enabled: isSaasMode });
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+
+  // Every role has its own budget; personal workspaces have none.
+  const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
 
   const shouldHideBilling = isBillingHidden(
     config,
     hasPermission("view_billing"),
   );
-  const isSaasMode = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
   const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
@@ -72,6 +79,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
+
+  // The quota page is only useful when a daily limit is configured.
+  if (isSaasMode && quota?.daily_limit === null) {
+    items = items.filter((item) => item.to !== "/settings/quota");
+  }
 
   // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
@@ -105,6 +117,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // Hide admin-only settings pages for non-admins/owners or personal orgs
   if (!isAdminOrOwner || !organizationId || isPersonalOrg) {
     items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
+  }
+
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget) {
+    items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
   const PERSONAL_LLM_PATHS = new Set([
@@ -161,7 +178,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org and personal sections (admins/owners only)
+      // Add section header for org, personal and user sections (admins/owners only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",

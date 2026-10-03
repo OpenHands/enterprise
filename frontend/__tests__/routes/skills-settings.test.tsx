@@ -1,14 +1,16 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { createRoutesStub, Outlet } from "react-router";
 import SkillsSettingsScreen from "#/routes/skills-settings";
 import SettingsService from "#/api/settings-service/settings-service.api";
+import SkillsService from "#/api/skills-service";
 import OptionService from "#/api/option-service/option-service.api";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
 
 // Mock hooks
@@ -160,5 +162,69 @@ describe("hasSkillChanges - enabled toggle bug fix", () => {
     expect(normalizeBool(false)).toBe(false);
     expect(normalizeBool(undefined)).toBe(false);
     expect(normalizeBool(null)).toBe(false);
+  });
+});
+
+describe("skill name conflict warning", () => {
+  beforeEach(() => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      registered_marketplaces: [
+        { name: "acme", source: "github:acme/skills", scope: "personal" },
+      ],
+    });
+    vi.spyOn(SkillsService, "getSkills").mockResolvedValue([
+      { name: "github", type: "knowledge", source: "global" },
+    ]);
+  });
+
+  it("should show the conflicting skill name and both sources", async () => {
+    // Arrange
+    vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+      skills: [],
+      plugins: [],
+      marketplace_skills: { acme: [] },
+      errors: [],
+      conflicts: [
+        {
+          name: "github",
+          marketplace: "acme",
+          source: "github:acme/skills",
+          conflicts_with: "global",
+        },
+      ],
+    });
+
+    // Act
+    renderSkillsSettings();
+
+    // Assert
+    const alert = await screen.findByTestId("skill-name-conflicts-alert");
+    expect(within(alert).getByText("github")).toBeInTheDocument();
+    expect(within(alert).getByText("global")).toBeInTheDocument();
+    expect(within(alert).getByText("acme")).toBeInTheDocument();
+    expect(within(alert).getByText("github:acme/skills")).toBeInTheDocument();
+  });
+
+  it("should not show a warning when no skill name conflicts", async () => {
+    // Arrange
+    vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+      skills: [
+        { name: "acme-github", type: "knowledge", source: "marketplace:acme" },
+      ],
+      plugins: [],
+      marketplace_skills: { acme: ["acme-github"] },
+      errors: [],
+      conflicts: [],
+    });
+
+    // Act
+    renderSkillsSettings();
+
+    // Assert
+    await screen.findByText("acme-github");
+    expect(
+      screen.queryByTestId("skill-name-conflicts-alert"),
+    ).not.toBeInTheDocument();
   });
 });

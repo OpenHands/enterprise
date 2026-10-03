@@ -1,5 +1,6 @@
 import os
 import threading
+from urllib.parse import quote
 
 from redis import Redis
 from redis import asyncio as aioredis
@@ -63,7 +64,11 @@ def get_redis_client_async() -> aioredis.Redis:
 
 
 def get_redis_authed_url():
-    return f'redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
+    # Password is URL-encoded so clients that parse the URL (e.g. coredis via
+    # the `limits` library) recover the exact bytes Redis expects. Without
+    # encoding, special characters such as a trailing newline are mangled by
+    # URL parsing and auth fails with an invalid-username-password error.
+    return f'redis://:{quote(REDIS_PASSWORD, safe="")}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}'
 
 
 __all__ = [

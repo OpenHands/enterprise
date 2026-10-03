@@ -22,12 +22,20 @@ interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
+export interface TestMessage {
+  ok: boolean;
+  text: string;
+}
+
 interface MCPServerFormProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
   existingServers?: MCPServerConfig[];
   onSubmit: (server: MCPServerConfig) => void;
   onCancel: () => void;
+  onTest?: (server: MCPServerConfig) => void;
+  isTestPending?: boolean;
+  testMessage?: TestMessage | null;
 }
 
 export function MCPServerForm({
@@ -36,12 +44,16 @@ export function MCPServerForm({
   existingServers,
   onSubmit,
   onCancel,
+  onTest,
+  isTestPending = false,
+  testMessage = null,
 }: MCPServerFormProps) {
   const { t } = useTranslation();
   const [serverType, setServerType] = React.useState<MCPServerType>(
     server?.type || "sse",
   );
   const [error, setError] = React.useState<string | null>(null);
+  const formRef = React.useRef<HTMLFormElement>(null);
 
   const serverTypeOptions = [
     { key: "sse", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE) },
@@ -209,18 +221,7 @@ export function MCPServerForm({
       .join("\n");
   };
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError(null);
-
-    const formData = new FormData(event.currentTarget);
-    const validationError = validateForm(formData);
-
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
+  const buildConfig = (formData: FormData): MCPServerConfig => {
     const baseConfig = {
       id: server?.id || `${serverType}-${Date.now()}`,
       type: serverType,
@@ -245,36 +246,69 @@ export function MCPServerForm({
         }
       }
 
-      onSubmit(serverConfig);
-    } else if (serverType === "stdio") {
-      const name = formData.get("name")?.toString().trim();
-      const command = formData.get("command")?.toString().trim();
-      const argsString = formData.get("args")?.toString().trim();
-      const envString = formData.get("env")?.toString().trim();
-
-      const args = argsString
-        ? argsString
-            .split("\n")
-            .map((arg) => arg.trim())
-            .filter(Boolean)
-        : [];
-      const env = parseEnvironmentVariables(envString || "");
-
-      onSubmit({
-        ...baseConfig,
-        name: name!,
-        command: command!,
-        ...(args.length > 0 && { args }),
-        ...(Object.keys(env).length > 0 && { env }),
-      });
+      return serverConfig;
     }
+
+    // stdio
+    const name = formData.get("name")?.toString().trim();
+    const command = formData.get("command")?.toString().trim();
+    const argsString = formData.get("args")?.toString().trim();
+    const envString = formData.get("env")?.toString().trim();
+
+    const args = argsString
+      ? argsString
+          .split("\n")
+          .map((arg) => arg.trim())
+          .filter(Boolean)
+      : [];
+    const env = parseEnvironmentVariables(envString || "");
+
+    return {
+      ...baseConfig,
+      name: name!,
+      command: command!,
+      ...(args.length > 0 && { args }),
+      ...(Object.keys(env).length > 0 && { env }),
+    };
   };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    const formData = new FormData(event.currentTarget);
+    const validationError = validateForm(formData);
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    onSubmit(buildConfig(formData));
+  };
+
+  const handleTestClick = () => {
+    if (!onTest || !formRef.current) return;
+    setError(null);
+    const formData = new FormData(formRef.current);
+    const validationError = validateForm(formData);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    onTest(buildConfig(formData));
+  };
+
+  // Only remote servers can be probed from the settings page; stdio servers
+  // run inside the conversation sandbox.
+  const canTest = !!onTest && (serverType === "sse" || serverType === "shttp");
 
   const formTestId =
     mode === "add" ? "add-mcp-server-form" : "edit-mcp-server-form";
 
   return (
     <form
+      ref={formRef}
       data-testid={formTestId}
       onSubmit={handleSubmit}
       className="flex w-full flex-col items-stretch gap-6"
@@ -410,6 +444,18 @@ export function MCPServerForm({
         </>
       )}
 
+      {testMessage && (
+        <p
+          data-testid="mcp-test-message"
+          className={cn(
+            "text-sm whitespace-pre-wrap",
+            testMessage.ok ? "text-success" : "text-red-500",
+          )}
+        >
+          {testMessage.text}
+        </p>
+      )}
+
       <div className="flex w-full items-center justify-end gap-2">
         <BrandButton
           testId="cancel-button"
@@ -419,7 +465,25 @@ export function MCPServerForm({
         >
           {t(I18nKey.BUTTON$CANCEL)}
         </BrandButton>
-        <BrandButton testId="submit-button" type="submit" variant="primary">
+        {canTest && (
+          <BrandButton
+            testId="mcp-test-connection"
+            type="button"
+            variant="secondary"
+            onClick={handleTestClick}
+            isDisabled={isTestPending}
+          >
+            {isTestPending
+              ? t(I18nKey.SETTINGS$MCP_TESTING)
+              : t(I18nKey.SETTINGS$MCP_TEST_CONNECTION)}
+          </BrandButton>
+        )}
+        <BrandButton
+          testId="submit-button"
+          type="submit"
+          variant="primary"
+          isDisabled={isTestPending}
+        >
           {mode === "add" && t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
           {mode === "edit" && t(I18nKey.SETTINGS$MCP_SAVE_SERVER)}
         </BrandButton>

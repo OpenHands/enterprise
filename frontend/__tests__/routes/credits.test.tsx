@@ -182,6 +182,18 @@ describe("Credits Route", () => {
     });
   });
 
+  it("should render no limit when the organization has no configured cap", async () => {
+    vi.spyOn(BillingService, "getBalance").mockResolvedValueOnce(null);
+    renderCredits();
+    await screen.findByTestId("org-credits");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("available-credits")).toHaveTextContent(
+        "CONVERSATION$NO_BUDGET_LIMIT",
+      );
+    });
+  });
+
   it("should be able to add credits", async () => {
     const createCheckoutSessionSpy = vi.spyOn(
       BillingService,

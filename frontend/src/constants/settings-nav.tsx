@@ -1,10 +1,12 @@
 import {
   AppWindow,
+  BarChart2,
   Briefcase,
   DollarSign,
   LayoutDashboard,
   Shield,
   Users,
+  Wallet,
 } from "lucide-react";
 import CreditCardIcon from "#/icons/credit-card.svg?react";
 import KeyIcon from "#/icons/key.svg?react";
@@ -187,7 +189,24 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "user",
     menuOnly: true,
   },
+  {
+    icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/quota",
+    text: "SETTINGS$NAV_QUOTA",
+    subtitle: "SETTINGS$PAGE_QUOTA_SUBLINE",
+    section: "user",
+  },
 ];
+
+// Kept out of SAAS_NAV_ITEMS: it is only shown in a SaaS team org, which
+// `useSettingsNavItems` decides at runtime.
+export const YOUR_BUDGET_NAV_ITEM: SettingsNavItem = {
+  icon: <Wallet className="size-4" strokeWidth={2} aria-hidden />,
+  to: "/settings/your-budget",
+  text: "SETTINGS$NAV_YOUR_BUDGET",
+  subtitle: "SETTINGS$PAGE_YOUR_BUDGET_SUBLINE",
+  section: "user",
+};
 
 export const OSS_NAV_ITEMS: SettingsNavItem[] = [
   {

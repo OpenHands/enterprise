@@ -24,6 +24,7 @@ from openhands.app_server.integrations.utils import validate_provider_token
 from openhands.app_server.secrets.secrets_models import (
     CustomSecretCreate,
     CustomSecretPage,
+    CustomSecretScope,
     CustomSecretWithoutValue,
     Secrets,
 )
@@ -42,6 +43,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
+from storage.saas_secrets_store import SaasSecretsStore
 
 _logger = logging.getLogger(__name__)
 
@@ -254,7 +256,9 @@ async def store_provider_tokens(
     await check_provider_tokens(provider_info, provider_tokens)
 
     async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
         if not user_secrets:
             user_secrets = Secrets()
 
@@ -313,7 +317,9 @@ async def unset_provider_tokens(
         500: Error unsetting git provider tokens
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        user_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
         if user_secrets:
             updated_secrets = user_secrets.model_copy(update={'provider_tokens': {}})
             await secrets_store.store(updated_secrets)
@@ -345,6 +351,7 @@ async def search_custom_secrets(
         ),
     ] = 100,
     user_secrets: Secrets | None = Depends(get_secrets),
+    secrets_store: SecretsStore = Depends(get_secrets_store),
 ) -> CustomSecretPage:
     """Search / List custom secrets.
 
@@ -352,39 +359,105 @@ async def search_custom_secrets(
     Results are paginated and can be filtered by name.
 
     In SaaS mode, includes the system-generated OPENHANDS_API_KEY which cannot be deleted.
+    In SaaS mode, also includes org-shared secrets (scope=organization), with suffix
+    deduplication applied so that a personal secret and an org-shared secret with the
+    same base name are both listed as distinct entries.
 
     Returns:
         CustomSecretPage: Paginated list of custom secrets (without values)
     """
-    if not user_secrets or not user_secrets.custom_secrets:
-        return CustomSecretPage(items=[], next_page_id=None)
+    # In SaaS mode, query personal and org-shared separately so we can
+    # tag each item with its scope (personal vs organization) and apply
+    # suffix deduplication on name collisions.
+    if _is_saas_mode() and isinstance(secrets_store, SaasSecretsStore):
+        from storage.org_secrets_store import OrgSecretsStore
+        from storage.saas_secrets_store import _resolve_unique_name
 
-    # Build list of all secrets, optionally filtered by name
-    all_secrets: list[CustomSecretWithoutValue] = []
-    for secret_name, secret_value in sorted(user_secrets.custom_secrets.items()):
-        if name__contains and name__contains.lower() not in secret_name.lower():
-            continue
-        all_secrets.append(
-            CustomSecretWithoutValue.model_construct(
-                name=secret_name,
-                description=secret_value.description,
+        personal_items: list[
+            tuple[str, str | None]
+        ] = await secrets_store.list_personal()
+
+        # Fetch org-shared secrets (names + descriptions only)
+        effective_org_id = getattr(secrets_store, 'effective_org_id', None)
+        shared_items: list[CustomSecretWithoutValue] = []
+        if effective_org_id is not None:
+            org_store = await OrgSecretsStore.get_instance(effective_org_id)
+            shared_items = await org_store.list_shared()
+
+        # Also include OPENHANDS_API_KEY (system-generated, personal scope)
+        if user_secrets and user_secrets.custom_secrets:
+            personal_names = {name for name, _ in personal_items}
+            if 'OPENHANDS_API_KEY' in user_secrets.custom_secrets:
+                if 'OPENHANDS_API_KEY' not in personal_names:
+                    personal_items.append(
+                        (
+                            'OPENHANDS_API_KEY',
+                            user_secrets.custom_secrets[
+                                'OPENHANDS_API_KEY'
+                            ].description,
+                        )
+                    )
+
+        # Merge personal + shared with suffix dedup.
+        # Personal secrets win the bare name; org-shared secrets that
+        # collide get ``_2``, ``_3``, … appended (display-only).
+        all_secrets: list[CustomSecretWithoutValue] = []
+        taken_names: set[str] = set()
+
+        for name, desc in sorted(personal_items):
+            if name__contains and name__contains.lower() not in name.lower():
+                continue
+            effective_name = _resolve_unique_name(name, taken_names)
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=effective_name,
+                    description=desc,
+                    scope=CustomSecretScope.PERSONAL,
+                )
             )
-        )
+            taken_names.add(effective_name)
+
+        for shared in sorted(shared_items, key=lambda s: s.name):
+            if name__contains and name__contains.lower() not in shared.name.lower():
+                continue
+            effective_name = _resolve_unique_name(shared.name, taken_names)
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=effective_name,
+                    description=shared.description,
+                    scope=CustomSecretScope.ORGANIZATION,
+                )
+            )
+            taken_names.add(effective_name)
+
+    else:
+        # OSS / non-SaaS path — no org-shared secrets exist.
+        if not user_secrets or not user_secrets.custom_secrets:
+            return CustomSecretPage(items=[], next_page_id=None)
+
+        all_secrets = []
+        for secret_name, secret_value in sorted(user_secrets.custom_secrets.items()):
+            if name__contains and name__contains.lower() not in secret_name.lower():
+                continue
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=secret_name,
+                    description=secret_value.description,
+                    scope=CustomSecretScope.PERSONAL,
+                )
+            )
 
     # Apply pagination
     start_index = 0
     if page_id:
-        # Find the index after the page_id secret
         for i, secret in enumerate(all_secrets):
             if secret.name == page_id:
                 start_index = i + 1
                 break
 
-    # Get the page of results
     end_index = start_index + limit
     page_items = all_secrets[start_index:end_index]
 
-    # Determine next_page_id
     next_page_id = None
     if end_index < len(all_secrets):
         next_page_id = page_items[-1].name if page_items else None
@@ -411,7 +484,9 @@ async def create_custom_secret(
     )
 
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        existing_secrets = await secrets_store.load_personal()
         custom_secrets = (
             dict(existing_secrets.custom_secrets) if existing_secrets else {}
         )
@@ -465,7 +540,11 @@ async def update_custom_secret(
         500: Error updating secret
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
         if not existing_secrets or secret_id not in existing_secrets.custom_secrets:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -520,7 +599,11 @@ async def delete_custom_secret(
         500: Error deleting secret
     """
     async with _secrets_write_lock(user_id, secrets_store):
-        existing_secrets = await secrets_store.load()
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
         if existing_secrets:
             # Get existing custom secrets
             custom_secrets = dict(existing_secrets.custom_secrets)

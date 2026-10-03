@@ -266,6 +266,23 @@ describe("Settings Screen", () => {
     ).toBeInTheDocument();
   });
 
+  it("should not link to the Agent Profiles library in the saas navbar", async () => {
+    // Arrange
+    mockQueryClient.clear();
+    mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+    seedActiveUser({ role: "member" });
+
+    // Act
+    renderSettingsScreen();
+
+    // Assert
+    const navbar = await screen.findByTestId("settings-navbar");
+    await within(navbar).findByText("SETTINGS$AGENT");
+    expect(
+      navbar.querySelector('a[href="/canvas/settings/agents"]'),
+    ).not.toBeInTheDocument();
+  });
+
   it("should not be able to access saas-only routes in oss mode", async () => {
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
     // @ts-expect-error - only return app mode
@@ -503,6 +520,62 @@ describe("Settings Screen", () => {
         ).not.toBeInTheDocument();
       });
     });
+
+    const seedTeamOrgUser = (role: OrganizationMember["role"]) => {
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: MOCK_TEAM_ORG_ACME.id }),
+      );
+    };
+
+    it("should show the Account settings header to an admin in a team org and keep User in the account menu", async () => {
+      // Arrange
+      seedTeamOrgUser("admin");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
+      // User is an account-menu destination, not a rail item.
+      expect(
+        within(navbar).queryByRole("link", { name: "User Settings" }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
+      ).toBeInTheDocument();
+    });
+
+    it("should not show the Account settings header to a member of a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("member");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("Secrets");
+      expect(
+        within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("enable_billing feature flag", () => {
@@ -556,7 +629,9 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await waitFor(() => {
-        expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
+        expect(
+          within(navbar).getByText("Billing & Credits"),
+        ).toBeInTheDocument();
       });
 
       getConfigSpy.mockRestore();
@@ -589,7 +664,9 @@ describe("Settings Screen", () => {
 
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
-      expect(within(navbar).queryByText("Billing & Credits")).not.toBeInTheDocument();
+      expect(
+        within(navbar).queryByText("Billing & Credits"),
+      ).not.toBeInTheDocument();
 
       getConfigSpy.mockRestore();
     });
@@ -663,6 +740,80 @@ describe("Settings Screen", () => {
       const response = result as Response;
       expect(response.status).toBe(302);
       expect(response.headers.get("Location")).toBe("/settings/user");
+    });
+  });
+
+  describe("Your Budget route access", () => {
+    beforeEach(() => {
+      mockQueryClient.clear();
+      useSelectedOrganizationStore.setState({ organizationId: null });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const selectOrg = (
+      org: typeof MOCK_TEAM_ORG_ACME,
+      role: OrganizationMember["role"],
+    ) => {
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [org],
+        currentOrgId: org.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: org.id });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: org.id }),
+      );
+    };
+
+    const openYourBudget = () => {
+      const request = new Request("http://localhost/settings/your-budget");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      return clientLoader({ request, params: {} });
+    };
+
+    it.each(["member", "admin", "owner"] as const)(
+      "should let a %s open Your Budget in a team org",
+      async (role) => {
+        // Arrange
+        mockQueryClient.setQueryData(["web-client-config"], {
+          app_mode: "saas",
+        });
+        selectOrg(MOCK_TEAM_ORG_ACME, role);
+
+        // Act
+        const result = await openYourBudget();
+
+        // Assert
+        expect(result).not.toBeInstanceOf(Response);
+      },
+    );
+
+    it("should redirect away from Your Budget in a personal workspace", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      selectOrg(MOCK_PERSONAL_ORG, "owner");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+
+    it("should redirect away from Your Budget in OSS mode", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "oss" });
+      selectOrg(MOCK_TEAM_ORG_ACME, "member");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
     });
   });
 
@@ -1324,5 +1475,123 @@ describe("clientLoader redirect behavior", () => {
     expect(result.status).toBe(302);
     // In OSS mode, first available is /settings (LLM)
     expect(result.headers.get("Location")).toBe("/settings");
+  });
+});
+
+describe("clientLoader ?org= deep link", () => {
+  const seedConfig = (appMode: "saas" | "oss") => {
+    mockQueryClient.setQueryData(["web-client-config"], {
+      app_mode: appMode,
+      feature_flags: {
+        enable_billing: false,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    mockQueryClient.clear();
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("switches to the requested org and redirects to the same page without the param", async () => {
+    // Arrange: the cloud's current org is the personal workspace
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+    const switchSpy = vi
+      .spyOn(organizationService, "switchOrganization")
+      .mockResolvedValue(MOCK_TEAM_ORG_ACME);
+
+    // Act: open settings deep-linked to the team org
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: org switched locally and server-side, param stripped
+    expect(switchSpy).toHaveBeenCalledWith({ orgId: MOCK_TEAM_ORG_ACME.id });
+    expect(useSelectedOrganizationStore.getState().organizationId).toBe(
+      MOCK_TEAM_ORG_ACME.id,
+    );
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  it("replaces the history entry when stripping the param so Back returns to the referrer", async () => {
+    // Arrange: the requested org is already current, so only the param is stripped
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+
+    // Act: enter settings from agent-canvas with the org deep link
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: a replacing redirect, so the pre-switch URL is not left in history
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+    expect(result.headers.get("X-Remix-Replace")).toBe("true");
+  });
+
+  it("keeps the param and does not redirect when organizations cannot be fetched", async () => {
+    // Arrange: e.g. no cloud session yet, so the org list request fails
+    seedConfig("saas");
+    vi.spyOn(organizationService, "getOrganizations").mockRejectedValue(
+      new Error("Unauthorized"),
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert: nothing switched; the page renders so the login redirect can
+    // carry the param in returnTo
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+
+  it("ignores the param in OSS mode", async () => {
+    // Arrange
+    seedConfig("oss");
+    const getOrganizationsSpy = vi.spyOn(
+      organizationService,
+      "getOrganizations",
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert
+    expect(getOrganizationsSpy).not.toHaveBeenCalled();
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
   });
 });

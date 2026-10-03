@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
-import { MCPServerForm } from "./mcp-server-form";
+import { MCPServerForm, type TestMessage } from "./mcp-server-form";
 
 type MCPServerType = "sse" | "stdio" | "shttp";
 
@@ -23,6 +23,9 @@ interface MCPServerModalProps {
   existingServers: MCPServerConfig[];
   onSubmit: (server: MCPServerConfig) => void;
   onClose: () => void;
+  onTest?: (server: MCPServerConfig) => void;
+  isTestPending?: boolean;
+  testMessage?: TestMessage | null;
 }
 
 export function MCPServerModal({
@@ -31,6 +34,9 @@ export function MCPServerModal({
   existingServers,
   onSubmit,
   onClose,
+  onTest,
+  isTestPending,
+  testMessage,
 }: MCPServerModalProps) {
   const { t } = useTranslation();
 
@@ -60,6 +66,9 @@ export function MCPServerModal({
           existingServers={existingServers}
           onSubmit={onSubmit}
           onCancel={onClose}
+          onTest={onTest}
+          isTestPending={isTestPending}
+          testMessage={testMessage}
         />
       </div>
     </ModalBackdrop>

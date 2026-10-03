@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { PostHogWrapper } from "#/components/providers/posthog-wrapper";
 import OptionService from "#/api/option-service/option-service.api";
+import { queryClient } from "#/query-client-config";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 // Mock PostHogProvider to capture the options passed to it
 const mockPostHogProvider = vi.fn();
@@ -12,14 +14,23 @@ vi.mock("posthog-js/react", () => ({
   },
 }));
 
+function encodeHandoff(value: unknown): string {
+  const encoded = btoa(
+    encodeURIComponent(JSON.stringify(value)).replace(
+      /%([0-9A-F]{2})/g,
+      (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)),
+    ),
+  );
+  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 describe("PostHogWrapper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset URL hash
+    queryClient.clear();
     window.location.hash = "";
-    // Clear sessionStorage
+    localStorage.clear();
     sessionStorage.clear();
-    // Mock the config fetch
     // @ts-expect-error - partial mock
     vi.spyOn(OptionService, "getConfig").mockResolvedValue({
       posthog_client_key: "test-posthog-key",
@@ -27,7 +38,6 @@ describe("PostHogWrapper", () => {
   });
 
   it("should initialize PostHog with bootstrap IDs from URL hash (without ph_ prefix)", async () => {
-    // Webflow sends distinct_id and session_id without the ph_ prefix
     window.location.hash = "distinct_id=user-123&session_id=session-456";
 
     render(
@@ -64,7 +74,7 @@ describe("PostHogWrapper", () => {
     expect(window.location.hash).toBe("");
   });
 
-  it("should persist bootstrap IDs to sessionStorage for OAuth survival", async () => {
+  it("should persist legacy bootstrap IDs to sessionStorage as a flat Canvas-compatible shape", async () => {
     window.location.hash = "distinct_id=user-123&session_id=session-456";
 
     render(
@@ -75,11 +85,6 @@ describe("PostHogWrapper", () => {
 
     await screen.findByTestId("child");
 
-    // After extracting from hash, IDs should NOT remain in sessionStorage
-    // because they were already consumed during this page load.
-    // But if a full-page redirect happened before PostHog init,
-    // sessionStorage would still have them for the next load.
-    // We verify the write happened by checking the provider received the IDs.
     expect(mockPostHogProvider).toHaveBeenCalledWith(
       expect.objectContaining({
         options: expect.objectContaining({
@@ -90,10 +95,15 @@ describe("PostHogWrapper", () => {
         }),
       }),
     );
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toEqual({
+      distinctID: "user-123",
+      sessionID: "session-456",
+    });
   });
 
   it("should read bootstrap IDs from sessionStorage when hash is absent (post-OAuth)", async () => {
-    // Simulate returning from OAuth: no hash, but sessionStorage has the IDs
     sessionStorage.setItem(
       "posthog_bootstrap",
       JSON.stringify({ distinctID: "user-123", sessionID: "session-456" }),
@@ -119,7 +129,7 @@ describe("PostHogWrapper", () => {
     );
   });
 
-  it("should clean up sessionStorage after consuming bootstrap IDs", async () => {
+  it("should clean up legacy sessionStorage bootstrap IDs after consuming them", async () => {
     sessionStorage.setItem(
       "posthog_bootstrap",
       JSON.stringify({ distinctID: "user-123", sessionID: "session-456" }),
@@ -135,6 +145,245 @@ describe("PostHogWrapper", () => {
 
     expect(sessionStorage.getItem("posthog_bootstrap")).toBeNull();
   });
+
+  it("should keep structured stored handoffs for Canvas but apply them only once in Enterprise", async () => {
+    sessionStorage.setItem(
+      "posthog_bootstrap",
+      JSON.stringify({
+        bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+        exp: Date.now() + 60_000,
+        nonce: "stored-once",
+        attribution: { cta_surface: "docs_link" },
+      }),
+    );
+
+    const firstView = render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+        }),
+      }),
+    );
+
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toMatchObject({
+      bootstrap: { distinctID: "user-123", sessionID: "session-456" },
+      attribution: { cta_surface: "docs_link" },
+    });
+
+    firstView.unmount();
+    mockPostHogProvider.mockClear();
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child-again" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child-again");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ bootstrap: undefined }),
+      }),
+    );
+    expect(sessionStorage.getItem("posthog_bootstrap")).not.toBeNull();
+  });
+
+  it("should initialize PostHog from structured website handoff and register attribution", async () => {
+    window.location.hash = `oh_ph_handoff=${encodeHandoff({
+      v: 1,
+      exp: Date.now() + 60_000,
+      nonce: "enterprise-structured",
+      distinct_id: "website-anon-id",
+      session_id: "website-session-id",
+      attribution: {
+        utm_source: "newsletter",
+        utm_medium: "email",
+        utm_campaign: "launch",
+        landing_page_category: "home",
+        cta_id: "hero-cloud",
+        cta_surface: "homepage_hero",
+        referring_domain_category: "search",
+        full_url: "https://www.openhands.dev/?secret=value",
+      },
+    })}`;
+
+    const firstView = render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const props = mockPostHogProvider.mock.calls[0][0];
+    expect(props).toEqual(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          bootstrap: {
+            distinctID: "website-anon-id",
+            sessionID: "website-session-id",
+          },
+        }),
+      }),
+    );
+
+    const register = vi.fn();
+    const register_for_session = vi.fn();
+    props.options.loaded({ register, register_for_session });
+    expect(register_for_session).toHaveBeenCalledWith({
+      utm_source: "newsletter",
+      utm_medium: "email",
+      utm_campaign: "launch",
+      landing_page_category: "home",
+      cta_id: "hero-cloud",
+      cta_surface: "homepage_hero",
+      referring_domain_category: "search",
+    });
+    expect(register).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(sessionStorage.getItem("posthog_bootstrap") ?? "{}"),
+    ).toMatchObject({
+      bootstrap: {
+        distinctID: "website-anon-id",
+        sessionID: "website-session-id",
+      },
+      attribution: {
+        utm_source: "newsletter",
+        cta_surface: "homepage_hero",
+      },
+      nonce: "enterprise-structured",
+    });
+    expect(window.location.hash).toBe("");
+
+    firstView.unmount();
+    mockPostHogProvider.mockClear();
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child-again" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child-again");
+    expect(mockPostHogProvider).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ bootstrap: undefined }),
+      }),
+    );
+  });
+
+  it("stores consumed structured handoff nonces in a pruned bounded map", async () => {
+    const now = Date.now();
+    localStorage.setItem(
+      "posthog_bootstrap:consumed_nonces",
+      JSON.stringify({
+        expired: now - 60_000,
+        ...Object.fromEntries(
+          Array.from({ length: 105 }, (_, index) => [
+            `existing-${index}`,
+            now + 10_000 + index,
+          ]),
+        ),
+      }),
+    );
+    window.location.hash = `oh_ph_handoff=${encodeHandoff({
+      v: 1,
+      exp: now + 120_000,
+      nonce: "bounded-new",
+      distinct_id: "website-anon-id",
+      session_id: "website-session-id",
+    })}`;
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const stored = JSON.parse(
+      localStorage.getItem("posthog_bootstrap:consumed_nonces") ?? "{}",
+    );
+    expect(Object.keys(stored)).toHaveLength(100);
+    expect(stored.expired).toBeUndefined();
+    expect(stored["bounded-new"]).toBe(now + 120_000);
+    expect(localStorage.getItem("posthog_bootstrap:bounded-new")).toBeNull();
+  });
+
+  it("should initialize PostHog from query handoff and remove only handoff params", async () => {
+    const encoded = encodeHandoff({
+      v: 1,
+      exp: Date.now() + 60_000,
+      nonce: "enterprise-query",
+      distinct_id: "docs-anon-id",
+      session_id: "docs-session-id",
+      attribution: { cta_surface: "docs_link" },
+    });
+    window.history.replaceState(
+      null,
+      "",
+      `/?keep=1&oh_ph_handoff=${encoded}#section=top`,
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const props = mockPostHogProvider.mock.calls[0][0];
+    expect(props.options.bootstrap).toEqual({
+      distinctID: "docs-anon-id",
+      sessionID: "docs-session-id",
+    });
+
+    const register = vi.fn();
+    props.options.loaded({ register });
+    expect(register).toHaveBeenCalledWith({ cta_surface: "docs_link" });
+    expect(window.location.search).toBe("?keep=1");
+    expect(window.location.hash).toBe("#section=top");
+  });
+
+  it.each(["#pricing", "#/settings/app"])(
+    "should preserve raw hash %s when removing a query handoff",
+    async (hash) => {
+      const encoded = encodeHandoff({
+        v: 1,
+        exp: Date.now() + 60_000,
+        nonce: `enterprise-query-${hash}`,
+        distinct_id: "docs-anon-id",
+        session_id: "docs-session-id",
+      });
+      window.history.replaceState(
+        null,
+        "",
+        `/?keep=1&oh_ph_handoff=${encoded}${hash}`,
+      );
+
+      render(
+        <PostHogWrapper>
+          <div data-testid="child" />
+        </PostHogWrapper>,
+      );
+
+      await screen.findByTestId("child");
+
+      expect(window.location.search).toBe("?keep=1");
+      expect(window.location.hash).toBe(hash);
+    },
+  );
 
   it("should initialize PostHog with health monitoring config (web vitals, error tracking, network timing)", async () => {
     render(
@@ -158,6 +407,40 @@ describe("PostHogWrapper", () => {
     );
   });
 
+  it("should stamp deployment_kind on every PostHog event", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        posthog_client_key: "configured-posthog-key",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "cloud",
+        },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await screen.findByTestId("child");
+
+    const [{ options }] = mockPostHogProvider.mock.calls[0];
+    const event = options.before_send({
+      event: "test_event",
+      properties: { custom: "value" },
+    });
+
+    expect(event.properties).toEqual(
+      expect.objectContaining({
+        custom: "value",
+        deployment_kind: "remote",
+      }),
+    );
+  });
+
   it("should initialize without bootstrap when neither hash nor sessionStorage has IDs", async () => {
     render(
       <PostHogWrapper>
@@ -174,5 +457,30 @@ describe("PostHogWrapper", () => {
         }),
       }),
     );
+  });
+
+  it("should not initialize PostHog in self-hosted Enterprise", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        posthog_client_key: "configured-posthog-key",
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          deployment_mode: "self_hosted",
+        },
+      }),
+    );
+
+    render(
+      <PostHogWrapper>
+        <div data-testid="child" />
+      </PostHogWrapper>,
+    );
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["web-client-config"] });
+    });
+
+    expect(mockPostHogProvider).not.toHaveBeenCalled();
   });
 });

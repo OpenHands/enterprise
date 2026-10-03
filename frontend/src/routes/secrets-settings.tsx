@@ -24,6 +24,8 @@ import {
   settingsListTableHeaderCellClassName,
   settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
+import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 
 export const clientLoader = createPermissionGuard("manage_secrets");
 
@@ -33,6 +35,9 @@ function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
+  const { data: me } = useMe();
+  const { hasPermission } = usePermission(me?.role ?? "member");
+  const canManageOrgSecrets = hasPermission("manage_org_secrets");
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -51,6 +56,8 @@ function SecretsSettingsScreen() {
   const [selectedSecret, setSelectedSecret] = React.useState<string | null>(
     null,
   );
+  const [selectedSecretIsShared, setSelectedSecretIsShared] =
+    React.useState(false);
   const [confirmationModalIsVisible, setConfirmationModalIsVisible] =
     React.useState(false);
 
@@ -78,18 +85,23 @@ function SecretsSettingsScreen() {
     });
   };
 
-  const handleDeleteSecret = (secret: string) => {
-    deleteSecret(secret, {
-      onSettled: () => {
-        setConfirmationModalIsVisible(false);
+  const handleDeleteSecret = (secret: string, isShared: boolean) => {
+    deleteSecret(
+      { id: secret, isShared, organizationId },
+      {
+        onSettled: () => {
+          setConfirmationModalIsVisible(false);
+        },
+        onSuccess: invalidateSecrets,
+        onError: invalidateSecrets,
       },
-      onSuccess: invalidateSecrets,
-      onError: invalidateSecrets,
-    });
+    );
   };
 
   const onConfirmDeleteSecret = () => {
-    if (selectedSecret) handleDeleteSecret(selectedSecret);
+    if (selectedSecret) {
+      handleDeleteSecret(selectedSecret, selectedSecretIsShared);
+    }
   };
 
   const onCancelDeleteSecret = () => {
@@ -173,21 +185,32 @@ function SecretsSettingsScreen() {
                 </tr>
               </thead>
               <tbody>
-                {secrets?.map((secret) => (
-                  <SecretListItem
-                    key={secret.name}
-                    title={secret.name}
-                    description={secret.description}
-                    onEdit={() => {
-                      setView("edit-secret-form");
-                      setSelectedSecret(secret.name);
-                    }}
-                    onDelete={() => {
-                      setConfirmationModalIsVisible(true);
-                      setSelectedSecret(secret.name);
-                    }}
-                  />
-                ))}
+                {secrets?.map((secret) => {
+                  const isOrgShared = secret.scope === "organization";
+                  // A user can edit/delete a secret if they own it (personal
+                  // scope) or if it is org-shared and they have
+                  // manage_org_secrets permission (admins/owners).
+                  const canEdit = !isOrgShared || canManageOrgSecrets;
+                  return (
+                    <SecretListItem
+                      key={secret.name}
+                      title={secret.name}
+                      description={secret.description}
+                      scope={secret.scope ?? "personal"}
+                      canEdit={canEdit}
+                      onEdit={() => {
+                        setView("edit-secret-form");
+                        setSelectedSecret(secret.name);
+                        setSelectedSecretIsShared(isOrgShared);
+                      }}
+                      onDelete={() => {
+                        setConfirmationModalIsVisible(true);
+                        setSelectedSecret(secret.name);
+                        setSelectedSecretIsShared(isOrgShared);
+                      }}
+                    />
+                  );
+                })}
               </tbody>
             </table>
           </HorizontalScrollFade>

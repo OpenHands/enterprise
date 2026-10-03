@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRoutesStub } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import i18next from "i18next";
@@ -8,6 +8,7 @@ import { I18nextProvider } from "react-i18next";
 import GitSettingsScreen, { clientLoader } from "#/routes/git-settings";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import OptionService from "#/api/option-service/option-service.api";
+import { openHands } from "#/api/open-hands-axios";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
@@ -290,7 +291,11 @@ describe("Content", () => {
     const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
 
     getConfigSpy.mockResolvedValue(VALID_OSS_CONFIG);
-    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    // GitHub must be connected: the Configure button is only offered then
+    getSettingsSpy.mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: { github: null },
+    });
 
     const { rerender } = renderGitSettingsScreen();
 
@@ -319,7 +324,7 @@ describe("Content", () => {
 
     getConfigSpy.mockResolvedValue({
       ...VALID_SAAS_CONFIG,
-      providers_configured: ["gitlab"],
+      providers_configured: ["github", "gitlab"],
       github_app_slug: "test-slug",
       gitlab_enabled: true,
       slack_enabled: true,
@@ -330,13 +335,18 @@ describe("Content", () => {
     await waitFor(() => {
       button = screen.getByTestId("configure-github-repositories-button");
       expect(button).toBeInTheDocument();
-      expect(button).toHaveClass("bg-primary");
-      expect(button.querySelector("svg")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("github-status-text")).not.toBeInTheDocument();
+      expect(button).toHaveClass("bg-base-secondary");
+      expect(button.querySelector("svg")).toBeInTheDocument();
+      expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+        /Connected|STATUS\$CONNECTED/,
+      );
+      expect(
+        screen.getByTestId("disconnect-github-button"),
+      ).toBeInTheDocument();
       expect(screen.getByTestId("gitlab-status-text")).toHaveTextContent(
         /Not Connected|SETTINGS\$GITLAB_NOT_CONNECTED/,
       );
-      expect(screen.getByTestId("configure-gitlab-button")).toBeInTheDocument();
+      expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
       expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
       expect(screen.queryByTestId("submit-button")).not.toBeInTheDocument();
       expect(
@@ -354,6 +364,7 @@ describe("Content", () => {
 
     getConfigSpy.mockResolvedValue({
       ...VALID_SAAS_CONFIG,
+      providers_configured: ["github"],
       github_app_slug: "test-slug",
     });
     getSettingsSpy.mockResolvedValue({
@@ -768,5 +779,160 @@ describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
+  });
+});
+
+describe("Git provider connections in SaaS mode", () => {
+  it("should offer to connect each configured provider that is not connected", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      ...VALID_SAAS_CONFIG,
+      providers_configured: ["github", "gitlab", "bitbucket"],
+      github_app_slug: "test-slug",
+      gitlab_enabled: true,
+    });
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: {},
+    });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() => {
+      expect(screen.getByTestId("connect-github-button")).toBeInTheDocument();
+      expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("connect-bitbucket-button"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId("configure-github-repositories-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("disconnect-github-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should show an error toast when returning from a failed provider link", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(VALID_SAAS_CONFIG);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      MOCK_DEFAULT_USER_SETTINGS,
+    );
+    const displayErrorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+    displayErrorToastSpy.mockClear();
+    window.history.replaceState(
+      null,
+      "",
+      "/settings/integrations?link_status=error",
+    );
+
+    // Act
+    renderGitSettingsScreen();
+    await screen.findByTestId("git-settings-screen");
+
+    // Assert
+    await waitFor(() =>
+      expect(displayErrorToastSpy).toHaveBeenCalledWith(
+        "GIT_PROVIDER$LINK_FAILED",
+      ),
+    );
+    expect(window.location.search).toBe("");
+
+    window.history.replaceState(null, "", "/");
+  });
+});
+
+describe("Slack connection status", () => {
+  const mockSlackStatusRequest = (result: { data: unknown } | Error) =>
+    vi.spyOn(openHands, "get").mockImplementation(async (url: string) => {
+      if (url !== "/slack/status") {
+        return { data: null };
+      }
+      if (result instanceof Error) {
+        throw result;
+      }
+      return result;
+    });
+
+  const waitForSlackStatusToSettle = async (
+    getSpy: ReturnType<typeof mockSlackStatusRequest>,
+  ) => {
+    await waitFor(() => expect(getSpy).toHaveBeenCalledWith("/slack/status"));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+  };
+
+  beforeEach(() => {
+    // The query client is shared: drop any status a previous test loaded, and
+    // fail on the first error instead of retrying.
+    queryClient.clear();
+    queryClient.setDefaultOptions({ queries: { retry: false } });
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      ...VALID_SAAS_CONFIG,
+      slack_enabled: true,
+    });
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: {},
+    });
+  });
+
+  afterEach(() => {
+    queryClient.setDefaultOptions({});
+    vi.restoreAllMocks();
+  });
+
+  it("should show Slack as connected when the user has linked their Slack account", async () => {
+    // Arrange
+    mockSlackStatusRequest({ data: { connected: true } });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    expect(await screen.findByTestId("slack-status-text")).toHaveTextContent(
+      "STATUS$CONNECTED",
+    );
+  });
+
+  it("should show Slack as not connected when the user has not linked their Slack account", async () => {
+    // Arrange
+    mockSlackStatusRequest({ data: { connected: false } });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    expect(await screen.findByTestId("slack-status-text")).toHaveTextContent(
+      "STATUS$NOT_CONNECTED",
+    );
+  });
+
+  it("should not show a Slack status when the status cannot be loaded", async () => {
+    // Arrange
+    const getSpy = mockSlackStatusRequest(new Error("Network Error"));
+
+    // Act
+    renderGitSettingsScreen();
+    await waitForSlackStatusToSettle(getSpy);
+
+    // Assert
+    expect(screen.queryByTestId("slack-status-text")).not.toBeInTheDocument();
+  });
+
+  it("should not show a Slack status when the server does not return one", async () => {
+    // Arrange
+    const getSpy = mockSlackStatusRequest({
+      data: "<!doctype html><html><body></body></html>",
+    });
+
+    // Act
+    renderGitSettingsScreen();
+    await waitForSlackStatusToSettle(getSpy);
+
+    // Assert
+    expect(screen.queryByTestId("slack-status-text")).not.toBeInTheDocument();
   });
 });

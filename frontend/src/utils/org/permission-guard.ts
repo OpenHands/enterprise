@@ -1,9 +1,10 @@
-import { redirect } from "react-router";
+import { replace } from "react-router";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
+import { hasPendingOrgSwitch } from "./org-url-param";
 import { getActiveOrganizationUser } from "./permission-checks";
 import { PermissionKey, rolePermissions } from "./permissions";
 
@@ -46,7 +47,8 @@ const PERMISSION_GRANTED = {} as const;
 
 /**
  * Creates a clientLoader guard that checks if the user has the required permission.
- * Redirects to the first available settings page if permission is denied.
+ * Redirects (replacing the history entry) to the first available settings
+ * page if permission is denied.
  *
  * In OSS mode, permission checks are bypassed since there are no user roles.
  *
@@ -57,6 +59,10 @@ const PERMISSION_GRANTED = {} as const;
 export const createPermissionGuard =
   (requiredPermission: PermissionKey, customRedirectPath?: string) =>
   async ({ request }: { request: Request }) => {
+    // The settings loader is consuming a pending `?org=` switch on this pass
+    // and will redirect without the param; redirecting here would drop it.
+    if (hasPendingOrgSwitch(request)) return PERMISSION_GRANTED;
+
     // Get config to check app_mode. A failed config fetch (e.g. mock mode
     // proxying to a down backend) must not throw into ErrorBoundary.
     let config: WebClientConfig | undefined;
@@ -84,7 +90,7 @@ export const createPermissionGuard =
       if (redirectPath === currentPath) {
         return PERMISSION_GRANTED;
       }
-      return redirect(redirectPath);
+      return replace(redirectPath);
     };
 
     if (!user) {

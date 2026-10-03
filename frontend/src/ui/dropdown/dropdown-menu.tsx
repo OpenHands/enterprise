@@ -54,6 +54,10 @@ export function DropdownMenu({
         dropdownMenuPanelPaddingClassName,
         !isOpen && "hidden",
       )}
+      // Menu-item clicks bubble to any <label> wrapping the Dropdown, whose
+      // default action re-clicks the combobox input and reopens the menu
+      // right after selection; cancel that default here.
+      onClick={(event) => event.preventDefault()}
     >
       {isOpen && header ? (
         <div

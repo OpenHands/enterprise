@@ -1,11 +1,11 @@
 import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
+import type { IntegrationProviderId } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { cn } from "#/utils/utils";
 
 interface HubProviderModalHeaderProps {
-  provider: string;
+  provider: IntegrationProviderId;
   title: string;
   subtitle?: string;
-  logoUrl?: string;
   className?: string;
   testId?: string;
 }
@@ -15,7 +15,6 @@ export function HubProviderModalHeader({
   provider,
   title,
   subtitle,
-  logoUrl,
   className,
   testId,
 }: HubProviderModalHeaderProps) {
@@ -24,11 +23,7 @@ export function HubProviderModalHeader({
       className={cn("flex items-start gap-3 pr-8", className)}
       data-testid={testId}
     >
-      <IntegrationProviderIcon
-        provider={provider}
-        logoUrl={logoUrl}
-        size="md"
-      />
+      <IntegrationProviderIcon provider={provider} size="md" />
       <div className="min-w-0 flex-1 space-y-1">
         <h2 className="text-lg font-semibold leading-5 text-white">{title}</h2>
         {subtitle ? (

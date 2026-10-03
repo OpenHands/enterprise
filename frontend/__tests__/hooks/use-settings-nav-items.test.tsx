@@ -10,6 +10,7 @@ import {
   getSettingsUserMenuItems,
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -48,6 +49,14 @@ const mockMe = vi.hoisted(() => ({
 
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
+}));
+
+const mockQuotaStatus = vi.hoisted(() => ({
+  data: { daily_limit: 100 } as { daily_limit: number | null } | undefined,
+}));
+
+vi.mock("#/hooks/query/use-quota-status", () => ({
+  useQuotaStatus: () => mockQuotaStatus,
 }));
 
 const queryClient = new QueryClient();
@@ -107,6 +116,31 @@ describe("useSettingsNavItems", () => {
     mockOrgTypeAndAccess.selectedOrg = null;
     mockOrgTypeAndAccess.canViewOrgRoutes = false;
     mockMe.data = null;
+    mockQuotaStatus.data = { daily_limit: 100 };
+  });
+
+  it("should show quota route when a daily limit is configured", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: 100 };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeDefined();
+    });
+  });
+
+  it("should hide quota route when the daily limit is unlimited", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: null };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeUndefined();
+    });
   });
 
   it("should return SAAS_NAV_ITEMS minus billing/org/org-members when userRole is 'member'", async () => {
@@ -667,6 +701,53 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/secrets"),
         ).toBeDefined();
       });
+    });
+  });
+
+  describe("Your Budget visibility", () => {
+    const selectTeamOrg = (role: string) => {
+      mockConfig("saas");
+      mockMe.data = { role };
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-1";
+    };
+
+    it.each(["member", "admin", "owner"])(
+      "should show Your Budget to a %s in a team org without asking whether budgets are enabled",
+      async (role) => {
+        // Arrange
+        selectTeamOrg(role);
+        const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
+
+        // Act
+        const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+        // Assert
+        await waitFor(() => {
+          expect(
+            findItemByPath(result.current, "/settings/your-budget"),
+          ).toBeDefined();
+        });
+        expect(getMyBudgetSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it("should hide Your Budget in a personal workspace", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockOrgTypeAndAccess.isTeamOrg = false;
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
     });
   });
 });

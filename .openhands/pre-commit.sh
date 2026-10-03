@@ -18,7 +18,7 @@ has_backend_changes=false
 for file in $STAGED_FILES; do
     if [[ $file == frontend/* ]]; then
         has_frontend_changes=true
-    elif [[ $file == openhands/* || $file == evaluation/* || $file == tests/* ]]; then
+    elif [[ $file == openhands/* || $file == server/* || $file == storage/* || $file == integrations/* || $file == sync/* || $file == analytics/* || $file == utils/* || $file == migrations/* || $file == tests/* ]]; then
         has_backend_changes=true
     fi
 done
@@ -92,7 +92,7 @@ if [ "$has_frontend_changes" = false ] && [ "$has_backend_changes" = false ]; th
     echo "No specific code changes detected. Running basic checks..."
     if [ -n "$STAGED_FILES" ]; then
         # Run only basic pre-commit hooks for non-code files
-        poetry run pre-commit run --files $(echo "$STAGED_FILES" | tr '\n' ' ') --hook-stage commit --config ./dev_config/python/.pre-commit-config.yaml
+        uv run pre-commit run --files $(echo "$STAGED_FILES" | tr '\n' ' ') --hook-stage commit --config ./dev_config/python/.pre-commit-config.yaml
         if [ $? -ne 0 ]; then
             echo "Basic checks failed. Please fix the issues before committing."
             EXIT_CODE=1

@@ -26,7 +26,7 @@ export default [
     id: "routes/integrations-hub-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
-    index("routes/root-to-settings.tsx"),
+    index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),
     route("launch", "routes/launch.tsx"),
     route("settings", "routes/settings.tsx", [
@@ -62,6 +62,8 @@ export default [
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
+      route("quota", "routes/quota-settings.tsx"),
+      route("your-budget", "routes/your-budget.tsx"),
     ]),
     route("super-admin", "routes/super-admin.tsx", [
       index("routes/super-admin-overview.tsx"),

@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -56,6 +57,9 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.conversation_links import (
+    get_conversation_ui_url,
+)
 from openhands.app_server.app_conversation.conversation_secret_enricher import (
     ConversationSecretEnricher,
 )
@@ -74,6 +78,9 @@ from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_service import (
     EventCallbackService,
+)
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
 )
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
@@ -98,8 +105,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.settings.marketplace_composition import (
-    load_composed_marketplaces,
-    marketplace_plugin_loading_enabled,
+    resolve_registered_marketplaces,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -241,23 +247,27 @@ def append_system_context(existing: str | None, block: str) -> str:
     return f'{existing.rstrip()}\n\n{block}'
 
 
-def effective_disabled_skills(user: UserInfo) -> list[str]:
-    """Union of the member-level and launched-profile-level skill deny-lists.
+def effective_disabled_skills(
+    user: UserInfo, request_disabled_skills: Sequence[str] | None = None
+) -> list[str]:
+    """Union of the member-, launched-profile- and per-request skill deny-lists.
 
-    A skill disabled at EITHER level stays off. The member's deny-list rides
+    A skill disabled at ANY level stays off. The member's deny-list rides
     ``user.disabled_skills``; the launched Agent Profile's rides the resolved
     ``agent_settings.agent_context.disabled_skills`` (the SDK resolver stamps the
-    profile's ``disabled_skills`` there — #4017). On a non-profile launch the
-    resolved context's deny-list is empty, so this is just the member's list.
-    Order-preserving de-dup. Because it is a deny-list, a name absent from the
-    discovered catalog is a harmless no-op, so no reconciliation is needed
-    between the two sources.
+    profile's ``disabled_skills`` there — #4017); ``request_disabled_skills`` is
+    the one-off list a caller passed on the start request. On a non-profile
+    launch the resolved context's deny-list is empty, so this is just the
+    member's list (plus the request's, if any). Order-preserving de-dup.
+    Because it is a deny-list, a name absent from the discovered catalog is a
+    harmless no-op, so no reconciliation is needed between the sources.
     """
     member = list(user.disabled_skills or [])
     agent_settings = getattr(user, 'agent_settings', None)
     agent_context = getattr(agent_settings, 'agent_context', None)
     profile = list(getattr(agent_context, 'disabled_skills', None) or [])
-    return list(dict.fromkeys([*member, *profile]))
+    requested = list(request_disabled_skills or [])
+    return list(dict.fromkeys([*member, *profile, *requested]))
 
 
 def _to_sdk_marketplace_registrations(
@@ -301,7 +311,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         default_factory=ConversationSecretEnricher
     )
     app_mode: str | None = None
-    export_max_events: int = 10000
+    export_max_events: int = 0
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
@@ -331,6 +341,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 20,
@@ -344,6 +355,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
             sort_order=sort_order,
             page_id=page_id,
             limit=limit,
@@ -362,6 +374,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         return await self.app_conversation_info_service.count_app_conversation_info(
             title__contains=title__contains,
@@ -370,6 +383,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
     async def get_app_conversation(
@@ -393,11 +407,61 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        async for task in self._start_app_conversation(request):
-            await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                task
+        quota_user_id = await self.user_context.get_user_id()
+        quota_reserved = bool(
+            getattr(self.user_context, '_daily_quota_reserved', False)
+        )
+        if quota_reserved:
+            setattr(self.user_context, '_daily_quota_reserved', False)
+        elif quota_user_id:
+            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
+
+        try:
+            async for task in self._start_app_conversation(request):
+                await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                    task
+                )
+                if quota_reserved:
+                    if task.status == AppConversationStartTaskStatus.ERROR:
+                        await self._release_daily_conversation_quota(quota_user_id)
+                        quota_reserved = False
+                    elif task.status == AppConversationStartTaskStatus.READY:
+                        quota_reserved = False
+                yield task
+        except BaseException:
+            if quota_reserved:
+                await self._release_daily_conversation_quota(quota_user_id)
+            raise
+
+    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
+        try:
+            from openhands.app_server.shared import server_config
+            from server.services.daily_conversation_quota_service import (
+                DailyConversationQuotaService,
             )
-            yield task
+            from storage.database import a_session_maker
+        except ImportError:
+            return False
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        if server_config.app_mode.value != 'saas' or org_id is None:
+            return False
+        async with a_session_maker() as session:
+            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
+
+    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
+        if not user_id:
+            return
+        try:
+            from server.services.daily_conversation_quota_service import (
+                DailyConversationQuotaService,
+            )
+            from storage.database import a_session_maker
+
+            async with a_session_maker() as session:
+                await DailyConversationQuotaService(session).release(user_id)
+        except Exception:
+            _logger.exception('Failed to release daily conversation quota reservation')
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
@@ -425,6 +489,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         self._apply_suggested_task(request)
 
+        # Resolved once: validation, the build and provenance must see one revision.
+        user = await self.user_context.get_user_info(
+            resolve_agent_profile=True,
+            override_agent_profile_id=request.agent_profile_id,
+        )
+        validate_acp_provider_surfaced(user.agent_settings)
+
         task = AppConversationStartTask(
             created_by_user_id=user_id,
             request=request,
@@ -441,12 +512,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
-
-            # Mirror the user's LLM profiles into the sandbox so the agent's
-            # built-in switch_llm tool can resolve them (in SaaS profiles live
-            # on the app-server, not the sandbox filesystem). Before conversation
-            # creation, so the tool is enabled; re-runs on every start/resume.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # Get the working dir
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
@@ -490,6 +555,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Build the start request
             start_conversation_request = (
                 await self._build_start_conversation_request_for_user(
+                    user,
                     sandbox,
                     conversation_id,
                     request.initial_message,
@@ -504,12 +570,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
                     api_secrets=request.secrets,
-                    agent_profile_id=request.agent_profile_id,
+                    system_prompt=request.system_prompt,
+                    disabled_skills=request.disabled_skills,
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
                 )
             )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
@@ -575,19 +646,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # the launched ``agent_settings`` (a resolve-requested load carries
             # its id + revision onto UserInfo); ride the tags dict so it
             # round-trips and surfaces as the ``launched_agent_profile``
-            # computed field. Resolves with the same override the launch itself
-            # used, so provenance reflects what actually ran even when the
-            # request carried a one-off ``agent_profile_id``.
-            profile_user = await self.user_context.get_user_info(
-                resolve_agent_profile=True,
-                override_agent_profile_id=request.agent_profile_id,
-            )
-            launched_profile_id = getattr(profile_user, 'active_agent_profile_id', None)
+            # computed field.
+            launched_profile_id = getattr(user, 'active_agent_profile_id', None)
             if isinstance(launched_profile_id, str) and launched_profile_id:
                 tags[AGENT_PROFILE_ID_TAG_KEY] = launched_profile_id
-                launched_revision = getattr(
-                    profile_user, 'active_agent_profile_revision', None
-                )
+                launched_revision = getattr(user, 'active_agent_profile_revision', None)
                 if isinstance(launched_revision, int):
                     tags[AGENT_PROFILE_REVISION_TAG_KEY] = str(launched_revision)
             if request_agent.agent_kind == 'acp':
@@ -597,17 +660,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # can resolve a brand label ("Claude Code", "Codex", …) via
                 # the SDK registry without keeping a per-conversation column.
                 # Surfaced to the UI as the projected ``acp_server`` field.
-                # Reuses ``profile_user`` (resolved above with the same
-                # override) rather than re-fetching — a second fetch would
-                # both double the settings-resolution cost and risk a
-                # different profile resolving if it changed in between.
-                if isinstance(profile_user.agent_settings, ACPAgentSettings):
-                    tags[ACP_SERVER_TAG_KEY] = profile_user.agent_settings.acp_server
+                if isinstance(user.agent_settings, ACPAgentSettings):
+                    tags[ACP_SERVER_TAG_KEY] = user.agent_settings.acp_server
             else:
                 llm_model = request_agent.llm.model
                 agent_kind = 'openhands'
 
-            conversation_tags: dict[str, str] = dict(tags)
+            conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
             if request.git_provider:
@@ -617,7 +676,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             app_conversation_info = AppConversationInfo(
                 id=info.id,
-                title=f'Conversation {info.id.hex[:5]}',
+                title=request.title or f'Conversation {info.id.hex[:5]}',
                 sandbox_id=sandbox.id,
                 created_by_user_id=user_id,
                 llm_model=llm_model,
@@ -638,13 +697,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Setup default processors
             processors = request.processors or []
 
-            # Always ensure SetTitleCallbackProcessor is included
-            has_set_title_processor = any(
-                isinstance(processor, SetTitleCallbackProcessor)
-                for processor in processors
-            )
-            if not has_set_title_processor:
-                processors.append(SetTitleCallbackProcessor())
+            # Auto-title unless the caller supplied a title: the generated
+            # title must not replace the one the caller chose.
+            if not request.title:
+                has_set_title_processor = any(
+                    isinstance(processor, SetTitleCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_set_title_processor:
+                    processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # enterprise persistent memory enabled. ``enable_memory_context``
+            # is a top-level user setting (not the SDK's ``load_memory``, which
+            # lives inside agent_settings.agent_context and is dropped by the
+            # fresh AgentContext built in _build_start_conversation_request).
+            if getattr(user, 'enable_memory_context', False):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
 
             # Save processors
             for processor in processors:
@@ -800,6 +874,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox_status=sandbox_status,
             execution_status=execution_status,
             conversation_url=conversation_url,
+            conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
             session_api_key=session_api_key,
         )
 
@@ -1034,6 +1109,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user = await self.user_context.get_user_info()
             profiles = user.llm_profiles.profiles
             settings_llm = getattr(user.agent_settings, 'llm', None)
+            if settings_llm is not None:
+                settings_llm = await self._maybe_refresh_managed_llm_key(
+                    user, settings_llm
+                )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
         except Exception:
             _logger.exception(
@@ -1313,9 +1392,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
-        This intentionally only runs for SaaS managed LiteLLM keys that are the
-        current member's stored managed key. BYOK/custom keys and OSS/local
-        deployments are left untouched.
+        Uses the current member's managed key if a concurrent start replaced
+        the captured credential. BYOK/custom keys and OSS/local deployments
+        are left untouched.
         """
         _logger.debug(
             'managed_llm_key_refresh:evaluate',
@@ -1353,9 +1432,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             from storage.saas_settings_store import (  # type: ignore[import-not-found]
                 ManagedLlmKeyStatus,
                 SaasSettingsStore,
+                managed_llm_key_config_from_model,
             )
-
-            from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
         except Exception:
             _logger.warning(
                 'managed_llm_key_refresh:dependency_import_failed',
@@ -1364,23 +1442,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        normalized_base_url = (llm.base_url or '').strip().rstrip('/')
-        managed_base_url = LITE_LLM_API_URL.rstrip('/')
-        is_openhands_provider = bool(llm.model and llm.model.startswith('openhands/'))
-        uses_openhands_provider_proxy = is_openhands_provider and (
-            not normalized_base_url or 'all-hands.dev' in normalized_base_url.lower()
-        )
-        if (
-            normalized_base_url != managed_base_url
-            and not uses_openhands_provider_proxy
-        ):
+        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',
                 extra={
                     'user_id': user.id,
                     'model': llm.model,
-                    'base_url': normalized_base_url or None,
-                    'is_openhands_provider': is_openhands_provider,
+                    'base_url': llm.base_url,
                 },
             )
             return llm
@@ -1425,13 +1494,73 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'user_id': user.id,
                     'org_id': str(org_id),
                     'model': llm.model,
-                    'base_url': normalized_base_url or None,
-                    'uses_openhands_provider_proxy': uses_openhands_provider_proxy,
+                    'base_url': llm.base_url,
                 },
             )
             settings_store = await SaasSettingsStore.get_instance(
                 user.id, effective_org_id=org_id
             )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
+                rotation = await settings_store.rotate_managed_llm_key()
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:healed_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
+                _logger.warning(
+                    'managed_llm_key_refresh:cleared_without_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'rotation_status': getattr(rotation, 'status', None),
+                    },
+                )
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(
@@ -1445,16 +1574,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 return llm
             if managed_key != key:
                 _logger.debug(
-                    'managed_llm_key_refresh:skip_key_mismatch',
+                    'managed_llm_key_refresh:use_current_member_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
                     },
                 )
-                return llm
+                key = managed_key
+                llm = llm.model_copy(update={'api_key': SecretStr(key)})
+                self.user_context.invalidate_user_info_cache()
 
-            key_is_valid = await LiteLlmManager.verify_key(key, user.id)
+            key_belongs_to_user = await LiteLlmManager.verify_existing_key(
+                key,
+                user.id,
+                str(org_id),
+                openhands_type=managed_config.openhands_type,
+            )
+            key_is_valid = key_belongs_to_user and await LiteLlmManager.verify_key(
+                key, user.id
+            )
             if key_is_valid:
                 _logger.debug(
                     'managed_llm_key_refresh:skip_key_still_valid',
@@ -1470,7 +1609,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'managed_llm_key_refresh:stale_key_detected',
                 extra={'user_id': user.id, 'org_id': str(org_id), 'model': llm.model},
             )
-            rotation = await settings_store.rotate_managed_llm_key()
+            # Pass the stale key so overlapping refreshes are idempotent: if a
+            # concurrent start already rotated it, reuse that fresh key instead
+            # of rotating again and orphaning the sandbox's key (enterprise#439).
+            rotation = await settings_store.rotate_managed_llm_key(only_if_current=key)
             if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
                 _logger.info(
                     'managed_llm_key_refresh:rotated',
@@ -1481,6 +1623,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'openhands_type': getattr(rotation, 'openhands_type', None),
                     },
                 )
+                self.user_context.invalidate_user_info_cache()
                 return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
 
             _logger.warning(
@@ -1679,14 +1822,24 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         repo_name: str | None = None,
         git_provider: ProviderType | None = None,
         selected_branch: str | None = None,
+        system_prompt: str | None = None,
     ) -> Agent:
         """Apply server-only fields that have no place in ``AgentSettings``.
 
-        * System-prompt filename / kwargs (planning vs default agent).
+        * System prompt: an inline ``system_prompt`` from the start request,
+          else the filename / kwargs (planning vs default agent).
         * LLM tracing metadata for SaaS analytics.
         """
         overrides: dict[str, Any] = {}
-        if agent_type == AgentType.PLAN:
+        if system_prompt is not None:
+            # The inline prompt replaces the built-in static prompt verbatim;
+            # the SDK still appends the dynamic block (skills, suffix, secrets).
+            # The SDK rejects an inline prompt alongside a non-default
+            # system_prompt_filename, so the planning preset is not selected
+            # here — PLAN keeps its tools and the PLANNING_AGENT_INSTRUCTION
+            # riding system_message_suffix.
+            overrides['system_prompt'] = system_prompt
+        elif agent_type == AgentType.PLAN:
             overrides['system_prompt_filename'] = 'system_prompt_planning.j2'
             overrides['system_prompt_kwargs'] = {
                 'plan_structure': format_plan_structure()
@@ -1900,6 +2053,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     async def _build_start_conversation_request_for_user(
         self,
+        user: UserInfo,
         sandbox: SandboxInfo,
         conversation_id: UUID,
         initial_message: SendMessageRequest | None,
@@ -1914,7 +2068,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
-        agent_profile_id: str | None = None,
+        system_prompt: str | None = None,
+        disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -1930,6 +2085,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         For ACP agent settings, routes to ``_build_acp_start_conversation_request``.
 
         Args:
+            user: Resolved launch view (Agent Profile applied)
             sandbox: Sandbox information
             conversation_id: Unique conversation identifier
             initial_message: Optional initial message to send
@@ -1947,9 +2103,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
                 precedence.
-            agent_profile_id: One-off Agent Profile override for this
-                conversation only (cloud-only; does not change the member's
-                active pointer). ``None`` uses the ambient active profile.
+            system_prompt: Optional inline system prompt that replaces the
+                built-in static system prompt verbatim. Ignored (with a
+                warning) for ACP agents, which own their own prompt.
+            disabled_skills: Optional per-request skill deny-list, unioned
+                with the member's and launched profile's deny-lists.
             request_observability_metadata: Optional caller-provided trace metadata to
                 merge with app-server conversation metadata.
             request_observability_tags: Optional caller-provided tags to append to the
@@ -1957,13 +2115,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             request_observability_span_name: Optional named child span to emit
                 under the conversation root.
         """
-        # Conversation start builds the agent, so it consumes the RESOLVED
-        # (effective launch) view; plain settings reads/round-trips elsewhere
-        # stay on the persisted view.
-        user = await self.user_context.get_user_info(
-            resolve_agent_profile=True,
-            override_agent_profile_id=agent_profile_id,
-        )
         llm_settings = getattr(user.agent_settings, 'llm', None)
         _logger.debug(
             'managed_llm_key_refresh:build_request_context',
@@ -1994,7 +2145,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'has_api_key': bool(getattr(llm_settings, 'api_key', None)),
                 },
             )
+            if system_prompt is not None:
+                # ACP agents (external CLIs) own their system prompt; there is
+                # nothing to replace, so the request-level prompt is dropped.
+                _logger.warning(
+                    'app_conversation_start:system_prompt_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                    },
+                )
             acp_request = await self._build_acp_start_conversation_request(
+                user=user,
                 sandbox=sandbox,
                 conversation_id=conversation_id,
                 initial_message=initial_message,
@@ -2008,7 +2170,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 plugins=plugins,
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
-                agent_profile_id=agent_profile_id,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2020,7 +2181,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     remote_workspace,
                     selected_repository,
                     get_project_dir(working_dir, selected_repository),
-                    effective_disabled_skills(user),
+                    effective_disabled_skills(user, disabled_skills),
                     registered_marketplaces,
                 )
             return acp_request
@@ -2100,18 +2261,25 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
+        # When enterprise persistent memory is enabled, stamp load_memory=True
+        # so the SDK's LocalConversation reads MEMORY.md from disk at session
+        # start. The memory file itself is written to the sandbox by
+        # maybe_inject_memory_context() in run_setup_scripts.
+        agent_context_kwargs: dict[str, Any] = {
+            'system_message_suffix': effective_suffix,
+            'secrets': secrets,
+            'registered_marketplaces': _to_sdk_marketplace_registrations(
+                registered_marketplaces
+            ),
+        }
+        if getattr(user, 'enable_memory_context', False):
+            agent_context_kwargs['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
                 'tools': tools,
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(
-                    system_message_suffix=effective_suffix,
-                    secrets=secrets,
-                    registered_marketplaces=_to_sdk_marketplace_registrations(
-                        registered_marketplaces
-                    ),
-                ),
+                'agent_context': AgentContext(**agent_context_kwargs),
             }
         )
         agent = configured_agent_settings.create_agent()
@@ -2147,6 +2315,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             repo_name=selected_repository,
             git_provider=git_provider,
             selected_branch=selected_branch,
+            system_prompt=system_prompt,
         )
 
         # --- hooks (require remote workspace; must precede request build) -----
@@ -2256,7 +2425,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 remote_workspace,
                 selected_repository,
                 project_dir,
-                effective_disabled_skills(user),
+                effective_disabled_skills(user, disabled_skills),
                 registered_marketplaces,
             )
 
@@ -2267,27 +2436,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     ) -> list[MarketplaceRegistration] | None:
         """Compose instance + org + user marketplaces for conversation start.
 
-        Enabled by default; returns ``None`` (feature inert) when
-        ENABLE_MARKETPLACE_PLUGIN_LOADING is explicitly disabled. Never raises:
-        any failure degrades to no marketplaces so it can never block
-        conversation creation.
+        Kept as a method over the shared resolver so tests can patch it by
+        name.
         """
-        if not marketplace_plugin_loading_enabled():
-            return None
-        try:
-            from openhands.app_server.shared import SettingsStoreImpl
-
-            user_id = await self.user_context.get_user_id()
-            settings_store = await SettingsStoreImpl.get_instance(user_id)
-            composed = await load_composed_marketplaces(
-                user_id, user.registered_marketplaces, settings_store
-            )
-            return composed.all or None
-        except Exception as e:
-            _logger.warning(
-                'Failed to compose marketplaces for conversation start: %s', e
-            )
-            return None
+        return await resolve_registered_marketplaces(self.user_context, user)
 
     async def _load_skills_onto_request(
         self,
@@ -2322,6 +2474,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     async def _build_acp_start_conversation_request(
         self,
+        user: UserInfo,
         sandbox: SandboxInfo,
         conversation_id: UUID,
         initial_message: SendMessageRequest | None,
@@ -2335,7 +2488,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
-        agent_profile_id: str | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -2353,6 +2505,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         OpenHands/agent-canvas#1039).
 
         Args:
+            user: Resolved launch view (Agent Profile applied)
             sandbox: Sandbox information
             conversation_id: Unique conversation identifier
             initial_message: Optional initial message to send
@@ -2368,9 +2521,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             registered_marketplaces: Optional marketplace registrations for
                 plugin resolution and runtime loading.
             api_secrets: Optional secrets passed directly via the API.
-            agent_profile_id: One-off Agent Profile override for this
-                conversation only (cloud-only; does not change the member's
-                active pointer). ``None`` uses the ambient active profile.
             request_observability_metadata: Optional caller-provided trace metadata to
                 merge with app-server conversation metadata.
             request_observability_tags: Optional caller-provided tags to append to the
@@ -2378,11 +2528,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             request_observability_span_name: Optional named child span to emit
                 under the conversation root.
         """
-        user = await self.user_context.get_user_info(
-            resolve_agent_profile=True,
-            override_agent_profile_id=agent_profile_id,
-        )
-
         project_dir = get_project_dir(working_dir, selected_repository)
         workspace = LocalWorkspace(working_dir=project_dir)
 
@@ -2768,8 +2913,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # This uses Pydantic's model_fields_set to detect which fields were set,
         # allowing us to distinguish between "not provided" and "explicitly set to None"
         for field_name in request.model_fields_set:
+            if field_name == 'tags':
+                continue
             value = getattr(request, field_name)
             setattr(info, field_name, value)
+
+        # Tags are applied as a merge patch: a None value deletes the key and keys
+        # not mentioned in the request are left untouched.
+        if request.tags is not None:
+            merged_tags = dict(info.tags)
+            for key, tag_value in request.tags.items():
+                if tag_value is None:
+                    merged_tags.pop(key, None)
+                else:
+                    merged_tags[key] = tag_value
+            info.tags = merged_tags
 
         info = await self.app_conversation_info_service.save_app_conversation_info(info)
         conversations = await self._build_app_conversations([info])
@@ -3052,6 +3210,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def export_conversation(self, conversation_id: UUID) -> bytes:
         """Download a conversation trajectory as a zip file.
 
+        The whole zip is buffered in memory before it is returned, so this is
+        only suitable for small conversations. Large exports should go through
+        ``open_conversation_export``, which streams the zip instead.
+
         Args:
             conversation_id: The UUID of the conversation to download.
 
@@ -3092,8 +3254,12 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
         ),
     )
     export_max_events: int = Field(
-        default=10000,
-        description='The maximum number of events allowed in a conversation export',
+        default=0,
+        ge=0,
+        description=(
+            'The maximum number of events allowed in a conversation export '
+            '(0 disables the limit)'
+        ),
     )
     export_lock_ttl_seconds: int = Field(
         default=3600,

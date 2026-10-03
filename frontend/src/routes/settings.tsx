@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Outlet, redirect, useLocation, useMatches } from "react-router";
+import { Outlet, replace, useLocation, useMatches } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Route } from "./+types/settings";
 import OptionService from "#/api/option-service/option-service.api";
@@ -20,6 +20,10 @@ import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
+import {
+  ORG_QUERY_PARAM,
+  switchOrganizationFromUrl,
+} from "#/utils/org/org-url-param";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
   isSettingsPageHidden,
@@ -43,6 +47,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/verification",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/your-budget",
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
@@ -82,13 +87,30 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
 
+  // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
+  // switch the current org before any settings guard runs, then strip the
+  // param so the next loader pass evaluates the guards against the new org.
+  // Child route guards skip their redirects while the param is present.
+  //
+  // Every redirect in this loader uses `replace` so guard hops leave no
+  // history entry: Back must return to where the user came from (e.g.
+  // agent-canvas at /canvas), not bounce forward again (OHE-3242).
+  const orgIdFromUrl = url.searchParams.get(ORG_QUERY_PARAM);
+  if (isSaas && orgIdFromUrl) {
+    const handled = await switchOrganizationFromUrl(orgIdFromUrl, featureFlags);
+    if (handled) {
+      url.searchParams.delete(ORG_QUERY_PARAM);
+      return replace(`${pathname}${url.search}`);
+    }
+  }
+
   if (pathname === "/settings/admin-dashboard") {
-    return redirect(isSaas ? "/settings/usage-monitoring" : "/settings");
+    return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
-    return redirect("/settings");
+    return replace("/settings");
   }
 
   // Step 3: Check feature flag-based hiding and redirect IMMEDIATELY (no user data required)
@@ -96,7 +118,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   if (isSettingsPageHidden(pathname, featureFlags)) {
     const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
     if (fallbackPath && fallbackPath !== pathname) {
-      return redirect(fallbackPath);
+      return replace(fallbackPath);
     }
   }
 
@@ -127,7 +149,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
           staleTime: 1000 * 60 * 5,
         });
         if (personalSettings?.agent_settings?.agent_kind === "acp") {
-          return redirect("/settings/agent");
+          return replace("/settings/agent");
         }
       } catch {
         // Settings unfetchable (unauthed, no org, network) — let the
@@ -141,15 +163,22 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
+    pathname === "/settings/your-budget" ||
     isAdminOnlyPath
   ) {
     const user = await getActiveOrganizationUser();
 
-    const orgId = getSelectedOrganizationIdFromStore();
     const organizationsData = queryClient.getQueryData<{
       items: Organization[];
       currentOrgId: string | null;
     }>(["organizations"]);
+    // After a hard load the selected-org store is empty (in-memory only), so
+    // fall back to the backend's current org like getActiveOrganizationUser.
+    const orgId =
+      getSelectedOrganizationIdFromStore() ??
+      organizationsData?.currentOrgId ??
+      organizationsData?.items?.[0]?.id ??
+      null;
     const selectedOrg = organizationsData?.items?.find(
       (org) => org.id === orgId,
     );
@@ -164,13 +193,13 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       if (!user || billingHidden) {
         if (isSaas) {
           const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
-          return redirect(fallbackPath ?? "/settings");
+          return replace(fallbackPath ?? "/settings");
         }
       } else if (isTeamOrg) {
         // Stripe checkout still returns to /settings/billing; send team orgs
         // to Credits and preserve checkout status for the success/cancel toast.
         const checkout = url.searchParams.get("checkout");
-        return redirect(
+        return replace(
           checkout
             ? `/settings/credits?checkout=${encodeURIComponent(checkout)}`
             : "/settings/credits",
@@ -182,7 +211,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       if (!user || billingHidden || isPersonalOrg || !isTeamOrg) {
         if (isSaas) {
           const fallbackPath = getFirstAvailablePath(isSaas, featureFlags);
-          return redirect(fallbackPath ?? "/settings");
+          return replace(fallbackPath ?? "/settings");
         }
       }
     }
@@ -194,7 +223,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
         !rolePermissions[role].includes("view_billing") ||
         isPersonalOrg
       ) {
-        return redirect("/settings");
+        return replace("/settings");
       }
     }
 
@@ -205,14 +234,21 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
         !rolePermissions[role].includes("invite_user_to_organization") ||
         isPersonalOrg
       ) {
-        return redirect("/settings");
+        return replace("/settings");
       }
     }
 
     if (isAdminOnlyPath) {
       const role = user?.role ?? "member";
       if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
-        return redirect("/settings");
+        return replace("/settings");
+      }
+    }
+
+    // Open to every role; personal workspaces have no budgets.
+    if (pathname === "/settings/your-budget") {
+      if (!user || !isTeamOrg) {
+        return replace("/settings");
       }
     }
   }

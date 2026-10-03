@@ -184,6 +184,40 @@ class TestFetchSpecs:
         assert nightly.run_as_group == 10001
         assert nightly.fs_group == 10001
 
+    async def test_security_context_defaults_when_null(self):
+        config = {
+            **_CONFIGS_RESPONSE['configs'][0],
+            'run_as_user': None,
+            'run_as_group': None,
+            'fs_group': None,
+        }
+        ctx, _ = _make_async_client_mock(_make_http_response({'configs': [config]}))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        assert specs[0].run_as_user == 10001
+        assert specs[0].run_as_group == 10001
+        assert specs[0].fs_group == 10001
+
+    async def test_security_context_preserves_zero(self):
+        config = {
+            **_CONFIGS_RESPONSE['configs'][0],
+            'run_as_user': 0,
+            'run_as_group': 0,
+            'fs_group': 0,
+        }
+        ctx, _ = _make_async_client_mock(_make_http_response({'configs': [config]}))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        assert specs[0].run_as_user == 0
+        assert specs[0].run_as_group == 0
+        assert specs[0].fs_group == 0
+
     async def test_populates_name_to_spec_mapping(self):
         """The name→spec dict must be keyed by the config 'name', not the image URL."""
         ctx, _ = _make_async_client_mock(_make_http_response(_CONFIGS_RESPONSE))

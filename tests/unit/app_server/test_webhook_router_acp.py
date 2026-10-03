@@ -12,20 +12,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.agent_server.models import ConversationInfo, Success
 from openhands.app_server.app_conversation.app_conversation_models import (
     ACP_SERVER_TAG_KEY,
     AppConversationInfo,
+    ConversationTrigger,
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
 )
 from openhands.app_server.event_callback.webhook_router import on_conversation_update
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
-from openhands.app_server.utils.sql_utils import Base
 from openhands.sdk import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.llm import LLM
@@ -33,20 +32,6 @@ from openhands.sdk.llm import LLM
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def async_engine():
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield engine
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -309,20 +294,18 @@ async def test_acp_server_key_derived_from_command(
 
 
 # ---------------------------------------------------------------------------
-# Analytics — llm_model must not leak the ACP sentinel
+# Analytics — canonical creation belongs to agent-server telemetry
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_acp_conversation_analytics_llm_model_is_null(
+async def test_webhook_does_not_emit_conversation_created_analytics(
     async_session, service, sandbox_record
 ):
-    """``track_conversation_created`` must receive ``llm_model=None`` for ACP.
+    """Runtime webhooks must not double-count conversation creation.
 
-    Regression guard: ``ACPAgent.llm`` defaults to a dummy ``LLM(model='acp-managed')``
-    sentinel, so reading ``conversation_info.agent.llm.model`` directly would
-    record the literal string ``"acp-managed"`` in BIZZ-04 dashboards. The
-    handler must use the agent-kind-aware ``llm_model`` variable instead.
+    The canonical creation milestone is emitted by the agent-server telemetry
+    subscriber. The app-server webhook only persists conversation metadata.
     """
     acp_info = _make_acp_conversation_info(acp_command=['my-acp'])
     existing = AppConversationInfo(
@@ -353,9 +336,64 @@ async def test_acp_conversation_analytics_llm_model_is_null(
             app_conversation_info_service=service,
         )
 
-    analytics.track_conversation_created.assert_called_once()
-    kwargs = analytics.track_conversation_created.call_args.kwargs
-    assert kwargs['llm_model'] is None
+    analytics.track_conversation_created.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_conversation_trigger_detected_from_tags(
+    async_session, service, sandbox_record
+):
+    conversation_info = _make_llm_conversation_info().model_copy(
+        update={'tags': {'automationrunid': 'run-123'}}
+    )
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=None,
+    )
+
+    with patch(
+        'openhands.app_server.event_callback.webhook_router.valid_conversation',
+        return_value=existing,
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    saved = await service.get_app_conversation_info(conversation_info.id)
+    assert saved.trigger == ConversationTrigger.AUTOMATION
+
+
+@pytest.mark.asyncio
+async def test_gui_trigger_stamps_clientsource_tag(
+    async_session, service, sandbox_record
+):
+    """Conversations with trigger=GUI get a clientsource=agentcanvas tag."""
+    conversation_info = _make_llm_conversation_info()
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=ConversationTrigger.GUI,
+    )
+
+    with patch(
+        'openhands.app_server.event_callback.webhook_router.valid_conversation',
+        return_value=existing,
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    saved = await service.get_app_conversation_info(conversation_info.id)
+    assert saved.tags.get('clientsource') == 'agentcanvas'
 
 
 # ---------------------------------------------------------------------------

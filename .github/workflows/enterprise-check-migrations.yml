@@ -3,8 +3,8 @@ name: Enterprise Check Migrations
 on:
   pull_request:
     paths:
-      - 'enterprise/migrations/**'
-      - 'enterprise/alembic.ini'
+      - 'migrations/**'
+      - 'alembic.ini'
       - 'scripts/check_enterprise_migration_integrity.py'
       - '.github/workflows/enterprise-check-migrations.yml'
 
@@ -106,39 +106,36 @@ jobs:
       DB_DRIVER: ${{ matrix.db-driver }}  # pg8000 for prod parity, "" for psycopg2
     steps:
       - uses: actions/checkout@v6
-      - name: Install poetry via pipx
-        run: pipx install poetry
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: "poetry"
-      - name: Install Python dependencies using Poetry
-        working-directory: ./enterprise
-        run: poetry install --with dev,test
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.32"
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --locked --python 3.12
       - name: Show migration history
-        working-directory: ./enterprise
-        run: poetry run alembic history --verbose
+        run: uv run alembic history --verbose
       - name: Apply full migration chain (upgrade head)
-        working-directory: ./enterprise
         run: |
           echo "::group::alembic upgrade head (from empty DB)"
           START=$(date +%s)
-          poetry run alembic upgrade head
+          uv run alembic upgrade head
           echo "upgrade head took $(( $(date +%s) - START ))s"
           echo "::endgroup::"
-          poetry run alembic current
+          uv run alembic current
       - name: Round-trip the newest migration (downgrade -1, upgrade head)
-        working-directory: ./enterprise
         # Fail fast if downgrade fails. The database is throwaway, and the
         # final reporting step still prints the current revision for debugging.
         run: |
           echo "::group::downgrade -1 then re-upgrade"
-          poetry run alembic downgrade -1
-          poetry run alembic upgrade head
+          uv run alembic downgrade -1
+          uv run alembic upgrade head
           echo "::endgroup::"
-          poetry run alembic current
+          uv run alembic current
       - name: Report migration state
         if: always()
-        working-directory: ./enterprise
-        run: poetry run alembic current || true
+        run: uv run alembic current || true
