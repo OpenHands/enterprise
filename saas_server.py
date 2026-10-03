@@ -50,6 +50,7 @@ from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
+from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
@@ -185,6 +186,9 @@ base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+base_app.include_router(
+    instance_admin_router
+)  # Add routes for Super Admin org/user directory
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags

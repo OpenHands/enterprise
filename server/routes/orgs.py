@@ -263,8 +263,10 @@ async def create_org(
     ``CREATE_ORGANIZATION`` permission to create a new organization. In
     practice this permission is only granted via the ``superadmin``
     role; no regular,
-    org-scoped role carries it. The creator is not automatically added
-    as a member; a superadmin can provision the initial org users separately.
+    org-scoped role carries it. When ``owner_user_id`` is given, that user
+    (the caller or an existing user) becomes the organization's owner.
+    Otherwise the creator is not automatically added as a member; a
+    superadmin can provision the initial org users separately.
 
     Args:
         org_data: Organization creation data
@@ -276,6 +278,7 @@ async def create_org(
     Raises:
         HTTPException: 401 if the user is not authenticated
         HTTPException: 403 if the user lacks ``CREATE_ORGANIZATION``
+        HTTPException: 404 if ``owner_user_id`` does not match an existing user
         HTTPException: 409 if organization name already exists
         HTTPException: 500 if creation fails
     """
@@ -287,14 +290,22 @@ async def create_org(
         },
     )
 
+    owner_user_id = org_data.owner_user_id
+    if owner_user_id is not None:
+        owner = await UserStore.get_user_by_id(str(owner_user_id))
+        if owner is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+            )
+
     try:
         # Use service layer to create organization
         org = await OrgService.create_org_with_owner(
             name=org_data.name,
             contact_name=org_data.contact_name,
             contact_email=org_data.contact_email,
-            user_id=user_id,
-            add_creator_as_owner=False,
+            user_id=str(owner_user_id) if owner_user_id else user_id,
+            add_creator_as_owner=owner_user_id is not None,
         )
 
         # Retrieve credits from LiteLLM

@@ -22,6 +22,8 @@ type EditLLMSettingsPermission = "edit_llm_settings";
 
 type ManageOrgClaimsPermission = "manage_org_claims";
 type CreateOrganizationPermission = "create_organization";
+type ProvisionUserPermission = "provision_user";
+type ManageSuperAdminsPermission = "manage_super_admins";
 
 // Union of all permission keys
 export type PermissionKey =
@@ -41,7 +43,27 @@ export type PermissionKey =
   | ViewLLMSettingsPermission
   | EditLLMSettingsPermission
   | ManageOrgClaimsPermission
-  | CreateOrganizationPermission;
+  | CreateOrganizationPermission
+  | ProvisionUserPermission
+  | ManageSuperAdminsPermission;
+
+/** Instance-level permissions that identify a Super Admin in the FE.
+
+ *  Must stay aligned with backend ``is_instance_super_admin`` /
+ *  ``MANAGE_SUPER_ADMINS``. Do **not** include ``provision_user`` — that
+ *  permission is also granted to org owners/admins.
+ */
+export const INSTANCE_SUPER_ADMIN_PERMISSIONS: PermissionKey[] = [
+  "manage_super_admins",
+];
+
+export function isInstanceSuperAdmin(
+  permissions?: readonly string[] | null,
+): boolean {
+  return INSTANCE_SUPER_ADMIN_PERMISSIONS.some(
+    (permission) => permissions?.includes(permission) === true,
+  );
+}
 
 /* PERMISSION ARRAYS */
 const memberPerms: PermissionKey[] = [

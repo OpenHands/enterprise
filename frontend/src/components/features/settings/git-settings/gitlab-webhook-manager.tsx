@@ -4,6 +4,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { useGitLabResources } from "#/hooks/query/use-gitlab-resources-list";
 import { useReinstallGitLabWebhook } from "#/hooks/mutation/use-reinstall-gitlab-webhook";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import type { GitLabResource } from "#/api/integration-service/integration-service.types";
 import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
@@ -11,6 +12,7 @@ import { WebhookStatusBadge } from "./webhook-status-badge";
 import { GitLabWebhookManagerState } from "./gitlab-webhook-manager-state";
 import {
   settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
 } from "#/utils/settings-list-classes";
@@ -118,86 +120,93 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
         {t(I18nKey.GITLAB$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
 
-      <div className={settingsListContainerClassName}>
-        <table className="w-full">
-          <thead className={settingsListTableHeadClassName}>
-            <tr>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.GITLAB$WEBHOOK_COLUMN_RESOURCE)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.GITLAB$WEBHOOK_COLUMN_TYPE)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.GITLAB$WEBHOOK_COLUMN_STATUS)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.GITLAB$WEBHOOK_COLUMN_ACTION)}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-700">
-            {resources.map((resource) => {
-              const key = getResourceKey(resource);
-              const result = installationResults.get(key);
-              const isInstalling = installingResource === key;
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          settingsListScrollFadeFromClassName,
+        )}
+      >
+        <HorizontalScrollFade>
+          <table className="w-full">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.GITLAB$WEBHOOK_COLUMN_RESOURCE)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.GITLAB$WEBHOOK_COLUMN_TYPE)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.GITLAB$WEBHOOK_COLUMN_STATUS)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.GITLAB$WEBHOOK_COLUMN_ACTION)}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-700">
+              {resources.map((resource) => {
+                const key = getResourceKey(resource);
+                const result = installationResults.get(key);
+                const isInstalling = installingResource === key;
 
-              return (
-                <tr
-                  key={key}
-                  className="hover:bg-neutral-800/50 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex flex-col">
-                      <Typography.Text className="text-sm font-medium text-white">
-                        {resource.name}
-                      </Typography.Text>
-                      <Typography.Text className="text-xs text-gray-400">
-                        {resource.full_path}
-                      </Typography.Text>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Typography.Text className="text-sm text-gray-300 capitalize">
-                      {resource.type}
-                    </Typography.Text>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-col gap-1">
-                      <WebhookStatusBadge
-                        webhookInstalled={resource.webhook_installed}
-                        installationResult={result}
-                      />
-                      {result?.error && (
-                        <Typography.Text className="text-xs text-red-400">
-                          {result.error}
+                return (
+                  <tr
+                    key={key}
+                    className="hover:bg-neutral-800/50 transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col">
+                        <Typography.Text className="text-sm font-medium text-white">
+                          {resource.name}
                         </Typography.Text>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <BrandButton
-                      type="button"
-                      variant="primary"
-                      onClick={() => handleReinstall(resource)}
-                      isDisabled={
-                        installingResource !== null ||
-                        resource.webhook_installed ||
-                        result?.success === true
-                      }
-                      className="cursor-pointer"
-                      testId={`reinstall-webhook-button-${key}`}
-                    >
-                      {isInstalling
-                        ? t(I18nKey.GITLAB$WEBHOOK_REINSTALLING)
-                        : t(I18nKey.GITLAB$WEBHOOK_REINSTALL)}
-                    </BrandButton>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        <Typography.Text className="text-xs text-gray-400">
+                          {resource.full_path}
+                        </Typography.Text>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Typography.Text className="text-sm text-gray-300 capitalize">
+                        {resource.type}
+                      </Typography.Text>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col gap-1">
+                        <WebhookStatusBadge
+                          webhookInstalled={resource.webhook_installed}
+                          installationResult={result}
+                        />
+                        {result?.error && (
+                          <Typography.Text className="text-xs text-red-400">
+                            {result.error}
+                          </Typography.Text>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <BrandButton
+                        type="button"
+                        variant="primary"
+                        onClick={() => handleReinstall(resource)}
+                        isDisabled={
+                          installingResource !== null ||
+                          resource.webhook_installed ||
+                          result?.success === true
+                        }
+                        className="cursor-pointer"
+                        testId={`reinstall-webhook-button-${key}`}
+                      >
+                        {isInstalling
+                          ? t(I18nKey.GITLAB$WEBHOOK_REINSTALLING)
+                          : t(I18nKey.GITLAB$WEBHOOK_REINSTALL)}
+                      </BrandButton>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

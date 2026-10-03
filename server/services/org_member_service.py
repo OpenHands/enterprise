@@ -33,6 +33,9 @@ class OrgMemberService:
         Retrieves the authenticated user's role, status, email, and LLM override
         fields (with masked API keys) within the specified organization.
 
+        Instance Super Admins who are not members still receive a synthetic
+        membership so Open Org / inspection of suspended orgs keeps working.
+
         Args:
             org_id: Organization ID (UUID)
             user_id: User ID (UUID)
@@ -42,11 +45,16 @@ class OrgMemberService:
 
         Raises:
             OrgMemberNotFoundError: If user is not a member of the organization
+                and is not an instance Super Admin
             RoleNotFoundError: If the role associated with the member is not found
         """
         # Look up the user's membership in this org
         org_member = await OrgMemberStore.get_org_member(org_id, user_id)
         if org_member is None:
+            from server.auth.authorization import is_instance_super_admin
+
+            if await is_instance_super_admin(str(user_id)):
+                return await MeResponse.for_instance_super_admin(org_id, user_id)
             raise OrgMemberNotFoundError(str(org_id), str(user_id))
 
         # Resolve role name from role_id
@@ -242,9 +250,27 @@ class OrgMemberService:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
+        if not await OrgMemberService.remove_member_with_cleanup(
+            org_id, target_user_id
+        ):
+            return False, 'removal_failed'
+
+        return True, None
+
+    @staticmethod
+    async def remove_member_with_cleanup(org_id: UUID, target_user_id: UUID) -> bool:
+        """Remove a membership and the state that depends on it.
+
+        Resets the user's current organization to their personal workspace when
+        it pointed at ``org_id``, and removes them from the org's LiteLLM team.
+        Callers are responsible for authorization.
+
+        Returns:
+            bool: False if there was no membership to remove, True otherwise.
+        """
         success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
         if not success:
-            return False, 'removal_failed'
+            return False
 
         user = await UserStore.get_user_by_id(str(target_user_id))
         if user and user.current_org_id == org_id:
@@ -271,7 +297,7 @@ class OrgMemberService:
                 },
             )
 
-        return True, None
+        return True
 
     @staticmethod
     async def update_org_member(

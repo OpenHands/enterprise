@@ -36,6 +36,10 @@ class Org(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Instance-admin lifecycle: ``active`` (default) or ``suspended``.
+    # Suspended orgs remain readable by super admins but deny normal
+    # member access via ``require_permission``.
+    status: Mapped[str] = mapped_column(String, nullable=False, default='active')
     remote_runtime_resource_factor: Mapped[int | None] = mapped_column(nullable=True)
     billing_margin: Mapped[float | None] = mapped_column(
         nullable=True, default=DEFAULT_BILLING_MARGIN

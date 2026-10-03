@@ -9,6 +9,7 @@ import {
   SecretListItemSkeleton,
 } from "#/components/features/settings/secrets-settings/secret-list-item";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import { I18nKey } from "#/i18n/declaration";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
@@ -18,8 +19,10 @@ import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import {
   settingsListScrollContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
@@ -142,61 +145,75 @@ function SecretsSettingsScreen() {
       {view === "list" && !isLoadingSecrets && (
         <div
           ref={tableContainerRef}
-          className={settingsListScrollContainerClassName}
+          className={cn(
+            settingsListScrollContainerClassName,
+            settingsListScrollFadeFromClassName,
+          )}
           onScroll={handleScroll}
         >
-          <table className="w-full min-w-full table-fixed">
-            <thead className={settingsListTableHeadClassName}>
-              <tr>
-                <th
-                  className={cn(settingsListTableHeaderCellClassName, "w-1/4")}
-                >
-                  {t(I18nKey.SETTINGS$NAME)}
-                </th>
-                <th
-                  className={cn(settingsListTableHeaderCellClassName, "w-1/2")}
-                >
-                  {t(I18nKey.SECRETS$DESCRIPTION)}
-                </th>
-                <th
-                  className={cn(
-                    settingsListTableHeaderCellClassName,
-                    "w-1/4 text-right",
-                  )}
-                >
-                  {t(I18nKey.SETTINGS$ACTIONS)}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {secrets?.map((secret) => {
-                const isOrgShared = secret.scope === "organization";
-                // A user can edit/delete a secret if they own it (personal
-                // scope) or if it is org-shared and they have
-                // manage_org_secrets permission (admins/owners).
-                const canEdit = !isOrgShared || canManageOrgSecrets;
-                return (
-                  <SecretListItem
-                    key={secret.name}
-                    title={secret.name}
-                    description={secret.description}
-                    scope={secret.scope ?? "personal"}
-                    canEdit={canEdit}
-                    onEdit={() => {
-                      setView("edit-secret-form");
-                      setSelectedSecret(secret.name);
-                      setSelectedSecretIsShared(isOrgShared);
-                    }}
-                    onDelete={() => {
-                      setConfirmationModalIsVisible(true);
-                      setSelectedSecret(secret.name);
-                      setSelectedSecretIsShared(isOrgShared);
-                    }}
-                  />
-                );
-              })}
-            </tbody>
-          </table>
+          <HorizontalScrollFade>
+            <table
+              className="w-full table-fixed"
+              style={settingsListTableMinWidthStyle(3)}
+            >
+              <thead className={settingsListTableHeadClassName}>
+                <tr>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/4",
+                    )}
+                  >
+                    {t(I18nKey.SETTINGS$NAME)}
+                  </th>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/2",
+                    )}
+                  >
+                    {t(I18nKey.SECRETS$DESCRIPTION)}
+                  </th>
+                  <th
+                    className={cn(
+                      settingsListTableHeaderCellClassName,
+                      "w-1/4 text-right",
+                    )}
+                  >
+                    {t(I18nKey.SETTINGS$ACTIONS)}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {secrets?.map((secret) => {
+                  const isOrgShared = secret.scope === "organization";
+                  // A user can edit/delete a secret if they own it (personal
+                  // scope) or if it is org-shared and they have
+                  // manage_org_secrets permission (admins/owners).
+                  const canEdit = !isOrgShared || canManageOrgSecrets;
+                  return (
+                    <SecretListItem
+                      key={secret.name}
+                      title={secret.name}
+                      description={secret.description}
+                      scope={secret.scope ?? "personal"}
+                      canEdit={canEdit}
+                      onEdit={() => {
+                        setView("edit-secret-form");
+                        setSelectedSecret(secret.name);
+                        setSelectedSecretIsShared(isOrgShared);
+                      }}
+                      onDelete={() => {
+                        setConfirmationModalIsVisible(true);
+                        setSelectedSecret(secret.name);
+                        setSelectedSecretIsShared(isOrgShared);
+                      }}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          </HorizontalScrollFade>
 
           {/* Loading indicator for infinite scroll */}
           {isFetchingNextPage && (

@@ -45,6 +45,11 @@ class WebClientFeatureFlags(BaseModel):
     # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
     # distinguish "export disabled on this deployment" from "buy credits to enable".
     enable_byor_export: bool = False
+    # When false, the web client hides Super Admin entry points and redirects
+    # /super-admin/* to Settings. Defaults to False so the unfinished
+    # Super Admin dashboard stays off in production. Set
+    # ENABLE_SUPER_ADMIN=true (or 1) to show it for instance Super Admins.
+    enable_super_admin: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -92,6 +97,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     slack_enabled: bool = False
     email_enabled: bool = False
     email_change_enabled: bool = True
+    # True when USER_PROVISIONING_ENABLED registers the admin provision-user
+    # route; the Super Admin Users page hides "Provision User" otherwise.
+    user_provisioning_enabled: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

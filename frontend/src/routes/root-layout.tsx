@@ -35,6 +35,8 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { SetupTestHarnessPanel } from "#/components/features/setup/setup-test-harness-panel";
+import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -273,16 +275,17 @@ export default function MainApp() {
     );
   }
 
-  // Settings owns its own gutters (aside pl-8 + main pr-[14px]), matching
+  // Settings and Super Admin own their own gutters (aside + main), matching
   // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
-  const isSettingsRoute = pathname.startsWith("/settings");
+  const isFlushChromeRoute =
+    pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
 
   return (
     <div
       data-testid="root-layout"
       className={cn(
         "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
-        pathname === "/" || isSettingsRoute ? "p-0" : "p-0 md:p-3",
+        pathname === "/" || isFlushChromeRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>
@@ -307,6 +310,12 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
+              {config.data?.app_mode === "saas" && (
+                <>
+                  <SuperAdminSetupFloatingWidget />
+                  <SetupTestHarnessPanel />
+                </>
+              )}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>

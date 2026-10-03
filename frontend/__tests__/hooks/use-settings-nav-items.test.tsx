@@ -6,6 +6,8 @@ import OptionService from "#/api/option-service/option-service.api";
 import {
   useSettingsNavItems,
   SettingsNavRenderedItem,
+  filterSettingsNavForSidebar,
+  getSettingsUserMenuItems,
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -36,7 +38,13 @@ vi.mock("#/hooks/use-org-type-and-access", () => ({
 
 // Mock useMe
 const mockMe = vi.hoisted(() => ({
-  data: null as { role: string } | null | undefined,
+  data: null as
+    | {
+        role: string;
+        permissions?: string[];
+      }
+    | null
+    | undefined,
 }));
 
 vi.mock("#/hooks/query/use-me", () => ({
@@ -158,6 +166,40 @@ describe("useSettingsNavItems", () => {
     });
   });
 
+  it("does not put Super Admin pages in Settings nav", async () => {
+    mockConfig("saas");
+    mockOrgTypeAndAccess.isTeamOrg = true;
+    mockOrgTypeAndAccess.organizationId = "org-123";
+    mockMe.data = {
+      role: "owner",
+      permissions: [
+        "create_organization",
+        "provision_user",
+        "manage_super_admins",
+      ],
+    };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/org")).toBeDefined();
+    });
+
+    expect(findItemByPath(result.current, "/super-admin")).toBeUndefined();
+    expect(
+      result.current.some(
+        (item) =>
+          item.type === "item" && item.item.to.startsWith("/super-admin"),
+      ),
+    ).toBe(false);
+    expect(
+      result.current.some(
+        (item) =>
+          item.type === "header" && String(item.text).includes("SUPER_ADMIN"),
+      ),
+    ).toBe(false);
+  });
+
   it("should return OSS_NAV_ITEMS when app_mode is 'oss'", async () => {
     mockConfig("oss");
     mockMe.data = { role: "admin" };
@@ -219,6 +261,32 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeDefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeDefined();
+
+      const orgItems = result.current
+        .filter(
+          (item): item is Extract<SettingsNavRenderedItem, { type: "item" }> =>
+            item.type === "item" && item.item.section === "org",
+        )
+        .map((item) => ({ to: item.item.to, text: item.item.text }));
+      expect(orgItems).toEqual([
+        {
+          to: "/settings/usage-monitoring",
+          text: "SETTINGS$NAV_ADMIN_DASHBOARD",
+        },
+        { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
+        { to: "/settings/org-members", text: "SETTINGS$NAV_ORG_MEMBERS" },
+        { to: "/settings/org-defaults", text: "COMMON$LANGUAGE_MODEL_LLM" },
+        {
+          to: "/settings/org-defaults/condenser",
+          text: "SETTINGS$NAV_CONDENSER",
+        },
+        {
+          to: "/settings/org-defaults/verification",
+          text: "SETTINGS$NAV_VERIFICATION",
+        },
+        { to: "/settings/credits", text: "SETTINGS$NAV_CREDITS" },
+        { to: "/settings/org", text: "SETTINGS$NAV_ORGANIZATION" },
+      ]);
     });
 
     it("should hide org routes when isPersonalOrg is true", async () => {
@@ -708,5 +776,45 @@ describe("disabledByAcp flags (ACP-incompatible settings surfaces)", () => {
     expect(
       items.find((item) => item.to === "/settings/condenser")?.disabledByAcp,
     ).toBe(true);
+  });
+});
+
+describe("account-menu settings items", () => {
+  it("marks User and Application as menu-only in SaaS nav", () => {
+    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly).toBe(
+      true,
+    );
+    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
+      true,
+    );
+  });
+
+  it("marks Application as menu-only in OSS nav", () => {
+    expect(OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
+      true,
+    );
+  });
+
+  it("keeps menu-only items out of the sidebar and in the account menu", () => {
+    const rendered: SettingsNavRenderedItem[] = [
+      { type: "item", item: SAAS_NAV_ITEMS[0] },
+      { type: "divider" },
+      {
+        type: "item",
+        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")!,
+      },
+      {
+        type: "item",
+        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")!,
+      },
+    ];
+
+    expect(filterSettingsNavForSidebar(rendered)).toEqual([
+      { type: "item", item: SAAS_NAV_ITEMS[0] },
+    ]);
+    expect(getSettingsUserMenuItems(rendered).map((item) => item.to)).toEqual([
+      "/settings/user",
+      "/settings/app",
+    ]);
   });
 });
