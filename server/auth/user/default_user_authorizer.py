@@ -4,6 +4,7 @@ from typing import AsyncGenerator
 
 from fastapi import Request
 from pydantic import Field
+from tenacity import RetryError
 
 from openhands.app_server.services.injector import InjectorState
 from server.auth.email_validation import extract_base_email
@@ -79,6 +80,8 @@ class DefaultUserAuthorizer(UserAuthorizer):
                 return UserAuthorizationResponse(success=False, error_detail='blocked')
 
             return UserAuthorizationResponse(success=True)
+        except RetryError:
+            raise
         except Exception:
             logger.exception(
                 'error authorizing user', extra={'user_id': user_id}, stack_info=True
