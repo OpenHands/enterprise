@@ -429,9 +429,12 @@ class TestSandboxInfoConversion:
     """Test cases for converting stored sandbox and runtime data to SandboxInfo."""
 
     @pytest.mark.asyncio
-    async def test_to_sandbox_info_with_running_runtime(self, remote_sandbox_service):
+    async def test_to_sandbox_info_with_running_runtime(
+        self, remote_sandbox_service, monkeypatch
+    ):
         """Test conversion to SandboxInfo with running runtime."""
         # Setup
+        monkeypatch.delenv('OH_ENABLE_VSCODE', raising=False)
         stored_sandbox = create_stored_sandbox()
         runtime_data = create_runtime_data(status='running')
 
@@ -446,9 +449,30 @@ class TestSandboxInfoConversion:
         assert sandbox_info.sandbox_spec_id == 'test-image:latest'
         assert sandbox_info.status == SandboxStatus.RUNNING
         assert sandbox_info.session_api_key == 'test-session-key'
-        assert len(sandbox_info.exposed_urls) == 4
+        # VSCode is only exposed when explicitly enabled.
+        assert len(sandbox_info.exposed_urls) == 3
 
         # Check exposed URLs
+        url_names = [url.name for url in sandbox_info.exposed_urls]
+        assert AGENT_SERVER in url_names
+        assert VSCODE not in url_names
+        assert WORKER_1 in url_names
+        assert WORKER_2 in url_names
+
+    @pytest.mark.asyncio
+    async def test_to_sandbox_info_exposes_vscode_when_enabled(
+        self, remote_sandbox_service, monkeypatch
+    ):
+        """VSCode is exposed when OH_ENABLE_VSCODE opts in."""
+        monkeypatch.setenv('OH_ENABLE_VSCODE', 'true')
+        stored_sandbox = create_stored_sandbox()
+        runtime_data = create_runtime_data(status='running')
+
+        sandbox_info = remote_sandbox_service._to_sandbox_info(
+            stored_sandbox, runtime_data
+        )
+
+        assert len(sandbox_info.exposed_urls) == 4
         url_names = [url.name for url in sandbox_info.exposed_urls]
         assert AGENT_SERVER in url_names
         assert VSCODE in url_names
