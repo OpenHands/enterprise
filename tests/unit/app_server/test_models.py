@@ -57,6 +57,50 @@ async def test_app_conversation_start_request_polymorphism():
     assert result.detail == 'Live long and prosper!'
 
 
+def test_app_conversation_start_request_accepts_tool_module_qualnames():
+    """A caller can activate tools that live in the sandbox image but were
+    not imported at server startup.
+
+    Mirrors the ``custom-agent-with-tool`` and ``custom-agent-with-pip-tool``
+    examples from ``jpshackelford/oh-examples`` on a customer-owned image
+    (via ``OH_EXTRA_PYTHON_PATH``) — the module is on the sandbox's Python
+    path, and naming its qualname here triggers the import + registration
+    at conversation-start time. The value type mirrors the SDK's
+    ``StartConversationRequest.tool_module_qualnames``.
+    """
+    request = AppConversationStartRequest(
+        tool_module_qualnames={
+            'bug_registry': 'bug_registry.tool',
+            'markdown_document': 'oh_markdown_tool.tool',
+        },
+    )
+
+    dumped = request.model_dump(mode='json')
+
+    assert request.tool_module_qualnames == {
+        'bug_registry': 'bug_registry.tool',
+        'markdown_document': 'oh_markdown_tool.tool',
+    }
+    assert dumped['tool_module_qualnames'] == {
+        'bug_registry': 'bug_registry.tool',
+        'markdown_document': 'oh_markdown_tool.tool',
+    }
+
+
+def test_app_conversation_start_request_tool_module_qualnames_defaults_to_none():
+    """The field defaults to ``None`` (field omitted) rather than ``{}``.
+
+    A caller who does not know or care about custom tool modules simply
+    omits the field. Unlike ``tools`` on this same request, ``None`` and
+    ``{}`` are semantically identical for this field (nothing to import in
+    either case), so the service layer's truthy check is safe.
+    """
+    request = AppConversationStartRequest()
+
+    assert request.tool_module_qualnames is None
+    assert 'tool_module_qualnames' not in request.model_fields_set
+
+
 def test_app_conversation_update_request_includes_title_field():
     """Test that AppConversationUpdateRequest supports updating the title field.
 

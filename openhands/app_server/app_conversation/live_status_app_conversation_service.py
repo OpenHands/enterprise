@@ -569,6 +569,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_repository=request.selected_repository,
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
+                    tool_module_qualnames=request.tool_module_qualnames,
                     api_secrets=request.secrets,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
@@ -2067,6 +2068,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
+        tool_module_qualnames: dict[str, str] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
@@ -2099,6 +2101,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository: Optional repository name
             selected_branch: Optional selected branch name
             plugins: Optional list of plugins to load
+            tool_module_qualnames: Optional mapping of tool names to
+                fully-qualified module paths. Modules must already be
+                importable inside the sandbox agent-server (typical delivery
+                is a customer-owned image that sets ``OH_EXTRA_PYTHON_PATH``
+                at build time). Importing the module registers its tool via
+                its ``register_tool()`` side effect. Ignored (with a
+                warning) for ACP agents.
             api_secrets: Optional secrets passed directly via the API.
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
@@ -2153,6 +2162,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     extra={
                         'user_id': user.id,
                         'conversation_id': str(conversation_id),
+                    },
+                )
+            if tool_module_qualnames:
+                # ACP agents (external CLIs) own their tool protocol; the
+                # OpenHands lazy tool-module registration has no meaning on
+                # that path and is dropped.
+                _logger.warning(
+                    'app_conversation_start:tool_module_qualnames_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                        'tool_names': list(tool_module_qualnames.keys()),
                     },
                 )
             acp_request = await self._build_acp_start_conversation_request(
@@ -2413,6 +2434,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             create_kwargs['observability_tags'] = observability_tags
         if request_observability_span_name:
             create_kwargs['observability_span_name'] = request_observability_span_name
+        # Truthy check is safe here: the SDK default is an empty dict, so
+        # ``None`` and ``{}`` are semantically identical end-to-end (nothing
+        # to import in either case). Contrast with the ``tools`` override on
+        # this same request, where an explicit ``[]`` is a meaningful "narrow
+        # to nothing" signal and MUST use ``is not None`` — do not copy this
+        # pattern for fields whose empty value differs from field omission.
+        if tool_module_qualnames:
+            create_kwargs['tool_module_qualnames'] = tool_module_qualnames
         request = conv_settings.create_request(
             StartConversationRequest, **create_kwargs
         )

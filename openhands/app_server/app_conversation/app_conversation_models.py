@@ -354,6 +354,25 @@ class AppConversationStartRequest(OpenHandsModel):
         ),
     )
 
+    tool_module_qualnames: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            'Optional mapping of tool names to fully-qualified module paths. '
+            'Each named module is imported inside the sandbox agent-server at '
+            "conversation-start time; that import triggers the module's "
+            '`register_tool()` side effect, making the tool available for the '
+            'conversation.\n\n'
+            "The modules must already be importable on the sandbox's Python "
+            'path — this field does NOT upload or install code. The intended '
+            'delivery mechanism is a customer-owned sandbox image that copies '
+            'the modules in at build time and points `OH_EXTRA_PYTHON_PATH` '
+            'at them; see the SDK reference recipe at '
+            '`examples/02_remote_agent_server/06_custom_tool/Dockerfile` in '
+            'the software-agent-sdk repo. Ignored (with a warning) for ACP '
+            'agents, which own their own tool protocol.'
+        ),
+    )
+
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(
         default=None,

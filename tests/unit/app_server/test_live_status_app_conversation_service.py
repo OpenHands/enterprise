@@ -2165,6 +2165,123 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_forwards_tool_module_qualnames(self, _mock_tools):
+        """Custom tool qualnames land on the resulting StartConversationRequest.
+
+        Mirrors the customer-owned-image use case from the
+        ``custom-agent-with-tool`` and ``custom-agent-with-pip-tool``
+        examples in ``jpshackelford/oh-examples``: a module bundled into
+        the sandbox image (via ``OH_EXTRA_PYTHON_PATH``) is activated by
+        naming its qualname on the App-API request. The App API does not
+        upload or install the module — that is expected to have been done
+        at image-build time (see
+        ``examples/02_remote_agent_server/06_custom_tool/Dockerfile``).
+        """
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+        qualnames = {
+            'bug_registry': 'bug_registry.tool',
+            'markdown_document': 'oh_markdown_tool.tool',
+        }
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            tool_module_qualnames=qualnames,
+        )
+
+        assert result.tool_module_qualnames == qualnames
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_omits_tool_module_qualnames_when_none(
+        self, _mock_tools
+    ):
+        """Omitting the field leaves the SDK default (empty dict) in place.
+
+        Field omission and an empty dict are semantically equivalent for
+        this field — nothing to import in either case — which is why the
+        forwarding is a plain truthy check.
+        """
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            tool_module_qualnames=None,
+        )
+
+        assert result.tool_module_qualnames == {}
+
+    @pytest.mark.asyncio
+    async def test_build_request_ignores_tool_module_qualnames_for_acp_agent(self):
+        """ACP agents own their tool protocol: tool_module_qualnames is
+        dropped with a warning and never forwarded to the ACP builder."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=None)
+        sentinel = Mock(spec=StartConversationRequest)
+        self.service._build_acp_start_conversation_request = AsyncMock(
+            return_value=sentinel
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
+        ) as mock_logger:
+            result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=None,
+                tool_module_qualnames={'bug_registry': 'bug_registry.tool'},
+            )
+
+        assert result is sentinel
+        acp_kwargs = self.service._build_acp_start_conversation_request.call_args.kwargs
+        assert 'tool_module_qualnames' not in acp_kwargs
+        warned = [call.args[0] for call in mock_logger.warning.call_args_list]
+        assert (
+            'app_conversation_start:tool_module_qualnames_ignored_for_acp_agent'
+            in warned
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_populates_observability_metadata(self, _mock_tools):
         """Repo / branch / provider land on the request's observability_metadata
         so the agent-server attaches them to the Laminar trace. With no
@@ -3795,6 +3912,35 @@ class TestLiveStatusAppConversationService:
         )
         assert kwargs['system_prompt'] == 'You are a helper.'
         assert kwargs['disabled_skills'] == ['github']
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_tool_module_qualnames(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """App-API ``tool_module_qualnames`` reaches the builder unchanged."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        qualnames = {
+            'bug_registry': 'bug_registry.tool',
+            'markdown_document': 'oh_markdown_tool.tool',
+        }
+        request = AppConversationStartRequest(tool_module_qualnames=qualnames)
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['tool_module_qualnames'] == qualnames
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
