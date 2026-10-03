@@ -383,6 +383,21 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
     });
+
+    it("should preserve neutral root query parameters in returnTo when redirecting to login", async () => {
+      renderWithLoginStub(RouterStubWithDeviceVerify, ["/?utm_source=docs"]);
+
+      await waitFor(
+        () => {
+          expect(screen.getByTestId("login-page")).toBeInTheDocument();
+          const returnToElement = screen.getByTestId("return-to-param");
+          expect(returnToElement).toBeInTheDocument();
+          expect(returnToElement.textContent).toBe("/?utm_source=docs");
+        },
+        { timeout: 2000 },
+      );
+    });
+
   });
 
   describe("Re-authentication with stored login method", () => {

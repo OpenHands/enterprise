@@ -3,6 +3,7 @@ import {
   MarketplaceRegistration,
   MarketplacePluginInfo,
   SkillInfo,
+  SkillNameConflict,
 } from "#/types/settings";
 
 interface SkillPage {
@@ -15,6 +16,7 @@ export interface MarketplaceSkillsResponse {
   plugins: MarketplacePluginInfo[];
   marketplace_skills: Record<string, string[]>;
   errors: string[];
+  conflicts?: SkillNameConflict[];
 }
 
 class SkillsService {

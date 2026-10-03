@@ -578,11 +578,23 @@ class TestRefreshManagedLlmApiKey:
     @classmethod
     @contextlib.contextmanager
     def _patched_route(
-        cls, async_session_maker, user_id, org_id, *, generated_key='sk-new-managed-key'
+        cls,
+        async_session_maker,
+        user_id,
+        org_id,
+        *,
+        generated_key='sk-new-managed-key',
+        verify_key_result=True,
     ):
         """Like ``_patched`` but also patches ``get_instance`` to return a real
         ``SaasSettingsStore`` bound to the test DB, so the route exercises the
         real rotation end-to-end.
+
+        Also patches ``verify_key`` (default True) and ``diagnose_state``
+        (default empty dict) so the route's post-mint verify + diagnostic
+        path is deterministic and never touches the network. Neither mock
+        is yielded — tests that care about the specific values assert on
+        the returned response.
         """
         with contextlib.ExitStack() as stack:
             for p in cls._session_patches(async_session_maker):
@@ -596,6 +608,24 @@ class TestRefreshManagedLlmApiKey:
                     'storage.saas_settings_store.SaasSettingsStore.get_instance',
                     new_callable=AsyncMock,
                     return_value=SaasSettingsStore(user_id, effective_org_id=org_id),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.api_keys.LiteLlmManager.verify_key',
+                    new_callable=AsyncMock,
+                    return_value=verify_key_result,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.api_keys.LiteLlmManager.diagnose_state',
+                    new_callable=AsyncMock,
+                    return_value={
+                        'liveliness_status': 200,
+                        'readiness_status': 200,
+                        'master_key_health_status': 401,
+                    },
                 )
             )
             yield mock_delete_alias, mock_generate, mock_delete_token
@@ -1039,6 +1069,57 @@ class TestRefreshManagedLlmApiKey:
         mock_delete_alias.assert_awaited_once_with(key_alias=expected_alias)
         mock_generate.assert_awaited_once()
         mock_delete_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_omits_diagnostics_when_new_key_verifies(
+        self, async_session_maker, managed_env
+    ):
+        """Happy path: fresh key verifies against LiteLLM. Response body has
+        no diagnostics — the caller sees a clean ``refreshed=True``.
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+
+        with self._patched_route(
+            async_session_maker, user_id, org_id, verify_key_result=True
+        ):
+            result = await refresh_managed_llm_api_key(
+                user_id=user_id, effective_org_id=org_id
+            )
+
+        assert result.refreshed is True
+        assert result.diagnostics is None
+
+    @pytest.mark.asyncio
+    async def test_route_returns_diagnostics_when_new_key_fails_verify(
+        self, async_session_maker, managed_env
+    ):
+        """The whole point of this endpoint's diagnostic path: when the
+        freshly-minted key ALSO fails ``verify_key``, the response body
+        surfaces the LiteLLM health probe so a curl caller (and future
+        support-bundle triage) sees the smoking gun without needing to
+        grep server logs. Rotation itself still counts as successful
+        (``refreshed=True``) — the app-server DB is in a consistent
+        state; the fault is LiteLLM-side.
+        """
+        user_id, org_id = await self._seed(async_session_maker)
+
+        with self._patched_route(
+            async_session_maker, user_id, org_id, verify_key_result=False
+        ):
+            result = await refresh_managed_llm_api_key(
+                user_id=user_id, effective_org_id=org_id
+            )
+
+        assert result.refreshed is True
+        assert result.diagnostics is not None
+        assert result.diagnostics['new_key_verifies'] is False
+        health = result.diagnostics['litellm_health']
+        # The _patched_route default stub simulates a master-key drift:
+        # both unauth probes green, master-key probe 401. That is exactly
+        # the shape we want a real customer support bundle to expose.
+        assert health['liveliness_status'] == 200
+        assert health['readiness_status'] == 200
+        assert health['master_key_health_status'] == 401
 
     @pytest.mark.asyncio
     async def test_route_rejects_non_managed_effective_config(
