@@ -309,3 +309,175 @@ describe("IntegrationRow (Jira Cloud org scoping)", () => {
     expect(screen.queryByTestId("org-scope-badge")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Mock a Jira Cloud workspace the caller is already linked to (workspaces/link,
+ * with the matching org-level workspaces/status) and a successful save
+ * (workspaces). Returns the POST spy.
+ */
+const mockLinkedJiraWorkspace = (status: "active" | "inactive") => {
+  vi.spyOn(openHands, "get").mockImplementation(async (url: string) => {
+    if (url.includes("/workspaces/status")) {
+      return {
+        data: { configured: status === "active", host: "acme.atlassian.net" },
+      };
+    }
+    if (url.includes("/workspaces/link")) {
+      return {
+        data: {
+          id: 1,
+          keycloak_user_id: "user-1",
+          jira_workspace_id: 10,
+          status: "active",
+          workspace: {
+            id: 10,
+            name: "acme.atlassian.net",
+            jira_cloud_id: "cloud-1",
+            status,
+            editable: true,
+            svc_acc_email: "bot@acme.com",
+          },
+        },
+      };
+    }
+    return { data: null };
+  });
+  return vi
+    .spyOn(openHands, "post")
+    .mockResolvedValue({ data: { success: true, redirect: false } });
+};
+
+const findWorkspaceSave = (post: ReturnType<typeof mockLinkedJiraWorkspace>) =>
+  post.mock.calls.find(([url]) => url === "/integration/jira/workspaces");
+
+const openEditModal = async (user: ReturnType<typeof userEvent.setup>) => {
+  // The button is disabled until the integration-status query settles.
+  await waitFor(() => {
+    expect(screen.getByTestId("jira-configure-button")).toBeEnabled();
+  });
+  await user.click(screen.getByTestId("jira-configure-button"));
+};
+
+describe("IntegrationRow (Jira Cloud saved workspace)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  });
+
+  it("shows Connected and the hostname when the saved workspace is active", async () => {
+    // Arrange
+    setupConfig(false);
+    setupUser("admin");
+    mockLinkedJiraWorkspace("active");
+
+    // Act
+    renderJiraRow();
+
+    // Assert
+    expect(await screen.findByTestId("jira-status-text")).toHaveTextContent(
+      "STATUS$CONNECTED",
+    );
+    expect(screen.getByTestId("jira-workspace-name")).toHaveTextContent(
+      "acme.atlassian.net",
+    );
+    expect(screen.getByTestId("jira-configure-button")).toHaveTextContent(
+      "PROJECT_MANAGEMENT$EDIT_BUTTON_LABEL",
+    );
+  });
+
+  it("shows Paused and an inactive toggle when the saved workspace is inactive", async () => {
+    // Arrange
+    setupConfig(false);
+    setupUser("admin");
+    mockLinkedJiraWorkspace("inactive");
+    const user = userEvent.setup();
+
+    // Act
+    renderJiraRow();
+
+    // Assert
+    expect(await screen.findByTestId("jira-status-text")).toHaveTextContent(
+      "PROJECT_MANAGEMENT$JIRA_DC_STATUS_INACTIVE",
+    );
+    await openEditModal(user);
+    expect(screen.getByTestId("active-toggle")).not.toBeChecked();
+  });
+
+  it("lets an admin update the saved workspace without re-entering secrets", async () => {
+    // Arrange
+    setupConfig(false);
+    setupUser("admin");
+    const post = mockLinkedJiraWorkspace("active");
+    const user = userEvent.setup();
+
+    // Act
+    renderJiraRow();
+    await openEditModal(user);
+
+    // Assert: the saved configuration is reflected and Update is available.
+    expect(
+      screen.getByPlaceholderText(
+        "PROJECT_MANAGEMENT$SERVICE_ACCOUNT_EMAIL_PLACEHOLDER",
+      ),
+    ).toHaveValue("bot@acme.com");
+    expect(
+      screen.getByPlaceholderText(
+        "PROJECT_MANAGEMENT$WEBHOOK_SECRET_SAVED_PLACEHOLDER",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText(
+        "PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_SAVED_PLACEHOLDER",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("active-toggle")).toBeChecked();
+    expect(screen.getByTestId("connect-button")).toBeEnabled();
+
+    // Act: pause the integration without touching the secrets.
+    await user.click(screen.getByTestId("active-toggle"));
+    await user.click(screen.getByTestId("connect-button"));
+
+    // Assert: the secrets are omitted so the server keeps the stored values.
+    await waitFor(() => {
+      expect(findWorkspaceSave(post)).toBeDefined();
+    });
+    expect(findWorkspaceSave(post)?.[1]).toEqual({
+      workspace_name: "acme.atlassian.net",
+      svc_acc_email: "bot@acme.com",
+      is_active: false,
+    });
+  });
+
+  it("sends only a newly entered token when replacing a saved secret", async () => {
+    // Arrange
+    setupConfig(false);
+    setupUser("admin");
+    const post = mockLinkedJiraWorkspace("active");
+    const user = userEvent.setup();
+
+    // Act
+    renderJiraRow();
+    await openEditModal(user);
+    await user.type(
+      screen.getByPlaceholderText(
+        "PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_SAVED_PLACEHOLDER",
+      ),
+      "new-token",
+    );
+    await user.click(screen.getByTestId("connect-button"));
+
+    // Assert
+    await waitFor(() => {
+      expect(findWorkspaceSave(post)).toBeDefined();
+    });
+    expect(findWorkspaceSave(post)?.[1]).toEqual({
+      workspace_name: "acme.atlassian.net",
+      svc_acc_email: "bot@acme.com",
+      is_active: true,
+      svc_acc_api_key: "new-token",
+    });
+  });
+});

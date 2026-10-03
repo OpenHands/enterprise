@@ -87,7 +87,10 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
                 StoredConversationMetadata.conversation_id
                 == StoredConversationMetadataSaas.conversation_id,
             )
-            .where(StoredConversationMetadata.conversation_version == 'V1')
+            .where(
+                StoredConversationMetadata.conversation_version == 'V1',
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
         )
         is_public = StoredConversationMetadata.public == True  # noqa: E712
         if self.viewer_user_id is None:

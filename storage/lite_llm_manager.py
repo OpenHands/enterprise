@@ -1846,6 +1846,69 @@ class LiteLlmManager:
             return True
 
     @staticmethod
+    async def diagnose_state() -> dict[str, Any]:
+        """Cheap LiteLLM state probe for support-bundle triage.
+
+        Intended to be called only when a rotation just yielded a key that
+        failed ``verify_key`` — the goal is to distinguish LiteLLM-side
+        systemic failures (LiteLLM down, master-key drift, DB unreachable)
+        from app-server-side bugs, without adding a per-request cost to the
+        happy path.
+
+        Never raises. Any probe failure is captured as an ``<probe>_error``
+        field so the caller can log it and continue.
+
+        Returned fields:
+        - ``liveliness_status`` (int) or ``liveliness_error`` (str): unauth
+          probe of ``/health/liveliness`` — coarsest "is LiteLLM up".
+        - ``readiness_status`` (int) or ``readiness_error`` (str): unauth
+          probe of ``/health/readiness`` — includes DB reachability.
+        - ``master_key_health_status`` (int) or ``master_key_health_error``
+          (str): probe of ``/health`` with the configured LiteLLM master
+          key. A 200 means the master key still authenticates against
+          LiteLLM; a 401 means the master key configured on this
+          app-server no longer matches the one LiteLLM is running with
+          (typically drift across an upgrade).
+        """
+        out: dict[str, Any] = {}
+        if not LITE_LLM_API_URL:
+            out['config_error'] = 'LITE_LLM_API_URL not configured'
+            return out
+
+        async def _record_probe(
+            prefix: str, path: str, headers: dict[str, str] | None = None
+        ) -> None:
+            """Record a probe outcome as ``<prefix>_status`` on success or
+            ``<prefix>_error`` on failure. Errors are truncated to bound
+            log/response growth on long stack traces.
+            """
+            try:
+                async with httpx.AsyncClient(
+                    verify=httpx_verify_option(),
+                    timeout=KEY_VERIFICATION_TIMEOUT,
+                ) as client:
+                    r = await client.get(
+                        f'{LITE_LLM_API_URL}{path}', headers=headers or {}
+                    )
+                    out[f'{prefix}_status'] = r.status_code
+            except Exception as e:
+                out[f'{prefix}_error'] = f'{type(e).__name__}: {str(e)[:160]}'
+
+        await _record_probe('liveliness', '/health/liveliness')
+        await _record_probe('readiness', '/health/readiness')
+
+        if LITE_LLM_API_KEY:
+            await _record_probe(
+                'master_key_health',
+                '/health',
+                headers={'Authorization': f'Bearer {LITE_LLM_API_KEY}'},
+            )
+        else:
+            out['master_key_health_error'] = 'LITE_LLM_API_KEY not configured'
+
+        return out
+
+    @staticmethod
     async def _get_key_info(
         client: httpx.AsyncClient,
         org_id: str,
