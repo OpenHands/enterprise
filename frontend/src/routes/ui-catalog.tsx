@@ -78,8 +78,6 @@ const SOURCE: Record<string, string> = {
     "frontend/src/components/features/super-admin/super-admin-setup-guide.tsx",
   "remove-setup":
     "frontend/src/components/features/super-admin/super-admin-setup-guide.tsx",
-  "/settings/getting-started":
-    "frontend/src/components/features/setup/getting-started.tsx",
   "/settings/integrations":
     "frontend/src/components/features/settings/integrations/legacy-resolvers-page.tsx",
   integration:
@@ -288,13 +286,6 @@ const GROUPS: CatalogGroup[] = [
         "Confirms hiding the setup guide.",
         ["Confirms hiding the setup guide", "The guide can be started again"],
         "Dismiss should only flip the local setup-guide flag. It must not clear oh-sa-nux or org data.",
-      ),
-      PAGE(
-        "Getting Started",
-        "/settings/getting-started",
-        "In-app setup guide for an organization. Separate from the first-install flow.",
-        ["In-app guide, separate from the first-install flow", ...NEO_SETTINGS],
-        "Visual pass. Confirm this is the in-app guide, not the first-install flow, and that the Account nav label still opens account settings.",
       ),
       PAGE(
         "Integrations",

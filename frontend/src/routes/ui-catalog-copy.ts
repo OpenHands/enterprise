@@ -99,13 +99,6 @@ const ZH_CN: Record<string, string> = {
   "The guide can be started again": "指南可以重新开始",
   "Dismiss should only flip the local setup-guide flag. It must not clear oh-sa-nux or org data.":
     "关闭只应翻转本地的设置指南标记。不能清掉 oh-sa-nux 或组织数据。",
-  "Getting Started": "开始使用",
-  "In-app setup guide for an organization. Separate from the first-install flow.":
-    "组织内部的设置指南。和首次安装流程是分开的。",
-  "In-app guide, separate from the first-install flow":
-    "应用内指南，和首次安装流程分开",
-  "Visual pass. Confirm this is the in-app guide, not the first-install flow, and that the Account nav label still opens account settings.":
-    "做一遍外观检查。确认这是应用内指南，不是首次安装流程，并且导航里的账户仍会打开账户设置。",
   Integrations: "集成",
   "Git and project resolvers. Hub addresses redirect here. The Integrations Hub is not on this branch.":
     "Git 和项目解析器。中心地址会重定向到这里。集成中心不在这个分支上。",
@@ -461,13 +454,6 @@ const ZH_TW: Record<string, string> = {
   "The guide can be started again": "指南可以重新開始",
   "Dismiss should only flip the local setup-guide flag. It must not clear oh-sa-nux or org data.":
     "關閉只應翻轉本地的設定指南標記。不能清掉 oh-sa-nux 或組織資料。",
-  "Getting Started": "開始使用",
-  "In-app setup guide for an organization. Separate from the first-install flow.":
-    "組織內部的設定指南。和首次安裝流程是分開的。",
-  "In-app guide, separate from the first-install flow":
-    "應用內指南，和首次安裝流程分開",
-  "Visual pass. Confirm this is the in-app guide, not the first-install flow, and that the Account nav label still opens account settings.":
-    "做一遍外觀檢查。確認這是應用內指南，不是首次安裝流程，並且導航裡的帳戶仍會開啟帳戶設定。",
   Integrations: "整合",
   "Git and project resolvers. Hub addresses redirect here. The Integrations Hub is not on this branch.":
     "Git 和專案解析器。中心地址會重定向到這裡。整合中心不在這個分支上。",
