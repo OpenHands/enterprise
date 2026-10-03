@@ -138,6 +138,13 @@ def _get_email_enabled() -> bool:
     return smtp_enabled or resend_enabled
 
 
+def _get_user_provisioning_enabled() -> bool:
+    """Return whether the admin provision-user route is registered."""
+    from server.constants import USER_PROVISIONING_ENABLED
+
+    return USER_PROVISIONING_ENABLED
+
+
 def _get_jira_dc_oauth_host() -> str | None:
     """Hostname of the Jira Data Center server when DC OAuth is configured.
 
@@ -299,6 +306,9 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
     email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
+    user_provisioning_enabled: bool = Field(
+        default_factory=_get_user_provisioning_enabled
+    )
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -360,6 +370,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             slack_enabled=self.slack_enabled,
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
+            user_provisioning_enabled=self.user_provisioning_enabled,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

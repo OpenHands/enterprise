@@ -680,6 +680,7 @@ export const SETTINGS_HANDLERS = [
       },
       slack_enabled: mockSaas,
       email_enabled: mockSaas,
+      user_provisioning_enabled: mockSaas,
     };
 
     return HttpResponse.json(config);

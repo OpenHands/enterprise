@@ -1,12 +1,84 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRoutesStub } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import OptionService from "#/api/option-service/option-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import {
   SuperAdminRowMenu,
   SuperAdminTable,
   SuperAdminUserMemberships,
 } from "#/components/features/super-admin/super-admin-chrome";
 import { SUPER_ADMIN_USERS } from "#/components/features/super-admin/super-admin-mock";
+import { SuperAdminUsers } from "#/components/features/super-admin/super-admin-pages";
+import { QUERY_KEYS } from "#/hooks/query/query-keys";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+
+async function renderUsersPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  // The Super Admin layout renders its pages only once the config has loaded.
+  await queryClient.prefetchQuery({
+    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+    queryFn: OptionService.getConfig,
+  });
+  const RouterStub = createRoutesStub([
+    { path: "/super-admin/users", Component: SuperAdminUsers },
+  ]);
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterStub initialEntries={["/super-admin/users"]} />
+    </QueryClientProvider>,
+  );
+  await screen.findByTestId("super-admin-users");
+}
+
+describe("Super Admin Users page", () => {
+  beforeEach(() => {
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([]);
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("offers Provision User when the server has user provisioning enabled", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ user_provisioning_enabled: true }),
+    );
+
+    // Act
+    await renderUsersPage();
+
+    // Assert
+    expect(
+      screen.getByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("SUPER_ADMIN$USERS_SUBLINE")).toBeInTheDocument();
+  });
+
+  it("hides Provision User when the server has user provisioning disabled", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ user_provisioning_enabled: false }),
+    );
+
+    // Act
+    await renderUsersPage();
+
+    // Assert
+    expect(
+      screen.queryByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION"),
+    ).toBeInTheDocument();
+  });
+});
 
 describe("Super Admin user memberships", () => {
   it("lists each org and its role for a user in more than one organization", () => {

@@ -89,6 +89,8 @@ export interface WebClientConfig {
   slack_enabled?: boolean;
   email_enabled?: boolean;
   email_change_enabled?: boolean;
+  /** True when the admin provision-user route is registered on the server. */
+  user_provisioning_enabled?: boolean;
   acp_providers?: ACPProviderConfig[];
   /** Jira DC host when DC OAuth is configured; used to pre-fill + lock the
    *  configure form's host field. Null/absent in email-match mode. */
