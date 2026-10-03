@@ -1,14 +1,33 @@
-import { useLocation, useNavigate, useOutlet } from "react-router";
+import { replace, useLocation, useNavigate, useOutlet } from "react-router";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import OptionService from "#/api/option-service/option-service.api";
+import { WebClientConfig } from "#/api/option-service/option.types";
 import { InstallFooter } from "#/components/features/super-admin/install-footer";
 import { InstallStepBar } from "#/components/features/super-admin/install-step-bar";
+import { CONFIG_CACHE_OPTIONS, QUERY_KEYS } from "#/hooks/query/query-keys";
+import { queryClient } from "#/query-client-config";
 import {
   getSuperAdminNuxPath,
   getSuperAdminNuxStep,
   readSuperAdminNux,
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
+
+/** The install wizard ships behind ENABLE_SUPER_ADMIN; leave it when the flag is off. */
+export const clientLoader = async () => {
+  const config = await queryClient.fetchQuery<WebClientConfig>({
+    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+    queryFn: OptionService.getConfig,
+    ...CONFIG_CACHE_OPTIONS,
+  });
+
+  if (!config?.feature_flags?.enable_super_admin) {
+    return replace("/");
+  }
+
+  return {};
+};
 
 /** How long the outgoing and incoming install steps overlap. */
 const INSTALL_CROSSFADE_S = 0.5;

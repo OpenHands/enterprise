@@ -9,10 +9,6 @@ import { useNavigate } from "react-router";
 import { FlaskConical, X } from "lucide-react";
 import { stopGuidedTour } from "#/components/features/setup/tours/tour-engine";
 import {
-  PRODUCT_TOUR_DISMISSED_KEY,
-  type SetupPersona,
-} from "#/utils/org/setup-readiness";
-import {
   getSuperAdminNuxPath,
   resetSuperAdminNux,
   setSuperAdminNuxStep,
@@ -28,6 +24,7 @@ import {
   readSetupTestPersona,
   setSetupTestPersona,
   subscribeSetupTestPersona,
+  type SetupPersona,
   type SetupTestPersona,
 } from "#/utils/org/setup-test-harness";
 import { cn } from "#/utils/utils";
@@ -41,18 +38,11 @@ const NUX_JUMPS: { step: SuperAdminNuxStep; label: string }[] = [
   { step: "done", label: "Setup" },
 ];
 
-function clearProductTourDismissed() {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.removeItem(PRODUCT_TOUR_DISMISSED_KEY);
-}
-
 function personaHomePath(persona: SetupTestPersona): string {
   if (persona === "super_admin") {
     return "/super-admin/setup";
   }
-  return "/settings/getting-started";
+  return "/settings";
 }
 
 function isMockApiBoot(): boolean {
@@ -99,7 +89,6 @@ export function SetupTestHarnessPanel() {
     stopGuidedTour();
     resetSuperAdminNux();
     resetSuperAdminSetupState();
-    clearProductTourDismissed();
     setSetupTestPersona("live");
     setSuperAdminSetupVisible(true);
     navigate("/install");
@@ -194,21 +183,6 @@ export function SetupTestHarnessPanel() {
           <div className="flex flex-col gap-1">
             <button
               type="button"
-              data-testid="setup-test-goto-getting-started"
-              onClick={() => {
-                stopGuidedTour();
-                navigate("/settings/getting-started");
-              }}
-              className={cn(
-                "rounded border border-[var(--oh-border)] px-2 py-1.5 text-left",
-                "text-[11px] font-medium text-[var(--oh-muted)]",
-                "hover:border-amber-500/40 hover:text-white",
-              )}
-            >
-              Open Getting Started
-            </button>
-            <button
-              type="button"
               data-testid="setup-test-ui-catalog"
               onClick={() => navigate("/ui-catalog")}
               className={cn(
@@ -226,7 +200,6 @@ export function SetupTestHarnessPanel() {
                 stopGuidedTour();
                 resetSuperAdminSetupState();
                 setSuperAdminSetupVisible(true);
-                clearProductTourDismissed();
               }}
               className={cn(
                 "rounded border border-[var(--oh-border)] px-2 py-1.5 text-left",
@@ -234,7 +207,7 @@ export function SetupTestHarnessPanel() {
                 "hover:border-amber-500/40 hover:text-white",
               )}
             >
-              Reset SA setup + tour
+              Reset SA setup
             </button>
             <button
               type="button"

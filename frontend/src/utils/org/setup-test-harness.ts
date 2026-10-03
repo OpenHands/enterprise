@@ -3,7 +3,7 @@
  * Gated by VITE_MOCK_API — remove before production.
  */
 
-import type { SetupPersona } from "#/utils/org/setup-readiness";
+export type SetupPersona = "super_admin" | "owner" | "admin" | "member";
 
 export const SETUP_TEST_PERSONA_STORAGE_KEY = "oh-setup-test-persona";
 
