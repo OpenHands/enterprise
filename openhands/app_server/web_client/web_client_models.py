@@ -97,6 +97,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     slack_enabled: bool = False
     email_enabled: bool = False
     email_change_enabled: bool = True
+    # True when USER_PROVISIONING_ENABLED registers the admin provision-user
+    # route; the Super Admin Users page hides "Provision User" otherwise.
+    user_provisioning_enabled: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

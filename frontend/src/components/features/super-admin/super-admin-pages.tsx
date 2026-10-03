@@ -290,6 +290,8 @@ export function SuperAdminUsers() {
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
+  const { data: config } = useConfig();
+  const provisioningEnabled = Boolean(config?.user_provisioning_enabled);
   const provision = useProvisionUserToGroups();
 
   const users: SuperAdminUserRow[] = useMemo(
@@ -381,19 +383,25 @@ export function SuperAdminUsers() {
     <div className="flex flex-col gap-4" data-testid="super-admin-users">
       <SuperAdminPageHeader
         title={t(copy.text)}
-        subtitle={t(copy.subtitle)}
+        subtitle={
+          provisioningEnabled
+            ? t(copy.subtitle)
+            : t(I18nKey.SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION)
+        }
         action={
-          <BrandButton
-            type="button"
-            variant="primary"
-            startContent={<Plus className="h-4 w-4" />}
-            onClick={() => {
-              setProvisionResult(null);
-              setProvisionOpen(true);
-            }}
-          >
-            {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
-          </BrandButton>
+          provisioningEnabled ? (
+            <BrandButton
+              type="button"
+              variant="primary"
+              startContent={<Plus className="h-4 w-4" />}
+              onClick={() => {
+                setProvisionResult(null);
+                setProvisionOpen(true);
+              }}
+            >
+              {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
+            </BrandButton>
+          ) : undefined
         }
       />
       <SuperAdminSearchField

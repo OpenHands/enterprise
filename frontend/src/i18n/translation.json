@@ -30480,6 +30480,23 @@
     "uk": "Provision and review users across all organizations.",
     "ca": "Provision and review users across all organizations."
   },
+  "SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION": {
+    "en": "Review users across all organizations.",
+    "ja": "Review users across all organizations.",
+    "zh-CN": "Review users across all organizations.",
+    "zh-TW": "Review users across all organizations.",
+    "ko-KR": "Review users across all organizations.",
+    "no": "Review users across all organizations.",
+    "it": "Review users across all organizations.",
+    "pt": "Review users across all organizations.",
+    "es": "Review users across all organizations.",
+    "ar": "Review users across all organizations.",
+    "fr": "Review users across all organizations.",
+    "tr": "Review users across all organizations.",
+    "de": "Review users across all organizations.",
+    "uk": "Review users across all organizations.",
+    "ca": "Review users across all organizations."
+  },
   "SUPER_ADMIN$NAV_ADMINS": {
     "en": "Super Admins",
     "ja": "Super Admins",
