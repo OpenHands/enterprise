@@ -153,9 +153,15 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
 @pytest.mark.asyncio
 async def test_delete_organization_not_found(mock_app, grant_manage_super_admins):
     org_id = uuid.uuid4()
-    with patch(
-        'server.routes.instance_admin.OrgService.delete_org_with_cleanup',
-        AsyncMock(side_effect=OrgNotFoundError(str(org_id))),
+    with (
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.delete_org_with_cleanup',
+            AsyncMock(side_effect=OrgNotFoundError(str(org_id))),
+        ),
     ):
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/organizations/{org_id}')
@@ -170,16 +176,45 @@ async def test_delete_organization_success(mock_app, grant_manage_super_admins):
     deleted.name = 'Gone'
     deleted.contact_name = None
     deleted.contact_email = None
-    with patch(
-        'server.routes.instance_admin.OrgService.delete_org_with_cleanup',
-        AsyncMock(return_value=deleted),
-    ) as delete_mock:
+    with (
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.delete_org_with_cleanup',
+            AsyncMock(return_value=deleted),
+        ) as delete_mock,
+    ):
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/organizations/{org_id}')
 
     assert resp.status_code == 200
     delete_mock.assert_awaited_once()
     assert delete_mock.await_args.kwargs.get('allow_super_admin') is True
+
+
+@pytest.mark.asyncio
+async def test_delete_organization_rejects_personal_workspace(
+    mock_app, grant_manage_super_admins
+):
+    personal_org_id = uuid.UUID(CALLER_USER_ID)
+    delete_org = AsyncMock()
+    with (
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.delete_org_with_cleanup',
+            delete_org,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/organizations/{personal_org_id}')
+
+    assert resp.status_code == 403
+    delete_org.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -192,6 +227,10 @@ async def test_update_organization_status_success(mock_app, grant_manage_super_a
     org.contact_name = 'Ops'
     org.status = 'suspended'
     with (
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
         patch(
             'server.routes.instance_admin.OrgStore.set_org_status',
             AsyncMock(return_value=org),
@@ -209,6 +248,29 @@ async def test_update_organization_status_success(mock_app, grant_manage_super_a
 
     assert resp.status_code == 200
     assert resp.json()['status'] == 'suspended'
+
+
+@pytest.mark.asyncio
+async def test_update_organization_status_rejects_suspending_personal_workspace(
+    mock_app, grant_manage_super_admins
+):
+    personal_org_id = uuid.uuid4()
+    set_status = AsyncMock()
+    with (
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=True),
+        ),
+        patch('server.routes.instance_admin.OrgStore.set_org_status', set_status),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/organizations/{personal_org_id}',
+                json={'status': 'suspended'},
+            )
+
+    assert resp.status_code == 403
+    set_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -257,6 +319,40 @@ async def test_update_user_status_success(mock_app, grant_manage_super_admins):
 
 
 @pytest.mark.asyncio
+async def test_update_user_status_rejects_suspending_self(
+    mock_app, grant_manage_super_admins
+):
+    caller = MagicMock()
+    caller.id = uuid.UUID(CALLER_USER_ID)
+    caller.email = 'admin@acme.example'
+    caller.git_user_name = 'Admin'
+    set_status = AsyncMock()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=caller),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.set_all_membership_statuses',
+            set_status,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/users/{CALLER_USER_ID}',
+                json={'status': 'inactive'},
+            )
+
+    assert resp.status_code == 403
+    set_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_remove_user_blocks_last_owner(mock_app, grant_manage_super_admins):
     user_id = uuid.uuid4()
     user = MagicMock()
@@ -294,6 +390,45 @@ async def test_remove_user_blocks_last_owner(mock_app, grant_manage_super_admins
             resp = await client.delete(f'/api/admin/users/{user_id}')
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_remove_user_rejects_self(mock_app, grant_manage_super_admins):
+    caller = MagicMock()
+    caller.id = uuid.UUID(CALLER_USER_ID)
+
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 1
+    role = MagicMock()
+    role.name = 'member'
+    remove_member = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=caller),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.remove_user_from_org',
+            remove_member,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{CALLER_USER_ID}')
+
+    assert resp.status_code == 403
+    remove_member.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -387,3 +522,92 @@ async def test_update_user_groups_remove_blocks_last_owner(
             )
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_rejects_another_users_personal_workspace(
+    mock_app, grant_manage_super_admins
+):
+    caller = MagicMock()
+    caller.id = uuid.UUID(CALLER_USER_ID)
+    other_users_personal_org_id = uuid.uuid4()
+    add_member = AsyncMock()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=caller),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.add_user_to_org',
+            add_member,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{CALLER_USER_ID}/groups',
+                json={
+                    'action': 'add',
+                    'org_ids': [str(other_users_personal_org_id)],
+                    'role': 'admin',
+                },
+            )
+
+    assert resp.status_code == 403
+    add_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_remove_rejects_own_personal_workspace(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    user = MagicMock()
+    user.id = user_id
+    user.email = 'alex@acme.example'
+    user.git_user_name = 'Alex'
+
+    personal_org = MagicMock()
+    personal_org.id = user_id
+    personal_org.name = f'user_{user_id}_org'
+    member = MagicMock()
+    member.role_id = 1
+    member.status = 'active'
+    role = MagicMock()
+    role.name = 'owner'
+    remove_member = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, personal_org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.remove_user_from_org',
+            remove_member,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'remove', 'org_ids': [str(user_id)]},
+            )
+
+    assert resp.status_code == 403
+    remove_member.assert_not_awaited()

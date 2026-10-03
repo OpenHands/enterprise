@@ -13,12 +13,17 @@ import {
   it,
   vi,
 } from "vitest";
+import OptionService from "#/api/option-service/option-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import {
   superAdminService,
   type SuperAdminApiOrg,
+  type SuperAdminApiUser,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminOrganizations } from "#/components/features/super-admin/super-admin-pages";
 import translations from "#/i18n/translation.json";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
 const ACME: SuperAdminApiOrg = {
   id: "2",
@@ -27,6 +32,26 @@ const ACME: SuperAdminApiOrg = {
   contact_name: null,
   member_count: 3,
   is_personal: false,
+  status: "active",
+};
+
+const SAM: SuperAdminApiUser = {
+  user_id: "7",
+  email: "sam@beta.llc",
+  name: "sam",
+  memberships: [
+    { org_id: "7", org_name: "user_7_org", role: "owner", status: "active" },
+  ],
+  status: "active",
+};
+
+const SAM_PERSONAL_WORKSPACE: SuperAdminApiOrg = {
+  id: "7",
+  name: "user_7_org",
+  contact_email: "sam@beta.llc",
+  contact_name: null,
+  member_count: 1,
+  is_personal: true,
   status: "active",
 };
 
@@ -84,6 +109,7 @@ describe("Super Admin Organizations page", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    useSelectedOrganizationStore.setState({ organizationId: null });
   });
 
   it("asks for confirmation naming the organization before deleting it", async () => {
@@ -188,5 +214,64 @@ describe("Super Admin Organizations page", () => {
         status: "suspended",
       }),
     );
+  });
+
+  it("does not offer to open or act on another user's personal workspace", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      SAM_PERSONAL_WORKSPACE,
+    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    await screen.findByText("user_7_org");
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("super-admin-org-open-7"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("super-admin-org-actions-7"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers only View on the super admin's own personal workspace", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      SAM_PERSONAL_WORKSPACE,
+    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    useSelectedOrganizationStore.setState({ organizationId: "7" });
+    vi.spyOn(organizationService, "getMe").mockResolvedValue({
+      org_id: "7",
+      user_id: "7",
+      email: "sam@beta.llc",
+      role: "owner",
+      llm_api_key: "",
+      max_iterations: 100,
+      llm_model: "gpt-4",
+      llm_base_url: "",
+      status: "active",
+    });
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-org-actions-7"));
+
+    // Assert
+    expect(screen.getByTestId("super-admin-org-view-7")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-suspend-7"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-remove-7"),
+    ).not.toBeInTheDocument();
   });
 });

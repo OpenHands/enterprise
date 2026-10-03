@@ -98,8 +98,14 @@ export function SuperAdminSetup() {
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
   const { data: me } = useMe();
-  const { viewOrg, pendingOrg, dismissGrant, confirmGrant, userId } =
-    useSuperAdminViewOrg();
+  const {
+    viewOrg,
+    canViewOrg,
+    pendingOrg,
+    dismissGrant,
+    confirmGrant,
+    userId,
+  } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.organizations);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -193,16 +199,19 @@ export function SuperAdminOrganizations() {
             key: "name",
             header: t(I18nKey.ORG$ORGANIZATION_NAME),
             className: "w-[28%]",
-            render: (row) => (
-              <button
-                type="button"
-                data-testid={`super-admin-org-open-${row.id}`}
-                className="block max-w-full truncate text-left hover:underline"
-                onClick={() => viewOrg(row.id, row.name)}
-              >
-                {row.name}
-              </button>
-            ),
+            render: (row) =>
+              canViewOrg(row.id) ? (
+                <button
+                  type="button"
+                  data-testid={`super-admin-org-open-${row.id}`}
+                  className="block max-w-full truncate text-left hover:underline"
+                  onClick={() => viewOrg(row.id, row.name)}
+                >
+                  {row.name}
+                </button>
+              ) : (
+                <span className="block truncate">{row.name}</span>
+              ),
           },
           {
             key: "members",
@@ -230,42 +239,55 @@ export function SuperAdminOrganizations() {
             key: "actions",
             header: "",
             className: "w-12 min-w-12 text-right",
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-org-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$VIEW_ORG),
-                    testId: `super-admin-org-view-${row.id}`,
-                    onSelect: () => viewOrg(row.id, row.name),
-                  },
-                  row.status === "active"
-                    ? {
-                        label: t(I18nKey.SUPER_ADMIN$SUSPEND),
-                        testId: `super-admin-org-suspend-${row.id}`,
-                        onSelect: () =>
-                          setPendingOrgAction({ action: "suspend", org: row }),
-                      }
-                    : {
-                        label: t(I18nKey.SUPER_ADMIN$RESUME),
-                        testId: `super-admin-org-resume-${row.id}`,
-                        onSelect: () =>
-                          updateOrgStatus.mutate({
-                            orgId: row.id,
-                            status: "active",
-                          }),
-                      },
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$REMOVE),
-                    testId: `super-admin-org-remove-${row.id}`,
-                    destructive: true,
-                    onSelect: () =>
-                      setPendingOrgAction({ action: "remove", org: row }),
-                  },
-                ]}
-              />
-            ),
+            render: (row) =>
+              canViewOrg(row.id) ? (
+                <SuperAdminRowMenu
+                  testId={`super-admin-org-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$VIEW_ORG),
+                      testId: `super-admin-org-view-${row.id}`,
+                      onSelect: () => viewOrg(row.id, row.name),
+                    },
+                    // Personal workspaces belong to their user; the dashboard
+                    // does not suspend or delete them.
+                    ...(row.isPersonal
+                      ? []
+                      : [
+                          row.status === "active"
+                            ? {
+                                label: t(I18nKey.SUPER_ADMIN$SUSPEND),
+                                testId: `super-admin-org-suspend-${row.id}`,
+                                onSelect: () =>
+                                  setPendingOrgAction({
+                                    action: "suspend",
+                                    org: row,
+                                  }),
+                              }
+                            : {
+                                label: t(I18nKey.SUPER_ADMIN$RESUME),
+                                testId: `super-admin-org-resume-${row.id}`,
+                                onSelect: () =>
+                                  updateOrgStatus.mutate({
+                                    orgId: row.id,
+                                    status: "active",
+                                  }),
+                              },
+                          {
+                            label: t(I18nKey.SUPER_ADMIN$REMOVE),
+                            testId: `super-admin-org-remove-${row.id}`,
+                            destructive: true,
+                            onSelect: () =>
+                              setPendingOrgAction({
+                                action: "remove",
+                                org: row,
+                              }),
+                          },
+                        ]),
+                  ]}
+                />
+              ) : null,
           },
         ]}
       />
@@ -318,8 +340,14 @@ export function SuperAdminOrganizations() {
 
 export function SuperAdminUsers() {
   const { t } = useTranslation();
-  const { viewOrg, pendingOrg, dismissGrant, confirmGrant, userId } =
-    useSuperAdminViewOrg();
+  const {
+    viewOrg,
+    canViewOrg,
+    pendingOrg,
+    dismissGrant,
+    confirmGrant,
+    userId,
+  } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
   const [provisionOpen, setProvisionOpen] = useState(false);
@@ -495,6 +523,7 @@ export function SuperAdminUsers() {
                 memberships={row.memberships}
                 field="orgName"
                 onOrgClick={viewOrg}
+                canOpenOrg={canViewOrg}
               />
             ),
           },
@@ -660,6 +689,7 @@ export function SuperAdminUsers() {
             id: org.id,
             name: org.name,
           }))}
+          isSelf={managedUser.id === userId}
           onClose={() => setManagedUserId(null)}
         />
       ) : null}

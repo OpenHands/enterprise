@@ -78,6 +78,45 @@ describe("Super Admin Users page", () => {
       screen.getByText("SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION"),
     ).toBeInTheDocument();
   });
+
+  it("does not link another user's personal workspace", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+      {
+        user_id: "7",
+        email: "sam@beta.llc",
+        name: "sam",
+        status: "active",
+        memberships: [
+          {
+            org_id: "3",
+            org_name: "Beta LLC",
+            role: "admin",
+            status: "active",
+          },
+          {
+            org_id: "7",
+            org_name: "user_7_org",
+            role: "owner",
+            status: "active",
+          },
+        ],
+      },
+    ]);
+
+    // Act
+    await renderUsersPage();
+
+    // Assert
+    await screen.findByText("user_7_org");
+    expect(
+      screen.queryByTestId("super-admin-user-org-7"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("super-admin-user-org-3")).toBeInTheDocument();
+  });
 });
 
 describe("Super Admin user memberships", () => {
