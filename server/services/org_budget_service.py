@@ -1914,6 +1914,15 @@ class OrgBudgetService:
         if triggered:
             await self.store.flush()
 
+        # The spend this compares against is read from LiteLLM and never stored, so
+        # the model cannot derive which thresholds it reached -- log the set and let
+        # the spec apply its own once-per-cycle latch to it.
+        quint_oracle.log(
+            '_maybe_send_alerts',
+            'org-budgets',
+            reached={t.percentage for t in thresholds if percentage >= t.percentage},
+        )
+
     async def _send_alerts(
         self,
         org_id: UUID,

@@ -99,8 +99,10 @@ export function IntegrationRow({
     unlinkMutation.isPending ||
     configureMutation.isPending;
 
+  const workspace = integrationData?.workspace;
+  const isWorkspaceActive = workspace?.status === "active";
   const isIntegrationActive = integrationData?.status === "active";
-  const hasWorkspace = integrationData?.workspace;
+  const hasWorkspace = !!workspace;
 
   const buttonText =
     isIntegrationActive && hasWorkspace
@@ -151,10 +153,40 @@ export function IntegrationRow({
     >
       <div className="flex min-w-0 items-center gap-3">
         <IntegrationProviderIcon provider={platform} />
-        <Text className="min-w-0 truncate text-sm font-medium text-content-2">
-          {platformName}
-        </Text>
-        {isJira && <OrgScopeBadge />}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+              {platformName}
+            </Text>
+            {isJira && <OrgScopeBadge />}
+            {/* Describes the saved workspace connection, not webhook health. */}
+            {workspace && (
+              <span
+                data-testid={`${platform}-status-text`}
+                className={cn(
+                  "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+                  isWorkspaceActive
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-yellow-500/20 text-yellow-400",
+                )}
+              >
+                {t(
+                  isWorkspaceActive
+                    ? I18nKey.STATUS$CONNECTED
+                    : I18nKey.PROJECT_MANAGEMENT$JIRA_DC_STATUS_INACTIVE,
+                )}
+              </span>
+            )}
+          </div>
+          {workspace && (
+            <Text
+              testId={`${platform}-workspace-name`}
+              className="truncate text-xs leading-4 text-[var(--oh-muted)]"
+            >
+              {workspace.name}
+            </Text>
+          )}
+        </div>
       </div>
       <ConfigureButton
         onClick={handleConfigure}

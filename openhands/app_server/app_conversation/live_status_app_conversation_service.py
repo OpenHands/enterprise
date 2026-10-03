@@ -58,6 +58,9 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.conversation_links import (
+    get_conversation_ui_url,
+)
 from openhands.app_server.app_conversation.conversation_secret_enricher import (
     ConversationSecretEnricher,
 )
@@ -895,6 +898,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox_status=sandbox_status,
             execution_status=execution_status,
             conversation_url=conversation_url,
+            conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
             session_api_key=session_api_key,
         )
 
