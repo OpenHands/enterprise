@@ -140,6 +140,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import Tool
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -569,6 +570,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_repository=request.selected_repository,
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
+                    tools_override=request.tools,
                     api_secrets=request.secrets,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
@@ -2067,6 +2069,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
+        tools_override: list[Tool] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
@@ -2099,6 +2102,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository: Optional repository name
             selected_branch: Optional selected branch name
             plugins: Optional list of plugins to load
+            tools_override: Optional per-request replacement for the agent's
+                tool list. Replace semantics: when not None, the caller's list
+                verbatim becomes ``agent.tools`` (an explicit empty list is a
+                meaningful "narrow to nothing extra" override; the runtime
+                still adds finish/think). Ignored (with a warning) for ACP
+                agents, which own their tool protocol.
             api_secrets: Optional secrets passed directly via the API.
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
@@ -2153,6 +2162,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     extra={
                         'user_id': user.id,
                         'conversation_id': str(conversation_id),
+                    },
+                )
+            if tools_override is not None:
+                # ACP agents own their tool protocol; the OpenHands per-request
+                # tool list has no meaning on that path and is dropped.
+                _logger.warning(
+                    'app_conversation_start:tools_override_ignored_for_acp_agent',
+                    extra={
+                        'user_id': user.id,
+                        'conversation_id': str(conversation_id),
+                        'tool_names': [t.name for t in tools_override],
                     },
                 )
             acp_request = await self._build_acp_start_conversation_request(
@@ -2259,6 +2279,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if user.agent_settings.enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
+
+        # --- per-request tools override (App API) ---------------------------
+        # Replace semantics: the caller's list becomes ``agent.tools`` verbatim.
+        # ``None`` leaves the agent-type / profile default untouched; an
+        # explicit ``[]`` is a meaningful "narrow to nothing extra" override
+        # (finish/think are always added by the runtime). ACP is handled
+        # earlier with a warn-and-drop.
+        if tools_override is not None:
+            tools = list(tools_override)
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True

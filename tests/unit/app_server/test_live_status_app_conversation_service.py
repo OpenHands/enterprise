@@ -77,6 +77,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from openhands.sdk.tool import Tool
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -2162,6 +2163,124 @@ class TestLiveStatusAppConversationService:
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='browser_tool_set'), Tool(name='terminal')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_applies_tools_override(self, _mock_tools):
+        """A per-request tools list REPLACES the profile default.
+
+        Mirrors the ``custom-agent-no-browser`` example from
+        ``jpshackelford/oh-examples`` — the profile default here would
+        include ``browser_tool_set``, and the caller narrows to a focused
+        agent that only has ``file_editor`` + ``task_tracker``. The browser
+        tool must not survive the override.
+        """
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            tools_override=[Tool(name='file_editor'), Tool(name='task_tracker')],
+        )
+
+        tool_names = [t.name for t in result.agent.tools]
+        assert 'file_editor' in tool_names
+        assert 'task_tracker' in tool_names
+        assert 'browser_tool_set' not in tool_names
+        assert 'terminal' not in tool_names
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[Tool(name='browser_tool_set'), Tool(name='terminal')],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_empty_tools_override_narrows_to_nothing(
+        self, _mock_tools
+    ):
+        """An explicit ``tools=[]`` is a meaningful "no built-in tools" override.
+
+        Distinct from omitting the field entirely (which leaves the profile
+        default intact). Enables an ultra-focused agent — e.g. a Canvas
+        automation that only needs ``finish`` + ``think`` for a one-shot
+        classification task and should not have terminal or browser access.
+        """
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('k')), {})
+        )
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+            remote_workspace=None,
+            tools_override=[],
+        )
+
+        tool_names = [t.name for t in result.agent.tools]
+        # Profile defaults are gone; only whatever the runtime auto-injects
+        # (finish/think) may remain. The caller's explicit narrowing
+        # signal must not have been collapsed to "field omitted".
+        assert 'browser_tool_set' not in tool_names
+        assert 'terminal' not in tool_names
+
+    @pytest.mark.asyncio
+    async def test_build_request_ignores_tools_override_for_acp_agent(self):
+        """ACP agents own their tool protocol: tools_override is dropped
+        with a warning and never forwarded to the ACP builder."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=None)
+        sentinel = Mock(spec=StartConversationRequest)
+        self.service._build_acp_start_conversation_request = AsyncMock(
+            return_value=sentinel
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
+        ) as mock_logger:
+            result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=None,
+                tools_override=[Tool(name='file_editor')],
+            )
+
+        assert result is sentinel
+        acp_kwargs = self.service._build_acp_start_conversation_request.call_args.kwargs
+        assert 'tools_override' not in acp_kwargs
+        assert 'tools' not in acp_kwargs
+        warned = [call.args[0] for call in mock_logger.warning.call_args_list]
+        assert 'app_conversation_start:tools_override_ignored_for_acp_agent' in warned
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
         return_value=[],
     )
     @pytest.mark.asyncio
@@ -3795,6 +3914,36 @@ class TestLiveStatusAppConversationService:
         )
         assert kwargs['system_prompt'] == 'You are a helper.'
         assert kwargs['disabled_skills'] == ['github']
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_tools_override(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """The App-API ``tools`` field reaches the builder as ``tools_override``."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(
+            tools=[Tool(name='file_editor'), Tool(name='task_tracker')],
+        )
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['tools_override'] == [
+            Tool(name='file_editor'),
+            Tool(name='task_tracker'),
+        ]
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

@@ -21,6 +21,7 @@ from openhands.app_server.event_callback.event_callback_result_models import (
     EventCallbackResultStatus,
 )
 from openhands.sdk import Event
+from openhands.sdk.tool import Tool
 
 
 class MyCallbackProcessor(EventCallbackProcessor):
@@ -55,6 +56,45 @@ async def test_app_conversation_start_request_polymorphism():
     processor = req.processors[0]
     result = await processor(uuid4(), MagicMock(id=uuid4()), MagicMock(id=str(uuid4())))
     assert result.detail == 'Live long and prosper!'
+
+
+def test_app_conversation_start_request_accepts_tools_override():
+    """A caller can narrow the agent's tool list per request.
+
+    Mirrors the ``custom-agent-no-browser`` example from
+    ``jpshackelford/oh-examples``: pick a subset of the built-in tool set
+    (here: ``file_editor`` + ``task_tracker``) and exclude the rest — most
+    notably the browser — for a focused agent.
+    """
+    request = AppConversationStartRequest(
+        tools=[Tool(name='file_editor'), Tool(name='task_tracker')],
+    )
+
+    dumped = request.model_dump(mode='json')
+
+    assert request.tools == [Tool(name='file_editor'), Tool(name='task_tracker')]
+    assert dumped['tools'] == [
+        {'name': 'file_editor', 'params': {}},
+        {'name': 'task_tracker', 'params': {}},
+    ]
+
+
+def test_app_conversation_start_request_tools_distinguishes_none_from_empty():
+    """``None`` and ``[]`` must be distinguishable on the tools override.
+
+    Field omission ('use the agent-type / profile default') and an explicit
+    empty list ('narrow to nothing extra beyond finish/think') are separate
+    signals; the request model preserves both so the builder can act on the
+    difference. Truthy-collapsing the two would silently drop the empty
+    override — one of the two intended use cases.
+    """
+    omitted = AppConversationStartRequest()
+    empty = AppConversationStartRequest(tools=[])
+
+    assert omitted.tools is None
+    assert empty.tools == []
+    assert 'tools' not in omitted.model_fields_set
+    assert 'tools' in empty.model_fields_set
 
 
 def test_app_conversation_update_request_includes_title_field():
