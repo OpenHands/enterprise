@@ -24,11 +24,12 @@ export const useCreateOrganization = () => {
         // is available immediately after create.
         try {
           await organizationService.switchOrganization({ orgId: org.id });
+          useSelectedOrganizationStore.getState().setOrganizationId(org.id);
+          setSelectedOrg(org.id);
         } catch {
-          // Local selection still helps even if the switch API fails.
+          // The server refuses a switch into an organization the caller is not
+          // a member of, so stay in the current organization.
         }
-        useSelectedOrganizationStore.getState().setOrganizationId(org.id);
-        setSelectedOrg(org.id);
       }
 
       await Promise.all([
