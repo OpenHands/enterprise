@@ -1,7 +1,6 @@
 import {
   Bot,
   Building2,
-  FileText,
   Sparkles,
   Users,
   Workflow,
@@ -24,13 +23,6 @@ const INSTALL_STEPS: {
     detail: I18nKey.SA_NUX$STEP_WELCOME_DETAIL,
     path: "/install",
     icon: Sparkles,
-  },
-  {
-    id: "tos",
-    label: I18nKey.SA_NUX$STEP_TERMS,
-    detail: I18nKey.SA_NUX$STEP_TERMS_DETAIL,
-    path: "/install/tos",
-    icon: FileText,
   },
   {
     id: "company",

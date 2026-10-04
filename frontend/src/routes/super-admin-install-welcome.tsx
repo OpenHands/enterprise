@@ -12,7 +12,7 @@ export default function SuperAdminInstallWelcome() {
 
   const onNext = () => {
     markSuperAdminNuxWelcomeDone();
-    navigate("/install/tos");
+    navigate("/install/company");
   };
 
   return (

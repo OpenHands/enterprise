@@ -32775,23 +32775,6 @@
     "uk": "Welcome",
     "ca": "Welcome"
   },
-  "SA_NUX$STEP_TERMS": {
-    "en": "Terms",
-    "ja": "Terms",
-    "zh-CN": "Terms",
-    "zh-TW": "Terms",
-    "ko-KR": "Terms",
-    "no": "Terms",
-    "it": "Terms",
-    "pt": "Terms",
-    "es": "Terms",
-    "ar": "Terms",
-    "fr": "Terms",
-    "tr": "Terms",
-    "de": "Terms",
-    "uk": "Terms",
-    "ca": "Terms"
-  },
   "SA_NUX$STEP_COMPANY": {
     "en": "Company",
     "ja": "Company",
@@ -32995,23 +32978,6 @@
     "de": "Legal",
     "uk": "Legal",
     "ca": "Legal"
-  },
-  "SA_NUX$TOS_DESCRIPTION": {
-    "en": "Review and accept the terms to continue setting up your installation.",
-    "ja": "Review and accept the terms to continue setting up your installation.",
-    "zh-CN": "Review and accept the terms to continue setting up your installation.",
-    "zh-TW": "Review and accept the terms to continue setting up your installation.",
-    "ko-KR": "Review and accept the terms to continue setting up your installation.",
-    "no": "Review and accept the terms to continue setting up your installation.",
-    "it": "Review and accept the terms to continue setting up your installation.",
-    "pt": "Review and accept the terms to continue setting up your installation.",
-    "es": "Review and accept the terms to continue setting up your installation.",
-    "ar": "Review and accept the terms to continue setting up your installation.",
-    "fr": "Review and accept the terms to continue setting up your installation.",
-    "tr": "Review and accept the terms to continue setting up your installation.",
-    "de": "Review and accept the terms to continue setting up your installation.",
-    "uk": "Review and accept the terms to continue setting up your installation.",
-    "ca": "Review and accept the terms to continue setting up your installation."
   },
   "SA_NUX$ORG_TITLE": {
     "en": "Name your first organization",
@@ -33845,23 +33811,6 @@
     "de": "See how OpenHands runs agents in production and opens a pull request for you to review.",
     "uk": "See how OpenHands runs agents in production and opens a pull request for you to review.",
     "ca": "See how OpenHands runs agents in production and opens a pull request for you to review."
-  },
-  "SA_NUX$STEP_TERMS_DETAIL": {
-    "en": "Review and accept the terms before this installation continues.",
-    "ja": "Review and accept the terms before this installation continues.",
-    "zh-CN": "Review and accept the terms before this installation continues.",
-    "zh-TW": "Review and accept the terms before this installation continues.",
-    "ko-KR": "Review and accept the terms before this installation continues.",
-    "no": "Review and accept the terms before this installation continues.",
-    "it": "Review and accept the terms before this installation continues.",
-    "pt": "Review and accept the terms before this installation continues.",
-    "es": "Review and accept the terms before this installation continues.",
-    "ar": "Review and accept the terms before this installation continues.",
-    "fr": "Review and accept the terms before this installation continues.",
-    "tr": "Review and accept the terms before this installation continues.",
-    "de": "Review and accept the terms before this installation continues.",
-    "uk": "Review and accept the terms before this installation continues.",
-    "ca": "Review and accept the terms before this installation continues."
   },
   "SA_NUX$STEP_COMPANY_DETAIL": {
     "en": "Add your company, a logo, and a license key if you have one.",

@@ -67,7 +67,6 @@ const MODAL = (
 /** Defining file for each catalog card, keyed by route or modal frame id. */
 const SOURCE: Record<string, string> = {
   "/install": "frontend/src/routes/super-admin-install-welcome.tsx",
-  "/install/tos": "frontend/src/routes/super-admin-install-tos.tsx",
   "/install/company": "frontend/src/routes/super-admin-install-company.tsx",
   "/install/org": "frontend/src/routes/super-admin-install-org.tsx",
   "/settings/org-defaults": "frontend/src/routes/llm-settings.tsx",
@@ -174,30 +173,18 @@ const GROUPS: CatalogGroup[] = [
   {
     ticket: "OHE-3384 · PRD OHE-651",
     title: "First-time Super Admin onboarding",
-    flow: "Install wizard, in order: welcome, terms, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
+    flow: "Install wizard, in order: welcome, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
     entries: [
       PAGE(
         "Welcome",
         "/install",
         "Opens the Super Admin install. Progress is stored in this browser only.",
         [
-          "Six-step install bar from welcome through first automation",
+          "Five-step install bar from welcome through first automation",
           "Animated OpenHands mark and welcome copy",
           "Next marks this step done in this browser",
         ],
         "Confirm Next only writes the oh-sa-nux welcome flag in this browser. A finished install must not return here unless that storage is cleared.",
-        "First-install NUX",
-      ),
-      PAGE(
-        "Terms",
-        "/install/tos",
-        "Terms acceptance before company setup. Clearing storage starts the flow over.",
-        [
-          "Terms must be accepted before the company step",
-          "Acceptance is stored in this browser, not on the server",
-          "Clearing storage restarts the install",
-        ],
-        "Acceptance has to block the company step. There is no server record of it. Clearing oh-sa-nux must restart the flow.",
         "First-install NUX",
       ),
       PAGE(
@@ -221,7 +208,7 @@ const GROUPS: CatalogGroup[] = [
           "Continues to LLM settings",
           "Leaves the starter modal pending",
         ],
-        "This should run only after welcome, terms, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.",
+        "This should run only after welcome and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.",
         "First-install NUX",
       ),
       PAGE(

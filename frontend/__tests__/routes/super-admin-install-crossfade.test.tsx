@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRoutesStub } from "react-router";
 import { beforeEach, describe, expect, it } from "vitest";
+import { renderWithProviders } from "test-utils";
 import SuperAdminInstallLayout from "#/routes/super-admin-install-layout";
 import SuperAdminInstallWelcome from "#/routes/super-admin-install-welcome";
-import SuperAdminInstallTos from "#/routes/super-admin-install-tos";
+import SuperAdminInstallCompany from "#/routes/super-admin-install-company";
 import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
 
 function renderInstall(initialPath = "/install") {
@@ -14,12 +15,12 @@ function renderInstall(initialPath = "/install") {
       Component: SuperAdminInstallLayout,
       children: [
         { index: true, Component: SuperAdminInstallWelcome },
-        { path: "tos", Component: SuperAdminInstallTos },
+        { path: "company", Component: SuperAdminInstallCompany },
       ],
     },
   ]);
 
-  return render(<RouterStub initialEntries={[initialPath]} />);
+  return renderWithProviders(<RouterStub initialEntries={[initialPath]} />);
 }
 
 describe("super admin install crossfade", () => {
@@ -27,7 +28,7 @@ describe("super admin install crossfade", () => {
     resetSuperAdminNux();
   });
 
-  it("keeps the welcome screen mounted while the terms screen fades in", async () => {
+  it("keeps the welcome screen mounted while the company screen fades in", async () => {
     const user = userEvent.setup();
     renderInstall();
 
@@ -40,7 +41,9 @@ describe("super admin install crossfade", () => {
 
     await user.click(screen.getByTestId("sa-nux-welcome-next"));
 
-    expect(screen.getByTestId("super-admin-install-tos")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("super-admin-install-company"),
+    ).toBeInTheDocument();
     expect(
       screen.getByTestId("super-admin-install-welcome"),
     ).toBeInTheDocument();
@@ -53,7 +56,9 @@ describe("super admin install crossfade", () => {
         screen.queryByTestId("super-admin-install-welcome"),
       ).not.toBeInTheDocument();
     });
-    expect(screen.getByTestId("super-admin-install-tos")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("super-admin-install-company"),
+    ).toBeInTheDocument();
     expect(screen.getAllByTestId("super-admin-install-crossfade")).toHaveLength(
       1,
     );
