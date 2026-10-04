@@ -47,8 +47,11 @@ class WebClientFeatureFlags(BaseModel):
     enable_byor_export: bool = False
     # When false, the web client hides Super Admin entry points and redirects
     # /super-admin/* to Settings. Defaults to False so the unfinished
-    # Super Admin dashboard stays off in production. Set
-    # ENABLE_SUPER_ADMIN=true (or 1) to show it for instance Super Admins.
+    # Super Admin dashboard stays off in production. To turn it on, set both
+    # ENABLE_SUPER_ADMIN=true (or 1), which the server reads to mount the
+    # /api/admin directory, and OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN=true:
+    # once any OH_WEB_CLIENT_FEATURE_FLAGS_* is set, flags are built from those
+    # alone and the bare variable no longer reaches this field.
     enable_super_admin: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
