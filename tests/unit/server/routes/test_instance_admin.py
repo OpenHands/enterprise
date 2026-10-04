@@ -9,10 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 
 from openhands.app_server.user_auth import get_user_id
 from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
 from server.routes.org_models import OrgNotFoundError
+from storage.instance_settings import InstanceSettings
+from storage.org import Org
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -851,3 +854,183 @@ async def test_update_instance_settings_rejects_invalid_values(
 
     # Assert
     assert resp.status_code == 422
+
+
+NO_SETUP_STATE = {
+    'wizard_pending': False,
+    'guide_org_id': None,
+    'guide_dismissed': False,
+}
+
+
+async def _record_setup_user(async_session_maker, user_id: str) -> None:
+    async with async_session_maker() as session:
+        session.add(InstanceSettings(id=1, setup_user_id=uuid.UUID(user_id)))
+        await session.commit()
+
+
+async def _add_org(async_session_maker) -> uuid.UUID:
+    org_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(Org(id=org_id, name=f'org-{org_id}'))
+        await session.commit()
+    return org_id
+
+
+@pytest.mark.asyncio
+async def test_get_setup_state_requires_sign_in(instance_settings_db):
+    # Arrange
+    app = _app_for(None)
+
+    # Act
+    async with _client(app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_setup_state_is_empty_when_no_first_super_admin_was_recorded(
+    mock_app, instance_settings_db
+):
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == NO_SETUP_STATE
+
+
+@pytest.mark.asyncio
+async def test_first_super_admin_has_a_pending_wizard(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == {**NO_SETUP_STATE, 'wizard_pending': True}
+
+
+@pytest.mark.asyncio
+async def test_later_super_admin_is_not_reported_as_needing_the_wizard(
+    instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+
+    # Act
+    async with _client(_app_for(str(uuid.uuid4()))) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == NO_SETUP_STATE
+
+
+@pytest.mark.asyncio
+async def test_completed_wizard_is_no_longer_pending(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+
+    async with _client(mock_app) as client:
+        # Act
+        resp = await client.patch(
+            '/api/admin/setup-state', json={'wizard_completed': True}
+        )
+        saved = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert saved.json() == NO_SETUP_STATE
+
+
+@pytest.mark.asyncio
+async def test_update_setup_state_saves_the_guide_org_and_dismissal(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+    org_id = await _add_org(async_session_maker)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state',
+            json={'guide_org_id': str(org_id), 'guide_dismissed': True},
+        )
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == {
+        'wizard_pending': True,
+        'guide_org_id': str(org_id),
+        'guide_dismissed': True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_super_admin_can_update_the_setup_state(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+
+    # Act
+    async with _client(_app_for(str(uuid.uuid4()))) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state', json={'wizard_completed': True}
+        )
+
+    # Assert
+    assert resp.status_code == 403
+    async with _client(mock_app) as client:
+        saved = await client.get('/api/admin/setup-state')
+    assert saved.json()['wizard_pending'] is True
+
+
+@pytest.mark.asyncio
+async def test_update_setup_state_rejects_an_unknown_organization(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state', json={'guide_org_id': str(uuid.uuid4())}
+        )
+
+    # Assert
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _record_setup_user(async_session_maker, CALLER_USER_ID)
+    org_id = await _add_org(async_session_maker)
+    async with _client(mock_app) as client:
+        await client.patch('/api/admin/setup-state', json={'guide_org_id': str(org_id)})
+
+    # Act
+    async with async_session_maker() as session:
+        await session.execute(text('DELETE FROM org WHERE id = :id'), {'id': org_id})
+        await session.commit()
+
+    # Assert
+    async with _client(mock_app) as client:
+        saved = await client.get('/api/admin/setup-state')
+    assert saved.json()['guide_org_id'] is None

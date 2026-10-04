@@ -8,6 +8,7 @@ export const SUPER_ADMIN_QUERY_KEYS = {
   organizations: ["super-admin", "organizations"] as const,
   users: ["super-admin", "users"] as const,
   instanceSettings: ["super-admin", "instance-settings"] as const,
+  setupState: ["super-admin", "setup-state"] as const,
 };
 
 export const useSuperAdmins = () =>
@@ -35,6 +36,19 @@ export const useInstanceSettings = () => {
   return useQuery({
     queryKey: SUPER_ADMIN_QUERY_KEYS.instanceSettings,
     queryFn: () => superAdminService.getInstanceSettings(),
+    enabled: config?.feature_flags?.enable_super_admin === true,
+    ...CONFIG_CACHE_OPTIONS,
+    meta: { disableToast: true },
+  });
+};
+
+/** First-install wizard and setup-guide state for the signed-in user. */
+export const useSetupState = () => {
+  const { data: config } = useConfig();
+
+  return useQuery({
+    queryKey: SUPER_ADMIN_QUERY_KEYS.setupState,
+    queryFn: () => superAdminService.getSetupState(),
     enabled: config?.feature_flags?.enable_super_admin === true,
     ...CONFIG_CACHE_OPTIONS,
     meta: { disableToast: true },
