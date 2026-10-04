@@ -3,7 +3,6 @@ import {
   Building2,
   FileText,
   Sparkles,
-  UserRound,
   Users,
   Workflow,
   type LucideIcon,
@@ -32,13 +31,6 @@ const INSTALL_STEPS: {
     detail: I18nKey.SA_NUX$STEP_TERMS_DETAIL,
     path: "/install/tos",
     icon: FileText,
-  },
-  {
-    id: "account",
-    label: I18nKey.SA_NUX$STEP_ACCOUNT,
-    detail: I18nKey.SA_NUX$STEP_ACCOUNT_DETAIL,
-    path: "/install/account",
-    icon: UserRound,
   },
   {
     id: "company",

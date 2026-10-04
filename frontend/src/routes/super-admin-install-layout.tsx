@@ -1,6 +1,8 @@
 import { replace, useLocation, useNavigate, useOutlet } from "react-router";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import axios from "axios";
+import AuthService from "#/api/auth-service/auth-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { InstallFooter } from "#/components/features/super-admin/install-footer";
@@ -14,8 +16,11 @@ import {
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
 
-/** The install wizard ships behind ENABLE_SUPER_ADMIN; leave it when the flag is off. */
-export const clientLoader = async () => {
+/**
+ * The install wizard ships behind ENABLE_SUPER_ADMIN; leave it when the flag is off.
+ * It runs as the signed-in Super Admin, so a signed-out visitor signs in first.
+ */
+export const clientLoader = async ({ request }: { request: Request }) => {
   const config = await queryClient.fetchQuery<WebClientConfig>({
     queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
     queryFn: OptionService.getConfig,
@@ -24,6 +29,18 @@ export const clientLoader = async () => {
 
   if (!config?.feature_flags?.enable_super_admin) {
     return replace("/");
+  }
+
+  try {
+    await AuthService.authenticate(config.app_mode);
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      const { pathname, search } = new URL(request.url);
+      return replace(
+        `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`,
+      );
+    }
+    throw error;
   }
 
   return {};
@@ -107,7 +124,7 @@ function InstallStepLayer({
 /**
  * Full-bleed blank shell for first-install Super Admin NUX (no settings chrome).
  *
- * Welcome, terms, account, company, and the first organization stay mounted together
+ * Welcome, terms, company, and the first organization stay mounted together
  * for one beat so the outgoing step can fade out while the next step fades
  * in over the same background.
  */
@@ -147,7 +164,6 @@ export default function SuperAdminInstallLayout() {
       const order = [
         "/install",
         "/install/tos",
-        "/install/account",
         "/install/company",
         "/install/org",
       ];

@@ -10,13 +10,13 @@ const ZH_CN: Record<string, string> = {
   "Review.": "评审。",
   "OHE-3384 · PRD OHE-651": "OHE-3384 · 产品需求 OHE-651",
   "First-time Super Admin onboarding": "超级管理员首次上手",
-  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
-    "安装向导按顺序是：欢迎、条款、账户、公司、第一个组织，然后是组织语言模型和起步对话框。验收标准还要求在后台创建组织，并把超级管理员设为所有者。这个向导仍会让他们给组织起名。许可证密钥只留在这个浏览器里。单元测试、功能开关、OpenHands Cloud 端到端测试和缺陷清扫都不是本页上的画面。",
+  "Install wizard, in order: welcome, terms, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
+    "安装向导按顺序是：欢迎、条款、公司、第一个组织，然后是组织语言模型和起步对话框。验收标准还要求在后台创建组织，并把超级管理员设为所有者。这个向导仍会让他们给组织起名。许可证密钥只留在这个浏览器里。单元测试、功能开关、OpenHands Cloud 端到端测试和缺陷清扫都不是本页上的画面。",
   Welcome: "欢迎",
   "Opens the Super Admin install. Progress is stored in this browser only.":
     "打开超级管理员安装。进度只存在这个浏览器里。",
-  "Seven-step install bar from welcome through first automation":
-    "从欢迎到第一次自动化的七步安装条",
+  "Six-step install bar from welcome through first automation":
+    "从欢迎到第一次自动化的六步安装条",
   "Animated OpenHands mark and welcome copy":
     "带动画的 OpenHands 标志和欢迎文案",
   "Next marks this step done in this browser":
@@ -25,24 +25,15 @@ const ZH_CN: Record<string, string> = {
     "确认下一步只在这个浏览器里写入 oh-sa-nux 的欢迎标记。安装完成后不应再回到这里，除非清掉那份存储。",
   "First-install NUX": "首次安装引导",
   Terms: "条款",
-  "Terms acceptance before account setup. Clearing storage starts the flow over.":
-    "接受条款之后才能设置账户。清掉存储会把流程重新开始。",
-  "Terms must be accepted before the account step":
-    "必须先接受条款，才能进入账户这一步",
+  "Terms acceptance before company setup. Clearing storage starts the flow over.":
+    "接受条款之后才能设置公司。清掉存储会把流程重新开始。",
+  "Terms must be accepted before the company step":
+    "必须先接受条款，才能进入公司这一步",
   "Acceptance is stored in this browser, not on the server":
     "接受记录存在这个浏览器里，不在服务器上",
   "Clearing storage restarts the install": "清掉存储会重新开始安装",
-  "Acceptance has to block the account step. There is no server record of it. Clearing oh-sa-nux must restart the flow.":
-    "未接受条款必须拦住账户这一步。服务器上没有这份记录。清掉 oh-sa-nux 必须重新开始流程。",
-  Account: "账户",
-  "Installer name and email. This step does not create the server account by itself.":
-    "安装者的姓名和邮箱。这一步本身不会创建服务器账户。",
-  "Full name, email, and password for the installing Super Admin":
-    "安装这位超级管理员时填写的全名、邮箱和密码",
-  "Does not create the server account by itself": "本身不会创建服务器账户",
-  "Progress stays in this browser": "进度留在这个浏览器里",
-  "This form must not create a user or send the password to an API. The name is one field, not a stored first and last name.":
-    "这个表单不能创建用户，也不能把密码发给接口。姓名是一个字段，不会分开存储名和姓。",
+  "Acceptance has to block the company step. There is no server record of it. Clearing oh-sa-nux must restart the flow.":
+    "未接受条款必须拦住公司这一步。服务器上没有这份记录。清掉 oh-sa-nux 必须重新开始流程。",
   Company: "公司",
   "Company name, logo, and a license key or evaluation trial. The key does not activate a license. The name and logo are saved to the server.":
     "公司名称、标志，以及许可证密钥或评估试用。密钥不会激活许可证。名称和标志会保存到服务器。",
@@ -58,8 +49,8 @@ const ZH_CN: Record<string, string> = {
   "Names the first organization on the instance": "为实例上的第一个组织起名",
   "Continues to LLM settings": "继续进入语言模型设置",
   "Leaves the starter modal pending": "起步对话框保持待打开",
-  "This should run only after welcome, terms, account, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.":
-    "这一步只应在欢迎、条款、账户和公司都完成后出现，然后打开语言模型设置，并让起步对话框待打开。不能直接跳到仪表盘。",
+  "This should run only after welcome, terms, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.":
+    "这一步只应在欢迎、条款和公司都完成后出现，然后打开语言模型设置，并让起步对话框待打开。不能直接跳到仪表盘。",
   "Language Model": "语言模型",
   "Org LLM defaults. After first install, the starter modal opens on this page.":
     "组织的语言模型默认值。首次安装之后，起步对话框会在这个页面打开。",
@@ -365,13 +356,13 @@ const ZH_TW: Record<string, string> = {
   "Review.": "評審。",
   "OHE-3384 · PRD OHE-651": "OHE-3384 · 產品需求 OHE-651",
   "First-time Super Admin onboarding": "超級管理員首次上手",
-  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
-    "安裝嚮導按順序是：歡迎、條款、帳戶、公司、第一個組織，然後是組織語言模型和起步對話框。驗收標準還要求在後臺建立組織，並把超級管理員設為所有者。這個嚮導仍會讓他們給組織起名。許可證金鑰只留在這個瀏覽器裡。單元測試、功能開關、OpenHands Cloud 端到端測試和缺陷清掃都不是本頁上的畫面。",
+  "Install wizard, in order: welcome, terms, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
+    "安裝嚮導按順序是：歡迎、條款、公司、第一個組織，然後是組織語言模型和起步對話框。驗收標準還要求在後臺建立組織，並把超級管理員設為所有者。這個嚮導仍會讓他們給組織起名。許可證金鑰只留在這個瀏覽器裡。單元測試、功能開關、OpenHands Cloud 端到端測試和缺陷清掃都不是本頁上的畫面。",
   Welcome: "歡迎",
   "Opens the Super Admin install. Progress is stored in this browser only.":
     "開啟超級管理員安裝。進度只存在這個瀏覽器裡。",
-  "Seven-step install bar from welcome through first automation":
-    "從歡迎到第一次自動化的七步安裝條",
+  "Six-step install bar from welcome through first automation":
+    "從歡迎到第一次自動化的六步安裝條",
   "Animated OpenHands mark and welcome copy":
     "帶動畫的 OpenHands 標誌和歡迎文案",
   "Next marks this step done in this browser":
@@ -380,24 +371,15 @@ const ZH_TW: Record<string, string> = {
     "確認下一步只在這個瀏覽器裡寫入 oh-sa-nux 的歡迎標記。安裝完成後不應再回到這裡，除非清掉那份儲存。",
   "First-install NUX": "首次安裝引導",
   Terms: "條款",
-  "Terms acceptance before account setup. Clearing storage starts the flow over.":
-    "接受條款之後才能設定帳戶。清掉儲存會把流程重新開始。",
-  "Terms must be accepted before the account step":
-    "必須先接受條款，才能進入帳戶這一步",
+  "Terms acceptance before company setup. Clearing storage starts the flow over.":
+    "接受條款之後才能設定公司。清掉儲存會把流程重新開始。",
+  "Terms must be accepted before the company step":
+    "必須先接受條款，才能進入公司這一步",
   "Acceptance is stored in this browser, not on the server":
     "接受記錄存在這個瀏覽器裡，不在伺服器上",
   "Clearing storage restarts the install": "清掉儲存會重新開始安裝",
-  "Acceptance has to block the account step. There is no server record of it. Clearing oh-sa-nux must restart the flow.":
-    "未接受條款必須攔住帳戶這一步。伺服器上沒有這份記錄。清掉 oh-sa-nux 必須重新開始流程。",
-  Account: "帳戶",
-  "Installer name and email. This step does not create the server account by itself.":
-    "安裝者的姓名和郵箱。這一步本身不會建立伺服器帳戶。",
-  "Full name, email, and password for the installing Super Admin":
-    "安裝這位超級管理員時填寫的全名、郵箱和密碼",
-  "Does not create the server account by itself": "本身不會建立伺服器帳戶",
-  "Progress stays in this browser": "進度留在這個瀏覽器裡",
-  "This form must not create a user or send the password to an API. The name is one field, not a stored first and last name.":
-    "這個表單不能建立使用者，也不能把密碼發給介面。姓名是一個欄位，不會分開儲存名和姓。",
+  "Acceptance has to block the company step. There is no server record of it. Clearing oh-sa-nux must restart the flow.":
+    "未接受條款必須攔住公司這一步。伺服器上沒有這份記錄。清掉 oh-sa-nux 必須重新開始流程。",
   Company: "公司",
   "Company name, logo, and a license key or evaluation trial. The key does not activate a license. The name and logo are saved to the server.":
     "公司名稱、標誌，以及許可證金鑰或評估試用。金鑰不會啟用許可證。名稱和標誌會儲存到伺服器。",
@@ -413,8 +395,8 @@ const ZH_TW: Record<string, string> = {
   "Names the first organization on the instance": "為例項上的第一個組織起名",
   "Continues to LLM settings": "繼續進入語言模型設定",
   "Leaves the starter modal pending": "起步對話框保持待開啟",
-  "This should run only after welcome, terms, account, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.":
-    "這一步只應在歡迎、條款、帳戶和公司都完成後出現，然後開啟語言模型設定，並讓起步對話框待開啟。不能直接跳到儀表板。",
+  "This should run only after welcome, terms, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.":
+    "這一步只應在歡迎、條款和公司都完成後出現，然後開啟語言模型設定，並讓起步對話框待開啟。不能直接跳到儀表板。",
   "Language Model": "語言模型",
   "Org LLM defaults. After first install, the starter modal opens on this page.":
     "組織的語言模型預設值。首次安裝之後，起步對話框會在這個頁面開啟。",
