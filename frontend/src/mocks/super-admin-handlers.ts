@@ -105,8 +105,9 @@ const MOCK_INSTANCE_SETTINGS: InstanceSettings = {
 
 let instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
 
+// The mock user is the first Super Admin of a fresh install until the wizard ends.
 const MOCK_SETUP_STATE: SetupState = {
-  wizard_pending: false,
+  wizard_pending: true,
   guide_org_id: null,
   guide_dismissed: false,
 };

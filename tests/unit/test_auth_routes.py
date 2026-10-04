@@ -1,5 +1,6 @@
 import base64
 import json
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from server.routes.auth import (
     logout,
     set_response_cookie,
 )
+from storage.instance_settings import InstanceSettings
 
 
 def create_mock_user_authorizer(success: bool = True, error_detail: str | None = None):
@@ -325,6 +327,65 @@ async def test_keycloak_callback_success_with_valid_offline_token(
         assert track_kwargs['ctx'].org_id == 'test_org_id'
         assert track_kwargs['ctx'].consented is True
         assert track_kwargs['idp'] == 'github'
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install_wizard(
+    mock_request, mock_background_tasks, create_keycloak_user_info, async_session_maker
+):
+    """A returning first Super Admin who left the wizard unfinished goes back to it."""
+    # Arrange
+    user_id = str(uuid.uuid4())
+    async with async_session_maker() as session:
+        session.add(InstanceSettings(id=1, setup_user_id=uuid.UUID(user_id)))
+        await session.commit()
+    mock_user = MagicMock()
+    mock_user.id = user_id
+    mock_user.current_org_id = user_id
+    mock_user.accepted_tos = '2025-01-01'
+    mock_user.user_consents_to_analytics = True
+    mock_user.onboarding_completed = False
+
+    with (
+        patch('server.routes.auth.ENABLE_SUPER_ADMIN', True),
+        patch('server.routes.auth.a_session_maker', async_session_maker),
+        patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch('server.routes.auth.get_analytics_service', return_value=None),
+    ):
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.backfill_contact_name = AsyncMock()
+        mock_user_store.backfill_user_email = AsyncMock()
+        mock_user_store.record_login = AsyncMock()
+        mock_user_store.get_first_owner_in_org = AsyncMock(return_value=mock_user)
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub=user_id,
+                preferred_username='first_admin',
+                identity_provider='github',
+                email_verified=True,
+            )
+        )
+        mock_token_manager.store_idp_tokens = AsyncMock()
+        mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.headers['location'] == 'http://localhost:8000/install'
 
 
 @pytest.mark.asyncio
