@@ -5,7 +5,6 @@ const INTERMEDIATE_PAGE_PATHS = [
   "/information-request",
   "/install",
   "/install/tos",
-  "/install/account",
   "/install/company",
   "/install/org",
 ];

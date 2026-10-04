@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import SuperAdminInstallLayout from "#/routes/super-admin-install-layout";
 import SuperAdminInstallWelcome from "#/routes/super-admin-install-welcome";
 import SuperAdminInstallTos from "#/routes/super-admin-install-tos";
-import SuperAdminInstallAccount from "#/routes/super-admin-install-account";
 import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
 
 function renderInstall(initialPath = "/install") {
@@ -16,7 +15,6 @@ function renderInstall(initialPath = "/install") {
       children: [
         { index: true, Component: SuperAdminInstallWelcome },
         { path: "tos", Component: SuperAdminInstallTos },
-        { path: "account", Component: SuperAdminInstallAccount },
       ],
     },
   ]);

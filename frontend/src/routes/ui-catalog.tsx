@@ -68,7 +68,6 @@ const MODAL = (
 const SOURCE: Record<string, string> = {
   "/install": "frontend/src/routes/super-admin-install-welcome.tsx",
   "/install/tos": "frontend/src/routes/super-admin-install-tos.tsx",
-  "/install/account": "frontend/src/routes/super-admin-install-account.tsx",
   "/install/company": "frontend/src/routes/super-admin-install-company.tsx",
   "/install/org": "frontend/src/routes/super-admin-install-org.tsx",
   "/settings/org-defaults": "frontend/src/routes/llm-settings.tsx",
@@ -175,14 +174,14 @@ const GROUPS: CatalogGroup[] = [
   {
     ticket: "OHE-3384 · PRD OHE-651",
     title: "First-time Super Admin onboarding",
-    flow: "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
+    flow: "Install wizard, in order: welcome, terms, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
     entries: [
       PAGE(
         "Welcome",
         "/install",
         "Opens the Super Admin install. Progress is stored in this browser only.",
         [
-          "Seven-step install bar from welcome through first automation",
+          "Six-step install bar from welcome through first automation",
           "Animated OpenHands mark and welcome copy",
           "Next marks this step done in this browser",
         ],
@@ -192,25 +191,13 @@ const GROUPS: CatalogGroup[] = [
       PAGE(
         "Terms",
         "/install/tos",
-        "Terms acceptance before account setup. Clearing storage starts the flow over.",
+        "Terms acceptance before company setup. Clearing storage starts the flow over.",
         [
-          "Terms must be accepted before the account step",
+          "Terms must be accepted before the company step",
           "Acceptance is stored in this browser, not on the server",
           "Clearing storage restarts the install",
         ],
-        "Acceptance has to block the account step. There is no server record of it. Clearing oh-sa-nux must restart the flow.",
-        "First-install NUX",
-      ),
-      PAGE(
-        "Account",
-        "/install/account",
-        "Installer name and email. This step does not create the server account by itself.",
-        [
-          "Full name, email, and password for the installing Super Admin",
-          "Does not create the server account by itself",
-          "Progress stays in this browser",
-        ],
-        "This form must not create a user or send the password to an API. The name is one field, not a stored first and last name.",
+        "Acceptance has to block the company step. There is no server record of it. Clearing oh-sa-nux must restart the flow.",
         "First-install NUX",
       ),
       PAGE(
@@ -234,7 +221,7 @@ const GROUPS: CatalogGroup[] = [
           "Continues to LLM settings",
           "Leaves the starter modal pending",
         ],
-        "This should run only after welcome, terms, account, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.",
+        "This should run only after welcome, terms, and company are done, then open LLM settings with the starter modal pending. It must not skip to the dashboard.",
         "First-install NUX",
       ),
       PAGE(

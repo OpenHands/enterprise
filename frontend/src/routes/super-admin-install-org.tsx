@@ -1,6 +1,8 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
@@ -9,7 +11,6 @@ import { useCreateOrganization } from "#/hooks/mutation/use-create-organization"
 import { I18nKey } from "#/i18n/declaration";
 import {
   markSuperAdminNuxOrgDone,
-  readSuperAdminNux,
   SUPER_ADMIN_NUX_LLM_PATH,
 } from "#/utils/org/super-admin-nux";
 
@@ -20,6 +21,11 @@ export default function SuperAdminInstallOrg() {
   const navigate = useNavigate();
   const { mutateAsync: createOrganization, isPending } =
     useCreateOrganization();
+  // The signed-in user's name and email live on their personal workspace.
+  const { data: organizations } = useQuery({
+    queryKey: ["organizations"],
+    queryFn: organizationService.getOrganizations,
+  });
   const translatedDefault = t(I18nKey.SA_NUX$ORG_DEFAULT_NAME);
   const defaultName = translatedDefault.startsWith("SA_NUX$")
     ? FALLBACK_ORG_NAME
@@ -43,13 +49,13 @@ export default function SuperAdminInstallOrg() {
       setError(t(I18nKey.SA_NUX$ORG_INVALID));
       return;
     }
-    const { account } = readSuperAdminNux();
+    const personal = organizations?.items.find((org) => org.is_personal);
     setError(null);
     try {
       await createOrganization({
         name: trimmed,
-        contact_name: account?.name?.trim() || "Super Admin",
-        contact_email: account?.email?.trim() || "admin@localhost",
+        contact_name: personal?.contact_name?.trim() || "Super Admin",
+        contact_email: personal?.contact_email?.trim() || "admin@localhost",
       });
     } catch {
       setError(t(I18nKey.SA_NUX$ORG_ERROR));

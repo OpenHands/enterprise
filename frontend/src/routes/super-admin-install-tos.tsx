@@ -71,7 +71,7 @@ export default function SuperAdminInstallTos() {
   const onContinue = () => {
     if (!accepted) return;
     markSuperAdminNuxTosDone();
-    navigate("/install/account");
+    navigate("/install/company");
   };
 
   return (

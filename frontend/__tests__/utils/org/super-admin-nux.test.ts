@@ -5,7 +5,6 @@ import {
   clearSuperAdminNuxStarterModal,
   getSuperAdminNuxPath,
   getSuperAdminNuxStep,
-  markSuperAdminNuxAccountDone,
   markSuperAdminNuxCompanyDone,
   markSuperAdminNuxOrgDone,
   markSuperAdminNuxTosDone,
@@ -21,7 +20,7 @@ describe("super-admin-nux", () => {
     resetSuperAdminNux();
   });
 
-  it("starts at welcome and advances through TOS, account, company, and org", () => {
+  it("starts at welcome and advances through TOS, company, and org", () => {
     expect(getSuperAdminNuxStep()).toBe("welcome");
     expect(getSuperAdminNuxPath()).toBe("/install");
 
@@ -30,13 +29,8 @@ describe("super-admin-nux", () => {
     expect(getSuperAdminNuxPath()).toBe("/install/tos");
 
     markSuperAdminNuxTosDone();
-    expect(getSuperAdminNuxStep()).toBe("account");
-    expect(getSuperAdminNuxPath()).toBe("/install/account");
-
-    markSuperAdminNuxAccountDone({ name: "Ada", email: "ada@example.com" });
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
-    expect(readSuperAdminNux().account?.email).toBe("ada@example.com");
 
     markSuperAdminNuxCompanyDone({ name: "Acme", hasLicenseKey: true });
     expect(getSuperAdminNuxStep()).toBe("org");
@@ -62,9 +56,6 @@ describe("super-admin-nux", () => {
     expect(getSuperAdminNuxStep()).toBe("tos");
     expect(getSuperAdminNuxPath()).toBe("/install/tos");
 
-    setSuperAdminNuxStep("account");
-    expect(getSuperAdminNuxStep()).toBe("account");
-
     setSuperAdminNuxStep("company");
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
@@ -72,7 +63,6 @@ describe("super-admin-nux", () => {
     setSuperAdminNuxStep("org");
     expect(getSuperAdminNuxStep()).toBe("org");
     expect(getSuperAdminNuxPath()).toBe("/install/org");
-    expect(readSuperAdminNux().account?.email).toBe("me@acme.org");
     expect(readSuperAdminNux().company?.name).toBe("Acme");
 
     setSuperAdminNuxStep("done");
