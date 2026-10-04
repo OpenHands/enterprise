@@ -1,10 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
+import { useConfig } from "#/hooks/query/use-config";
+import { CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 
 export const SUPER_ADMIN_QUERY_KEYS = {
   admins: ["super-admin", "admins"] as const,
   organizations: ["super-admin", "organizations"] as const,
   users: ["super-admin", "users"] as const,
+  instanceSettings: ["super-admin", "instance-settings"] as const,
 };
 
 export const useSuperAdmins = () =>
@@ -24,3 +27,16 @@ export const useSuperAdminUsers = () =>
     queryKey: SUPER_ADMIN_QUERY_KEYS.users,
     queryFn: () => superAdminService.listUsers(),
   });
+
+/** Company name and logo for the instance. Readable by any signed-in user. */
+export const useInstanceSettings = () => {
+  const { data: config } = useConfig();
+
+  return useQuery({
+    queryKey: SUPER_ADMIN_QUERY_KEYS.instanceSettings,
+    queryFn: () => superAdminService.getInstanceSettings(),
+    enabled: config?.feature_flags?.enable_super_admin === true,
+    ...CONFIG_CACHE_OPTIONS,
+    meta: { disableToast: true },
+  });
+};
