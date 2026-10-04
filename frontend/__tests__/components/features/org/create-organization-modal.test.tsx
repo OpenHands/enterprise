@@ -143,4 +143,29 @@ describe("CreateOrganizationModal", () => {
     });
     expect(organizationService.switchOrganization).not.toHaveBeenCalled();
   });
+
+  it("stays in the current organization when the server refuses the switch", async () => {
+    // Arrange
+    vi.spyOn(organizationService, "switchOrganization").mockRejectedValue(
+      new Error("Forbidden"),
+    );
+    const onClose = vi.fn();
+    renderCreateOrganizationModal(onClose);
+    await screen.findByDisplayValue("ORG$OWNER_ME");
+
+    // Act
+    await userEvent.type(
+      screen.getByTestId("create-organization-name"),
+      "Acme",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "ORG$CREATE_ORGANIZATION" }),
+    );
+
+    // Assert
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(useSelectedOrganizationStore.getState().organizationId).toBe(
+      "current-org",
+    );
+  });
 });

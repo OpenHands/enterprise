@@ -722,22 +722,18 @@ export const ORG_HANDLERS = [
       contact_email: contactEmail,
     };
     orgs.set(orgId, org);
-    // An org owned by someone else does not include the current user.
-    const isOwnedByOtherUser =
-      !!body.owner_user_id && body.owner_user_id !== MOCK_ME.user_id;
-    ORGS_AND_MEMBERS[orgId] = isOwnedByOtherUser
-      ? []
-      : [currentUserMembership(orgId, "owner")];
+    // Like the real API, only an explicit owner_user_id makes the current user
+    // a member, and creating an org does not switch into it.
+    ORGS_AND_MEMBERS[orgId] =
+      body.owner_user_id === MOCK_ME.user_id
+        ? [currentUserMembership(orgId, "owner")]
+        : [];
     registerMockAdminOrg({
       id: orgId,
       name,
       contact_email: contactEmail,
       contact_name: contactName,
     });
-    if (!isOwnedByOtherUser) {
-      // Switch into the new org so org-defaults / setup tour can continue.
-      mockCurrentOrgId = orgId;
-    }
     return HttpResponse.json(org, { status: 201 });
   }),
 
