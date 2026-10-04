@@ -7,7 +7,6 @@ import {
   getSuperAdminNuxStep,
   markSuperAdminNuxCompanyDone,
   markSuperAdminNuxOrgDone,
-  markSuperAdminNuxTosDone,
   markSuperAdminNuxWelcomeDone,
   readSuperAdminNux,
   resetSuperAdminNux,
@@ -20,15 +19,11 @@ describe("super-admin-nux", () => {
     resetSuperAdminNux();
   });
 
-  it("starts at welcome and advances through TOS, company, and org", () => {
+  it("starts at welcome and advances through company and org", () => {
     expect(getSuperAdminNuxStep()).toBe("welcome");
     expect(getSuperAdminNuxPath()).toBe("/install");
 
     markSuperAdminNuxWelcomeDone();
-    expect(getSuperAdminNuxStep()).toBe("tos");
-    expect(getSuperAdminNuxPath()).toBe("/install/tos");
-
-    markSuperAdminNuxTosDone();
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
 
@@ -52,10 +47,6 @@ describe("super-admin-nux", () => {
   });
 
   it("can jump to a specific NUX step for testing", () => {
-    setSuperAdminNuxStep("tos");
-    expect(getSuperAdminNuxStep()).toBe("tos");
-    expect(getSuperAdminNuxPath()).toBe("/install/tos");
-
     setSuperAdminNuxStep("company");
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");

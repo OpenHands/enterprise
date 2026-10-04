@@ -13,7 +13,6 @@ export default [
   route("ui-catalog/frame/:frameId", "routes/ui-catalog-frame.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),
-    route("tos", "routes/super-admin-install-tos.tsx"),
     route("company", "routes/super-admin-install-company.tsx"),
     route("org", "routes/super-admin-install-org.tsx"),
   ]),

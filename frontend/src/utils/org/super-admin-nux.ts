@@ -1,6 +1,6 @@
 /**
  * First-install Super Admin NUX (before the group setup modal):
- * Welcome → TOS → Company and plan → Name first org → LLM settings
+ * Welcome → Company and plan → Name first org → LLM settings
  */
 
 export const SUPER_ADMIN_NUX_STORAGE_KEY = "oh-sa-nux";
@@ -8,11 +8,10 @@ export const SUPER_ADMIN_NUX_STORAGE_KEY = "oh-sa-nux";
 /** Org LLM defaults, where first-install completion lands. */
 export const SUPER_ADMIN_NUX_LLM_PATH = "/settings/org-defaults";
 
-export type SuperAdminNuxStep = "welcome" | "tos" | "company" | "org" | "done";
+export type SuperAdminNuxStep = "welcome" | "company" | "org" | "done";
 
 export interface SuperAdminNuxState {
   welcomeDone: boolean;
-  tosDone: boolean;
   companyDone: boolean;
   orgDone: boolean;
   /** Show the group setup intro the first time the LLM screen opens. */
@@ -31,7 +30,6 @@ export interface SuperAdminNuxState {
 
 const DEFAULT_STATE: SuperAdminNuxState = {
   welcomeDone: false,
-  tosDone: false,
   companyDone: false,
   orgDone: false,
   starterModalPending: false,
@@ -51,7 +49,6 @@ function parseStored(): SuperAdminNuxState {
     const parsed = JSON.parse(raw) as Partial<SuperAdminNuxState>;
     return {
       welcomeDone: parsed.welcomeDone === true,
-      tosDone: parsed.tosDone === true,
       companyDone: parsed.companyDone === true,
       orgDone: parsed.orgDone === true,
       starterModalPending: parsed.starterModalPending === true,
@@ -86,7 +83,6 @@ export function getSuperAdminNuxStep(
   state = readSuperAdminNux(),
 ): SuperAdminNuxStep {
   if (!state.welcomeDone) return "welcome";
-  if (!state.tosDone) return "tos";
   if (!state.companyDone) return "company";
   if (!state.orgDone) return "org";
   return "done";
@@ -99,8 +95,6 @@ export function getSuperAdminNuxPath(
   switch (step) {
     case "welcome":
       return "/install";
-    case "tos":
-      return "/install/tos";
     case "company":
       return "/install/company";
     case "org":
@@ -117,11 +111,6 @@ export function getSuperAdminNuxPath(
 export function markSuperAdminNuxWelcomeDone() {
   const current = parseStored();
   writeSuperAdminNux({ ...current, welcomeDone: true });
-}
-
-export function markSuperAdminNuxTosDone() {
-  const current = parseStored();
-  writeSuperAdminNux({ ...current, tosDone: true });
 }
 
 export function markSuperAdminNuxCompanyDone(company: {
@@ -175,16 +164,6 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
     case "welcome":
       writeSuperAdminNux({
         welcomeDone: false,
-        tosDone: false,
-        companyDone: false,
-        orgDone: false,
-        starterModalPending: false,
-      });
-      break;
-    case "tos":
-      writeSuperAdminNux({
-        welcomeDone: true,
-        tosDone: false,
         companyDone: false,
         orgDone: false,
         starterModalPending: false,
@@ -193,7 +172,6 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
     case "company":
       writeSuperAdminNux({
         welcomeDone: true,
-        tosDone: true,
         companyDone: false,
         orgDone: false,
         starterModalPending: false,
@@ -202,7 +180,6 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
     case "org":
       writeSuperAdminNux({
         welcomeDone: true,
-        tosDone: true,
         companyDone: true,
         orgDone: false,
         starterModalPending: false,
@@ -212,7 +189,6 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
     case "done":
       writeSuperAdminNux({
         welcomeDone: true,
-        tosDone: true,
         companyDone: true,
         orgDone: true,
         starterModalPending: false,

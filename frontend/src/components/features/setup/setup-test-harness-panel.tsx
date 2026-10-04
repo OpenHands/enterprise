@@ -31,7 +31,6 @@ import { cn } from "#/utils/utils";
 
 const NUX_JUMPS: { step: SuperAdminNuxStep; label: string }[] = [
   { step: "welcome", label: "Welcome" },
-  { step: "tos", label: "TOS" },
   { step: "company", label: "Company" },
   { step: "org", label: "Org" },
   { step: "done", label: "Setup" },
