@@ -8,6 +8,7 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
 import { useCreateOrganization } from "#/hooks/mutation/use-create-organization";
+import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { I18nKey } from "#/i18n/declaration";
 import {
   markSuperAdminNuxOrgDone,
@@ -21,6 +22,8 @@ export default function SuperAdminInstallOrg() {
   const navigate = useNavigate();
   const { mutateAsync: createOrganization, isPending } =
     useCreateOrganization();
+  const { mutateAsync: updateSetupState, isPending: isSavingSetupState } =
+    useUpdateSetupState();
   // The signed-in user's name and email live on their personal workspace.
   const { data: organizations } = useQuery({
     queryKey: ["organizations"],
@@ -41,7 +44,7 @@ export default function SuperAdminInstallOrg() {
   }, [defaultName]);
 
   const trimmed = name.trim();
-  const canSubmit = trimmed.length > 1 && !isPending;
+  const canSubmit = trimmed.length > 1 && !isPending && !isSavingSetupState;
 
   const onContinue = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -57,6 +60,8 @@ export default function SuperAdminInstallOrg() {
         contact_name: personal?.contact_name?.trim() || "Super Admin",
         contact_email: personal?.contact_email?.trim() || "admin@localhost",
       });
+      // This is the wizard's last step; finishing it here ends it on every browser.
+      await updateSetupState({ wizard_completed: true });
     } catch {
       setError(t(I18nKey.SA_NUX$ORG_ERROR));
       return;

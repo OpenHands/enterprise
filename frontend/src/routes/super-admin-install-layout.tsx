@@ -5,20 +5,24 @@ import axios from "axios";
 import AuthService from "#/api/auth-service/auth-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { InstallFooter } from "#/components/features/super-admin/install-footer";
 import { InstallStepBar } from "#/components/features/super-admin/install-step-bar";
 import { CONFIG_CACHE_OPTIONS, QUERY_KEYS } from "#/hooks/query/query-keys";
+import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { queryClient } from "#/query-client-config";
 import {
   getSuperAdminNuxPath,
   getSuperAdminNuxStep,
   readSuperAdminNux,
+  resetSuperAdminNux,
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
 
 /**
  * The install wizard ships behind ENABLE_SUPER_ADMIN; leave it when the flag is off.
  * It runs as the signed-in Super Admin, so a signed-out visitor signs in first.
+ * Only the first Super Admin may open it, and only until the server records it finished.
  */
 export const clientLoader = async ({ request }: { request: Request }) => {
   const config = await queryClient.fetchQuery<WebClientConfig>({
@@ -41,6 +45,22 @@ export const clientLoader = async ({ request }: { request: Request }) => {
       );
     }
     throw error;
+  }
+
+  const setupState = await queryClient.fetchQuery({
+    queryKey: SUPER_ADMIN_QUERY_KEYS.setupState,
+    queryFn: superAdminService.getSetupState,
+    ...CONFIG_CACHE_OPTIONS,
+  });
+
+  if (!setupState.wizard_pending) {
+    return replace("/");
+  }
+
+  // The server says the wizard is pending, so local progress marked done
+  // (e.g. from an earlier install on this origin) is stale.
+  if (getSuperAdminNuxStep() === "done") {
+    resetSuperAdminNux();
   }
 
   return {};
