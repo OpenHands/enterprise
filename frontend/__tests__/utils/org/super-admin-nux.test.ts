@@ -27,12 +27,11 @@ describe("super-admin-nux", () => {
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
 
-    markSuperAdminNuxCompanyDone({ name: "Acme", hasLicenseKey: true });
+    markSuperAdminNuxCompanyDone({ name: "Acme" });
     expect(getSuperAdminNuxStep()).toBe("org");
     expect(getSuperAdminNuxPath()).toBe("/install/org");
     expect(readSuperAdminNux().company).toEqual({
       name: "Acme",
-      hasLicenseKey: true,
       hasLogo: false,
     });
 

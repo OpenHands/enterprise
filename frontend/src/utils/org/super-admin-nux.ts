@@ -1,6 +1,6 @@
 /**
  * First-install Super Admin NUX (before the group setup modal):
- * Welcome → Company and plan → Name first org → LLM settings
+ * Welcome → Company → Name first org → LLM settings
  */
 
 export const SUPER_ADMIN_NUX_STORAGE_KEY = "oh-sa-nux";
@@ -18,8 +18,6 @@ export interface SuperAdminNuxState {
   starterModalPending: boolean;
   company?: {
     name: string;
-    /** True when they continued with a license key (30-day trial). */
-    hasLicenseKey: boolean;
     /** True when they chose a company image. */
     hasLogo: boolean;
   };
@@ -115,7 +113,6 @@ export function markSuperAdminNuxWelcomeDone() {
 
 export function markSuperAdminNuxCompanyDone(company: {
   name: string;
-  hasLicenseKey: boolean;
   hasLogo?: boolean;
 }) {
   const current = parseStored();
@@ -124,7 +121,6 @@ export function markSuperAdminNuxCompanyDone(company: {
     companyDone: true,
     company: {
       name: company.name.trim(),
-      hasLicenseKey: company.hasLicenseKey,
       hasLogo: company.hasLogo === true,
     },
   });
@@ -183,7 +179,7 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
         companyDone: true,
         orgDone: false,
         starterModalPending: false,
-        company: { name: "Acme", hasLicenseKey: false, hasLogo: false },
+        company: { name: "Acme", hasLogo: false },
       });
       break;
     case "done":
@@ -192,7 +188,7 @@ export function setSuperAdminNuxStep(step: SuperAdminNuxStep) {
         companyDone: true,
         orgDone: true,
         starterModalPending: false,
-        company: { name: "Acme", hasLicenseKey: false, hasLogo: false },
+        company: { name: "Acme", hasLogo: false },
         org: { name: "My Organization" },
       });
       break;
