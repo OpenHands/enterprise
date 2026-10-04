@@ -6,11 +6,9 @@ import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { I18nKey } from "#/i18n/declaration";
-import {
-  readImageFileAsDataUrl,
-  readInstanceLogo,
-  setInstanceLogo,
-} from "#/utils/org/instance-logo";
+import { useInstanceSettings } from "#/hooks/query/use-super-admin";
+import { useUpdateInstanceSettings } from "#/hooks/mutation/use-super-admin-mutations";
+import { readImageFileAsDataUrl } from "#/utils/org/instance-logo";
 import { markSuperAdminNuxCompanyDone } from "#/utils/org/super-admin-nux";
 import { cn } from "#/utils/utils";
 
@@ -27,11 +25,13 @@ export default function SuperAdminInstallCompany() {
   const [companyName, setCompanyName] = React.useState("");
   const [licenseKey, setLicenseKey] = React.useState("");
   const [connectedKey, setConnectedKey] = React.useState<string | null>(null);
-  const [logoUrl, setLogoUrl] = React.useState<string | null>(() =>
-    readInstanceLogo(),
-  );
+  const [logoUrl, setLogoUrl] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const logoInputRef = React.useRef<HTMLInputElement>(null);
+  const { data: instanceSettings } = useInstanceSettings();
+  const { mutate: updateInstanceSettings, isPending } =
+    useUpdateInstanceSettings();
+  const shownLogo = logoUrl ?? instanceSettings?.logo ?? null;
 
   const trimmedKey = licenseKey.trim();
   const hasKey = connectedKey != null && connectedKey === trimmedKey;
@@ -61,7 +61,6 @@ export default function SuperAdminInstallCompany() {
     }
     try {
       const dataUrl = await readImageFileAsDataUrl(file);
-      setInstanceLogo(dataUrl);
       setLogoUrl(dataUrl);
       setError(null);
     } catch {
@@ -76,13 +75,23 @@ export default function SuperAdminInstallCompany() {
       return;
     }
     setError(null);
-    // Frontend NUX only — the key is not stored. A later bootstrap API redeems it.
-    markSuperAdminNuxCompanyDone({
-      name: companyName,
-      hasLicenseKey: hasKey,
-      hasLogo: logoUrl != null,
-    });
-    navigate("/install/org");
+    updateInstanceSettings(
+      {
+        company_name: companyName.trim(),
+        ...(logoUrl ? { logo: logoUrl } : {}),
+      },
+      {
+        onSuccess: () => {
+          // Frontend NUX only — the key is not stored. A later bootstrap API redeems it.
+          markSuperAdminNuxCompanyDone({
+            name: companyName,
+            hasLicenseKey: hasKey,
+            hasLogo: shownLogo != null,
+          });
+          navigate("/install/org");
+        },
+      },
+    );
   };
 
   return (
@@ -127,8 +136,8 @@ export default function SuperAdminInstallCompany() {
             aria-labelledby="sa-nux-company-logo-label"
             onClick={() => logoInputRef.current?.click()}
           >
-            {logoUrl ? (
-              <img src={logoUrl} alt="" className="size-full object-cover" />
+            {shownLogo ? (
+              <img src={shownLogo} alt="" className="size-full object-cover" />
             ) : (
               <ImagePlus className="size-5" strokeWidth={1.75} aria-hidden />
             )}
@@ -239,7 +248,7 @@ export default function SuperAdminInstallCompany() {
         variant="primary"
         className="w-full"
         testId="sa-nux-company-continue"
-        isDisabled={!canContinue}
+        isDisabled={!canContinue || isPending}
       >
         {t(I18nKey.SA_NUX$NEXT)}
       </BrandButton>

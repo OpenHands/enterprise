@@ -2,15 +2,15 @@ import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ImagePlus } from "lucide-react";
 import { I18nKey } from "#/i18n/declaration";
-import {
-  readImageFileAsDataUrl,
-  setInstanceLogo,
-  useInstanceLogo,
-} from "#/utils/org/instance-logo";
+import { useInstanceSettings } from "#/hooks/query/use-super-admin";
+import { useUpdateInstanceSettings } from "#/hooks/mutation/use-super-admin-mutations";
+import { readImageFileAsDataUrl } from "#/utils/org/instance-logo";
 
 export function InstanceLogoSetting() {
   const { t } = useTranslation();
-  const logo = useInstanceLogo();
+  const { data: instanceSettings } = useInstanceSettings();
+  const { mutate: updateInstanceSettings } = useUpdateInstanceSettings();
+  const logo = instanceSettings?.logo;
   const inputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,7 +22,7 @@ export function InstanceLogoSetting() {
       return;
     }
     try {
-      setInstanceLogo(await readImageFileAsDataUrl(file));
+      updateInstanceSettings({ logo: await readImageFileAsDataUrl(file) });
       setError(null);
     } catch {
       setError(t(I18nKey.SUPER_ADMIN$INSTANCE_LOGO_ERROR));
@@ -65,7 +65,7 @@ export function InstanceLogoSetting() {
             type="button"
             className="mt-1 w-fit text-xs text-[var(--oh-muted)] hover:text-white"
             data-testid="instance-logo-remove"
-            onClick={() => setInstanceLogo(null)}
+            onClick={() => updateInstanceSettings({ logo: null })}
           >
             {t(I18nKey.SUPER_ADMIN$INSTANCE_LOGO_REMOVE)}
           </button>

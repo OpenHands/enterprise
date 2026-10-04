@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +11,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
-from server.routes.instance_admin import instance_admin_router
+from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
 from server.routes.org_models import OrgNotFoundError
 
 CALLER_USER_ID = str(uuid.uuid4())
@@ -721,3 +722,132 @@ async def test_update_user_groups_remove_rejects_own_personal_workspace(
 
     assert resp.status_code == 403
     remove_member.assert_not_awaited()
+
+
+LOGO = 'data:image/png;base64,' + base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
+
+
+@pytest.fixture
+def instance_settings_db(async_session_maker):
+    with patch('server.routes.instance_admin.a_session_maker', async_session_maker):
+        yield
+
+
+def _app_for(user_id: str | None) -> FastAPI:
+    app = FastAPI()
+    app.include_router(instance_admin_router)
+    app.dependency_overrides[get_user_id] = lambda: user_id
+    return app
+
+
+@pytest.mark.asyncio
+async def test_get_instance_settings_requires_sign_in(instance_settings_db):
+    # Arrange
+    app = _app_for(None)
+
+    # Act
+    async with _client(app) as client:
+        resp = await client.get('/api/admin/instance-settings')
+
+    # Assert
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_instance_settings_is_empty_before_anything_is_saved(
+    mock_app, instance_settings_db
+):
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/instance-settings')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == {'company_name': None, 'logo': None}
+
+
+@pytest.mark.asyncio
+async def test_saved_instance_settings_are_visible_to_other_signed_in_users(
+    mock_app, grant_manage_super_admins, instance_settings_db
+):
+    # Arrange
+    async with _client(mock_app) as client:
+        await client.patch(
+            '/api/admin/instance-settings',
+            json={'company_name': 'Acme', 'logo': LOGO},
+        )
+
+    # Act
+    async with _client(_app_for(str(uuid.uuid4()))) as client:
+        resp = await client.get('/api/admin/instance-settings')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == {'company_name': 'Acme', 'logo': LOGO}
+
+
+@pytest.mark.asyncio
+async def test_update_instance_settings_requires_super_admin(
+    mock_app, deny_manage_super_admins, instance_settings_db
+):
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch('/api/admin/instance-settings', json={'logo': LOGO})
+        saved = await client.get('/api/admin/instance-settings')
+
+    # Assert
+    assert resp.status_code == 403
+    assert saved.json() == {'company_name': None, 'logo': None}
+
+
+@pytest.mark.asyncio
+async def test_update_instance_settings_keeps_omitted_fields_and_clears_null_ones(
+    mock_app, grant_manage_super_admins, instance_settings_db
+):
+    # Arrange
+    async with _client(mock_app) as client:
+        await client.patch(
+            '/api/admin/instance-settings',
+            json={'company_name': 'Acme', 'logo': LOGO},
+        )
+
+        # Act
+        resp = await client.patch('/api/admin/instance-settings', json={'logo': None})
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json() == {'company_name': 'Acme', 'logo': None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'body',
+    [
+        pytest.param(
+            {
+                'logo': 'data:image/svg+xml;base64,'
+                + base64.b64encode(b'<svg/>').decode()
+            },
+            id='svg-logo',
+        ),
+        pytest.param({'logo': 'https://example.com/logo.png'}, id='remote-logo'),
+        pytest.param({'logo': 'data:image/png;base64,not-base64!'}, id='bad-base64'),
+        pytest.param(
+            {
+                'logo': 'data:image/png;base64,'
+                + base64.b64encode(b'x' * (MAX_LOGO_BYTES + 1)).decode()
+            },
+            id='oversized-logo',
+        ),
+        pytest.param({'company_name': 'x' * 256}, id='long-company-name'),
+    ],
+)
+async def test_update_instance_settings_rejects_invalid_values(
+    body, mock_app, grant_manage_super_admins
+):
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch('/api/admin/instance-settings', json=body)
+
+    # Assert
+    assert resp.status_code == 422

@@ -56,6 +56,11 @@ export interface ProvisionUserResponse {
   action: "created" | "added_to_org" | "reprovisioned";
 }
 
+export interface InstanceSettings {
+  company_name: string | null;
+  logo: string | null;
+}
+
 export const superAdminService = {
   listSuperAdmins: async () => {
     const { data } = await openHands.get<{
@@ -163,6 +168,21 @@ export const superAdminService = {
       "/api/organizations/provision-user",
       payload,
       { headers: { "X-Org-Id": orgId } },
+    );
+    return data;
+  },
+
+  getInstanceSettings: async () => {
+    const { data } = await openHands.get<InstanceSettings>(
+      "/api/admin/instance-settings",
+    );
+    return data;
+  },
+
+  updateInstanceSettings: async (settings: Partial<InstanceSettings>) => {
+    const { data } = await openHands.patch<InstanceSettings>(
+      "/api/admin/instance-settings",
+      settings,
     );
     return data;
   },

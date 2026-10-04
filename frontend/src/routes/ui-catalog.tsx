@@ -175,7 +175,7 @@ const GROUPS: CatalogGroup[] = [
   {
     ticket: "OHE-3384 · PRD OHE-651",
     title: "First-time Super Admin onboarding",
-    flow: "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key and logo stay in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
+    flow: "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.",
     entries: [
       PAGE(
         "Welcome",
@@ -216,13 +216,13 @@ const GROUPS: CatalogGroup[] = [
       PAGE(
         "Company",
         "/install/company",
-        "Company name, logo, and a license key or evaluation trial. The key does not activate a license, and the logo is not uploaded.",
+        "Company name, logo, and a license key or evaluation trial. The key does not activate a license. The name and logo are saved to the server.",
         [
           "Company name and logo",
           "License key or evaluation trial",
-          "The key does not activate a license, and the logo file is not uploaded",
+          "The key does not activate a license, and the name and logo are saved to the server",
         ],
-        "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the logo file is never uploaded.",
+        "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the name and logo are saved and the logo shows for other users.",
         "First-install NUX",
       ),
       PAGE(

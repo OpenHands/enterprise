@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   superAdminService,
+  type InstanceSettings,
   type ProvisionUserRequest,
   type ProvisionUserResponse,
   type SuperAdminGroupAction,
@@ -276,5 +277,25 @@ export const useUpdateSuperAdminUserGroups = () => {
           t(I18nKey.SUPER_ADMIN$GROUPS_UPDATE_ERROR),
       );
     },
+  });
+};
+
+export const useUpdateInstanceSettings = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: (settings: Partial<InstanceSettings>) =>
+      superAdminService.updateInstanceSettings(settings),
+    onSuccess: (data) => {
+      queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.instanceSettings, data);
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.SUPER_ADMIN$INSTANCE_LOGO_ERROR),
+      );
+    },
+    meta: { disableToast: true },
   });
 };

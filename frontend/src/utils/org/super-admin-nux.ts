@@ -32,7 +32,7 @@ export interface SuperAdminNuxState {
     name: string;
     /** True when they continued with a license key (30-day trial). */
     hasLicenseKey: boolean;
-    /** True when they chose a company image. The file itself is not stored. */
+    /** True when they chose a company image. */
     hasLogo: boolean;
   };
   org?: {

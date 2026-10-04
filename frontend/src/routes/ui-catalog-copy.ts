@@ -10,8 +10,8 @@ const ZH_CN: Record<string, string> = {
   "Review.": "评审。",
   "OHE-3384 · PRD OHE-651": "OHE-3384 · 产品需求 OHE-651",
   "First-time Super Admin onboarding": "超级管理员首次上手",
-  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key and logo stay in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
-    "安装向导按顺序是：欢迎、条款、账户、公司、第一个组织，然后是组织语言模型和起步对话框。验收标准还要求在后台创建组织，并把超级管理员设为所有者。这个向导仍会让他们给组织起名。许可证密钥和标志只留在这个浏览器里。单元测试、功能开关、OpenHands Cloud 端到端测试和缺陷清扫都不是本页上的画面。",
+  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
+    "安装向导按顺序是：欢迎、条款、账户、公司、第一个组织，然后是组织语言模型和起步对话框。验收标准还要求在后台创建组织，并把超级管理员设为所有者。这个向导仍会让他们给组织起名。许可证密钥只留在这个浏览器里。单元测试、功能开关、OpenHands Cloud 端到端测试和缺陷清扫都不是本页上的画面。",
   Welcome: "欢迎",
   "Opens the Super Admin install. Progress is stored in this browser only.":
     "打开超级管理员安装。进度只存在这个浏览器里。",
@@ -44,14 +44,14 @@ const ZH_CN: Record<string, string> = {
   "This form must not create a user or send the password to an API. The name is one field, not a stored first and last name.":
     "这个表单不能创建用户，也不能把密码发给接口。姓名是一个字段，不会分开存储名和姓。",
   Company: "公司",
-  "Company name, logo, and a license key or evaluation trial. The key does not activate a license, and the logo is not uploaded.":
-    "公司名称、标志，以及许可证密钥或评估试用。密钥不会激活许可证，标志也不会上传。",
+  "Company name, logo, and a license key or evaluation trial. The key does not activate a license. The name and logo are saved to the server.":
+    "公司名称、标志，以及许可证密钥或评估试用。密钥不会激活许可证。名称和标志会保存到服务器。",
   "Company name and logo": "公司名称和标志",
   "License key or evaluation trial": "许可证密钥或评估试用",
-  "The key does not activate a license, and the logo file is not uploaded":
-    "密钥不会激活许可证，标志文件也不会上传",
-  "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the logo file is never uploaded.":
-    "把许可证密钥当成未完成项：它只是本地选择，不是许可证激活。确认标志文件从未上传。",
+  "The key does not activate a license, and the name and logo are saved to the server":
+    "密钥不会激活许可证，名称和标志会保存到服务器",
+  "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the name and logo are saved and the logo shows for other users.":
+    "把许可证密钥当成未完成项：它只是本地选择，不是许可证激活。确认名称和标志已保存，并且其他用户也能看到标志。",
   Organization: "组织",
   "Names the first organization, then continues to LLM settings.":
     "为第一个组织起名，然后进入语言模型设置。",
@@ -365,8 +365,8 @@ const ZH_TW: Record<string, string> = {
   "Review.": "評審。",
   "OHE-3384 · PRD OHE-651": "OHE-3384 · 產品需求 OHE-651",
   "First-time Super Admin onboarding": "超級管理員首次上手",
-  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key and logo stay in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
-    "安裝嚮導按順序是：歡迎、條款、帳戶、公司、第一個組織，然後是組織語言模型和起步對話框。驗收標準還要求在後臺建立組織，並把超級管理員設為所有者。這個嚮導仍會讓他們給組織起名。許可證金鑰和標誌只留在這個瀏覽器裡。單元測試、功能開關、OpenHands Cloud 端到端測試和缺陷清掃都不是本頁上的畫面。",
+  "Install wizard, in order: welcome, terms, account, company, first organization, then org LLM and the starter modal. The acceptance criteria also say the organization is created in the background with the Super Admin as owner. This wizard still asks them to name it. The license key stays in this browser. Unit tests, the feature flag, the OpenHands-Cloud E2E, and the bug bash are not screens on this page.":
+    "安裝嚮導按順序是：歡迎、條款、帳戶、公司、第一個組織，然後是組織語言模型和起步對話框。驗收標準還要求在後臺建立組織，並把超級管理員設為所有者。這個嚮導仍會讓他們給組織起名。許可證金鑰只留在這個瀏覽器裡。單元測試、功能開關、OpenHands Cloud 端到端測試和缺陷清掃都不是本頁上的畫面。",
   Welcome: "歡迎",
   "Opens the Super Admin install. Progress is stored in this browser only.":
     "開啟超級管理員安裝。進度只存在這個瀏覽器裡。",
@@ -399,14 +399,14 @@ const ZH_TW: Record<string, string> = {
   "This form must not create a user or send the password to an API. The name is one field, not a stored first and last name.":
     "這個表單不能建立使用者，也不能把密碼發給介面。姓名是一個欄位，不會分開儲存名和姓。",
   Company: "公司",
-  "Company name, logo, and a license key or evaluation trial. The key does not activate a license, and the logo is not uploaded.":
-    "公司名稱、標誌，以及許可證金鑰或評估試用。金鑰不會啟用許可證，標誌也不會上傳。",
+  "Company name, logo, and a license key or evaluation trial. The key does not activate a license. The name and logo are saved to the server.":
+    "公司名稱、標誌，以及許可證金鑰或評估試用。金鑰不會啟用許可證。名稱和標誌會儲存到伺服器。",
   "Company name and logo": "公司名稱和標誌",
   "License key or evaluation trial": "許可證金鑰或評估試用",
-  "The key does not activate a license, and the logo file is not uploaded":
-    "金鑰不會啟用許可證，標誌檔案也不會上傳",
-  "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the logo file is never uploaded.":
-    "把許可證金鑰當成未完成項：它只是本地選擇，不是許可證啟用。確認標誌檔案從未上傳。",
+  "The key does not activate a license, and the name and logo are saved to the server":
+    "金鑰不會啟用許可證，名稱和標誌會儲存到伺服器",
+  "Treat the license key as incomplete: it is a local choice, not license activation. Confirm the name and logo are saved and the logo shows for other users.":
+    "把許可證金鑰當成未完成項：它只是本地選擇，不是許可證啟用。確認名稱和標誌已儲存，並且其他使用者也能看到標誌。",
   Organization: "組織",
   "Names the first organization, then continues to LLM settings.":
     "為第一個組織起名，然後進入語言模型設定。",

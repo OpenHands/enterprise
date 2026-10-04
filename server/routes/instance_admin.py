@@ -2,18 +2,22 @@
 
 Lists organizations and users across the whole deployment, and supports
 suspend / resume / remove actions. Every endpoint is gated by
-``Permission.MANAGE_SUPER_ADMINS`` (superadmin super role only).
+``Permission.MANAGE_SUPER_ADMINS`` (superadmin super role only), except
+reading the instance settings, which any signed-in user can do.
 """
 
 from __future__ import annotations
 
+import base64
+import re
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import false, func, select
 
+from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.constants import ROLE_MEMBER, ROLE_OWNER
@@ -25,6 +29,7 @@ from server.routes.org_models import (
 )
 from server.services.org_member_service import OrgMemberService
 from storage.database import a_session_maker
+from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
@@ -39,6 +44,9 @@ instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
 OrgStatus = Literal['active', 'suspended']
 UserMembershipStatus = Literal['active', 'inactive']
+
+MAX_LOGO_BYTES = 512 * 1024
+_LOGO_DATA_URL = re.compile(r'data:image/(?:png|jpeg|webp);base64,(?P<payload>.*)')
 
 
 class AdminOrgResponse(BaseModel):
@@ -102,6 +110,33 @@ class AdminUserGroupsUpdate(BaseModel):
     action: Literal['suspend', 'resume', 'remove', 'add', 'set_role']
     org_ids: list[UUID] = Field(min_length=1)
     role: Literal['owner', 'admin', 'member'] | None = None
+
+
+class InstanceSettingsResponse(BaseModel):
+    """The company name and logo shown across the instance."""
+
+    company_name: str | None = None
+    logo: str | None = None
+
+
+class InstanceSettingsUpdate(BaseModel):
+    """Fields left out are unchanged; ``null`` clears a field."""
+
+    company_name: str | None = Field(default=None, max_length=255)
+    logo: str | None = None
+
+    @field_validator('logo')
+    @classmethod
+    def _validate_logo(cls, value: str | None) -> str | None:
+        """Accept only a PNG, JPEG, or WebP data URL of at most ``MAX_LOGO_BYTES``."""
+        if value is None:
+            return value
+        match = _LOGO_DATA_URL.fullmatch(value)
+        if match is None:
+            raise ValueError('logo must be a PNG, JPEG, or WebP data URL')
+        if len(base64.b64decode(match['payload'], validate=True)) > MAX_LOGO_BYTES:
+            raise ValueError(f'logo must be at most {MAX_LOGO_BYTES // 1024} KB')
+        return value
 
 
 def _display_name(user: User) -> str | None:
@@ -655,3 +690,57 @@ async def delete_admin_organization(
             'contact_email': deleted_org.contact_email,
         },
     }
+
+
+def _instance_settings_response(
+    settings: InstanceSettings | None,
+) -> InstanceSettingsResponse:
+    if settings is None:
+        return InstanceSettingsResponse()
+    return InstanceSettingsResponse(
+        company_name=settings.company_name, logo=settings.logo
+    )
+
+
+@instance_admin_router.get(
+    '/instance-settings',
+    response_model=InstanceSettingsResponse,
+)
+async def get_instance_settings(
+    user_id: str | None = Depends(get_user_id),
+) -> InstanceSettingsResponse:
+    """Return the instance company name and logo. Any signed-in user can read them."""
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User not authenticated',
+        )
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    return _instance_settings_response(settings)
+
+
+@instance_admin_router.patch(
+    '/instance-settings',
+    response_model=InstanceSettingsResponse,
+)
+async def update_instance_settings(
+    body: InstanceSettingsUpdate,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> InstanceSettingsResponse:
+    """Update the instance company name and logo. Requires ``MANAGE_SUPER_ADMINS``."""
+    changes = body.model_dump(exclude_unset=True)
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+        if settings is None:
+            settings = InstanceSettings(id=1)
+            session.add(settings)
+        for field, value in changes.items():
+            setattr(settings, field, value)
+        await session.commit()
+
+    logger.info(
+        'admin:instance_settings:update',
+        extra={'caller_user_id': caller_user_id, 'fields': sorted(changes)},
+    )
+    return _instance_settings_response(settings)

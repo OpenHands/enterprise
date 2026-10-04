@@ -1,9 +1,10 @@
 import { cn } from "#/utils/utils";
-import { useInstanceLogo } from "#/utils/org/instance-logo";
+import { useInstanceSettings } from "#/hooks/query/use-super-admin";
 
 /** Company image beside the product mark. Renders nothing until one is saved. */
 export function InstanceLogoMark({ className }: { className?: string }) {
-  const logo = useInstanceLogo();
+  const { data: instanceSettings } = useInstanceSettings();
+  const logo = instanceSettings?.logo;
   if (!logo) {
     return null;
   }

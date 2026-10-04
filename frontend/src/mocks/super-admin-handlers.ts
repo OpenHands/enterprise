@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { InstanceSettings } from "#/api/super-admin-service/super-admin-service.api";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 const MOCK_SUPER_ADMINS = [
@@ -92,6 +93,13 @@ const MOCK_ADMIN_USERS: MockAdminUser[] = [
 
 let adminUsers = [...MOCK_ADMIN_USERS];
 let freshSaAdminApplied = false;
+
+const MOCK_INSTANCE_SETTINGS: InstanceSettings = {
+  company_name: null,
+  logo: null,
+};
+
+let instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
 
 const FRESH_SA_ADMIN_ORG = {
   id: "2",
@@ -208,6 +216,7 @@ export const resetSuperAdminMockState = () => {
   adminOrgs = [...MOCK_ADMIN_ORGS];
   adminUsers = [...MOCK_ADMIN_USERS];
   freshSaAdminApplied = false;
+  instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
 };
 
 export const SUPER_ADMIN_HANDLERS = [
@@ -577,5 +586,15 @@ export const SUPER_ADMIN_HANDLERS = [
       { detail: "Invalid group action" },
       { status: 400 },
     );
+  }),
+
+  http.get("/api/admin/instance-settings", () =>
+    HttpResponse.json(instanceSettings),
+  ),
+
+  http.patch("/api/admin/instance-settings", async ({ request }) => {
+    const body = (await request.json()) as Partial<InstanceSettings>;
+    instanceSettings = { ...instanceSettings, ...body };
+    return HttpResponse.json(instanceSettings);
   }),
 ];
