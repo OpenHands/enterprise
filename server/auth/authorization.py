@@ -38,6 +38,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import ENABLE_SUPER_ADMIN
 from storage.org_member_store import OrgMemberStore
 from storage.role import Role
 from storage.role_store import RoleStore
@@ -272,14 +273,17 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
-            # Cross-org inspection from the Super Admin dashboard / directory.
-            Permission.DELETE_ORGANIZATION,
-            Permission.VIEW_ORG_CONVERSATIONS,
-            Permission.VIEW_ORG_SETTINGS,
         ]
     ),
     RoleName.MEMBER: frozenset(),
 }
+
+# Granted to superadmin only while the Super Admin dashboard is on
+# (ENABLE_SUPER_ADMIN): its overview reads usage from every team org,
+# including orgs the Super Admin has not joined.
+SUPER_ADMIN_DASHBOARD_PERMISSIONS: frozenset[Permission] = frozenset(
+    [Permission.VIEW_ORG_CONVERSATIONS]
+)
 
 
 async def get_user_org_role(user_id: str, org_id: UUID | None) -> Role | None:
@@ -374,7 +378,9 @@ def get_super_role_permissions(role_name: str) -> frozenset[Permission]:
     A super role is the same role row (``owner`` / ``admin`` / ``member``)
     referenced via ``user.role_id`` rather than ``org_member.role_id``;
     its effective permissions are defined explicitly and do not inherit
-    org-scoped permissions.
+    org-scoped permissions. ``superadmin`` also gets
+    :data:`SUPER_ADMIN_DASHBOARD_PERMISSIONS` while ``ENABLE_SUPER_ADMIN``
+    is on.
 
     Args:
         role_name: Name of the role (e.g. ``'admin'`` for ``superadmin``)
@@ -384,9 +390,12 @@ def get_super_role_permissions(role_name: str) -> frozenset[Permission]:
     """
     try:
         role_enum = RoleName(role_name)
-        return SUPER_ROLE_PERMISSIONS.get(role_enum, frozenset())
     except ValueError:
         return frozenset()
+    permissions = SUPER_ROLE_PERMISSIONS.get(role_enum, frozenset())
+    if role_enum == RoleName.ADMIN and ENABLE_SUPER_ADMIN:
+        permissions |= SUPER_ADMIN_DASHBOARD_PERMISSIONS
+    return permissions
 
 
 def has_permission(
@@ -444,10 +453,6 @@ async def authorize_permission(
     ):
         return
     if super_role and has_permission(super_role, permission, is_super=True):
-        return
-    # Non-member (or inactive-member) instance super admins may inspect /
-    # administer any org, including suspended ones.
-    if is_super_admin and permission in get_role_permissions(RoleName.OWNER.value):
         return
     if org_suspended and user_role and not is_super_admin:
         raise HTTPException(
@@ -597,27 +602,13 @@ def require_permission(permission: Permission):
             )
             return user_id
 
-        # 3. Instance super admins may exercise owner-level org permissions
-        #    in any org (including suspended / non-member) so Open Org and
-        #    admin inspection keep working after suspension.
-        if is_super_admin and permission in get_role_permissions(RoleName.OWNER.value):
-            logger.debug(
-                'Permission granted via instance super admin org access',
-                extra={
-                    'user_id': user_id,
-                    'org_id': str(org_id),
-                    'required_permission': permission.value,
-                },
-            )
-            return user_id
-
         if org_suspended and user_role and not is_super_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail='Organization is suspended',
             )
 
-        # 4. Neither path granted access -- deny.
+        # 3. Neither path granted access -- deny.
         if not user_role:
             logger.warning(
                 'User not a member of organization and lacks super-role permission',

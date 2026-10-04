@@ -27,6 +27,7 @@ from server.auth.constants import (  # noqa: E402
     BITBUCKET_DATA_CENTER_HOST,
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
+    ENABLE_SUPER_ADMIN,
     GITHUB_APP_CLIENT_ID,
     GITLAB_APP_CLIENT_ID,
 )
@@ -186,9 +187,10 @@ base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
-base_app.include_router(
-    instance_admin_router
-)  # Add routes for Super Admin org/user directory
+if ENABLE_SUPER_ADMIN:
+    base_app.include_router(
+        instance_admin_router
+    )  # Add routes for Super Admin org/user directory
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags

@@ -15,6 +15,7 @@ from server.auth.authorization import (
     SUPER_ROLE_PERMISSIONS,
     Permission,
     RoleName,
+    authorize_permission,
     get_api_key_org_id_from_request,
     get_role_permissions,
     get_super_role_permissions,
@@ -1493,12 +1494,21 @@ class TestSuperRolePermissions:
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
-                Permission.DELETE_ORGANIZATION,
-                Permission.VIEW_ORG_CONVERSATIONS,
-                Permission.VIEW_ORG_SETTINGS,
             ]
         )
         assert SUPER_ROLE_PERMISSIONS[RoleName.MEMBER] == frozenset()
+
+    @pytest.mark.parametrize('flag_enabled', [True, False])
+    def test_dashboard_permissions_follow_super_admin_flag(self, flag_enabled):
+        """
+        GIVEN: the Super Admin dashboard flag is on or off
+        WHEN: the superadmin super-role permissions are resolved
+        THEN: VIEW_ORG_CONVERSATIONS is granted only while the flag is on
+        """
+        with patch('server.auth.authorization.ENABLE_SUPER_ADMIN', flag_enabled):
+            permissions = get_super_role_permissions(RoleName.ADMIN.value)
+
+        assert (Permission.VIEW_ORG_CONVERSATIONS in permissions) is flag_enabled
 
     def test_super_role_keys_match_regular_role_keys(self):
         """
@@ -1839,8 +1849,12 @@ class TestRequirePermissionSuperRoleFallback:
             assert 'not a member' in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_instance_super_admin_can_access_suspended_org(self):
-        """Instance Super Admins may use owner-level perms on suspended orgs."""
+    async def test_instance_super_admin_member_can_use_suspended_org(self):
+        """
+        GIVEN: an instance Super Admin who is an admin member of a suspended org
+        WHEN: require_permission(VIEW_LLM_SETTINGS) runs
+        THEN: their org role still grants access despite the suspension
+        """
         user_id = str(uuid4())
         org_id = uuid4()
         mock_request = _create_mock_request()
@@ -1848,7 +1862,7 @@ class TestRequirePermissionSuperRoleFallback:
         with (
             patch(
                 'server.auth.authorization.get_user_org_role',
-                AsyncMock(return_value=None),
+                AsyncMock(return_value=_mock_role('admin')),
             ),
             patch(
                 'server.auth.authorization.get_user_super_role',
@@ -1864,6 +1878,77 @@ class TestRequirePermissionSuperRoleFallback:
                 request=mock_request, org_id=org_id, user_id=user_id
             )
             assert result == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'permission',
+        [
+            Permission.MANAGE_ORG_SECRETS,
+            Permission.MANAGE_API_KEYS,
+            Permission.VIEW_BILLING,
+        ],
+    )
+    async def test_instance_super_admin_non_member_lacks_owner_level_permissions(
+        self, permission
+    ):
+        """
+        GIVEN: an instance Super Admin who is not a member of the org
+        WHEN: require_permission runs for an org-scoped owner permission
+        THEN: 403 is raised -- the Super Admin must join the org first
+        """
+        user_id = str(uuid4())
+        org_id = uuid4()
+        mock_request = _create_mock_request()
+
+        with (
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                AsyncMock(return_value=_mock_role('admin')),
+            ),
+        ):
+            permission_checker = require_permission(permission)
+            with pytest.raises(HTTPException) as exc_info:
+                await permission_checker(
+                    request=mock_request, org_id=org_id, user_id=user_id
+                )
+            assert exc_info.value.status_code == 403
+            assert 'not a member' in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_authorize_permission_denies_non_member_instance_super_admin(
+        self,
+    ):
+        """
+        GIVEN: an instance Super Admin who is not a member of the target org
+        WHEN: authorize_permission(EDIT_ORG_SETTINGS) runs
+        THEN: 403 is raised -- owner-level permissions need a membership
+        """
+        user_id = str(uuid4())
+        mock_request = _create_mock_request()
+
+        with (
+            patch(
+                'server.auth.org_context.resolve_target_org_id_for_permission_check',
+                AsyncMock(return_value=uuid4()),
+            ),
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                AsyncMock(return_value=_mock_role('admin')),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await authorize_permission(
+                    mock_request, user_id, Permission.EDIT_ORG_SETTINGS
+                )
+            assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_member_blocked_from_suspended_org(self):
