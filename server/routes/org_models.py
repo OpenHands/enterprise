@@ -649,50 +649,6 @@ class MeResponse(BaseModel):
             status=member.status,
         )
 
-    @classmethod
-    async def for_instance_super_admin(
-        cls,
-        org_id: UUID,
-        user_id: UUID,
-    ) -> 'MeResponse':
-        """Synthetic ``/me`` for instance Super Admins who are not org members.
-
-        Grants owner-level org permissions plus super-role permissions so the
-        frontend can open suspended / non-joined orgs from Super Admin.
-        """
-        from server.auth.authorization import (
-            get_role_permissions,
-            get_super_role_permissions,
-            get_user_super_role,
-        )
-        from storage.user_store import UserStore
-
-        user = await UserStore.get_user_by_id(str(user_id))
-        email = user.email if user and user.email else ''
-        super_role = await get_user_super_role(str(user_id))
-
-        permission_values = {
-            permission.value for permission in get_role_permissions('owner')
-        }
-        if super_role is not None:
-            permission_values.update(
-                permission.value
-                for permission in get_super_role_permissions(super_role.name)
-            )
-
-        return cls(
-            org_id=str(org_id),
-            user_id=str(user_id),
-            email=email,
-            role='owner',
-            permissions=sorted(permission_values),
-            llm_api_key='',
-            llm_api_key_for_byor=None,
-            agent_settings_diff={},
-            conversation_settings_diff={},
-            status='active',
-        )
-
 
 class OrgAppSettingsResponse(BaseModel):
     """Response model for organization app settings."""

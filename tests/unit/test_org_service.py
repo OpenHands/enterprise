@@ -2361,9 +2361,15 @@ async def test_switch_org_org_not_found():
 
 
 @pytest.mark.asyncio
-async def test_switch_org_user_not_member():
+@pytest.mark.parametrize(
+    'super_role',
+    [None, Role(name='admin')],
+    ids=['regular user', 'instance super admin'],
+)
+async def test_switch_org_user_not_member(super_role):
     """
-    GIVEN: User is not a member of the organization
+    GIVEN: User is not a member of the organization, with or without the
+           instance Super Admin role
     WHEN: switch_org is called
     THEN: OrgAuthorizationError is raised
     """
@@ -2387,7 +2393,7 @@ async def test_switch_org_user_not_member():
         patch(
             'server.auth.authorization.get_user_super_role',
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=super_role,
         ),
     ):
         # Act & Assert

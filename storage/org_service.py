@@ -955,18 +955,15 @@ class OrgService:
         if getattr(org, 'status', 'active') == 'suspended' and not is_super_admin:
             raise OrgAuthorizationError('Organization is suspended')
 
-        # Step 2: Validate user is a member — or an instance super admin
-        # inspecting the org from the Super Admin dashboard.
+        # Step 2: Validate user is a member of the organization
         if not await OrgService.is_org_member(user_id, org_id):
-            if not is_super_admin:
-                logger.warning(
-                    'User attempted to switch to organization they are not a member of',
-                    extra={'user_id': user_id, 'org_id': str(org_id)},
-                )
-                raise OrgAuthorizationError(
-                    'User must be a member of the organization to switch to it'
-                )
-            # Super admins may land on a suspended membership; still allow.
+            logger.warning(
+                'User attempted to switch to organization they are not a member of',
+                extra={'user_id': user_id, 'org_id': str(org_id)},
+            )
+            raise OrgAuthorizationError(
+                'User must be a member of the organization to switch to it'
+            )
         else:
             # Active membership required for non-super users.
             from uuid import UUID as parse_uuid

@@ -2293,17 +2293,10 @@ class TestOrgMemberServiceGetMe:
         THEN: Raises OrgMemberNotFoundError
         """
         # Arrange
-        with (
-            patch(
-                'server.services.org_member_service.OrgMemberStore.get_org_member',
-                new_callable=AsyncMock,
-            ) as mock_get_member,
-            patch(
-                'server.auth.authorization.is_instance_super_admin',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
+        with patch(
+            'server.services.org_member_service.OrgMemberStore.get_org_member',
+            new_callable=AsyncMock,
+        ) as mock_get_member:
             mock_get_member.return_value = None
 
             # Act & Assert
@@ -2313,10 +2306,16 @@ class TestOrgMemberServiceGetMe:
             assert str(org_id) in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_get_me_instance_super_admin_non_member_returns_synthetic(
+    async def test_get_me_instance_super_admin_non_member_raises_not_found(
         self, org_id, current_user_id
     ):
-        """Non-member Super Admins get a synthetic /me for Open Org."""
+        """GIVEN: An instance Super Admin who is not a member of the organization
+        WHEN: get_me is called
+        THEN: Raises OrgMemberNotFoundError -- the Super Admin must join first
+        """
+        # Arrange
+        super_role = MagicMock()
+        super_role.name = 'admin'
         with (
             patch(
                 'server.services.org_member_service.OrgMemberStore.get_org_member',
@@ -2324,20 +2323,14 @@ class TestOrgMemberServiceGetMe:
                 return_value=None,
             ),
             patch(
-                'server.auth.authorization.is_instance_super_admin',
+                'server.auth.authorization.get_user_super_role',
                 new_callable=AsyncMock,
-                return_value=True,
+                return_value=super_role,
             ),
-            patch(
-                'server.routes.org_models.MeResponse.for_instance_super_admin',
-                new_callable=AsyncMock,
-            ) as mock_synthetic,
         ):
-            mock_synthetic.return_value = MagicMock()
-            result = await OrgMemberService.get_me(org_id, current_user_id)
-
-        mock_synthetic.assert_awaited_once_with(org_id, current_user_id)
-        assert result is mock_synthetic.return_value
+            # Act & Assert
+            with pytest.raises(OrgMemberNotFoundError):
+                await OrgMemberService.get_me(org_id, current_user_id)
 
     @pytest.mark.asyncio
     async def test_get_me_role_not_found_raises_error(
