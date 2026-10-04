@@ -1,5 +1,9 @@
 import { http, HttpResponse } from "msw";
-import { InstanceSettings } from "#/api/super-admin-service/super-admin-service.api";
+import {
+  InstanceSettings,
+  SetupState,
+  SetupStateUpdate,
+} from "#/api/super-admin-service/super-admin-service.api";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 const MOCK_SUPER_ADMINS = [
@@ -100,6 +104,14 @@ const MOCK_INSTANCE_SETTINGS: InstanceSettings = {
 };
 
 let instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
+
+const MOCK_SETUP_STATE: SetupState = {
+  wizard_pending: false,
+  guide_org_id: null,
+  guide_dismissed: false,
+};
+
+let setupState = { ...MOCK_SETUP_STATE };
 
 const FRESH_SA_ADMIN_ORG = {
   id: "2",
@@ -217,6 +229,7 @@ export const resetSuperAdminMockState = () => {
   adminUsers = [...MOCK_ADMIN_USERS];
   freshSaAdminApplied = false;
   instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
+  setupState = { ...MOCK_SETUP_STATE };
 };
 
 export const SUPER_ADMIN_HANDLERS = [
@@ -596,5 +609,20 @@ export const SUPER_ADMIN_HANDLERS = [
     const body = (await request.json()) as Partial<InstanceSettings>;
     instanceSettings = { ...instanceSettings, ...body };
     return HttpResponse.json(instanceSettings);
+  }),
+
+  http.get("/api/admin/setup-state", () => HttpResponse.json(setupState)),
+
+  http.patch("/api/admin/setup-state", async ({ request }) => {
+    const { wizard_completed: wizardCompleted, ...guide } =
+      (await request.json()) as SetupStateUpdate;
+    setupState = {
+      ...setupState,
+      ...guide,
+      ...(wizardCompleted === undefined
+        ? {}
+        : { wizard_pending: !wizardCompleted }),
+    };
+    return HttpResponse.json(setupState);
   }),
 ];

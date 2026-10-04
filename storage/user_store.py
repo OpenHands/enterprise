@@ -9,11 +9,13 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from server.auth.constants import ENABLE_SUPER_ADMIN
 from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -30,6 +32,7 @@ from storage.encrypt_utils import (
     decrypt_legacy_value,
     encrypt_legacy_value,
 )
+from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
@@ -121,6 +124,13 @@ class UserStore:
                             'user_store:create_user:first_user_designated_superadmin',
                             extra={'user_id': user_id},
                         )
+                        # This Super Admin runs the first-install wizard.
+                        if ENABLE_SUPER_ADMIN:
+                            await session.execute(
+                                insert(InstanceSettings)
+                                .values(id=1, setup_user_id=user_uuid)
+                                .on_conflict_do_nothing(index_elements=['id'])
+                            )
 
             org = await session.get(Org, user_uuid)
             org_created = False

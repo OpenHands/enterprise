@@ -61,6 +61,19 @@ export interface InstanceSettings {
   logo: string | null;
 }
 
+/** First-install state for the signed-in user. Only the first Super Admin gets real values. */
+export interface SetupState {
+  wizard_pending: boolean;
+  guide_org_id: string | null;
+  guide_dismissed: boolean;
+}
+
+export interface SetupStateUpdate {
+  wizard_completed?: boolean;
+  guide_org_id?: string | null;
+  guide_dismissed?: boolean;
+}
+
 export const superAdminService = {
   listSuperAdmins: async () => {
     const { data } = await openHands.get<{
@@ -183,6 +196,19 @@ export const superAdminService = {
     const { data } = await openHands.patch<InstanceSettings>(
       "/api/admin/instance-settings",
       settings,
+    );
+    return data;
+  },
+
+  getSetupState: async () => {
+    const { data } = await openHands.get<SetupState>("/api/admin/setup-state");
+    return data;
+  },
+
+  updateSetupState: async (update: SetupStateUpdate) => {
+    const { data } = await openHands.patch<SetupState>(
+      "/api/admin/setup-state",
+      update,
     );
     return data;
   },

@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from sqlalchemy import select
 
 from openhands.app_server.settings.settings_models import Settings
+from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -290,6 +291,55 @@ async def test_create_user_explicit_role_id_is_respected_for_first_user(
     assert user is not None
     assert user.role_id == other_role_id
     assert user.role_id != admin_role_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_the_first_user_as_the_setup_user(
+    async_session_maker,
+):
+    """With the Super Admin flag on, only the first user runs the first-install wizard."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    first_user_id = str(uuid.uuid4())
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', True),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+        await UserStore.create_user(str(uuid.uuid4()), {'email': 'b@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None
+    assert str(settings.setup_user_id) == first_user_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_no_setup_user_while_the_super_admin_flag_is_off(
+    async_session_maker,
+):
+    """An instance first used without the flag never offers the first-install wizard."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', False),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(str(uuid.uuid4()), {'email': 'a@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is None
 
 
 # --- Tests for create_default_settings ---

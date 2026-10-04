@@ -3,7 +3,8 @@
 Lists organizations and users across the whole deployment, and supports
 suspend / resume / remove actions. Every endpoint is gated by
 ``Permission.MANAGE_SUPER_ADMINS`` (superadmin super role only), except
-reading the instance settings, which any signed-in user can do.
+reading the instance settings, which any signed-in user can do, and the
+first-install setup state, which belongs to the first Super Admin.
 """
 
 from __future__ import annotations
@@ -137,6 +138,26 @@ class InstanceSettingsUpdate(BaseModel):
         if len(base64.b64decode(match['payload'], validate=True)) > MAX_LOGO_BYTES:
             raise ValueError(f'logo must be at most {MAX_LOGO_BYTES // 1024} KB')
         return value
+
+
+class SetupStateResponse(BaseModel):
+    """First-install wizard and setup-guide state for the signed-in user.
+
+    Only the first Super Admin has a wizard and a guide; everyone else gets
+    the defaults.
+    """
+
+    wizard_pending: bool = False
+    guide_org_id: str | None = None
+    guide_dismissed: bool = False
+
+
+class SetupStateUpdate(BaseModel):
+    """Fields left out are unchanged; a ``null`` ``guide_org_id`` clears it."""
+
+    wizard_completed: bool = False
+    guide_org_id: UUID | None = None
+    guide_dismissed: bool = False
 
 
 def _display_name(user: User) -> str | None:
@@ -744,3 +765,72 @@ async def update_instance_settings(
         extra={'caller_user_id': caller_user_id, 'fields': sorted(changes)},
     )
     return _instance_settings_response(settings)
+
+
+def _setup_state_response(
+    settings: InstanceSettings | None, user_id: str
+) -> SetupStateResponse:
+    if settings is None or str(settings.setup_user_id) != user_id:
+        return SetupStateResponse()
+    return SetupStateResponse(
+        wizard_pending=not settings.wizard_completed,
+        guide_org_id=str(settings.guide_org_id) if settings.guide_org_id else None,
+        guide_dismissed=settings.guide_dismissed,
+    )
+
+
+@instance_admin_router.get(
+    '/setup-state',
+    response_model=SetupStateResponse,
+)
+async def get_setup_state(
+    user_id: str | None = Depends(get_user_id),
+) -> SetupStateResponse:
+    """Return the first-install state for the caller. Any signed-in user can read it."""
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User not authenticated',
+        )
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    return _setup_state_response(settings, user_id)
+
+
+@instance_admin_router.patch(
+    '/setup-state',
+    response_model=SetupStateResponse,
+)
+async def update_setup_state(
+    body: SetupStateUpdate,
+    user_id: str | None = Depends(get_user_id),
+) -> SetupStateResponse:
+    """Update the first-install state. Only the first Super Admin can."""
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='User not authenticated',
+        )
+    changes = body.model_dump(exclude_unset=True)
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+        if settings is None or str(settings.setup_user_id) != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Only the first Super Admin can change the setup state',
+            )
+        guide_org_id = changes.get('guide_org_id')
+        if guide_org_id is not None and await session.get(Org, guide_org_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Organization not found',
+            )
+        for field, value in changes.items():
+            setattr(settings, field, value)
+        await session.commit()
+
+    logger.info(
+        'admin:setup_state:update',
+        extra={'caller_user_id': user_id, 'fields': sorted(changes)},
+    )
+    return _setup_state_response(settings, user_id)

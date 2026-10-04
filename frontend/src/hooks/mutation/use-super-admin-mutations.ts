@@ -5,6 +5,7 @@ import {
   type InstanceSettings,
   type ProvisionUserRequest,
   type ProvisionUserResponse,
+  type SetupStateUpdate,
   type SuperAdminGroupAction,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { I18nKey } from "#/i18n/declaration";
@@ -297,5 +298,17 @@ export const useUpdateInstanceSettings = () => {
       );
     },
     meta: { disableToast: true },
+  });
+};
+
+export const useUpdateSetupState = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (update: SetupStateUpdate) =>
+      superAdminService.updateSetupState(update),
+    onSuccess: (data) => {
+      queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, data);
+    },
   });
 };
