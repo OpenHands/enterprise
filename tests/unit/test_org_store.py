@@ -2237,12 +2237,13 @@ class TestUsesManagedDefaultLlm:
             'http://oh-main-litellm.openhands.svc.cluster.local:4000',
         ],
     )
-    def test_bundled_proxy_route_is_managed_without_its_url_env(self, proxy_url):
+    @pytest.mark.parametrize(
+        'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+    )
+    def test_bundled_proxy_route_is_managed_without_its_url_env(self, proxy_url, model):
         # With LiteLLM off the chart no longer sets LITE_LLM_API_URL.
         org = MagicMock(spec=Org)
-        org.agent_settings = {
-            'llm': {'model': 'litellm_proxy/claude-sonnet-4-5', 'base_url': proxy_url}
-        }
+        org.agent_settings = {'llm': {'model': model, 'base_url': proxy_url}}
         with patch(
             'storage.org_store.LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
         ):
@@ -2359,12 +2360,14 @@ def _gateway_off(direct_model: str | None, direct_key: str | None = None):
     )
 
 
-async def _current_org_on_gateway_default(async_session_maker) -> uuid.UUID:
+async def _current_org_on_gateway_default(
+    async_session_maker, llm: dict | None = None
+) -> uuid.UUID:
     async with async_session_maker() as session:
         org = Org(
             name='gateway-era-org',
             org_version=ORG_SETTINGS_VERSION,
-            agent_settings={'llm': dict(_GATEWAY_ERA_LLM)},
+            agent_settings={'llm': dict(llm or _GATEWAY_ERA_LLM)},
         )
         session.add(org)
         await session.commit()
@@ -2373,10 +2376,15 @@ async def _current_org_on_gateway_default(async_session_maker) -> uuid.UUID:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+)
 async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
-    async_session_maker,
+    async_session_maker, model
 ):
-    org_id = await _current_org_on_gateway_default(async_session_maker)
+    org_id = await _current_org_on_gateway_default(
+        async_session_maker, {**_GATEWAY_ERA_LLM, 'model': model}
+    )
     p = _gateway_off('anthropic/claude-x', 'sk-install')
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
