@@ -176,7 +176,7 @@ describe("SuperAdminLayout", () => {
 
     expect(screen.getByTestId("super-admin-setup")).toBeInTheDocument();
     expect(
-      screen.getByTestId("super-admin-setup-step-create-org"),
+      screen.getByTestId("super-admin-setup-step-add-llm"),
     ).toBeInTheDocument();
   });
 

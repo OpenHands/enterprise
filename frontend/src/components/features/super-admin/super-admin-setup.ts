@@ -4,7 +4,6 @@ import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/
 import { useSetupState } from "#/hooks/query/use-super-admin";
 
 export type SuperAdminSetupStepId =
-  | "create-org"
   | "add-llm"
   | "add-integration"
   | "first-automation"
@@ -12,14 +11,10 @@ export type SuperAdminSetupStepId =
   | "optional-saml";
 
 /**
- * What marks a step done: a server-derived flag from `guide_steps`,
- * "guide-org" once the guide has its organization, or "optional" for a link
- * that never counts toward progress.
+ * What marks a step done: a server-derived flag from `guide_steps`, or
+ * "optional" for a link that never counts toward progress.
  */
-export type SuperAdminSetupStepCompletion =
-  | keyof SetupGuideSteps
-  | "guide-org"
-  | "optional";
+export type SuperAdminSetupStepCompletion = keyof SetupGuideSteps | "optional";
 
 export interface SuperAdminSetupStep {
   id: SuperAdminSetupStepId;
@@ -31,16 +26,9 @@ export interface SuperAdminSetupStep {
 
 /**
  * Instance Super Admin NUX order (locked):
- * org → LLM → integration → automation → invite → optional SAML
+ * LLM → automation template → MCP → invite → optional SAML
  */
 export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
-  {
-    id: "create-org",
-    title: "SUPER_ADMIN$SETUP_STEP_ORG",
-    description: "SUPER_ADMIN$SETUP_STEP_ORG_HINT",
-    to: SUPER_ADMIN_PATHS.organizations,
-    completion: "guide-org",
-  },
   {
     id: "add-llm",
     title: "SUPER_ADMIN$SETUP_STEP_LLM",
@@ -49,18 +37,18 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     completion: "org_llm",
   },
   {
+    id: "first-automation",
+    title: "SUPER_ADMIN$SETUP_STEP_AUTOMATION",
+    description: "SUPER_ADMIN$SETUP_STEP_AUTOMATION_HINT",
+    to: "/automations/templates",
+    completion: "automation",
+  },
+  {
     id: "add-integration",
     title: "SUPER_ADMIN$SETUP_STEP_INTEGRATION",
     description: "SUPER_ADMIN$SETUP_STEP_INTEGRATION_HINT",
     to: "/settings/mcp",
     completion: "mcp_server",
-  },
-  {
-    id: "first-automation",
-    title: "SUPER_ADMIN$SETUP_STEP_AUTOMATION",
-    description: "SUPER_ADMIN$SETUP_STEP_AUTOMATION_HINT",
-    to: "/automations",
-    completion: "automation",
   },
   {
     id: "invite-users",
@@ -89,7 +77,7 @@ function isStepDone(
   if (!guideSteps || step.completion === "optional") {
     return false;
   }
-  return step.completion === "guide-org" || guideSteps[step.completion];
+  return guideSteps[step.completion];
 }
 
 /** Tell the guided tour and the guide that a step's action just succeeded. */

@@ -50,7 +50,17 @@ async function runSuperAdminSetupTour(
   navigate: (to: string) => void,
   startAtStepId?: string,
 ): Promise<void> {
-  // Checklist completion is driven by real actions (e.g. org created),
+  // A step in Agent Canvas has no tour stop: the page load into Canvas would
+  // end the tour, so open the step instead.
+  const step = SUPER_ADMIN_SETUP_STEPS.find(({ id }) => id === startAtStepId);
+  if (
+    step &&
+    !SUPER_ADMIN_SETUP_TOUR.steps.some((stop) => stop.checklistId === step.id)
+  ) {
+    navigate(step.to);
+    return;
+  }
+  // Checklist completion is driven by real actions (e.g. LLM saved),
   // not by walking through spotlight tips.
   await startGuidedTour(SUPER_ADMIN_SETUP_TOUR, navigate, {
     startAtStepId,

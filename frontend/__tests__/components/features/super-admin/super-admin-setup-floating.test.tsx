@@ -162,7 +162,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // Arrange
     const user = userEvent.setup();
     renderWidget(SUPER_ADMIN_PATHS.organizations);
-    expect(screen.getByText("1/5")).toBeInTheDocument();
+    expect(screen.getByText("0/4")).toBeInTheDocument();
     vi.mocked(superAdminService.getSetupState).mockResolvedValue({
       ...GUIDE_STATE,
       guide_steps: { ...NO_STEPS_DONE, org_llm: true },
@@ -172,7 +172,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     await user.click(screen.getByTestId("go-instance"));
 
     // Assert
-    expect(await screen.findByText("2/5")).toBeInTheDocument();
+    expect(await screen.findByText("1/4")).toBeInTheDocument();
   });
 
   it("is not shown to a user the server gives no guide", () => {
