@@ -38,10 +38,6 @@ class AuthService {
     return data;
   }
 
-  /**
-   * Logout user from the application
-   * @param appMode The application mode (saas or oss)
-   */
   static async loginWithPassword({
     email,
     password,
@@ -75,6 +71,10 @@ class AuthService {
     await openHands.post("/api/auth/password/complete", { token, password });
   }
 
+  /**
+   * Logout user from the application
+   * @param appMode The application mode (saas or oss)
+   */
   static async logout(appMode: WebClientConfig["app_mode"]): Promise<void> {
     const endpoint =
       appMode === "saas" ? "/api/logout" : "/api/unset-provider-tokens";

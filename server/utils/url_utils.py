@@ -28,6 +28,16 @@ def get_cookie_domain(request: Request | None = None) -> str | None:
     if request is None or cookie_domain is None:
         return cookie_domain
 
+    # Self-hosted password auth is commonly reached on a host that differs from
+    # the configured web_url (a proxy rewriting Host, an IP, a LAN name). A
+    # cookie scoped to web_url's domain is silently dropped there, so fall back
+    # to a host-only cookie. SaaS keeps the configured domain either way, so
+    # cookies set before this existed are still cleared on logout.
+    from server.auth.password_auth import is_password_auth_enabled
+
+    if not is_password_auth_enabled():
+        return cookie_domain
+
     request_hostname = request.url.hostname
     if request_hostname == cookie_domain or (
         request_hostname and request_hostname.endswith(f'.{cookie_domain}')

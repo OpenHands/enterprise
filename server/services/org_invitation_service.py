@@ -334,9 +334,7 @@ class OrgInvitationService:
         accepted: list[OrgInvitation] = []
         for invitation in invitations:
             if OrgInvitationStore.is_token_expired(invitation):
-                await OrgInvitationStore.update_invitation_status(
-                    invitation.id, OrgInvitation.STATUS_EXPIRED
-                )
+                await OrgInvitationService.mark_invitation_expired(invitation.id)
                 continue
 
             existing_member = await OrgMemberStore.get_org_member(
@@ -468,9 +466,7 @@ class OrgInvitationService:
 
         # Step 2: Check expiration
         if OrgInvitationStore.is_token_expired(invitation):
-            await OrgInvitationStore.update_invitation_status(
-                invitation.id, OrgInvitation.STATUS_EXPIRED
-            )
+            await OrgInvitationService.mark_invitation_expired(invitation.id)
             raise InvitationExpiredError('Invitation has expired')
 
         # Step 2.5: Verify user email matches invitation email
@@ -588,6 +584,16 @@ class OrgInvitationService:
         return updated_invitation
 
     @staticmethod
+    async def mark_invitation_expired(invitation_id: int) -> None:
+        """Expire an invitation and release anything provisioned for it."""
+        from server.services.password_auth_service import PasswordAuthService
+
+        await OrgInvitationStore.update_invitation_status(
+            invitation_id, OrgInvitation.STATUS_EXPIRED
+        )
+        await PasswordAuthService.discard_unclaimed_invitation_account(invitation_id)
+
+    @staticmethod
     async def revoke_invitation(
         org_id: UUID, invitation_id: int
     ) -> OrgInvitation | None:
@@ -610,6 +616,9 @@ class OrgInvitationService:
         revoked = await OrgInvitationStore.update_invitation_status(
             invitation_id, OrgInvitation.STATUS_REVOKED
         )
+        from server.services.password_auth_service import PasswordAuthService
+
+        await PasswordAuthService.discard_unclaimed_invitation_account(invitation_id)
         logger.info(
             'Organization invitation revoked',
             extra={'invitation_id': invitation_id, 'org_id': str(org_id)},

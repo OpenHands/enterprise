@@ -147,19 +147,33 @@ async def create_invitation(
         for invitation in successful:
             invite_url = None
             if password_auth_enabled:
+                from server.auth.password_auth import PasswordAuthError
                 from server.routes.password_auth import build_password_link
                 from server.services.password_auth_service import PasswordAuthService
 
-                link = await PasswordAuthService.issue_setup_link_for_invitation(
-                    invitation, UUID(user_id)
-                )
+                try:
+                    link = await PasswordAuthService.issue_setup_link_for_invitation(
+                        invitation, UUID(user_id)
+                    )
+                except PasswordAuthError:
+                    # The invitations are already stored, so one failure must
+                    # not discard the links issued for the rest of the batch.
+                    logger.exception(
+                        'Failed to issue password setup link for invitation',
+                        extra={
+                            'invitation_id': invitation.id,
+                            'org_id': str(org_id),
+                        },
+                    )
+                    link = None
                 if link is not None:
                     invite_url = build_password_link(request, link.token)
             successful_responses.append(
+                # Invitees who already have an account get no setup link, and
+                # accept the normal invitation URL signed in as themselves.
                 await InvitationResponse.from_invitation(
                     invitation,
                     invite_url=invite_url,
-                    include_default_invite_url=not password_auth_enabled,
                 )
             )
         return BatchInvitationResponse(
@@ -271,9 +285,7 @@ async def reissue_password_setup_link(
             detail='Invitation is no longer pending',
         )
     if OrgInvitationStore.is_token_expired(invitation):
-        await OrgInvitationStore.update_invitation_status(
-            invitation.id, OrgInvitation.STATUS_EXPIRED
-        )
+        await OrgInvitationService.mark_invitation_expired(invitation.id)
         raise HTTPException(
             status_code=status.HTTP_410_GONE, detail='Invitation has expired'
         )
@@ -284,10 +296,13 @@ async def reissue_password_setup_link(
     except PasswordAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if link is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='This user has already set a password',
-        )
+        # The invitee already has an account, so there is nothing to set up:
+        # they accept the normal invitation signed in as themselves.
+        return {
+            'url': SMTPEmailService.build_invitation_url(invitation.token),
+            'expires_at': invitation.expires_at,
+            'purpose': 'invitation',
+        }
     return {
         'url': build_password_link(request, link.token),
         'expires_at': link.expires_at,

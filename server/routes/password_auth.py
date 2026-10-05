@@ -16,7 +16,10 @@ from server.auth.password_auth import (
     is_password_auth_enabled,
 )
 from server.services.password_auth_service import PasswordAuthService
-from server.utils.rate_limit_utils import check_rate_limit_by_user_id
+from server.utils.rate_limit_utils import (
+    RATE_LIMIT_PASSWORD_AUTH_SECONDS,
+    check_rate_limit_by_user_id,
+)
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 
 password_auth_router = APIRouter(prefix='/api/auth/password', tags=['Authentication'])
@@ -96,18 +99,34 @@ async def password_auth_status() -> dict[str, bool | int]:
     }
 
 
+async def _rate_limit(request: Request, key_prefix: str, account_key: str = '') -> None:
+    """Throttle per account and per client IP.
+
+    ``check_rate_limit_by_user_id`` only falls back to the IP key when no
+    account key is given, so the IP limit needs its own call: without it one
+    client could walk a password list across every account in turn.
+    """
+    if account_key:
+        await check_rate_limit_by_user_id(
+            request,
+            key_prefix,
+            account_key,
+            user_rate_limit_seconds=RATE_LIMIT_PASSWORD_AUTH_SECONDS,
+        )
+    await check_rate_limit_by_user_id(
+        request,
+        f'{key_prefix}:by_ip',
+        None,
+        ip_rate_limit_seconds=RATE_LIMIT_PASSWORD_AUTH_SECONDS,
+    )
+
+
 @password_auth_router.post('/login')
 async def password_login(
     body: PasswordLoginRequest, request: Request, response: Response
 ) -> dict[str, bool]:
     digest = hashlib.sha256(str(body.email).casefold().encode()).hexdigest()
-    await check_rate_limit_by_user_id(
-        request,
-        'password_login',
-        digest,
-        user_rate_limit_seconds=2,
-        ip_rate_limit_seconds=2,
-    )
+    await _rate_limit(request, 'password_login', digest)
     try:
         user_id, version = await PasswordAuthService.login(
             str(body.email), body.password.get_secret_value()
@@ -119,7 +138,10 @@ async def password_login(
 
 
 @password_auth_router.post('/inspect', response_model=PasswordTokenResponse)
-async def inspect_password_token(body: PasswordTokenRequest) -> PasswordTokenResponse:
+async def inspect_password_token(
+    body: PasswordTokenRequest, request: Request
+) -> PasswordTokenResponse:
+    await _rate_limit(request, 'password_token_inspect')
     try:
         inspection = await PasswordAuthService.inspect_token(body.token)
     except PasswordAuthError as exc:
@@ -136,6 +158,7 @@ async def inspect_password_token(body: PasswordTokenRequest) -> PasswordTokenRes
 async def complete_password_token(
     body: CompletePasswordRequest, request: Request, response: Response
 ) -> dict[str, bool]:
+    await _rate_limit(request, 'password_token_complete')
     try:
         user_id, version = await PasswordAuthService.complete_token(
             body.token, body.password.get_secret_value()

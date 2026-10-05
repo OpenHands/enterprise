@@ -18,6 +18,12 @@ class PasswordAuthAccount(Base):
         String(320), nullable=False, unique=True, index=True
     )
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when the account row was provisioned by an invitation rather than by
+    # the person themselves. Only that invitation may hand out a setup link,
+    # so an admin can never set the password of a pre-existing account.
+    created_by_org_invitation_id: Mapped[int | None] = mapped_column(
+        ForeignKey('org_invitation.id', ondelete='SET NULL'), nullable=True
+    )
     session_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default='1'
     )

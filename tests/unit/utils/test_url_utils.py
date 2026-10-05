@@ -121,8 +121,8 @@ class TestGetCookieDomain:
 
         assert result == 'app.all-hands.dev'
 
-    def test_request_host_mismatch_returns_none(self):
-        """A mismatched request host should use a host-only cookie."""
+    def test_request_host_mismatch_returns_none_with_password_auth(self):
+        """Self-hosted password auth falls back to a host-only cookie."""
         from server.utils.url_utils import get_cookie_domain
 
         mock_config = MagicMock()
@@ -135,10 +135,37 @@ class TestGetCookieDomain:
             patch('server.utils.url_utils.IS_FEATURE_ENV', False),
             patch('server.utils.url_utils.IS_STAGING_ENV', False),
             patch('server.utils.url_utils.IS_LOCAL_ENV', False),
+            patch(
+                'server.auth.password_auth.is_password_auth_enabled',
+                return_value=True,
+            ),
         ):
             result = get_cookie_domain(mock_request)
 
         assert result is None
+
+    def test_request_host_mismatch_keeps_domain_without_password_auth(self):
+        """SaaS keeps the configured domain, so logout still clears the cookie."""
+        from server.utils.url_utils import get_cookie_domain
+
+        mock_config = MagicMock()
+        mock_config.web_url = 'https://app.all-hands.dev'
+        mock_request = MagicMock()
+        mock_request.url.hostname = 'internal-proxy.local'
+
+        with (
+            patch('server.utils.url_utils.get_global_config', return_value=mock_config),
+            patch('server.utils.url_utils.IS_FEATURE_ENV', False),
+            patch('server.utils.url_utils.IS_STAGING_ENV', False),
+            patch('server.utils.url_utils.IS_LOCAL_ENV', False),
+            patch(
+                'server.auth.password_auth.is_password_auth_enabled',
+                return_value=False,
+            ),
+        ):
+            result = get_cookie_domain(mock_request)
+
+        assert result == 'app.all-hands.dev'
 
     def test_production_without_web_url_returns_none(self):
         """In production without web_url configured, should return None."""

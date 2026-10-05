@@ -40,6 +40,12 @@ RATE_LIMIT_EMAIL_RESEND_IP_SECONDS = int(
     os.environ.get('RATE_LIMIT_EMAIL_RESEND_IP_SECONDS', '60')
 )
 
+# Password login and password-link endpoints (server.routes.password_auth).
+# Applied per account and, separately, per client IP.
+RATE_LIMIT_PASSWORD_AUTH_SECONDS = int(
+    os.environ.get('RATE_LIMIT_PASSWORD_AUTH_SECONDS', '2')
+)
+
 # Organization invitation creation (server.routes.org_invitations).
 RATE_LIMIT_ORG_INVITATION_USER_SECONDS = int(
     os.environ.get('RATE_LIMIT_ORG_INVITATION_USER_SECONDS', '6')

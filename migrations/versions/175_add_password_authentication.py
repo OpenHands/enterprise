@@ -27,6 +27,12 @@ def upgrade() -> None:
         ),
         sa.Column('normalized_email', sa.String(320), nullable=False),
         sa.Column('password_hash', sa.Text(), nullable=True),
+        sa.Column(
+            'created_by_org_invitation_id',
+            sa.Integer(),
+            sa.ForeignKey('org_invitation.id', ondelete='SET NULL'),
+            nullable=True,
+        ),
         sa.Column('session_version', sa.Integer(), nullable=False, server_default='1'),
         sa.Column(
             'created_at',

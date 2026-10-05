@@ -70,6 +70,9 @@ export function PasswordLoginForm({ returnTo }: PasswordLoginFormProps) {
       <BrandButton type="submit" variant="primary" isDisabled={isSubmitting}>
         {isSubmitting ? t(I18nKey.AUTH$SIGNING_IN) : t(I18nKey.AUTH$SIGN_IN)}
       </BrandButton>
+      <p className="text-xs text-muted">
+        {t(I18nKey.AUTH$PASSWORD_FORGOTTEN_HINT)}
+      </p>
     </form>
   );
 }

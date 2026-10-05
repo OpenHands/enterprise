@@ -3,6 +3,11 @@
 from uuid import UUID
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.authorization import (
+    get_super_admin_role_ids,
+    is_instance_super_admin,
+    outranks_for_member_management,
+)
 from server.constants import ROLE_ADMIN, ROLE_OWNER
 from server.routes.org_models import (
     CannotModifySelfError,
@@ -99,7 +104,7 @@ class OrgMemberService:
             role=role.name,
             role_rank=role.rank,
             status=org_member.status,
-            is_superadmin=await OrgMemberService._is_superadmin(user_id),
+            is_superadmin=await is_instance_super_admin(user_id),
             has_password=password_statuses.get(user_id, False),
         )
 
@@ -149,7 +154,7 @@ class OrgMemberService:
         password_statuses = await PasswordAuthService.get_password_statuses(
             [member.user_id for member in members]
         )
-        superadmin_role = await RoleStore.get_role_by_name(ROLE_ADMIN)
+        superadmin_role_ids = await get_super_admin_role_ids()
         items = []
         for member in members:
             # Access user and role relationships (eagerly loaded)
@@ -164,9 +169,7 @@ class OrgMemberService:
                     role=role.name if role else '',
                     role_rank=role.rank if role else 0,
                     status=member.status,
-                    is_superadmin=bool(
-                        user and superadmin_role and user.role_id == superadmin_role.id
-                    ),
+                    is_superadmin=bool(user and user.role_id in superadmin_role_ids),
                     has_password=password_statuses.get(member.user_id, False),
                 )
             )
@@ -229,8 +232,7 @@ class OrgMemberService:
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
-        requester_is_superadmin = await OrgMemberService._is_superadmin(current_user_id)
-        if not requester_membership and not requester_is_superadmin:
+        if not requester_membership:
             return False, 'not_a_member'
 
         if str(current_user_id) == str(target_user_id):
@@ -239,31 +241,19 @@ class OrgMemberService:
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             return False, 'member_not_found'
-        if (
-            await OrgMemberService._is_superadmin(target_user_id)
-            and not requester_is_superadmin
+        if await OrgMemberService._target_is_protected_superadmin(
+            target_user_id, current_user_id
         ):
             return False, 'insufficient_permission'
 
-        requester_role = (
-            await RoleStore.get_role_by_id(requester_membership.role_id)
-            if requester_membership
-            else None
-        )
+        requester_role = await RoleStore.get_role_by_id(requester_membership.role_id)
         target_role = await RoleStore.get_role_by_id(target_membership.role_id)
 
-        if (not requester_role and not requester_is_superadmin) or not target_role:
-            return False, 'role_not_found'
-
-        if requester_is_superadmin:
-            requester_role_name = ROLE_OWNER
-        elif requester_role:
-            requester_role_name = requester_role.name
-        else:
+        if not requester_role or not target_role:
             return False, 'role_not_found'
 
         if not OrgMemberService._can_remove_member(
-            requester_role_name, target_role.name
+            requester_role.name, target_role.name
         ):
             return False, 'insufficient_permission'
 
@@ -339,8 +329,7 @@ class OrgMemberService:
         requester_membership = await OrgMemberStore.get_org_member(
             org_id, current_user_id
         )
-        requester_is_superadmin = await OrgMemberService._is_superadmin(current_user_id)
-        if not requester_membership and not requester_is_superadmin:
+        if not requester_membership:
             raise OrgMemberNotFoundError(str(org_id), str(current_user_id))
 
         if str(current_user_id) == str(target_user_id):
@@ -349,23 +338,17 @@ class OrgMemberService:
         target_membership = await OrgMemberStore.get_org_member(org_id, target_user_id)
         if not target_membership:
             raise OrgMemberNotFoundError(str(org_id), str(target_user_id))
-        if (
-            await OrgMemberService._is_superadmin(target_user_id)
-            and not requester_is_superadmin
+        if await OrgMemberService._target_is_protected_superadmin(
+            target_user_id, current_user_id
         ):
             raise InsufficientPermissionError(
                 'Only a superadmin can modify another superadmin'
             )
 
-        requester_role = (
-            await RoleStore.get_role_by_id(requester_membership.role_id)
-            if requester_membership
-            else None
-        )
+        requester_role = await RoleStore.get_role_by_id(requester_membership.role_id)
         target_role = await RoleStore.get_role_by_id(target_membership.role_id)
 
-        if not requester_role and not requester_is_superadmin:
-            assert requester_membership is not None
+        if not requester_role:
             raise RoleNotFoundError(requester_membership.role_id)
         if not target_role:
             raise RoleNotFoundError(target_membership.role_id)
@@ -384,7 +367,7 @@ class OrgMemberService:
                 role=target_role.name,
                 role_rank=target_role.rank,
                 status=target_membership.status,
-                is_superadmin=await OrgMemberService._is_superadmin(target_user_id),
+                is_superadmin=await is_instance_super_admin(target_user_id),
                 has_password=target_has_password,
             )
 
@@ -392,15 +375,8 @@ class OrgMemberService:
         if not new_role:
             raise InvalidRoleError(new_role_name)
 
-        requester_role_name = (
-            ROLE_OWNER
-            if requester_is_superadmin
-            else requester_role.name
-            if requester_role
-            else ''
-        )
         if not OrgMemberService._can_update_member_role(
-            requester_role_name, target_role.name, new_role.name
+            requester_role.name, target_role.name, new_role.name
         ):
             raise InsufficientPermissionError(
                 'You do not have permission to modify this member'
@@ -428,7 +404,7 @@ class OrgMemberService:
             role=new_role.name,
             role_rank=new_role.rank,
             status=updated_member.status,
-            is_superadmin=await OrgMemberService._is_superadmin(target_user_id),
+            is_superadmin=await is_instance_super_admin(target_user_id),
             has_password=target_has_password,
         )
 
@@ -462,20 +438,16 @@ class OrgMemberService:
     @staticmethod
     def _can_remove_member(requester_role_name: str, target_role_name: str) -> bool:
         """Check if requester can remove target based on roles."""
-        if requester_role_name == ROLE_OWNER:
-            return True
-        elif requester_role_name == ROLE_ADMIN:
-            # Admins can remove admins and members (not owners)
-            return target_role_name != ROLE_OWNER
-        return False
+        return outranks_for_member_management(requester_role_name, target_role_name)
 
     @staticmethod
-    async def _is_superadmin(user_id: UUID) -> bool:
-        user = await UserStore.get_user_by_id(str(user_id))
-        if user is None or user.role_id is None:
+    async def _target_is_protected_superadmin(
+        target_user_id: UUID, requester_user_id: UUID
+    ) -> bool:
+        """Only a superadmin may manage another superadmin's membership."""
+        if not await is_instance_super_admin(target_user_id):
             return False
-        role = await RoleStore.get_role_by_id(user.role_id)
-        return bool(role and role.name == ROLE_ADMIN)
+        return not await is_instance_super_admin(requester_user_id)
 
     @staticmethod
     async def _is_last_owner(org_id: UUID, user_id: UUID) -> bool:

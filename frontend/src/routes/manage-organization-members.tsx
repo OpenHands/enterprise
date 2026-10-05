@@ -176,7 +176,9 @@ function ManageOrganizationMembers() {
     (!member.is_superadmin || isCurrentUserSuperadmin);
   const canAssignUserRole = (member: OrganizationMember) =>
     canManageMember(member) && hasPermission(`change_user_role:${member.role}`);
-  const canRemoveMember = (member: OrganizationMember) =>
+  // Mirrors the backend rank rule: owners act on anyone, admins on anyone but
+  // owners, and superadmins on anyone who isn't a superadmin themselves.
+  const outranksMember = (member: OrganizationMember) =>
     canAssignUserRole(member) ||
     (isCurrentUserSuperadmin && canManageMember(member));
 
@@ -319,12 +321,12 @@ function ManageOrganizationMembers() {
                       handleRoleSelectionClick(member, role)
                     }
                     onRemove={
-                      canRemoveMember(member)
+                      outranksMember(member)
                         ? () => handleRemoveMember(member)
                         : undefined
                     }
                     onResetPassword={
-                      config?.password_auth_enabled && canManageMember(member)
+                      config?.password_auth_enabled && outranksMember(member)
                         ? () => handlePasswordReset(member)
                         : undefined
                     }

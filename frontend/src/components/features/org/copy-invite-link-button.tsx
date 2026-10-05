@@ -30,11 +30,18 @@ export function CopyInviteLinkButton({
     }
   };
 
+  // Without a ready-made URL each copy mints a fresh single-use link, which
+  // invalidates the one the invitee may already be holding.
+  const title = inviteUrl
+    ? undefined
+    : t(I18nKey.ORG$COPY_INVITE_LINK_REISSUE_HINT);
+
   return (
     <button
       type="button"
       data-testid="copy-invite-link-button"
       onClick={handleCopy}
+      title={title}
       disabled={isLoading}
       className={cn(
         "flex items-center gap-1 text-xs cursor-pointer hover:underline shrink-0",

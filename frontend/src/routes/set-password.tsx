@@ -52,14 +52,19 @@ export default function SetPasswordPage() {
       );
   }, []);
 
+  const minimumLength = inspection?.minimum_password_length ?? 8;
+  // Checked as the user types, so the form reports problems before submitting.
+  let liveError: string | null = null;
+  if (password && password.length < minimumLength) {
+    liveError = t(I18nKey.AUTH$PASSWORD_MIN_LENGTH, { count: minimumLength });
+  } else if (confirmation && password !== confirmation) {
+    liveError = t(I18nKey.AUTH$PASSWORDS_DO_NOT_MATCH);
+  }
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!inspection || password.length < inspection.minimum_password_length) {
-      setError(
-        t(I18nKey.AUTH$PASSWORD_MIN_LENGTH, {
-          count: inspection?.minimum_password_length ?? 8,
-        }),
-      );
+    if (!inspection || password.length < minimumLength) {
+      setError(t(I18nKey.AUTH$PASSWORD_MIN_LENGTH, { count: minimumLength }));
       return;
     }
     if (password !== confirmation) {
@@ -141,15 +146,15 @@ export default function SetPasswordPage() {
                 className="h-10 rounded border border-tertiary bg-base px-3"
               />
             </label>
-            {error && (
+            {(error ?? liveError) && (
               <p className="text-sm text-danger" role="alert">
-                {error}
+                {error ?? liveError}
               </p>
             )}
             <BrandButton
               type="submit"
               variant="primary"
-              isDisabled={isSubmitting}
+              isDisabled={isSubmitting || liveError !== null}
             >
               {isSubmitting
                 ? t(I18nKey.SETTINGS$SAVING)

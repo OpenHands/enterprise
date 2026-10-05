@@ -4,11 +4,12 @@ import asyncio
 import hashlib
 import os
 import secrets
-import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 from email_validator import EmailNotValidError, validate_email
 
 from server.constants import DEPLOYMENT_MODE
@@ -17,9 +18,19 @@ PASSWORD_MIN_LENGTH = 8
 PASSWORD_LINK_TTL_HOURS = 72
 PASSWORD_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 
+# Argon2 is deliberately expensive (~65ms each), so cap how many hashes run at
+# once and make callers queue rather than fail. Only sustained saturation -
+# i.e. a wait longer than the timeout - returns 503.
+PASSWORD_HASH_CONCURRENCY = int(os.getenv('PASSWORD_HASH_CONCURRENCY', '0')) or max(
+    2, os.cpu_count() or 2
+)
+PASSWORD_HASH_WAIT_TIMEOUT_SECONDS = float(
+    os.getenv('PASSWORD_HASH_WAIT_TIMEOUT_SECONDS', '5')
+)
+
 _PASSWORD_HASHER = PasswordHasher()
-_HASH_CAPACITY = threading.BoundedSemaphore(2)
-_DUMMY_PASSWORD_HASH = _PASSWORD_HASHER.hash(secrets.token_urlsafe(32))
+_hash_semaphore: asyncio.Semaphore | None = None
+_dummy_password_hash: str | None = None
 
 
 class PasswordAuthError(ValueError):
@@ -27,6 +38,36 @@ class PasswordAuthError(ValueError):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+
+
+def _get_hash_semaphore() -> asyncio.Semaphore:
+    # Created lazily so it binds to the running loop rather than import time.
+    global _hash_semaphore
+    if _hash_semaphore is None:
+        _hash_semaphore = asyncio.Semaphore(PASSWORD_HASH_CONCURRENCY)
+    return _hash_semaphore
+
+
+def _get_dummy_password_hash() -> str:
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = _PASSWORD_HASHER.hash(secrets.token_urlsafe(32))
+    return _dummy_password_hash
+
+
+@asynccontextmanager
+async def _hash_capacity() -> AsyncIterator[None]:
+    semaphore = _get_hash_semaphore()
+    try:
+        await asyncio.wait_for(
+            semaphore.acquire(), timeout=PASSWORD_HASH_WAIT_TIMEOUT_SECONDS
+        )
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise PasswordAuthError('Authentication temporarily unavailable', 503) from exc
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 def is_password_auth_enabled() -> bool:
@@ -58,39 +99,29 @@ def validate_password(password: str) -> None:
         raise PasswordAuthError('Password is too long', code='password_too_long')
 
 
-def _hash_password(password: str) -> str:
-    if not _HASH_CAPACITY.acquire(blocking=False):
-        raise PasswordAuthError('Authentication temporarily unavailable', 503)
+def _verify_password(password_hash: str | None, password: str) -> bool:
+    # A missing hash still verifies against a dummy one so that unknown
+    # accounts cost the same as known ones. VerificationError covers a
+    # mismatch and an unreadable stored hash alike: both mean "not this user".
     try:
-        return _PASSWORD_HASHER.hash(password)
-    finally:
-        _HASH_CAPACITY.release()
+        return _PASSWORD_HASHER.verify(
+            password_hash or _get_dummy_password_hash(), password
+        )
+    except (InvalidHashError, VerificationError):
+        return False
 
 
 async def hash_password(password: str) -> str:
     validate_password(password)
-    return await asyncio.to_thread(_hash_password, password)
+    async with _hash_capacity():
+        return await asyncio.to_thread(_PASSWORD_HASHER.hash, password)
 
 
-def _verify_password(password_hash: str, password: str) -> bool:
+async def verify_password(password_hash: str | None, password: str) -> bool:
     if len(password.encode('utf-8')) > 4096:
         return False
-    if not _HASH_CAPACITY.acquire(blocking=False):
-        raise PasswordAuthError('Authentication temporarily unavailable', 503)
-    try:
-        return _PASSWORD_HASHER.verify(password_hash, password)
-    except (InvalidHashError, VerifyMismatchError):
-        return False
-    finally:
-        _HASH_CAPACITY.release()
-
-
-async def verify_password(password_hash: str, password: str) -> bool:
-    return await asyncio.to_thread(_verify_password, password_hash, password)
-
-
-async def verify_password_or_dummy(password_hash: str | None, password: str) -> bool:
-    return await verify_password(password_hash or _DUMMY_PASSWORD_HASH, password)
+    async with _hash_capacity():
+        return await asyncio.to_thread(_verify_password, password_hash, password)
 
 
 def new_password_token() -> str:

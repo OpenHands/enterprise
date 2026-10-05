@@ -326,6 +326,41 @@ async def get_user_super_role(user_id: str) -> Role | None:
     return await RoleStore.get_role_by_id(user.role_id)
 
 
+async def is_instance_super_admin(user_id: str | UUID) -> bool:
+    """Whether the user holds the instance-wide ``superadmin`` super role."""
+    super_role = await get_user_super_role(str(user_id))
+    return bool(super_role and _grants_super_admin(super_role))
+
+
+async def get_super_admin_role_ids() -> set[int]:
+    """Role ids that make a ``user.role_id`` holder an instance superadmin.
+
+    For callers that classify many users at once and would otherwise call
+    :func:`is_instance_super_admin` per user.
+    """
+    roles = await RoleStore.list_roles()
+    return {role.id for role in roles if _grants_super_admin(role)}
+
+
+def _grants_super_admin(role: Role) -> bool:
+    return has_permission(role, Permission.MANAGE_SUPER_ADMINS, is_super=True)
+
+
+def outranks_for_member_management(
+    requester_role_name: str, target_role_name: str
+) -> bool:
+    """Whether an org role may act on another member holding ``target_role_name``.
+
+    Owners may act on anyone, admins on anyone but owners. Shared by member
+    removal, role changes and password resets so they cannot drift apart.
+    """
+    if requester_role_name == RoleName.OWNER.value:
+        return True
+    if requester_role_name == RoleName.ADMIN.value:
+        return target_role_name != RoleName.OWNER.value
+    return False
+
+
 def get_role_permissions(role_name: str) -> frozenset[Permission]:
     """
     Get the org-scoped permissions for a role.

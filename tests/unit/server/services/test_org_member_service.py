@@ -31,14 +31,14 @@ def mock_member_auth_metadata():
             return_value={},
         ),
         patch(
-            'server.services.org_member_service.OrgMemberService._is_superadmin',
+            'server.services.org_member_service.is_instance_super_admin',
             new_callable=AsyncMock,
             return_value=False,
         ),
         patch(
-            'server.services.org_member_service.RoleStore.get_role_by_name',
+            'server.services.org_member_service.get_super_admin_role_ids',
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=set(),
         ),
     ):
         yield
@@ -2498,3 +2498,150 @@ class TestOrgMemberServiceGetOrgMember:
             # Assert
             assert result.user_id == str(target_user_id)
             assert result.email is None
+
+
+class TestSuperadminMemberProtection:
+    """The module-wide fixture mocks superadmin away, so these set it per test."""
+
+    @pytest.mark.asyncio
+    async def test_owner_cannot_remove_a_superadmin(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_owner,
+        target_membership_user,
+        owner_role,
+        member_role,
+    ):
+        """GIVEN: The target holds the instance-wide superadmin role
+        WHEN: An org owner who is not a superadmin removes them
+        THEN: The removal is refused
+        """
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.is_instance_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_is_superadmin,
+            patch(
+                'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
+                new_callable=AsyncMock,
+            ) as mock_remove,
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_owner,
+                target_membership_user,
+            ]
+            mock_get_role.side_effect = [owner_role, member_role]
+            mock_is_superadmin.side_effect = [True, False]
+
+            success, error = await OrgMemberService.remove_org_member(
+                org_id, target_user_id, current_user_id
+            )
+
+            assert success is False
+            assert error == 'insufficient_permission'
+            mock_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_superadmin_can_remove_another_superadmin(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_owner,
+        target_membership_user,
+        owner_role,
+        member_role,
+    ):
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.is_instance_super_admin',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_remove,
+            patch(
+                'server.services.org_member_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_owner,
+                target_membership_user,
+            ]
+            mock_get_role.side_effect = [owner_role, member_role]
+
+            success, error = await OrgMemberService.remove_org_member(
+                org_id, target_user_id, current_user_id
+            )
+
+            assert success is True
+            assert error is None
+            mock_remove.assert_called_once_with(org_id, target_user_id)
+
+    @pytest.mark.asyncio
+    async def test_admin_still_cannot_remove_an_owner(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_admin,
+        target_membership_owner,
+        admin_role,
+        owner_role,
+    ):
+        """A superadmin requester does not inherit owner rank in the org."""
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.is_instance_super_admin',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
+                new_callable=AsyncMock,
+            ) as mock_remove,
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_admin,
+                target_membership_owner,
+            ]
+            mock_get_role.side_effect = [admin_role, owner_role]
+
+            success, error = await OrgMemberService.remove_org_member(
+                org_id, target_user_id, current_user_id
+            )
+
+            assert success is False
+            assert error == 'insufficient_permission'
+            mock_remove.assert_not_called()

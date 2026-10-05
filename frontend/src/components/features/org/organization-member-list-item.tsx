@@ -111,7 +111,9 @@ export function OrganizationMemberListItem({
             onRoleChange={onRoleChange}
             onRemove={onRemove}
             onResetPassword={onResetPassword}
-            availableRolesToChangeTo={availableRolesToChangeTo}
+            availableRolesToChangeTo={
+              hasPermissionToChangeRole ? availableRolesToChangeTo : []
+            }
           />
         )}
       </div>
