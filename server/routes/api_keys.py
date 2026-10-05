@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.app_server.sandbox.session_auth import validate_session_key
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -178,6 +180,13 @@ class LlmApiKeyResponse(BaseModel):
 
 class ManagedLlmApiKeyRefreshResponse(BaseModel):
     refreshed: bool
+    # Populated only when the freshly-minted key fails ``verify_key``. Absent
+    # on the happy path (verify succeeds) so a green response stays a boolean.
+    # On failure carries the ``LiteLlmManager.diagnose_state`` output plus a
+    # ``new_key_verifies=false`` marker, so a curl caller sees in the response
+    # body — without needing to grep logs — whether the failure is app-server-
+    # side or LiteLLM-side (master-key drift, LiteLLM down, DB unreachable).
+    diagnostics: dict[str, Any] | None = None
 
 
 class ByorPermittedResponse(BaseModel):
@@ -497,11 +506,47 @@ async def refresh_managed_llm_api_key(
         # The store already generated-before-deleted and cleaned up the
         # previous key (best-effort) under a per-org lock, so the route does
         # not delete it again.
+
+        # Verify the freshly-minted key against LiteLLM before returning.
+        # Rotation succeeded in the app-server DB either way — but if the
+        # new key ALSO fails verify, we have caught a LiteLLM-side systemic
+        # failure (master-key drift, DB unreachable, schema mismatch) in
+        # the act. Emit the diagnostic in the response body so a curl caller
+        # sees it, and as a structured log line so support-bundle triage
+        # picks it up without needing to correlate a user report.
+        diagnostics: dict[str, Any] | None = None
+        if rotation.new_key is not None:
+            new_key_verifies = await LiteLlmManager.verify_key(
+                rotation.new_key, user_id
+            )
+            if new_key_verifies:
+                logger.info(
+                    'api_keys:managed_refresh:post_verify_ok',
+                    extra={
+                        'user_id': user_id,
+                        'org_id': str(effective_org_id),
+                    },
+                )
+            else:
+                litellm_health = await LiteLlmManager.diagnose_state()
+                diagnostics = {
+                    'new_key_verifies': False,
+                    'litellm_health': litellm_health,
+                }
+                logger.warning(
+                    'api_keys:managed_refresh:post_verify_failed',
+                    extra={
+                        'user_id': user_id,
+                        'org_id': str(effective_org_id),
+                        'diagnostics': diagnostics,
+                    },
+                )
+
         logger.info(
             'Managed LLM API key refresh completed successfully',
             extra={'user_id': user_id, 'org_id': str(effective_org_id)},
         )
-        return ManagedLlmApiKeyRefreshResponse(refreshed=True)
+        return ManagedLlmApiKeyRefreshResponse(refreshed=True, diagnostics=diagnostics)
     except HTTPException:
         raise
     except Exception as e:
@@ -518,6 +563,53 @@ async def refresh_managed_llm_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to refresh managed LLM API key',
         )
+
+
+@api_router.get(
+    '/llm/managed/current',
+    tags=['Keys'],
+    response_class=PlainTextResponse,
+    include_in_schema=False,
+)
+async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse:
+    """Return the calling sandbox's current-valid managed LLM key as plain text.
+
+    This is called from inside the agent-server sandbox (not by end users) when
+    a managed-proxy LLM hits a 401, so the key can be re-resolved and the request
+    retried in place (#5189). It is authenticated by the sandbox's own
+    ``X-Session-API-Key`` (the same credential used for webhooks), and the
+    response body is the raw key -- the format the SDK ``LookupSecret`` refresh
+    hook expects. A 404 is returned when the caller has no managed key to hand
+    out (non-managed / BYOK config, or none could be produced) so the SDK leaves
+    the original 401 to surface instead of masking it.
+    """
+    sandbox = await validate_session_key(request.headers.get('X-Session-API-Key'))
+    user_id = sandbox.created_by_user_id
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Sandbox has no owning user',
+        )
+
+    try:
+        settings_store = await SaasSettingsStore.get_instance(user_id)
+        key = await settings_store.resolve_valid_managed_llm_key()
+    except Exception:
+        logger.exception(
+            'Failed to resolve managed LLM key for sandbox',
+            extra={'user_id': user_id, 'sandbox_id': sandbox.id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Failed to resolve managed LLM key',
+        )
+
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No managed LLM key available for this sandbox',
+        )
+    return PlainTextResponse(key)
 
 
 @api_router.get('/llm/byor', tags=['Keys'])
