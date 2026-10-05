@@ -2,7 +2,6 @@ import type { GuidedTour } from "./types";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 
 const NAV = {
-  organizations: '[data-testid="sidebar-settings-/super-admin/organizations"]',
   orgDefaults: '[data-testid="sidebar-settings-/settings/org-defaults"]',
   mcp: '[data-testid="sidebar-settings-/settings/mcp"]',
   members: '[data-testid="sidebar-settings-/settings/org-members"]',
@@ -13,7 +12,7 @@ const NAV = {
  * Spotlight / hovercard stops for the Super Admin setup checklist.
  * Titles/bodies are English for the tour popover; setup page still uses i18n.
  *
- * Checklist completion is driven by real actions (e.g. org created), not by
+ * Checklist completion is driven by real actions (e.g. LLM saved), not by
  * advancing through these tips.
  *
  * `alsoHighlight` keeps the related left-nav tab lit alongside each stop.
@@ -22,29 +21,6 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
   id: "super-admin-setup",
   title: "Setup guide",
   steps: [
-    {
-      id: "create-org",
-      checklistId: "create-org",
-      route: SUPER_ADMIN_PATHS.organizations,
-      anchor: '[data-testid="super-admin-create-org"]',
-      alsoHighlight: NAV.organizations,
-      title: "Create an organization",
-      body: "Click Create organization, or press Next to open the form. Everything else hangs off this workspace.",
-      side: "left",
-      nextClicksAnchor: true,
-    },
-    {
-      id: "create-org-form",
-      checklistId: "create-org",
-      route: SUPER_ADMIN_PATHS.organizations,
-      anchor: '[data-testid="create-organization-form"]',
-      alsoHighlight: NAV.organizations,
-      openViaClick: '[data-testid="super-admin-create-org"]',
-      title: "Fill in organization details",
-      body: "Enter the organization name and contact info, then create it. The guide continues automatically when the organization is created.",
-      side: "left",
-      waitForComplete: "create-org",
-    },
     {
       id: "add-llm",
       checklistId: "add-llm",
@@ -112,16 +88,6 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
       title: "Add an integration",
       body: "Connect an MCP server so agents can use your organization's tools.",
       side: "bottom",
-    },
-    {
-      id: "first-automation",
-      checklistId: "first-automation",
-      route: "/",
-      // Automations button is itself the nav entry.
-      anchor: '[data-testid="automations-button"]',
-      title: "Create first automation",
-      body: "Automations live here in the main app sidebar. Open it to create a workflow and prove agents can run end-to-end.",
-      side: "right",
     },
     {
       id: "invite-users",

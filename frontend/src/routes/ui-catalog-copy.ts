@@ -60,13 +60,13 @@ const ZH_CN: Record<string, string> = {
   "Skip must clear starterModalPending. Hovering another step must not collapse the pinned one. The catalog forceOpen path must not clear a real user's nux.":
     "跳过必须清掉 starterModalPending。悬停另一步不能收起钉住的步骤。目录的 forceOpen 路径不能清掉真实用户的引导状态。",
   "Onboarding guide to the aha moment": "引导到第一次成功",
-  "After install, the setup guide follows the Super Admin across the product: organization, LLM, MCP integration, automation, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. There is no automation-template screen here; the guide links to /automations. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.":
-    "安装之后，设置指南会跟着超级管理员走完产品：组织、语言模型、MCP 集成、自动化、邀请，然后是可选的 SAML。它面向他们拥有的第一个组织。已经配置好的组织里，新来的管理员不应看到它。这里没有自动化模板画面；指南链接到 /automations。服务器会按组织真实的语言模型配置、MCP 服务器、自动化、成员和邀请来判断每一步，并保存关闭状态，所以在任何浏览器上进度都一样。",
+  "After install, the setup guide follows the Super Admin across the product: LLM, automation template, MCP integration, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. The automation template step opens the templates page in Agent Canvas. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.":
+    "安装之后，设置指南会跟着超级管理员走完产品：语言模型、自动化模板、MCP 集成、邀请，然后是可选的 SAML。它面向他们拥有的第一个组织。已经配置好的组织里，新来的管理员不应看到它。自动化模板这一步会打开 Agent Canvas 里的模板页面。服务器会按组织真实的语言模型配置、MCP 服务器、自动化、成员和邀请来判断每一步，并保存关闭状态，所以在任何浏览器上进度都一样。",
   "Setup guide": "设置指南",
   "Checklist after install. Dismissing it hides the guide.":
     "安装之后的清单。关闭它会把指南藏起来。",
-  "Steps for org, LLM, MCP integration, automation, invite, and optional SAML":
-    "组织、语言模型、MCP 集成、自动化、邀请，以及可选 SAML 的步骤",
+  "Steps for LLM, automation template, MCP integration, invite, and optional SAML":
+    "语言模型、自动化模板、MCP 集成、邀请，以及可选 SAML 的步骤",
   "The active step stays open while another step is previewed":
     "预览另一步时，当前步骤保持展开",
   "The guide can be dismissed": "指南可以关闭",
@@ -394,13 +394,13 @@ const ZH_TW: Record<string, string> = {
   "Skip must clear starterModalPending. Hovering another step must not collapse the pinned one. The catalog forceOpen path must not clear a real user's nux.":
     "跳過必須清掉 starterModalPending。懸停另一步不能收起釘住的步驟。目錄的 forceOpen 路徑不能清掉真實使用者的引導狀態。",
   "Onboarding guide to the aha moment": "引導到第一次成功",
-  "After install, the setup guide follows the Super Admin across the product: organization, LLM, MCP integration, automation, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. There is no automation-template screen here; the guide links to /automations. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.":
-    "安裝之後，設定指南會跟著超級管理員走完產品：組織、語言模型、MCP 整合、自動化、邀請，然後是可選的 SAML。它面向他們擁有的第一個組織。已經配置好的組織里，新來的管理員不應看到它。這裡沒有自動化模板畫面；指南連結到 /automations。伺服器會按組織真實的語言模型設定、MCP 伺服器、自動化、成員和邀請來判斷每一步，並儲存關閉狀態，所以在任何瀏覽器上進度都一樣。",
+  "After install, the setup guide follows the Super Admin across the product: LLM, automation template, MCP integration, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. The automation template step opens the templates page in Agent Canvas. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.":
+    "安裝之後，設定指南會跟著超級管理員走完產品：語言模型、自動化模板、MCP 整合、邀請，然後是可選的 SAML。它面向他們擁有的第一個組織。已經配置好的組織里，新來的管理員不應看到它。自動化模板這一步會開啟 Agent Canvas 裡的模板頁面。伺服器會按組織真實的語言模型設定、MCP 伺服器、自動化、成員和邀請來判斷每一步，並儲存關閉狀態，所以在任何瀏覽器上進度都一樣。",
   "Setup guide": "設定指南",
   "Checklist after install. Dismissing it hides the guide.":
     "安裝之後的清單。關閉它會把指南藏起來。",
-  "Steps for org, LLM, MCP integration, automation, invite, and optional SAML":
-    "組織、語言模型、MCP 整合、自動化、邀請，以及可選 SAML 的步驟",
+  "Steps for LLM, automation template, MCP integration, invite, and optional SAML":
+    "語言模型、自動化模板、MCP 整合、邀請，以及可選 SAML 的步驟",
   "The active step stays open while another step is previewed":
     "預覽另一步時，當前步驟保持展開",
   "The guide can be dismissed": "指南可以關閉",

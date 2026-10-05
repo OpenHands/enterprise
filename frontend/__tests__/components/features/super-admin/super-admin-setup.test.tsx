@@ -72,6 +72,10 @@ function renderSetupPage(state: SetupState) {
       Component: () => <div data-testid="dashboard-stub" />,
     },
     { path: "/super-admin/setup", Component: SuperAdminSetupGuide },
+    {
+      path: "/automations/templates",
+      Component: () => <div data-testid="automation-templates-stub" />,
+    },
   ]);
   render(
     <QueryClientProvider client={queryClient}>
@@ -105,10 +109,10 @@ describe("useSuperAdminSetup", () => {
     const { result } = renderSetupHook(state);
 
     // Assert
-    expect([...result.current.completed]).toEqual(["create-org", "add-llm"]);
-    expect(result.current.nextStep?.id).toBe("add-integration");
-    expect(result.current.completedCount).toBe(2);
-    expect(result.current.totalCount).toBe(5);
+    expect([...result.current.completed]).toEqual(["add-llm"]);
+    expect(result.current.nextStep?.id).toBe("first-automation");
+    expect(result.current.completedCount).toBe(1);
+    expect(result.current.totalCount).toBe(4);
     expect(result.current.visible).toBe(true);
   });
 
@@ -198,6 +202,20 @@ describe("SuperAdminSetupGuide", () => {
         "SUPER_ADMIN$SETUP_REMOVE_COMPLETE_CONFIRM",
       ),
     );
+  });
+
+  it("opens the template page instead of a tour when the next step is in Agent Canvas", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderSetupPage(guideState({ ...NO_STEPS_DONE, org_llm: true }));
+
+    // Act
+    await user.click(screen.getByTestId("super-admin-setup-start-guide"));
+
+    // Assert
+    expect(
+      await screen.findByTestId("automation-templates-stub"),
+    ).toBeInTheDocument();
   });
 
   it("does not ask again when an already finished guide is opened", () => {

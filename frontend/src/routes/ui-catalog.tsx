@@ -237,14 +237,14 @@ const GROUPS: CatalogGroup[] = [
   {
     ticket: "OHE-3384 · PRD OHE-651",
     title: "Onboarding guide to the aha moment",
-    flow: "After install, the setup guide follows the Super Admin across the product: organization, LLM, MCP integration, automation, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. There is no automation-template screen here; the guide links to /automations. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.",
+    flow: "After install, the setup guide follows the Super Admin across the product: LLM, automation template, MCP integration, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. The automation template step opens the templates page in Agent Canvas. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.",
     entries: [
       PAGE(
         "Setup guide",
         "/super-admin/setup",
         "Checklist after install. Dismissing it hides the guide.",
         [
-          "Steps for org, LLM, MCP integration, automation, invite, and optional SAML",
+          "Steps for LLM, automation template, MCP integration, invite, and optional SAML",
           "The active step stays open while another step is previewed",
           "The guide can be dismissed",
         ],
