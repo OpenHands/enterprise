@@ -172,9 +172,3 @@
   outline-offset: 0;
   pointer-events: none !important;
 }
-
-/* TEMP: keep mock Setup test harness clickable over driver.js overlay */
-.driver-active [data-testid="setup-test-harness"],
-.driver-active [data-testid="setup-test-harness"] * {
-  pointer-events: auto !important;
-}

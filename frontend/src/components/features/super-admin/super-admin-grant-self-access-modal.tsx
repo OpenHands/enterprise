@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { useUpdateSuperAdminUserGroups } from "#/hooks/mutation/use-super-admin-mutations";
 import { I18nKey } from "#/i18n/declaration";
-import type { SuperAdminOrgRole } from "./super-admin-mock";
+import type { SuperAdminOrgRole } from "./super-admin-types";
 
 /**
  * Asks a Super Admin to join an organization before they can open it.

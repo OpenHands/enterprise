@@ -27,7 +27,7 @@ import {
   settingsListTableMinWidthStyle,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
-import type { SuperAdminMembership } from "./super-admin-mock";
+import type { SuperAdminMembership } from "./super-admin-types";
 
 interface SuperAdminPageHeaderProps {
   title: string;

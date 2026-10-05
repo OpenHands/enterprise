@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SuperAdminUserGroupsModal } from "#/components/features/super-admin/super-admin-user-groups-modal";
-import type { SuperAdminUserRow } from "#/components/features/super-admin/super-admin-mock";
+import type { SuperAdminUserRow } from "#/components/features/super-admin/super-admin-types";
 import { resetSuperAdminMockState } from "#/mocks/super-admin-handlers";
 
 const { mutate, mutateStatus, mutateRemove } = vi.hoisted(() => ({

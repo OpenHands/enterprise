@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useMemo, useState } from "react";
 import {
   Navigate,
   NavLink,
@@ -23,11 +23,6 @@ import {
   SUPER_ADMIN_SETUP_ITEM,
 } from "#/constants/super-admin-nav";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
-import {
-  getSetupTestSuperAdminAccessOverride,
-  readSetupTestPersona,
-  subscribeSetupTestPersona,
-} from "#/utils/org/setup-test-harness";
 import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
 import {
@@ -121,12 +116,6 @@ export function SuperAdminLayout() {
   const { data: me, isLoading, isPending } = useMe();
   const { data: config, isLoading: isConfigLoading } = useConfig();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  // Mock persona override must re-render SA access checks.
-  useSyncExternalStore(
-    subscribeSetupTestPersona,
-    readSetupTestPersona,
-    () => "live",
-  );
   const routeHandles = matches.map(
     (match) =>
       match.handle as
@@ -151,13 +140,7 @@ export function SuperAdminLayout() {
     return <main data-testid="super-admin-screen" className="min-h-0 h-full" />;
   }
 
-  const saAccessOverride = getSetupTestSuperAdminAccessOverride();
-  const canAccess =
-    saAccessOverride === null
-      ? canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions)
-      : saAccessOverride;
-
-  if (!canAccess) {
+  if (!canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions)) {
     return <Navigate to="/settings" replace />;
   }
 

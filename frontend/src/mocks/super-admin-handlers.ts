@@ -14,6 +14,9 @@ const MOCK_SUPER_ADMINS = [
 
 let superAdmins = [...MOCK_SUPER_ADMINS];
 
+// The mock user's personal workspace (MOCK_PERSONAL_ORG in org-handlers).
+const MOCK_PERSONAL_ORG_ID = "1";
+
 const MOCK_ADMIN_ORGS = [
   {
     id: "2",
@@ -219,11 +222,17 @@ export function onMockAdminMembershipAdded(
   membershipAddedListeners.add(listener);
 }
 
+/** Lets the org mock resolve `owner_user_id` like the server's user lookup. */
+export function findMockAdminUser(userId: string) {
+  return adminUsers.find((user) => user.user_id === userId);
+}
+
 export function registerMockAdminOrg(org: {
   id: string;
   name: string;
   contact_email?: string | null;
   contact_name?: string | null;
+  owner_user_id?: string;
 }) {
   if (adminOrgs.some((row) => row.id === org.id)) {
     return;
@@ -235,11 +244,28 @@ export function registerMockAdminOrg(org: {
       name: org.name,
       contact_email: org.contact_email ?? "",
       contact_name: org.contact_name ?? "",
-      member_count: 1,
+      member_count: org.owner_user_id ? 1 : 0,
       is_personal: false,
       status: "active" as const,
     },
   ];
+  // Like the server, the owner is the new organization's only member.
+  adminUsers = adminUsers.map((user) =>
+    user.user_id === org.owner_user_id
+      ? {
+          ...user,
+          memberships: [
+            ...user.memberships,
+            {
+              org_id: org.id,
+              org_name: org.name,
+              role: "owner",
+              status: "active",
+            },
+          ],
+        }
+      : user,
+  );
 }
 
 export const resetSuperAdminMockState = () => {
@@ -397,12 +423,34 @@ export const SUPER_ADMIN_HANDLERS = [
   }),
 
   http.post("/api/organizations/provision-user", async ({ request }) => {
+    // The server registers this route only when USER_PROVISIONING_ENABLED is set,
+    // which the mock config reports as user_provisioning_enabled in mock SaaS.
+    // Without it, the path falls through to /api/organizations/{org_id}.
+    if (import.meta.env.VITE_MOCK_SAAS !== "true") {
+      return HttpResponse.json(
+        { detail: "Method Not Allowed" },
+        { status: 405 },
+      );
+    }
     const body = (await request.json()) as {
       email: string;
+      password?: string;
       role?: string;
     };
     const orgId = request.headers.get("X-Org-Id") ?? "2";
+    if (orgId === MOCK_PERSONAL_ORG_ID) {
+      return HttpResponse.json(
+        { detail: "Cannot provision users into a personal workspace" },
+        { status: 403 },
+      );
+    }
     const org = adminOrgs.find((row) => row.id === orgId);
+    if (!org) {
+      return HttpResponse.json(
+        { detail: "Target organization not found" },
+        { status: 404 },
+      );
+    }
     const email = body.email.trim().toLowerCase();
     const existing = adminUsers.find(
       (user) => user.email?.toLowerCase() === email,
@@ -411,7 +459,7 @@ export const SUPER_ADMIN_HANDLERS = [
       const already = existing.memberships.some(
         (membership) => membership.org_id === orgId,
       );
-      if (!already && org) {
+      if (!already) {
         existing.memberships.push({
           org_id: orgId,
           org_name: org.name,
@@ -419,7 +467,14 @@ export const SUPER_ADMIN_HANDLERS = [
           status: "active",
         });
         org.member_count += 1;
-        existing.status = "active";
+        membershipAddedListeners.forEach((listener) =>
+          listener({
+            userId: existing.user_id,
+            orgId,
+            orgName: org.name,
+            role: body.role ?? "member",
+          }),
+        );
       }
       return HttpResponse.json({
         email,
@@ -442,7 +497,7 @@ export const SUPER_ADMIN_HANDLERS = [
         memberships: [
           {
             org_id: orgId,
-            org_name: org?.name ?? "Organization",
+            org_name: org.name,
             role: body.role ?? "member",
             status: "active",
           },
@@ -450,10 +505,11 @@ export const SUPER_ADMIN_HANDLERS = [
       },
       ...adminUsers,
     ];
+    org.member_count += 1;
     return HttpResponse.json(
       {
         email,
-        password: "MockPass1!",
+        password: body.password || "MockPass1!",
         api_key: "mock-new-api-key",
         user_id: userId,
         org_id: orgId,

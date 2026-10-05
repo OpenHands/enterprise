@@ -54,7 +54,7 @@ import type {
   SuperAdminOrgRole,
   SuperAdminOrgRow,
   SuperAdminUserRow,
-} from "./super-admin-mock";
+} from "./super-admin-types";
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
 

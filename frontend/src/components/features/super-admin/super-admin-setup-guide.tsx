@@ -15,11 +15,6 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
-import {
-  getSetupTestSuperAdminAccessOverride,
-  readSetupTestPersona,
-  subscribeSetupTestPersona,
-} from "#/utils/org/setup-test-harness";
 import { cn } from "#/utils/utils";
 import {
   settingsListContainerClassName,
@@ -262,19 +257,12 @@ export function SuperAdminSetupFloatingWidget() {
     isGuidedTourActive,
     isGuidedTourActive,
   );
-  // Re-render when mock persona override changes SA widget visibility.
-  useSyncExternalStore(
-    subscribeSetupTestPersona,
-    readSetupTestPersona,
-    () => "live",
-  );
 
   const isInstallRoute = pathname.startsWith("/install");
-  const saAccessOverride = getSetupTestSuperAdminAccessOverride();
-  const canAccess =
-    saAccessOverride === null
-      ? canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions)
-      : saAccessOverride;
+  const canAccess = canAccessSuperAdminDashboard(
+    config?.feature_flags,
+    me?.permissions,
+  );
 
   useEffect(() => {
     if (tourActive) {

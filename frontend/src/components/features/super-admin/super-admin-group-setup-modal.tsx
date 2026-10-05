@@ -63,12 +63,7 @@ const STARTER_STEPS: {
  * First visit to org LLM settings after install. Explains the basic setup
  * for the organization that was just created.
  */
-export function SuperAdminGroupSetupModal({
-  forceOpen = false,
-}: {
-  /** Show the modal without the install localStorage flag. Catalog only. */
-  forceOpen?: boolean;
-} = {}) {
+export function SuperAdminGroupSetupModal() {
   const { t } = useTranslation();
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>("llm");
@@ -90,7 +85,7 @@ export function SuperAdminGroupSetupModal({
   const { mutateAsync: activateProfile } =
     useActivateOrgLlmProfile(organizationId);
 
-  if (!forceOpen && !nux.starterModalPending) {
+  if (!nux.starterModalPending) {
     return null;
   }
 
@@ -154,8 +149,8 @@ export function SuperAdminGroupSetupModal({
       secondaryButtonClassName="bg-transparent hover:bg-transparent hover:border-white"
       isLoading={isSaving}
       isPrimaryDisabled={!llm.model || !organizationId}
-      onPrimaryClick={forceOpen ? undefined : saveLlm}
-      onClose={forceOpen ? () => undefined : clearSuperAdminNuxStarterModal}
+      onPrimaryClick={saveLlm}
+      onClose={clearSuperAdminNuxStarterModal}
     >
       <div
         className="relative -mx-6 -mt-6 h-56 overflow-hidden"
