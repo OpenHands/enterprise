@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from typing import Any, Optional
-from urllib.parse import urlparse
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -33,6 +32,7 @@ from server.constants import (
     get_default_llm_api_key,
     get_default_llm_base_url,
     get_default_llm_model,
+    is_in_cluster_url,
 )
 from server.routes.org_models import OrgUpdate, OrphanedUserError
 from storage.database import a_session_maker
@@ -52,11 +52,6 @@ from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.user import User
 from storage.user_settings import UserSettings
-
-
-def _is_in_cluster_url(url: str) -> bool:
-    host = urlparse(url).hostname or ''
-    return '.' not in host or host.endswith(('.svc', '.cluster.local'))
 
 
 @dataclass(frozen=True)
@@ -415,13 +410,11 @@ class OrgStore:
             return (
                 normalized_base_url is None
                 or 'all-hands.dev' in normalized_base_url.lower()
-                or _is_in_cluster_url(normalized_base_url)
+                or is_in_cluster_url(normalized_base_url)
             )
         # The bundled proxy's route; its URL env is gone once LiteLLM is off.
         if model.startswith('litellm_proxy/'):
-            return normalized_base_url is None or _is_in_cluster_url(
-                normalized_base_url
-            )
+            return normalized_base_url is None or is_in_cluster_url(normalized_base_url)
         return False
 
     @staticmethod

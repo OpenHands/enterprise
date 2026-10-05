@@ -1,6 +1,7 @@
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
@@ -253,6 +254,11 @@ def is_bundled_proxy_base_url(base_url: object) -> bool:
         and base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
         and uses_bundled_litellm_proxy()
     )
+
+
+def is_in_cluster_url(url: str) -> bool:
+    host = urlparse(url).hostname or ''
+    return '.' not in host or host.endswith(('.svc', '.cluster.local'))
 
 
 def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
