@@ -12,9 +12,11 @@ import {
   useGrantSuperAdmin,
   useProvisionUserToGroups,
   useRevokeSuperAdmin,
+  useUpdateSetupState,
   useUpdateSuperAdminOrganizationStatus,
 } from "#/hooks/mutation/use-super-admin-mutations";
 import {
+  useSetupState,
   useSuperAdminOrganizations,
   useSuperAdmins,
   useSuperAdminUsers,
@@ -45,10 +47,6 @@ import {
   SuperAdminUserGroupsModal,
 } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
-import {
-  setSuperAdminSetupVisible,
-  useSuperAdminSetup,
-} from "./super-admin-setup";
 import type {
   SuperAdminAdminRow,
   SuperAdminMembership,
@@ -867,7 +865,9 @@ export function SuperAdminInstance() {
   const emailEnabled = Boolean(config?.email_enabled);
   const personalWorkspacesHidden =
     config?.feature_flags?.hide_personal_workspaces === true;
-  const { visible: setupVisible } = useSuperAdminSetup();
+  const { data: setupState } = useSetupState();
+  const { mutate: updateSetupState } = useUpdateSetupState();
+  const hasGuide = Boolean(setupState?.guide_org_id);
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -912,10 +912,12 @@ export function SuperAdminInstance() {
           className="text-[var(--oh-muted)]"
         />
       </div>
+      {/* Only the first Super Admin has a guide to show or hide. */}
       <SettingsSwitch
         testId="super-admin-instance-setup-guide"
-        isToggled={setupVisible}
-        onToggle={setSuperAdminSetupVisible}
+        isToggled={hasGuide && !setupState?.guide_dismissed}
+        isDisabled={!hasGuide}
+        onToggle={(show) => updateSetupState({ guide_dismissed: !show })}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_SETUP_GUIDE)}
       </SettingsSwitch>

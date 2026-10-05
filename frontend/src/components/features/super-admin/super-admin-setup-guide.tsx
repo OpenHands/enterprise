@@ -13,12 +13,8 @@ import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
+import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
-import {
-  getSuperAdminNuxStep,
-  readSuperAdminNux,
-  subscribeSuperAdminNux,
-} from "#/utils/org/super-admin-nux";
 import {
   getSetupTestSuperAdminAccessOverride,
   readSetupTestPersona,
@@ -38,12 +34,11 @@ import { BrandButton } from "./super-admin-chrome";
 import {
   SUPER_ADMIN_SETUP_STEPS,
   useSuperAdminSetup,
-  setSuperAdminSetupStepComplete,
-  setSuperAdminSetupVisible,
   type SuperAdminSetupStep,
   type SuperAdminSetupStepId,
 } from "./super-admin-setup";
 import { SUPER_ADMIN_SETUP_TOUR } from "#/components/features/setup/tours/super-admin-setup-tour";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import {
   startGuidedTour,
   stopGuidedTour,
@@ -243,13 +238,8 @@ export function SuperAdminSetupFloatingWidget() {
   const { pathname } = useLocation();
   const { data: me } = useMe();
   const { data: config } = useConfig();
-  const { visible, nextStep, progress, completedCount, totalCount } =
+  const { visible, nextStep, progress, completedCount, totalCount, refetch } =
     useSuperAdminSetup();
-  const nux = useSyncExternalStore(
-    subscribeSuperAdminNux,
-    readSuperAdminNux,
-    readSuperAdminNux,
-  );
   const isSetupGuidePage = pathname === SUPER_ADMIN_PATHS.setup;
   // Closed on the setup guide itself, because that page already shows the
   // checklist. Elsewhere the panel starts open until the user dismisses it.
@@ -269,7 +259,6 @@ export function SuperAdminSetupFloatingWidget() {
     () => "live",
   );
 
-  const nuxDone = getSuperAdminNuxStep(nux) === "done";
   const isInstallRoute = pathname.startsWith("/install");
   const saAccessOverride = getSetupTestSuperAdminAccessOverride();
   const canAccess =
@@ -298,6 +287,26 @@ export function SuperAdminSetupFloatingWidget() {
     }
   }, [isSetupGuidePage, tourActive]);
 
+  // Progress is read from the server, so re-read it as the admin moves around
+  // and when an action the tour waits on succeeds.
+  useEffect(() => {
+    if (visible) {
+      refetch();
+    }
+  }, [pathname, visible, refetch]);
+
+  useEffect(() => {
+    if (!visible) {
+      return undefined;
+    }
+    const onStep = () => {
+      refetch();
+    };
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+    return () =>
+      window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+  }, [visible, refetch]);
+
   const setWidgetOpen = (next: boolean) => {
     userClosedRef.current = !next;
     setOpen(next);
@@ -316,7 +325,7 @@ export function SuperAdminSetupFloatingWidget() {
     }
   };
 
-  if (!canAccess || !visible || !nuxDone || isInstallRoute || tourActive) {
+  if (!canAccess || !visible || isInstallRoute || tourActive) {
     return null;
   }
 
@@ -472,16 +481,9 @@ function SetupStepRow({
       data-testid={`super-admin-setup-step-${step.id}`}
       className="group flex items-start gap-3 px-3 py-3"
     >
-      <button
-        type="button"
-        data-testid={`super-admin-setup-toggle-${step.id}`}
-        aria-pressed={complete}
-        aria-label={
-          complete
-            ? t(I18nKey.SUPER_ADMIN$SETUP_MARK_INCOMPLETE)
-            : t(I18nKey.SUPER_ADMIN$SETUP_MARK_COMPLETE)
-        }
-        onClick={() => setSuperAdminSetupStepComplete(step.id, !complete)}
+      <span
+        data-testid={`super-admin-setup-check-${step.id}`}
+        aria-hidden
         className={cn(
           "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border",
           complete
@@ -490,7 +492,7 @@ function SetupStepRow({
         )}
       >
         <Check className="size-3" strokeWidth={3} aria-hidden />
-      </button>
+      </span>
       <button
         type="button"
         className="min-w-0 flex-1 space-y-1 rounded-md text-left hover:opacity-90"
@@ -535,25 +537,40 @@ function SetupStepRow({
 export function SuperAdminSetupGuide() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { completed, nextStep, completedCount, totalCount, progress, visible } =
-    useSuperAdminSetup();
+  const {
+    completed,
+    nextStep,
+    completedCount,
+    totalCount,
+    progress,
+    active,
+    isLoaded,
+  } = useSuperAdminSetup();
+  const { mutate: updateSetupState } = useUpdateSetupState();
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeBecauseComplete, setRemoveBecauseComplete] = useState(false);
   const [tourStarting, setTourStarting] = useState(false);
-  const wasComplete = useRef(progress === 1);
+  // Unknown until the server state loads, so opening a finished guide
+  // does not count as finishing it.
+  const wasComplete = useRef<boolean | null>(null);
 
   useEffect(() => {
-    if (progress === 1 && !wasComplete.current && visible) {
+    if (!isLoaded) {
+      return;
+    }
+    if (progress === 1 && wasComplete.current === false && active) {
       setRemoveBecauseComplete(true);
       setRemoveOpen(true);
     }
     wasComplete.current = progress === 1;
-  }, [progress, visible]);
+  }, [progress, active, isLoaded]);
 
   const hideGuide = () => {
     setRemoveOpen(false);
-    setSuperAdminSetupVisible(false);
-    navigate(SUPER_ADMIN_PATHS.root);
+    updateSetupState(
+      { guide_dismissed: true },
+      { onSuccess: () => navigate(SUPER_ADMIN_PATHS.root) },
+    );
   };
 
   return (

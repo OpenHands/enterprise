@@ -16,6 +16,7 @@ const PENDING_SETUP_STATE: SetupState = {
   wizard_pending: true,
   guide_org_id: null,
   guide_dismissed: false,
+  guide_steps: null,
 };
 
 function mockSuperAdminFlag(enabled: boolean) {

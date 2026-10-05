@@ -12,7 +12,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
-import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
@@ -85,7 +85,7 @@ export function CreateOrganizationModal({
         owner_user_id: ownerUserId ?? me?.user_id,
       });
       displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
-      setSuperAdminSetupStepComplete("create-org", true);
+      notifySuperAdminSetupStep("create-org");
       onClose();
     } catch {
       displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));

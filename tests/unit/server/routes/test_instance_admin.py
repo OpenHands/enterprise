@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import uuid
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -16,6 +19,10 @@ from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
 from server.routes.org_models import OrgNotFoundError
 from storage.instance_settings import InstanceSettings
 from storage.org import Org
+from storage.org_invitation import OrgInvitation
+from storage.org_member import OrgMember
+from storage.role import Role
+from storage.user import User
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -860,6 +867,7 @@ NO_SETUP_STATE = {
     'wizard_pending': False,
     'guide_org_id': None,
     'guide_dismissed': False,
+    'guide_steps': None,
 }
 
 
@@ -975,6 +983,7 @@ async def test_update_setup_state_saves_the_guide_org_and_dismissal(
         'wizard_pending': True,
         'guide_org_id': str(org_id),
         'guide_dismissed': True,
+        'guide_steps': None,
     }
 
 
@@ -1034,3 +1043,251 @@ async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
     async with _client(mock_app) as client:
         saved = await client.get('/api/admin/setup-state')
     assert saved.json()['guide_org_id'] is None
+
+
+NO_GUIDE_STEPS_DONE = {
+    'org_llm': False,
+    'mcp_server': False,
+    'automation': False,
+    'invite': False,
+}
+
+# What every org gets before anyone configures an LLM.
+SEEDED_DEFAULT_PROFILE = {'model': 'openhands/default'}
+
+MCP_SERVER = {'docs': {'url': 'https://mcp.example.com/mcp', 'transport': 'http'}}
+
+
+def _naive_utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def _add_user_to_org(
+    session, org_id: uuid.UUID, user_id: uuid.UUID, mcp_config=None
+) -> None:
+    role = Role(name=f'role-{user_id}', rank=10)
+    session.add(role)
+    session.add(User(id=user_id, current_org_id=org_id))
+    await session.flush()
+    session.add(
+        OrgMember(
+            org_id=org_id,
+            user_id=user_id,
+            role_id=role.id,
+            llm_api_key='test-key',
+            status='active',
+            mcp_config=mcp_config,
+        )
+    )
+
+
+async def _add_guide_org(
+    async_session_maker, llm_profiles=None, mcp_config=None
+) -> uuid.UUID:
+    """The first Super Admin's finished wizard and the org their guide belongs to."""
+    org_id = uuid.uuid4()
+    setup_user_id = uuid.UUID(CALLER_USER_ID)
+    async with async_session_maker() as session:
+        session.add(Org(id=org_id, name=f'org-{org_id}', llm_profiles=llm_profiles))
+        await _add_user_to_org(session, org_id, setup_user_id, mcp_config)
+        session.add(
+            InstanceSettings(
+                id=1,
+                setup_user_id=setup_user_id,
+                wizard_completed=True,
+                guide_org_id=org_id,
+            )
+        )
+        await session.commit()
+    return org_id
+
+
+async def _add_second_member(async_session_maker, org_id: uuid.UUID) -> None:
+    async with async_session_maker() as session:
+        await _add_user_to_org(session, org_id, uuid.uuid4())
+        await session.commit()
+
+
+async def _add_invitation(
+    async_session_maker, org_id: uuid.UUID, expires_in: timedelta
+) -> None:
+    async with async_session_maker() as session:
+        role = Role(name=f'invitee-{uuid.uuid4()}', rank=1000)
+        session.add(role)
+        await session.flush()
+        session.add(
+            OrgInvitation(
+                token=uuid.uuid4().hex,
+                org_id=org_id,
+                email='teammate@example.com',
+                role_id=role.id,
+                inviter_id=uuid.UUID(CALLER_USER_ID),
+                expires_at=_naive_utc_now() + expires_in,
+            )
+        )
+        await session.commit()
+
+
+@contextmanager
+def _automation_service(response: httpx.Response):
+    """Stand in for the automation service and record what it is sent."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return response
+
+    real_async_client = httpx.AsyncClient
+    with (
+        patch(
+            'server.routes.instance_admin.AUTOMATION_SERVICE_URL',
+            'http://automation/api/automation',
+        ),
+        patch(
+            'httpx.AsyncClient',
+            lambda **kwargs: real_async_client(transport=httpx.MockTransport(handler)),
+        ),
+    ):
+        yield requests
+
+
+@pytest.mark.asyncio
+async def test_no_guide_step_is_done_in_a_new_guide_org(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(
+        async_session_maker,
+        llm_profiles={
+            'profiles': {'Default': SEEDED_DEFAULT_PROFILE},
+            'active': 'Default',
+        },
+        mcp_config={},
+    )
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json()['guide_steps'] == NO_GUIDE_STEPS_DONE
+
+
+@pytest.mark.asyncio
+async def test_a_saved_llm_profile_completes_the_org_llm_step(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(
+        async_session_maker,
+        llm_profiles={
+            'profiles': {
+                'Default': SEEDED_DEFAULT_PROFILE,
+                'anthropic_claude': {'model': 'anthropic/claude-sonnet-4-5'},
+            },
+            'active': 'anthropic_claude',
+        },
+    )
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'org_llm': True}
+
+
+@pytest.mark.asyncio
+async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker, mcp_config=MCP_SERVER)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'mcp_server': True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('add_teammate', 'invite_done'),
+    [
+        pytest.param(
+            lambda sessions, org_id: _add_second_member(sessions, org_id),
+            True,
+            id='second-member',
+        ),
+        pytest.param(
+            lambda sessions, org_id: _add_invitation(
+                sessions, org_id, timedelta(days=7)
+            ),
+            True,
+            id='pending-invitation',
+        ),
+        pytest.param(
+            lambda sessions, org_id: _add_invitation(
+                sessions, org_id, timedelta(days=-1)
+            ),
+            False,
+            id='expired-invitation',
+        ),
+    ],
+)
+async def test_the_invite_step_needs_a_second_member_or_a_live_invitation(
+    add_teammate, invite_done, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    org_id = await _add_guide_org(async_session_maker)
+    await add_teammate(async_session_maker, org_id)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps']['invite'] is invite_done
+
+
+@pytest.mark.asyncio
+async def test_an_automation_in_the_guide_org_completes_the_automation_step(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    org_id = await _add_guide_org(async_session_maker)
+    response = httpx.Response(200, json={'automations': [], 'total': 1})
+
+    # Act
+    with _automation_service(response) as requests:
+        async with _client(mock_app) as client:
+            resp = await client.get(
+                '/api/admin/setup-state', headers={'cookie': 'keycloak_auth=session'}
+            )
+
+    # Assert
+    assert resp.json()['guide_steps']['automation'] is True
+    [request] = requests
+    assert str(request.url) == 'http://automation/api/automation/v1?limit=1'
+    assert request.headers['X-Org-Id'] == str(org_id)
+    assert request.headers['cookie'] == 'keycloak_auth=session'
+
+
+@pytest.mark.asyncio
+async def test_the_automation_step_stays_undone_when_the_automation_service_fails(
+    mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker)
+
+    # Act
+    with _automation_service(httpx.Response(502)):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.status_code == 200
+    assert resp.json()['guide_steps']['automation'] is False

@@ -6,7 +6,6 @@ import { organizationService } from "#/api/organization-service/organization-ser
 import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
-import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
 import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { I18nKey } from "#/i18n/declaration";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
@@ -78,13 +77,13 @@ export default function SuperAdminInstallOrg() {
       setSelectedOrg(org.id);
       await queryClient.invalidateQueries({ queryKey: ["organizations"] });
       // This is the wizard's last step; finishing it here ends it on every browser.
-      await updateSetupState({ wizard_completed: true });
+      // The setup guide belongs to this organization.
+      await updateSetupState({ wizard_completed: true, guide_org_id: org.id });
     } catch {
       setError(t(I18nKey.SA_NUX$ORG_ERROR));
       setIsSubmitting(false);
       return;
     }
-    setSuperAdminSetupStepComplete("create-org", true);
     markSuperAdminNuxOrgDone({ name: trimmed });
     navigate(SUPER_ADMIN_NUX_LLM_PATH);
   };

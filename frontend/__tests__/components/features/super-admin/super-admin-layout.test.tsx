@@ -2,15 +2,16 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  superAdminService,
+  type SetupState,
+} from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminLayout } from "#/components/features/super-admin/super-admin-layout";
 import { SuperAdminOverview } from "#/components/features/super-admin/super-admin-pages";
 import { SuperAdminSetupGuide } from "#/components/features/super-admin/super-admin-setup-guide";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
-import {
-  resetSuperAdminSetupState,
-  setSuperAdminSetupVisible,
-} from "#/components/features/super-admin/super-admin-setup";
+import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
 
 const mockMe = vi.hoisted(() => ({
@@ -57,10 +58,28 @@ vi.mock("#/hooks/use-app-mode", () => ({
   useAppMode: () => ({ isSaas: true, isEnterpriseCloud: true }),
 }));
 
-function renderSuperAdmin(initialPath = SUPER_ADMIN_PATHS.root) {
+const GUIDE_STATE: SetupState = {
+  wizard_pending: false,
+  guide_org_id: "guide-org",
+  guide_dismissed: false,
+  guide_steps: {
+    org_llm: false,
+    mcp_server: false,
+    automation: false,
+    invite: false,
+  },
+};
+
+function renderSuperAdmin(
+  initialPath = SUPER_ADMIN_PATHS.root,
+  setupState = GUIDE_STATE,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The first Super Admin's setup state, already loaded from the server.
+  vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(setupState);
+  queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, setupState);
   const RouterStub = createRoutesStub([
     {
       path: "/super-admin",
@@ -101,8 +120,11 @@ describe("SuperAdminLayout", () => {
     mockMe.isPending = false;
     mockConfig.data = { feature_flags: { enable_super_admin: true } };
     mockConfig.isLoading = false;
-    resetSuperAdminSetupState();
     resetSuperAdminNux();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("opens the dashboard when the install wizard has not been completed", () => {
@@ -158,9 +180,12 @@ describe("SuperAdminLayout", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides the Setup guide widget when it is turned off", () => {
-    setSuperAdminSetupVisible(false);
-    renderSuperAdmin();
+  it("hides the Setup guide widget once the guide is dismissed", () => {
+    renderSuperAdmin(SUPER_ADMIN_PATHS.root, {
+      ...GUIDE_STATE,
+      guide_dismissed: true,
+      guide_steps: null,
+    });
 
     expect(
       screen.queryByTestId("super-admin-setup-widget"),
