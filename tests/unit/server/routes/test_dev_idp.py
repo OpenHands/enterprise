@@ -84,11 +84,9 @@ def _mock_user(
 
 @contextmanager
 def _available():
-    """Make the dev IDP available (self-hosted, no real IDP configured)."""
+    """Make the dev IDP available (env var enabled, no real IDP configured)."""
     with ExitStack() as stack:
-        stack.enter_context(
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted')
-        )
+        stack.enter_context(patch('server.routes.dev_idp.DEV_IDP_ENABLED', True))
         stack.enter_context(
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
@@ -147,16 +145,16 @@ class TestDeriveDevIdpUserId:
 
 
 class TestIsDevIdpAvailable:
-    def test_cloud_disabled(self):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+    def test_disabled_when_env_var_off(self):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
         assert result is False
 
-    def test_self_hosted_no_idp(self):
+    def test_enabled_no_idp(self):
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.routes.dev_idp.DEV_IDP_ENABLED', True),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -168,9 +166,9 @@ class TestIsDevIdpAvailable:
             result = asyncio.run(is_dev_idp_available())
         assert result is True
 
-    def test_self_hosted_with_idp(self):
+    def test_disabled_when_real_idp_configured(self):
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.routes.dev_idp.DEV_IDP_ENABLED', True),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -181,6 +179,39 @@ class TestIsDevIdpAvailable:
 
             result = asyncio.run(is_dev_idp_available())
         assert result is False
+
+    def test_env_var_accepts_1_as_truthy(self, monkeypatch):
+        """Older Helm charts default to '1' rather than 'true'."""
+        import importlib
+
+        import server.constants
+
+        monkeypatch.setenv('DEV_IDP_ENABLED', '1')
+        importlib.reload(server.constants)
+        assert server.constants.DEV_IDP_ENABLED is True
+
+    @pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'True'])
+    def test_env_var_truthy_values(self, monkeypatch, value):
+        import importlib
+
+        import server.constants
+
+        monkeypatch.setenv('DEV_IDP_ENABLED', value)
+        importlib.reload(server.constants)
+        assert server.constants.DEV_IDP_ENABLED is True
+
+    @pytest.mark.parametrize('value', ['0', 'false', '', 'no', None])
+    def test_env_var_falsy_values(self, monkeypatch, value):
+        import importlib
+
+        import server.constants
+
+        if value is None:
+            monkeypatch.delenv('DEV_IDP_ENABLED', raising=False)
+        else:
+            monkeypatch.setenv('DEV_IDP_ENABLED', value)
+        importlib.reload(server.constants)
+        assert server.constants.DEV_IDP_ENABLED is False
 
 
 # ── get_dev_idp_if_available (sentinel) ────────────────────────────────────
@@ -197,7 +228,7 @@ class TestGetDevIdpIfAvailable:
         assert result.id == DEV_IDP_PROVIDER_ID
 
     def test_returns_none_on_cloud(self):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             import asyncio
 
             result = asyncio.run(get_dev_idp_if_available())
@@ -205,7 +236,7 @@ class TestGetDevIdpIfAvailable:
 
     def test_returns_none_when_real_idp_configured(self):
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            patch('server.routes.dev_idp.DEV_IDP_ENABLED', True),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -267,7 +298,7 @@ class TestOAuthV2LoginRedirectsDevIdp:
         assert 'redirect_url=%2Fdashboard' in location
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.get(
                 f'/oauth/{DEV_IDP_PROVIDER_ID}/login', follow_redirects=False
             )
@@ -301,7 +332,7 @@ class TestDevIdpLoginForm:
         assert 'Development Login' in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert response.status_code == 404
 
@@ -335,7 +366,7 @@ class TestDevIdpSignupForm:
         assert 'Development Sign Up' in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
         assert response.status_code == 404
 
@@ -350,7 +381,7 @@ class TestDevIdpSignupForm:
 
 class TestDevIdpSignup:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.post(
                 f'/oauth/{DEV_IDP_SIGNUP_PATH}',
                 data={
@@ -497,7 +528,7 @@ class TestDevIdpSignup:
 
 class TestDevIdpLogin:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.post(
                 f'/oauth/{DEV_IDP_LOGIN_PATH}',
                 data={'email': 'dev@example.com', 'password': 'password123'},
@@ -717,7 +748,7 @@ class TestDevIdpStatus:
         assert response.json()['enabled'] is True
 
     def test_returns_enabled_false_on_cloud(self, client):
-        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+        with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.get('/api/dev-idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is False

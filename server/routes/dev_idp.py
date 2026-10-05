@@ -29,7 +29,9 @@ in this module returns ``404``.
 
 **This IDP is intentionally insecure** (no rate limiting, no email
 verification, no password-reset flow). It must never be enabled on cloud
-(``app.all-hands.dev``) or any deployment where security matters.
+(``app.all-hands.dev``) or any deployment where security matters. Gated by
+the ``DEV_IDP_ENABLED`` env var (explicit opt-in) plus the "no real IDP
+configured" check.
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ from server.auth.password_hashing import (
     hash_password,
     verify_password,
 )
-from server.constants import DEPLOYMENT_MODE
+from server.constants import DEV_IDP_ENABLED
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.oauth_provider_store import OAuthProviderStore
@@ -116,7 +118,7 @@ async def is_dev_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
     Available when:
-    * ``DEPLOYMENT_MODE == 'self_hosted'`` (never on cloud), AND
+    * ``DEV_IDP_ENABLED`` is set (explicit opt-in via env var), AND
     * No real IDP is configured in ``oauth_providers`` (no row with
       ``is_idp = True``). Once an admin configures a real IDP, the dev
       IDP is disabled.
@@ -125,7 +127,7 @@ async def is_dev_idp_available() -> bool:
     ``get_idp_providers()`` to avoid infinite recursion: ``get_idp_providers``
     calls ``get_dev_idp_if_available`` → ``is_dev_idp_available``.
     """
-    if DEPLOYMENT_MODE != 'self_hosted':
+    if not DEV_IDP_ENABLED:
         return False
     return not await OAuthProviderStore()._has_real_idp()
 
