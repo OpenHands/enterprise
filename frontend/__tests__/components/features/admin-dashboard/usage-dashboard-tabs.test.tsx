@@ -1,14 +1,16 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "test-utils";
 import OptionService from "#/api/option-service/option-service.api";
+import SettingsService from "#/api/settings-service/settings-service.api";
 import {
   AssociatedPrCell,
   ModelsTab,
   OverviewTab,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
+import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import * as utilsModule from "#/utils/utils";
 
@@ -182,6 +184,43 @@ describe("AssociatedPrCell", () => {
       "https://gitlab.acme.dev/platform/api/-/merge_requests/7",
     );
   });
+
+  it.each(["contoso", "https://dev.azure.com/contoso"])(
+    "links Azure DevOps PRs to dev.azure.com when the viewer's Azure DevOps organization is %s",
+    async (azureDevOpsOrganization) => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          provider_default_hosts: { azure_devops: "dev.azure.com" },
+        }),
+      );
+      const getSettingsSpy = vi
+        .spyOn(SettingsService, "getSettings")
+        .mockResolvedValue({
+          ...MOCK_DEFAULT_USER_SETTINGS,
+          provider_tokens_set: { azure_devops: azureDevOpsOrganization },
+        });
+
+      renderWithProviders(
+        <AssociatedPrCell
+          conversation={{
+            pr_number: [42],
+            selected_repository: "contoso/proj/repo",
+            git_provider: "azure_devops",
+          }}
+        />,
+      );
+
+      await waitFor(() => expect(getSettingsSpy).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(
+          screen.getByRole("link", { name: "contoso/proj/repo #42" }),
+        ).toHaveAttribute(
+          "href",
+          "https://dev.azure.com/contoso/proj/_git/repo/pullrequest/42",
+        ),
+      );
+    },
+  );
 
   it("shows the PR number as plain text when the repository is unknown", () => {
     renderWithProviders(

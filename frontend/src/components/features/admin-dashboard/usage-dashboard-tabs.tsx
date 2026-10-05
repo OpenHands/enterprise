@@ -7,6 +7,7 @@ import {
   SearchIcon,
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
+import { useConfig } from "#/hooks/query/use-config";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import { useProviderHost } from "#/hooks/use-provider-host";
 import { Provider } from "#/types/settings";
@@ -261,7 +262,13 @@ export function AssociatedPrCell({
 }) {
   const repository = conversation.selected_repository;
   const provider = conversation.git_provider;
-  const host = useProviderHost(provider);
+  const providerHost = useProviderHost(provider);
+  const { data: config } = useConfig();
+  // The Azure DevOps token field stores the organization, not a host.
+  const host =
+    provider === "azure_devops"
+      ? config?.provider_default_hosts?.azure_devops
+      : providerHost;
   const prNumbers = conversation.pr_number ?? [];
 
   if (prNumbers.length === 0) return "-";
