@@ -221,7 +221,7 @@ async def test_keycloak_callback_user_not_authorized(
 async def test_keycloak_callback_refuses_a_disabled_user(
     mock_request, mock_background_tasks, create_keycloak_user_info
 ):
-    """A disabled user is refused at sign-in, before any login side effects."""
+    """A disabled user is sent to the login page, before any login side effects."""
     # Arrange
     with (
         patch('server.routes.auth.token_manager') as mock_token_manager,
@@ -245,18 +245,22 @@ async def test_keycloak_callback_refuses_a_disabled_user(
         mock_user_store.record_login = AsyncMock()
 
         # Act
-        with pytest.raises(HTTPException) as exc_info:
-            await keycloak_callback(
-                code='test_code',
-                state='test_state',
-                request=mock_request,
-                background_tasks=mock_background_tasks,
-                user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
-            )
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
+        )
 
     # Assert
-    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
-    assert exc_info.value.detail == 'account_disabled'
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == status.HTTP_302_FOUND
+    assert (
+        result.headers['location']
+        == 'http://localhost:8000/login?account_disabled=true'
+    )
+    assert 'set-cookie' not in result.headers
     mock_user_store.record_login.assert_not_called()
 
 

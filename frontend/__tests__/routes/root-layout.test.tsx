@@ -1,13 +1,23 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub, useSearchParams } from "react-router";
+import { http, HttpResponse } from "msw";
 import MainApp from "#/routes/root-layout";
 import OptionService from "#/api/option-service/option-service.api";
 import AuthService from "#/api/auth-service/auth-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { onboardingService } from "#/api/onboarding-service/onboarding-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
+import {
+  MOCK_PERSONAL_ORG,
+  MOCK_TEAM_ORG_ACME,
+  MOCK_TEAM_ORG_BETA,
+} from "#/mocks/org-handlers";
+import { server } from "#/mocks/node";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
 vi.mock("#/hooks/use-github-auth-url", () => ({
   useGitHubAuthUrl: () => "https://github.com/oauth/authorize",
@@ -668,6 +678,86 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
       expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Suspended organization", () => {
+    // The server refuses org-scoped requests while its current org is ACME,
+    // the way it does for a suspended org or membership.
+    let serverCurrentOrgId: string;
+
+    const refuseAcmeSettings = (detail: string) => {
+      serverCurrentOrgId = MOCK_TEAM_ORG_ACME.id;
+      vi.mocked(SettingsService.getSettings).mockRestore();
+      server.use(
+        http.get("/api/v1/settings", () =>
+          serverCurrentOrgId === MOCK_TEAM_ORG_ACME.id
+            ? HttpResponse.json({ detail }, { status: 403 })
+            : HttpResponse.json(MOCK_DEFAULT_USER_SETTINGS),
+        ),
+        http.post("/api/organizations/:orgId/switch", ({ params }) => {
+          serverCurrentOrgId = params.orgId as string;
+          return HttpResponse.json(MOCK_TEAM_ORG_BETA);
+        }),
+      );
+    };
+
+    beforeEach(() => {
+      useSelectedOrganizationStore.setState({ organizationId: null });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME, MOCK_TEAM_ORG_BETA],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+    });
+
+    it("should block a suspended organization and offer the user's other organizations", async () => {
+      // Arrange
+      refuseAcmeSettings("Organization is suspended");
+
+      // Act
+      renderMainApp();
+
+      // Assert
+      const modal = await screen.findByTestId("suspended-organization-modal");
+      expect(modal).toHaveTextContent("ORG$ORGANIZATION_SUSPENDED");
+      expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: MOCK_TEAM_ORG_BETA.name }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: MOCK_TEAM_ORG_ACME.name }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should restore the app after the user switches to another organization", async () => {
+      // Arrange
+      refuseAcmeSettings("Organization is suspended");
+      const user = userEvent.setup();
+      renderMainApp();
+      const betaButton = await screen.findByRole("button", {
+        name: MOCK_TEAM_ORG_BETA.name,
+      });
+
+      // Act
+      await user.click(betaButton);
+
+      // Assert
+      expect(await screen.findByTestId("outlet-content")).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("suspended-organization-modal"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should explain a suspended membership", async () => {
+      // Arrange
+      refuseAcmeSettings("User membership is suspended");
+
+      // Act
+      renderMainApp();
+
+      // Assert
+      const modal = await screen.findByTestId("suspended-organization-modal");
+      expect(modal).toHaveTextContent("ORG$MEMBERSHIP_SUSPENDED");
     });
   });
 });

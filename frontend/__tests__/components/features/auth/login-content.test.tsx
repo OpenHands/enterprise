@@ -279,6 +279,23 @@ describe("LoginContent", () => {
     expect(screen.getByText("AUTH$DUPLICATE_EMAIL_ERROR")).toBeInTheDocument();
   });
 
+  it("should explain a sign-in refused because the account is suspended", () => {
+    // Arrange & Act
+    render(
+      <MemoryRouter>
+        <LoginContent
+          githubAuthUrl="https://github.com/oauth/authorize"
+          appMode="saas"
+          providersConfigured={["github"]}
+          accountDisabled
+        />
+      </MemoryRouter>,
+    );
+
+    // Assert
+    expect(screen.getByText("AUTH$ACCOUNT_DISABLED")).toBeInTheDocument();
+  });
+
   it("should display Terms and Privacy notice", () => {
     render(
       <MemoryRouter>

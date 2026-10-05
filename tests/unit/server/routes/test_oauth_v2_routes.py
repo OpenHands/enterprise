@@ -458,7 +458,7 @@ def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
 
 
 def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
-    """A disabled user is refused at sign-in: no tokens stored, no cookie."""
+    """A disabled user is sent to the login page: no tokens stored, no cookie."""
     # Arrange
     provider = _fake_provider()
     token_response = {
@@ -516,8 +516,8 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
         )
 
     # Assert
-    assert response.status_code == 401
-    assert response.json()['detail'] == 'account_disabled'
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?account_disabled=true')
     assert 'openhands_auth' not in response.cookies
     store_tokens.assert_not_awaited()
 
