@@ -1086,10 +1086,11 @@ class UserStore:
     async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
         """Revoke the instance-level super-admin role from a user.
 
-        Clears ``user.role_id``. Refuses to remove the **last** remaining
+        Clears ``user.role_id``. Refuses to remove the **last** enabled
         super admin so an installation can never be left with no instance
-        administrator (this also covers self-removal: a super admin may
-        demote themselves as long as another super admin still exists).
+        administrator who can sign in (this also covers self-removal: a super
+        admin may demote themselves as long as another enabled super admin
+        still exists).
 
         Concurrency: the whole set of current super admins is selected
         ``FOR UPDATE`` before the count/clear, so simultaneous revokes
@@ -1122,7 +1123,10 @@ class UserStore:
                     else SuperAdminRevokeResult.NOT_SUPER_ADMIN
                 )
 
-            if len(super_admins) <= 1:
+            if not any(
+                admin.id != target_uuid and not admin.is_disabled
+                for admin in super_admins
+            ):
                 logger.warning(
                     'user_store:revoke_super_admin:refused_last_super_admin',
                     extra={'user_id': user_id},
@@ -1136,6 +1140,55 @@ class UserStore:
                 extra={'user_id': user_id},
             )
             return SuperAdminRevokeResult.REVOKED
+
+    @staticmethod
+    async def is_user_disabled(user_id: str) -> bool:
+        """Whether a Super Admin has disabled the user.
+
+        A user without a row yet, such as on a first sign-in, is not disabled.
+        """
+        async with a_session_maker() as session:
+            disabled = await session.scalar(
+                select(User.is_disabled).filter(User.id == uuid.UUID(user_id))
+            )
+            return bool(disabled)
+
+    @staticmethod
+    async def set_user_disabled(user_id: UUID, disabled: bool) -> bool:
+        """Disable or re-enable a user's sign-in, sessions and API keys.
+
+        Returns ``False``, changing nothing, when disabling the last enabled
+        super admin. The super admins are selected ``FOR UPDATE`` as in
+        :meth:`revoke_super_admin`, so two admins disabling each other
+        serialize and cannot leave the instance without one.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.role_id == admin_role_id).with_for_update()
+            )
+            super_admins = list(result.scalars().all())
+
+            is_super_admin = any(admin.id == user_id for admin in super_admins)
+            another_enabled = any(
+                admin.id != user_id and not admin.is_disabled for admin in super_admins
+            )
+            if disabled and is_super_admin and not another_enabled:
+                logger.warning(
+                    'user_store:set_user_disabled:refused_last_super_admin',
+                    extra={'user_id': str(user_id)},
+                )
+                return False
+
+            await session.execute(
+                sa.update(User).where(User.id == user_id).values(is_disabled=disabled)
+            )
+            await session.commit()
+            logger.info(
+                'user_store:set_user_disabled',
+                extra={'user_id': str(user_id), 'disabled': disabled},
+            )
+            return True
 
     @staticmethod
     async def delete_user(user_id: UUID) -> None:

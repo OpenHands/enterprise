@@ -81,6 +81,11 @@ class User(Base):
     allow_match_by_email: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default='false'
     )
+    # Set by a Super Admin to block sign-in, sessions and API keys, whatever
+    # organizations the user belongs to. Clearing it restores access.
+    is_disabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

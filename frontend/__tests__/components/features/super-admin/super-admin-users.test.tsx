@@ -117,6 +117,36 @@ describe("Super Admin Users page", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("super-admin-user-org-3")).toBeInTheDocument();
   });
+
+  it("shows the account status, not the status of the user's memberships", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+      {
+        user_id: "7",
+        email: "sam@beta.llc",
+        name: "sam",
+        status: "active",
+        memberships: [
+          {
+            org_id: "3",
+            org_name: "Beta LLC",
+            role: "member",
+            status: "inactive",
+          },
+        ],
+      },
+    ]);
+
+    // Act
+    await renderUsersPage();
+
+    // Assert
+    expect(await screen.findByText("active")).toBeInTheDocument();
+    expect(screen.queryByText("inactive")).not.toBeInTheDocument();
+  });
 });
 
 describe("Super Admin user memberships", () => {
