@@ -37,6 +37,9 @@ import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
 import { SetupTestHarnessPanel } from "#/components/features/setup/setup-test-harness-panel";
 import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
+import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { useSuspendedOrganizationStore } from "#/stores/suspended-organization-store";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -92,6 +95,11 @@ export default function MainApp() {
     isLoading: isAuthLoading,
     isError: isAuthError,
   } = useIsAuthed();
+
+  const selectedOrganizationId = useSelectedOrganizationStore(
+    (state) => state.organizationId,
+  );
+  const suspension = useSuspendedOrganizationStore((state) => state.suspension);
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
@@ -271,6 +279,20 @@ export default function MainApp() {
     return (
       <div className="min-h-screen bg-base">
         <ReauthModal />
+      </div>
+    );
+  }
+
+  // The server refused the selected organization (suspended org or
+  // membership). Unmount the app tree for the same reason as above; switching
+  // to another organization changes the selection and lifts the block.
+  if (suspension && suspension.orgId === selectedOrganizationId) {
+    return (
+      <div className="min-h-screen bg-base">
+        <SuspendedOrganizationModal
+          organizationId={suspension.orgId}
+          reason={suspension.reason}
+        />
       </div>
     );
   }

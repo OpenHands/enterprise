@@ -339,6 +339,12 @@ async def keycloak_callback(
                 logger.warning(
                     f'Failed to clean up orphaned Keycloak user {user_info.sub}: {e}'
                 )
+        # A disabled user lands here from a browser sign-in, so send them to
+        # the login page to read why instead of a raw JSON 401.
+        if authorization.error_detail == 'account_disabled':
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
         # Return unauthorized
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
