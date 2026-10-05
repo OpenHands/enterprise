@@ -54,8 +54,8 @@ const ZH_CN: Record<string, string> = {
   "Add an LLM starts open": "添加语言模型默认展开",
   "The pinned step stays open while another step is hovered":
     "悬停另一步时，钉住的步骤保持展开",
-  "Models are checkboxes in a dropdown, including All":
-    "模型是下拉框里的复选框，包含全部",
+  "Providers and models come from the server; pick one model":
+    "提供方和模型来自服务器，只选一个模型",
   "Skip dismisses the modal": "跳过会关掉对话框",
   "Skip must clear starterModalPending. Hovering another step must not collapse the pinned one. The catalog forceOpen path must not clear a real user's nux.":
     "跳过必须清掉 starterModalPending。悬停另一步不能收起钉住的步骤。目录的 forceOpen 路径不能清掉真实用户的引导状态。",
@@ -388,8 +388,8 @@ const ZH_TW: Record<string, string> = {
   "Add an LLM starts open": "新增語言模型預設展開",
   "The pinned step stays open while another step is hovered":
     "懸停另一步時，釘住的步驟保持展開",
-  "Models are checkboxes in a dropdown, including All":
-    "模型是下拉框裡的核取方塊，包含全部",
+  "Providers and models come from the server; pick one model":
+    "提供方和模型來自伺服器，只選一個模型",
   "Skip dismisses the modal": "跳過會關掉對話框",
   "Skip must clear starterModalPending. Hovering another step must not collapse the pinned one. The catalog forceOpen path must not clear a real user's nux.":
     "跳過必須清掉 starterModalPending。懸停另一步不能收起釘住的步驟。目錄的 forceOpen 路徑不能清掉真實使用者的引導狀態。",

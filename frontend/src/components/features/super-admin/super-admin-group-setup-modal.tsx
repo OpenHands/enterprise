@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
+import { AxiosError } from "axios";
 import {
   Bot,
   ChevronDown,
@@ -10,13 +11,25 @@ import { useTranslation } from "react-i18next";
 import { InteractiveOpenHandsIcon } from "#/components/features/setup/interactive-openhands-icon";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { PixelField } from "#/components/features/super-admin/pixel-field";
-import { StarterLlmFields } from "#/components/features/super-admin/starter-llm-fields";
+import {
+  StarterLlmFields,
+  type StarterLlmSelection,
+} from "#/components/features/super-admin/starter-llm-fields";
+import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
+import { useSelectedOrganizationId } from "#/context/use-selected-organization";
+import {
+  useActivateOrgLlmProfile,
+  useSaveOrgLlmProfile,
+} from "#/hooks/mutation/use-org-llm-profile-mutations";
+import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { I18nKey } from "#/i18n/declaration";
+import { deriveProfileNameFromModel } from "#/utils/derive-profile-name";
 import {
   clearSuperAdminNuxStarterModal,
   readSuperAdminNux,
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { cn } from "#/utils/utils";
 import "#/routes/super-admin-install-welcome.css";
 
@@ -64,10 +77,61 @@ export function SuperAdminGroupSetupModal({
     readSuperAdminNux,
     readSuperAdminNux,
   );
+  const [llm, setLlm] = useState<StarterLlmSelection>({
+    provider: null,
+    model: null,
+    apiKey: "",
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { organizationId } = useSelectedOrganizationId();
+  const { mutateAsync: saveSettings } = useSaveSettings("org");
+  const { mutateAsync: saveProfile } = useSaveOrgLlmProfile(organizationId);
+  const { mutateAsync: activateProfile } =
+    useActivateOrgLlmProfile(organizationId);
 
   if (!forceOpen && !nux.starterModalPending) {
     return null;
   }
+
+  // Same calls as the org LLM form (llm-settings.tsx): save the org defaults,
+  // save a profile that copies them, then make that profile active.
+  const saveLlm = async () => {
+    const model = `${llm.provider}/${llm.model}`;
+    const name = deriveProfileNameFromModel(model);
+    if (!name) {
+      return;
+    }
+    const apiKey = llm.apiKey.trim();
+    setError(null);
+    setIsSaving(true);
+    try {
+      await saveSettings({
+        agent_settings_diff: {
+          // A null base_url lets the server fill in the provider's default.
+          llm: {
+            model,
+            base_url: null,
+            ...(apiKey ? { api_key: apiKey } : {}),
+          },
+        },
+      });
+      await saveProfile({
+        name,
+        request: { include_secrets: true, preserve_existing_api_key: !apiKey },
+      });
+      await activateProfile(name);
+    } catch (saveError) {
+      setError(
+        retrieveAxiosErrorMessage(saveError as AxiosError) ||
+          t(I18nKey.ERROR$GENERIC),
+      );
+      setIsSaving(false);
+      return;
+    }
+    setSuperAdminSetupStepComplete("add-llm", true);
+    clearSuperAdminNuxStarterModal();
+  };
 
   const title = t(I18nKey.SA_NUX$STARTER_TITLE);
   const welcomeLine = t(I18nKey.SA_NUX$STARTER_LETS_GO);
@@ -88,7 +152,9 @@ export function SuperAdminGroupSetupModal({
       secondaryButtonText={t(I18nKey.SA_NUX$STARTER_SKIP)}
       secondaryButtonTestId="sa-nux-starter-skip"
       secondaryButtonClassName="bg-transparent hover:bg-transparent hover:border-white"
-      onPrimaryClick={forceOpen ? undefined : clearSuperAdminNuxStarterModal}
+      isLoading={isSaving}
+      isPrimaryDisabled={!llm.model || !organizationId}
+      onPrimaryClick={forceOpen ? undefined : saveLlm}
       onClose={forceOpen ? () => undefined : clearSuperAdminNuxStarterModal}
     >
       <div
@@ -248,7 +314,9 @@ export function SuperAdminGroupSetupModal({
                     >
                       {t(step.detail)}
                     </div>
-                    {step.id === "llm" ? <StarterLlmFields /> : null}
+                    {step.id === "llm" ? (
+                      <StarterLlmFields value={llm} onChange={setLlm} />
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -256,6 +324,11 @@ export function SuperAdminGroupSetupModal({
           );
         })}
       </ol>
+      {error ? (
+        <p className="text-sm text-red-400" role="alert">
+          {error}
+        </p>
+      ) : null}
     </OrgModal>
   );
 }

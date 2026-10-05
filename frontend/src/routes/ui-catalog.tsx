@@ -226,7 +226,7 @@ const GROUPS: CatalogGroup[] = [
         [
           "Add an LLM starts open",
           "The pinned step stays open while another step is hovered",
-          "Models are checkboxes in a dropdown, including All",
+          "Providers and models come from the server; pick one model",
           "Skip dismisses the modal",
         ],
         "Skip must clear starterModalPending. Hovering another step must not collapse the pinned one. The catalog forceOpen path must not clear a real user's nux.",
