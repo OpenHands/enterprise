@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, ClassVar
@@ -60,6 +61,8 @@ from openhands.app_server.utils.docker_utils import (
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
+STOP_TIMEOUT_SECONDS = 10
+MAX_PORT_ATTEMPTS = 100
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
 # managed containers so that one with no row can be found.
@@ -160,13 +163,32 @@ class DockerSandboxService(ManagedSandboxService):
         except APIError as exc:
             raise SandboxError(f'Could not read container {sandbox_id}: {exc}') from exc
 
-    def _find_unused_port(self) -> int:
-        """Find an unused port on the host machine."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-        return port
+    def _reserved_host_ports(self) -> set[int]:
+        """The host ports that managed containers bind, in any state.
+
+        A stopped container binds its ports again when it starts, but the host
+        sees them as free while it is stopped.
+        """
+        ports: set[int] = set()
+        for container in self._managed_containers_by_name().values():
+            host_config = container.attrs.get('HostConfig') or {}  # type: ignore[attr-defined]
+            for bindings in (host_config.get('PortBindings') or {}).values():
+                for binding in bindings or []:
+                    # Empty when Docker picked the port itself.
+                    if binding.get('HostPort'):
+                        ports.add(int(binding['HostPort']))
+        return ports
+
+    def _find_unused_port(self, reserved: Collection[int] = ()) -> int:
+        """Find a port that is free on the host and not in ``reserved``."""
+        for _ in range(MAX_PORT_ATTEMPTS):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                s.listen(1)
+                port = s.getsockname()[1]
+            if port not in reserved:
+                return port
+        raise SandboxError('Could not find a free host port')
 
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
@@ -499,8 +521,9 @@ class DockerSandboxService(ManagedSandboxService):
         else:
             # Bridge network mode: map container ports to random host ports
             port_mappings = {}
+            reserved_ports = self._reserved_host_ports()
             for exposed_port in self.exposed_ports:
-                host_port = self._find_unused_port()
+                host_port = self._find_unused_port(reserved_ports)
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
@@ -604,7 +627,13 @@ class DockerSandboxService(ManagedSandboxService):
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox
     ) -> ProviderOutcome:
-        """Freeze the sandbox's container.
+        """Stop the sandbox's container.
+
+        Stopping frees the sandbox's memory, where freezing it would not. The
+        container keeps its filesystem, its port bindings and its environment,
+        and ``_resume_at_provider`` starts it again. Processes the agent left
+        running do not survive, just as on the k8s backend, where a pause
+        deletes the pod.
 
         The key hash is kept. The container has the same key after resume, so
         clearing the hash would not revoke anything.
@@ -613,12 +642,15 @@ class DockerSandboxService(ManagedSandboxService):
         if container is None:
             return ProviderOutcome.FAILED
         try:
-            if container.status in ('paused', 'exited'):
+            if container.status == 'exited':
                 return ProviderOutcome.ALREADY_DONE
-            if container.status != 'running':
+            # A frozen container is one an earlier release paused.
+            if container.status not in ('running', 'paused'):
                 # Starting or dead: there is nothing to pause.
                 return ProviderOutcome.SKIPPED
-            container.pause()
+            # The agent server gets SIGTERM, then SIGKILL after the timeout.
+            # The wait runs off the event loop.
+            await asyncio.to_thread(container.stop, timeout=STOP_TIMEOUT_SECONDS)
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
@@ -634,7 +666,7 @@ class DockerSandboxService(ManagedSandboxService):
             return
         try:
             if container.status in ['running', 'paused']:
-                container.stop(timeout=10)
+                container.stop(timeout=STOP_TIMEOUT_SECONDS)
             container.remove()
         except NotFound:
             # Removed under us.
