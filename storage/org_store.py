@@ -412,8 +412,10 @@ class OrgStore:
         # Public OpenHands provider model with no explicit (or a managed-host)
         # base_url is managed.
         if is_openhands_model(model):
-            return normalized_base_url is None or (
-                'all-hands.dev' in normalized_base_url.lower()
+            return (
+                normalized_base_url is None
+                or 'all-hands.dev' in normalized_base_url.lower()
+                or _is_in_cluster_url(normalized_base_url)
             )
         # The bundled proxy's route; its URL env is gone once LiteLLM is off.
         if model.startswith('litellm_proxy/'):
