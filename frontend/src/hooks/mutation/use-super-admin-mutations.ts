@@ -156,6 +156,9 @@ export const useRemoveSuperAdminUser = () => {
       queryClient.invalidateQueries({
         queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
       });
+      queryClient.invalidateQueries({
+        queryKey: SUPER_ADMIN_QUERY_KEYS.admins,
+      });
     },
     onError: (error) => {
       displayErrorToast(

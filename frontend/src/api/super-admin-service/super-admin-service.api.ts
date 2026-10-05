@@ -157,7 +157,6 @@ export const superAdminService = {
     const { data } = await openHands.delete<{
       message: string;
       user_id: string;
-      removed_org_ids: string[];
     }>(`/api/admin/users/${userId}`);
     return data;
   },

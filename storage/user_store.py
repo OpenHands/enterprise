@@ -1138,6 +1138,76 @@ class UserStore:
             return SuperAdminRevokeResult.REVOKED
 
     @staticmethod
+    async def delete_user(user_id: UUID) -> None:
+        """Delete a user and the rows they own in every organization.
+
+        Runs in one transaction. Their conversations, credentials, personal
+        secrets, quota and budget rows and legacy settings are deleted. Git
+        claims and invitations they made in a team org pass to another owner
+        of that org, so the team keeps them. The personal workspace
+        (``org.id == user.id``) is left without members; delete it with
+        ``OrgStore.delete_org_cascade``. LiteLLM and Keycloak are not
+        touched, and callers are responsible for the last-owner check.
+
+        A table that adds a foreign key to ``user.id`` must be cleared here,
+        or the final ``DELETE`` fails.
+        """
+        params = {'user_id': str(user_id)}
+        async with a_session_maker() as session:
+            for table, column in (
+                ('org_git_claim', 'claimed_by'),
+                ('org_invitation', 'inviter_id'),
+            ):
+                await session.execute(
+                    text(f"""
+                        UPDATE {table}
+                        SET {column} = other_owner.user_id
+                        FROM (
+                            SELECT DISTINCT ON (om.org_id) om.org_id, om.user_id
+                            FROM org_member om
+                            JOIN role r ON r.id = om.role_id
+                            WHERE r.name = 'owner' AND om.user_id != :user_id
+                            ORDER BY om.org_id, om.user_id
+                        ) AS other_owner
+                        WHERE {table}.org_id = other_owner.org_id
+                        AND {table}.{column} = :user_id
+                    """),
+                    params,
+                )
+            for statement in (
+                """
+                DELETE FROM conversation_metadata
+                WHERE conversation_id IN (
+                    SELECT conversation_id FROM conversation_metadata_saas
+                    WHERE user_id = :user_id
+                )
+                """,
+                'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
+                'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
+                'DELETE FROM quota_increase_request WHERE user_id = :user_id',
+                'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
+                'DELETE FROM api_keys WHERE user_id = :user_id',
+                'DELETE FROM auth_tokens WHERE keycloak_user_id = :user_id',
+                'DELETE FROM offline_tokens WHERE user_id = :user_id',
+                'DELETE FROM device_codes WHERE keycloak_user_id = :user_id',
+                'DELETE FROM custom_secrets WHERE keycloak_user_id = :user_id AND is_org_shared = false',
+                # A leftover legacy settings row re-creates the user on lookup.
+                'DELETE FROM user_settings WHERE keycloak_user_id = :user_id',
+                'UPDATE instance_settings SET setup_user_id = NULL WHERE setup_user_id = :user_id',
+                'UPDATE org_invitation SET accepted_by_user_id = NULL WHERE accepted_by_user_id = :user_id',
+                # Claims and invitations left in orgs with no other owner.
+                'DELETE FROM org_git_claim WHERE claimed_by = :user_id',
+                'DELETE FROM org_invitation WHERE inviter_id = :user_id',
+                'DELETE FROM org_member WHERE user_id = :user_id',
+                'DELETE FROM "user" WHERE id = :user_id',
+            ):
+                await session.execute(text(statement), params)
+            await session.commit()
+        logger.info('user_store:delete_user:deleted', extra={'user_id': str(user_id)})
+
+    @staticmethod
     async def get_first_owner_in_org(org_id: UUID) -> Optional[User]:
         """Get the first owner in an organization who accepted the Terms of Service.
 
