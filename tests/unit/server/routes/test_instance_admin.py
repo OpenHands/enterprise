@@ -232,23 +232,24 @@ async def test_delete_organization_rejects_personal_workspace(
 
 
 @pytest.mark.asyncio
-async def test_update_organization_status_success(mock_app, grant_manage_super_admins):
+@pytest.mark.parametrize('org_status', ['suspended', 'active'])
+async def test_update_organization_status_success(
+    org_status, mock_app, grant_manage_super_admins
+):
     org_id = uuid.uuid4()
     org = MagicMock()
     org.id = org_id
     org.name = 'Acme'
     org.contact_email = 'ops@acme.example'
     org.contact_name = 'Ops'
-    org.status = 'suspended'
+    org.status = org_status
+    set_status = AsyncMock(return_value=org)
     with (
         patch(
             'server.routes.instance_admin._is_personal_workspace',
             AsyncMock(return_value=False),
         ),
-        patch(
-            'server.routes.instance_admin.OrgStore.set_org_status',
-            AsyncMock(return_value=org),
-        ),
+        patch('server.routes.instance_admin.OrgStore.set_org_status', set_status),
         patch(
             'server.routes.instance_admin.OrgMemberStore.get_org_members_count',
             AsyncMock(return_value=3),
@@ -257,11 +258,12 @@ async def test_update_organization_status_success(mock_app, grant_manage_super_a
         async with _client(mock_app) as client:
             resp = await client.patch(
                 f'/api/admin/organizations/{org_id}',
-                json={'status': 'suspended'},
+                json={'status': org_status},
             )
 
     assert resp.status_code == 200
-    assert resp.json()['status'] == 'suspended'
+    assert resp.json()['status'] == org_status
+    set_status.assert_awaited_once_with(org_id, org_status)
 
 
 @pytest.mark.asyncio
@@ -287,14 +289,83 @@ async def test_update_organization_status_rejects_suspending_personal_workspace(
     set_status.assert_not_awaited()
 
 
+async def _add_personal_workspace(async_session_maker) -> uuid.UUID:
+    """A user and the personal workspace that shares their id."""
+    user_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(Org(id=user_id, name=f'user_{user_id}_org'))
+        session.add(User(id=user_id, current_org_id=user_id))
+        await session.commit()
+    return user_id
+
+
 @pytest.mark.asyncio
-async def test_update_user_status_success(mock_app, grant_manage_super_admins):
+@pytest.mark.parametrize(
+    ('target', 'expected_status', 'expected_updates'),
+    [
+        pytest.param('personal', 403, 0, id='personal-workspace'),
+        pytest.param('team', 200, 1, id='team-org'),
+    ],
+)
+async def test_suspend_organization_tells_personal_workspaces_from_team_orgs(
+    target,
+    expected_status,
+    expected_updates,
+    mock_app,
+    grant_manage_super_admins,
+    instance_settings_db,
+    async_session_maker,
+):
+    # Arrange
+    org_ids = {
+        'personal': await _add_personal_workspace(async_session_maker),
+        'team': await _add_org(async_session_maker),
+    }
+    org_id = org_ids[target]
+    org = MagicMock()
+    org.id = org_id
+    org.name = 'Acme'
+    org.contact_email = None
+    org.contact_name = None
+    org.status = 'suspended'
+    set_status = AsyncMock(return_value=org)
+
+    # Act
+    with (
+        patch('server.routes.instance_admin.OrgStore.set_org_status', set_status),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_members_count',
+            AsyncMock(return_value=1),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/organizations/{org_id}',
+                json={'status': 'suspended'},
+            )
+
+    # Assert
+    assert resp.status_code == expected_status
+    assert set_status.await_count == expected_updates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('user_status', 'disabled'),
+    [
+        pytest.param('inactive', True, id='suspend'),
+        pytest.param('active', False, id='re-enable'),
+    ],
+)
+async def test_update_user_status_success(
+    user_status, disabled, mock_app, grant_manage_super_admins
+):
     user_id = uuid.uuid4()
     user = MagicMock()
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
-    user.is_disabled = False
+    user.is_disabled = not disabled
 
     org = MagicMock()
     org.id = uuid.uuid4()
@@ -327,12 +398,12 @@ async def test_update_user_status_success(mock_app, grant_manage_super_admins):
         async with _client(mock_app) as client:
             resp = await client.patch(
                 f'/api/admin/users/{user_id}',
-                json={'status': 'inactive'},
+                json={'status': user_status},
             )
 
     assert resp.status_code == 200
-    assert resp.json()['status'] == 'inactive'
-    set_disabled.assert_awaited_once_with(user_id, True)
+    assert resp.json()['status'] == user_status
+    set_disabled.assert_awaited_once_with(user_id, disabled)
 
 
 @pytest.mark.asyncio
@@ -398,10 +469,11 @@ def _delete_user_patches(
     role_name: str = 'member',
     is_last_owner: bool = False,
     revoke_result: SuperAdminRevokeResult = SuperAdminRevokeResult.NOT_SUPER_ADMIN,
+    org_id: uuid.UUID | None = None,
 ):
     """Patch the delete-user route's stores; yields its cleanup steps, in order."""
     org = MagicMock()
-    org.id = uuid.uuid4()
+    org.id = org_id or uuid.uuid4()
     org.name = 'Acme'
     member = MagicMock()
     member.role_id = 1
@@ -479,6 +551,25 @@ async def test_delete_user_blocks_last_owner(mock_app, grant_manage_super_admins
 
 
 @pytest.mark.asyncio
+async def test_delete_user_is_not_blocked_by_owning_their_personal_workspace(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+
+    # Act
+    with _delete_user_patches(
+        _target_user(user_id), role_name='owner', is_last_owner=True, org_id=user_id
+    ) as steps:
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{user_id}')
+
+    # Assert
+    assert resp.status_code == 200
+    steps.delete_user.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
 async def test_delete_user_rejects_self(mock_app, grant_manage_super_admins):
     caller_id = uuid.UUID(CALLER_USER_ID)
 
@@ -549,8 +640,12 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
 
 
 @pytest.mark.asyncio
-async def test_update_user_groups_suspends_selected_orgs(
-    mock_app, grant_manage_super_admins
+@pytest.mark.parametrize(
+    ('action', 'membership_status'),
+    [('suspend', 'inactive'), ('resume', 'active')],
+)
+async def test_update_user_groups_suspends_or_resumes_selected_orgs(
+    action, membership_status, mock_app, grant_manage_super_admins
 ):
     user_id = uuid.uuid4()
     user = MagicMock()
@@ -563,7 +658,7 @@ async def test_update_user_groups_suspends_selected_orgs(
     org.name = 'Acme'
     member = MagicMock()
     member.role_id = 1
-    member.status = 'inactive'
+    member.status = membership_status
     role = MagicMock()
     role.name = 'member'
     set_status = AsyncMock(return_value=1)
@@ -589,11 +684,11 @@ async def test_update_user_groups_suspends_selected_orgs(
         async with _client(mock_app) as client:
             resp = await client.post(
                 f'/api/admin/users/{user_id}/groups',
-                json={'action': 'suspend', 'org_ids': [str(org.id)]},
+                json={'action': action, 'org_ids': [str(org.id)]},
             )
 
     assert resp.status_code == 200
-    set_status.assert_awaited_once_with(user_id, 'inactive', [org.id])
+    set_status.assert_awaited_once_with(user_id, membership_status, [org.id])
 
 
 @pytest.mark.asyncio
@@ -738,6 +833,232 @@ async def test_update_user_groups_add_rejects_another_users_personal_workspace(
 
     assert resp.status_code == 403
     add_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_creates_membership_at_chosen_role(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    role = MagicMock()
+    role.id = 2
+    get_role_by_name = AsyncMock(return_value=role)
+    settings = MagicMock()
+    settings.agent_settings.llm.api_key = 'sk-team-key'
+    create_integration = AsyncMock(return_value=settings)
+    add_member = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            get_role_by_name,
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.create_litellm_integration',
+            create_integration,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.add_user_to_org', add_member
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'admin'},
+            )
+
+    # Assert
+    assert resp.status_code == 200
+    get_role_by_name.assert_awaited_once_with('admin')
+    create_integration.assert_awaited_once_with(org_id, str(user_id))
+    add_member.assert_awaited_once_with(
+        org_id=org_id,
+        user_id=user_id,
+        role_id=2,
+        llm_api_key='sk-team-key',
+        status='active',
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_reactivates_a_suspended_membership(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    role = MagicMock()
+    role.id = 2
+    suspended = MagicMock()
+    suspended.status = 'inactive'
+    update_role = AsyncMock()
+    add_member = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=suspended),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.update_user_role_in_org',
+            update_role,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.add_user_to_org', add_member
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'admin'},
+            )
+
+    # Assert
+    assert resp.status_code == 200
+    update_role.assert_awaited_once_with(org_id, user_id, 2, status='active')
+    add_member.assert_not_awaited()
+
+
+@contextmanager
+def _set_role_patches(user, current_role_name: str, is_last_owner: bool = False):
+    """Patch the set_role path for one membership in Acme; yields the role update."""
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 1
+    member.status = 'active'
+    current_role = MagicMock()
+    current_role.name = current_role_name
+    new_role = MagicMock()
+    new_role.id = 2
+    update_role = AsyncMock()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=new_role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=current_role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberService._is_last_owner',
+            AsyncMock(return_value=is_last_owner),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=member),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.update_user_role_in_org',
+            update_role,
+        ),
+    ):
+        yield org.id, update_role
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_set_role_changes_the_existing_membership(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+
+    # Act
+    with _set_role_patches(_target_user(user_id), current_role_name='member') as (
+        org_id,
+        update_role,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={'action': 'set_role', 'org_ids': [str(org_id)], 'role': 'admin'},
+            )
+
+    # Assert
+    assert resp.status_code == 200
+    update_role.assert_awaited_once_with(org_id, user_id, 2)
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_set_role_refuses_to_demote_the_last_owner(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+
+    # Act
+    with _set_role_patches(
+        _target_user(user_id), current_role_name='owner', is_last_owner=True
+    ) as (org_id, update_role):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/users/{user_id}/groups',
+                json={
+                    'action': 'set_role',
+                    'org_ids': [str(org_id)],
+                    'role': 'member',
+                },
+            )
+
+    # Assert
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'Cannot change role: last owner of Acme'
+    update_role.assert_not_awaited()
 
 
 @pytest.mark.asyncio

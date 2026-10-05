@@ -416,6 +416,22 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_super_admin is True
 
+    def test_enable_super_admin_true_from_structured_env(self):
+        """Structured web-client env can enable the Super Admin flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_super_admin is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""
