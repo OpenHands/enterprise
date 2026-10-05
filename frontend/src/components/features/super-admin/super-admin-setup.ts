@@ -1,8 +1,7 @@
-import { useSyncExternalStore } from "react";
+import type { SetupGuideSteps } from "#/api/super-admin-service/super-admin-service.api";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
-
-export const SUPER_ADMIN_SETUP_STORAGE_KEY = "oh-super-admin-setup";
+import { useSetupState } from "#/hooks/query/use-super-admin";
 
 export type SuperAdminSetupStepId =
   | "create-org"
@@ -12,11 +11,22 @@ export type SuperAdminSetupStepId =
   | "invite-users"
   | "optional-saml";
 
+/**
+ * What marks a step done: a server-derived flag from `guide_steps`,
+ * "guide-org" once the guide has its organization, or "optional" for a link
+ * that never counts toward progress.
+ */
+export type SuperAdminSetupStepCompletion =
+  | keyof SetupGuideSteps
+  | "guide-org"
+  | "optional";
+
 export interface SuperAdminSetupStep {
   id: SuperAdminSetupStepId;
   title: string;
   description: string;
   to: string;
+  completion: SuperAdminSetupStepCompletion;
 }
 
 /**
@@ -29,177 +39,92 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     title: "SUPER_ADMIN$SETUP_STEP_ORG",
     description: "SUPER_ADMIN$SETUP_STEP_ORG_HINT",
     to: SUPER_ADMIN_PATHS.organizations,
+    completion: "guide-org",
   },
   {
     id: "add-llm",
     title: "SUPER_ADMIN$SETUP_STEP_LLM",
     description: "SUPER_ADMIN$SETUP_STEP_LLM_HINT",
     to: "/settings/org-defaults",
+    completion: "org_llm",
   },
   {
     id: "add-integration",
     title: "SUPER_ADMIN$SETUP_STEP_INTEGRATION",
     description: "SUPER_ADMIN$SETUP_STEP_INTEGRATION_HINT",
-    to: "/settings/integrations",
+    to: "/settings/mcp",
+    completion: "mcp_server",
   },
   {
     id: "first-automation",
     title: "SUPER_ADMIN$SETUP_STEP_AUTOMATION",
     description: "SUPER_ADMIN$SETUP_STEP_AUTOMATION_HINT",
     to: "/automations",
+    completion: "automation",
   },
   {
     id: "invite-users",
     title: "SUPER_ADMIN$SETUP_STEP_INVITE",
     description: "SUPER_ADMIN$SETUP_STEP_INVITE_HINT",
     to: "/settings/org-members",
+    completion: "invite",
   },
   {
     id: "optional-saml",
     title: "SUPER_ADMIN$SETUP_STEP_SAML",
     description: "SUPER_ADMIN$SETUP_STEP_SAML_HINT",
     to: SUPER_ADMIN_PATHS.instance,
+    completion: "optional",
   },
 ];
 
-const DEFAULT_COMPLETED: SuperAdminSetupStepId[] = [];
+const REQUIRED_STEPS = SUPER_ADMIN_SETUP_STEPS.filter(
+  (step) => step.completion !== "optional",
+);
 
-interface StoredSetup {
-  completed: SuperAdminSetupStepId[];
-  visible: boolean;
-}
-
-const listeners = new Set<() => void>();
-
-function createSetupState(stored: StoredSetup) {
-  const completed = new Set(stored.completed);
-  const nextStep =
-    SUPER_ADMIN_SETUP_STEPS.find((step) => !completed.has(step.id)) ?? null;
-  return {
-    completedIds: stored.completed,
-    completed,
-    visible: stored.visible,
-    nextStep,
-    completedCount: stored.completed.length,
-    totalCount: SUPER_ADMIN_SETUP_STEPS.length,
-    progress:
-      SUPER_ADMIN_SETUP_STEPS.length === 0
-        ? 0
-        : stored.completed.length / SUPER_ADMIN_SETUP_STEPS.length,
-  };
-}
-
-function sanitizeCompleted(value: unknown): SuperAdminSetupStepId[] {
-  if (!Array.isArray(value)) {
-    return DEFAULT_COMPLETED;
+function isStepDone(
+  step: SuperAdminSetupStep,
+  guideSteps: SetupGuideSteps | null,
+): boolean {
+  if (!guideSteps || step.completion === "optional") {
+    return false;
   }
-  const validIds = new Set(SUPER_ADMIN_SETUP_STEPS.map((step) => step.id));
-  return value.filter(
-    (id): id is SuperAdminSetupStepId =>
-      typeof id === "string" && validIds.has(id as SuperAdminSetupStepId),
+  return step.completion === "guide-org" || guideSteps[step.completion];
+}
+
+/** Tell the guided tour and the guide that a step's action just succeeded. */
+export function notifySuperAdminSetupStep(stepId: SuperAdminSetupStepId) {
+  window.dispatchEvent(
+    new CustomEvent(SUPER_ADMIN_SETUP_STEP_EVENT, { detail: { id: stepId } }),
   );
 }
 
-function readStored(): StoredSetup {
-  if (typeof window === "undefined") {
-    return { completed: DEFAULT_COMPLETED, visible: true };
-  }
-  try {
-    const raw = window.localStorage.getItem(SUPER_ADMIN_SETUP_STORAGE_KEY);
-    if (!raw) {
-      return { completed: DEFAULT_COMPLETED, visible: true };
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    if (Array.isArray(parsed)) {
-      return { completed: sanitizeCompleted(parsed), visible: true };
-    }
-    if (parsed && typeof parsed === "object") {
-      const record = parsed as { completed?: unknown; visible?: unknown };
-      return {
-        completed: sanitizeCompleted(record.completed),
-        visible: record.visible !== false,
-      };
-    }
-    return { completed: DEFAULT_COMPLETED, visible: true };
-  } catch {
-    return { completed: DEFAULT_COMPLETED, visible: true };
-  }
-}
-
-let snapshot = createSetupState(readStored());
-
-function notify() {
-  snapshot = createSetupState(readStored());
-  listeners.forEach((listener) => listener());
-}
-
-function writeStored(next: StoredSetup) {
-  window.localStorage.setItem(
-    SUPER_ADMIN_SETUP_STORAGE_KEY,
-    JSON.stringify(next),
-  );
-  notify();
-}
-
-export function getSuperAdminSetupState() {
-  return snapshot;
-}
-
-export function setSuperAdminSetupStepComplete(
-  stepId: SuperAdminSetupStepId,
-  complete: boolean,
-) {
-  const current = readStored();
-  const completed = new Set(current.completed);
-  const wasComplete = completed.has(stepId);
-  if (complete) {
-    completed.add(stepId);
-  } else {
-    completed.delete(stepId);
-  }
-  writeStored({
-    visible: current.visible,
-    completed: SUPER_ADMIN_SETUP_STEPS.map((step) => step.id).filter((id) =>
-      completed.has(id),
-    ),
-  });
-  if (complete && !wasComplete && typeof window !== "undefined") {
-    window.dispatchEvent(
-      new CustomEvent(SUPER_ADMIN_SETUP_STEP_EVENT, {
-        detail: { id: stepId },
-      }),
-    );
-  }
-}
-
-export function setSuperAdminSetupVisible(visible: boolean) {
-  const current = readStored();
-  writeStored({ ...current, visible });
-}
-
-export function resetSuperAdminSetupState() {
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(SUPER_ADMIN_SETUP_STORAGE_KEY);
-  }
-  notify();
-}
-
+/**
+ * Setup-guide progress for the signed-in user, derived on the server from
+ * what the guide's organization really has.
+ */
 export function useSuperAdminSetup() {
-  return useSyncExternalStore(
-    (onStoreChange) => {
-      listeners.add(onStoreChange);
-      const onStorage = (event: StorageEvent) => {
-        if (event.key === SUPER_ADMIN_SETUP_STORAGE_KEY) {
-          notify();
-        }
-      };
-      window.addEventListener("storage", onStorage);
-      return () => {
-        listeners.delete(onStoreChange);
-        window.removeEventListener("storage", onStorage);
-      };
-    },
-    getSuperAdminSetupState,
-    getSuperAdminSetupState,
+  const { data, isSuccess, refetch } = useSetupState();
+  const guideSteps = data?.guide_steps ?? null;
+  const completed = new Set(
+    REQUIRED_STEPS.filter((step) => isStepDone(step, guideSteps)).map(
+      (step) => step.id,
+    ),
   );
+  const nextStep =
+    REQUIRED_STEPS.find((step) => !completed.has(step.id)) ?? null;
+  // Only the first Super Admin's guide has an organization; it stays until dismissed.
+  const active = Boolean(data?.guide_org_id) && !data?.guide_dismissed;
+
+  return {
+    completed,
+    nextStep,
+    completedCount: completed.size,
+    totalCount: REQUIRED_STEPS.length,
+    progress: completed.size / REQUIRED_STEPS.length,
+    isLoaded: isSuccess,
+    active,
+    visible: active && nextStep !== null,
+    refetch,
+  };
 }

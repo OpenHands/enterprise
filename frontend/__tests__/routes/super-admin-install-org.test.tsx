@@ -20,8 +20,9 @@ import {
 const NEW_ORG = createMockOrganization("new-org", "My Organization", 0);
 const FINISHED_SETUP_STATE = {
   wizard_pending: false,
-  guide_org_id: null,
+  guide_org_id: NEW_ORG.id,
   guide_dismissed: false,
+  guide_steps: null,
 };
 
 function renderOrgStep() {
@@ -64,15 +65,11 @@ describe("super admin install org step", () => {
     vi.restoreAllMocks();
   });
 
-  it("records the finished wizard on the server, then opens the org LLM defaults", async () => {
+  it("records the finished wizard and the guide's organization on the server, then opens the org LLM defaults", async () => {
     // Arrange
     const updateSetupState = vi
       .spyOn(superAdminService, "updateSetupState")
-      .mockResolvedValue({
-        wizard_pending: false,
-        guide_org_id: null,
-        guide_dismissed: false,
-      });
+      .mockResolvedValue(FINISHED_SETUP_STATE);
     renderOrgStep();
 
     // Act
@@ -80,7 +77,10 @@ describe("super admin install org step", () => {
 
     // Assert
     expect(await screen.findByTestId("org-llm-defaults")).toBeInTheDocument();
-    expect(updateSetupState).toHaveBeenCalledWith({ wizard_completed: true });
+    expect(updateSetupState).toHaveBeenCalledWith({
+      wizard_completed: true,
+      guide_org_id: NEW_ORG.id,
+    });
   });
 
   it("stays on the org step when the finished wizard cannot be recorded", async () => {

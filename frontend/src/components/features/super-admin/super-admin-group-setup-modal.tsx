@@ -15,7 +15,7 @@ import {
   StarterLlmFields,
   type StarterLlmSelection,
 } from "#/components/features/super-admin/starter-llm-fields";
-import { setSuperAdminSetupStepComplete } from "#/components/features/super-admin/super-admin-setup";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import {
   useActivateOrgLlmProfile,
@@ -129,7 +129,7 @@ export function SuperAdminGroupSetupModal({
       setIsSaving(false);
       return;
     }
-    setSuperAdminSetupStepComplete("add-llm", true);
+    notifySuperAdminSetupStep("add-llm");
     clearSuperAdminNuxStarterModal();
   };
 

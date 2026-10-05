@@ -11,16 +11,20 @@ from __future__ import annotations
 
 import base64
 import re
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import false, func, select
 
 from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.constants import ROLE_MEMBER, ROLE_OWNER
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -29,9 +33,12 @@ from server.routes.org_models import (
     OrphanedUserError,
 )
 from server.services.org_member_service import OrgMemberService
+from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
+from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
 from storage.org import Org
+from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
@@ -48,6 +55,9 @@ UserMembershipStatus = Literal['active', 'inactive']
 
 MAX_LOGO_BYTES = 512 * 1024
 _LOGO_DATA_URL = re.compile(r'data:image/(?:png|jpeg|webp);base64,(?P<payload>.*)')
+
+# The automation check runs on a page load, so it gives up quickly.
+_AUTOMATION_CHECK_TIMEOUT_SECONDS = 5
 
 
 class AdminOrgResponse(BaseModel):
@@ -140,16 +150,27 @@ class InstanceSettingsUpdate(BaseModel):
         return value
 
 
+class SetupGuideSteps(BaseModel):
+    """Setup-guide steps done in the guide's organization, read from real data."""
+
+    org_llm: bool = False
+    mcp_server: bool = False
+    automation: bool = False
+    invite: bool = False
+
+
 class SetupStateResponse(BaseModel):
     """First-install wizard and setup-guide state for the signed-in user.
 
     Only the first Super Admin has a wizard and a guide; everyone else gets
-    the defaults.
+    the defaults. ``guide_steps`` is set while the guide has an organization
+    and is not dismissed.
     """
 
     wizard_pending: bool = False
     guide_org_id: str | None = None
     guide_dismissed: bool = False
+    guide_steps: SetupGuideSteps | None = None
 
 
 class SetupStateUpdate(BaseModel):
@@ -767,15 +788,95 @@ async def update_instance_settings(
     return _instance_settings_response(settings)
 
 
-def _setup_state_response(
-    settings: InstanceSettings | None, user_id: str
+async def _org_has_automation(org_id: UUID, request: Request) -> bool:
+    """Ask the automation service whether the organization has an automation.
+
+    Automations live in that service's own database. The caller's own
+    credentials are forwarded, so the service authorizes them as it does for
+    Agent Canvas.
+    """
+    if not AUTOMATION_SERVICE_URL:
+        return False
+    headers = {
+        name: value
+        for name in ('cookie', 'authorization')
+        if (value := request.headers.get(name))
+    }
+    headers['X-Org-Id'] = str(org_id)
+    try:
+        async with httpx.AsyncClient(
+            verify=httpx_verify_option(), timeout=_AUTOMATION_CHECK_TIMEOUT_SECONDS
+        ) as client:
+            response = await client.get(
+                f'{AUTOMATION_SERVICE_URL.rstrip("/")}/v1',
+                params={'limit': 1},
+                headers=headers,
+            )
+            response.raise_for_status()
+            return response.json().get('total', 0) > 0
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            'admin:setup_state:automation_check_failed',
+            extra={'org_id': str(org_id), 'error': str(exc)},
+        )
+        return False
+
+
+async def _guide_steps(
+    org_id: UUID, setup_user_id: UUID, request: Request
+) -> SetupGuideSteps:
+    """Derive the guide's progress from what the organization really has."""
+    # Pending invitations only expire when someone touches them, so check the
+    # date too. ``expires_at`` is stored as naive UTC.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    async with a_session_maker() as session:
+        org = await session.get(Org, org_id)
+        member = await session.scalar(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id, OrgMember.user_id == setup_user_id
+            )
+        )
+        member_count = await session.scalar(
+            select(func.count())
+            .select_from(OrgMember)
+            .where(OrgMember.org_id == org_id)
+        )
+        pending_invitations = await session.scalar(
+            select(func.count())
+            .select_from(OrgInvitation)
+            .where(
+                OrgInvitation.org_id == org_id,
+                OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+                OrgInvitation.expires_at > now,
+            )
+        )
+    # Every org gets a Default profile seeded from its default model, so only
+    # a profile someone saved counts as configuring an LLM.
+    org_llm = org is not None and any(
+        name != DEFAULT_LLM_PROFILE_NAME for name in load_llm_profiles(org).profiles
+    )
+    return SetupGuideSteps(
+        org_llm=org_llm,
+        # MCP servers belong to each member, so this is the setup user's own.
+        mcp_server=member is not None and bool(member_mcp_config(member)),
+        automation=await _org_has_automation(org_id, request),
+        invite=(member_count or 0) > 1 or (pending_invitations or 0) > 0,
+    )
+
+
+async def _setup_state_response(
+    settings: InstanceSettings | None, user_id: str, request: Request
 ) -> SetupStateResponse:
     if settings is None or str(settings.setup_user_id) != user_id:
         return SetupStateResponse()
+    guide_steps = None
+    if settings.guide_org_id and not settings.guide_dismissed:
+        guide_steps = await _guide_steps(settings.guide_org_id, UUID(user_id), request)
     return SetupStateResponse(
         wizard_pending=not settings.wizard_completed,
         guide_org_id=str(settings.guide_org_id) if settings.guide_org_id else None,
         guide_dismissed=settings.guide_dismissed,
+        guide_steps=guide_steps,
     )
 
 
@@ -784,6 +885,7 @@ def _setup_state_response(
     response_model=SetupStateResponse,
 )
 async def get_setup_state(
+    request: Request,
     user_id: str | None = Depends(get_user_id),
 ) -> SetupStateResponse:
     """Return the first-install state for the caller. Any signed-in user can read it."""
@@ -794,7 +896,7 @@ async def get_setup_state(
         )
     async with a_session_maker() as session:
         settings = await session.get(InstanceSettings, 1)
-    return _setup_state_response(settings, user_id)
+    return await _setup_state_response(settings, user_id, request)
 
 
 @instance_admin_router.patch(
@@ -803,6 +905,7 @@ async def get_setup_state(
 )
 async def update_setup_state(
     body: SetupStateUpdate,
+    request: Request,
     user_id: str | None = Depends(get_user_id),
 ) -> SetupStateResponse:
     """Update the first-install state. Only the first Super Admin can."""
@@ -833,4 +936,4 @@ async def update_setup_state(
         'admin:setup_state:update',
         extra={'caller_user_id': user_id, 'fields': sorted(changes)},
     )
-    return _setup_state_response(settings, user_id)
+    return await _setup_state_response(settings, user_id, request)

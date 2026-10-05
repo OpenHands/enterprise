@@ -32,6 +32,7 @@ function mockWizardPending(pending: boolean) {
     wizard_pending: pending,
     guide_org_id: null,
     guide_dismissed: false,
+    guide_steps: null,
   });
 }
 

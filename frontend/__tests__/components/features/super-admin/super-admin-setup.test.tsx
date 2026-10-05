@@ -1,90 +1,211 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { createRoutesStub } from "react-router";
-import { SuperAdminSetupGuide } from "#/components/features/super-admin/super-admin-setup-guide";
 import {
-  SUPER_ADMIN_SETUP_STEPS,
-  SUPER_ADMIN_SETUP_STORAGE_KEY,
-  getSuperAdminSetupState,
-  resetSuperAdminSetupState,
-  setSuperAdminSetupStepComplete,
-} from "#/components/features/super-admin/super-admin-setup";
+  act,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ReactNode } from "react";
+import { createRoutesStub } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import OptionService from "#/api/option-service/option-service.api";
+import {
+  superAdminService,
+  type SetupGuideSteps,
+  type SetupState,
+} from "#/api/super-admin-service/super-admin-service.api";
+import { SuperAdminSetupGuide } from "#/components/features/super-admin/super-admin-setup-guide";
+import { useSuperAdminSetup } from "#/components/features/super-admin/super-admin-setup";
+import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
-function renderSetup() {
+const NO_STEPS_DONE: SetupGuideSteps = {
+  org_llm: false,
+  mcp_server: false,
+  automation: false,
+  invite: false,
+};
+
+const ALL_STEPS_DONE: SetupGuideSteps = {
+  org_llm: true,
+  mcp_server: true,
+  automation: true,
+  invite: true,
+};
+
+function guideState(guideSteps: SetupGuideSteps): SetupState {
+  return {
+    wizard_pending: false,
+    guide_org_id: "guide-org",
+    guide_dismissed: false,
+    guide_steps: guideSteps,
+  };
+}
+
+/** Server state already loaded, and returned again on any refetch. */
+function createQueryClient(state: SetupState) {
+  vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(state);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, state);
+  return queryClient;
+}
+
+function renderSetupHook(state: SetupState) {
+  const queryClient = createQueryClient(state);
+  function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+  }
+  return renderHook(() => useSuperAdminSetup(), { wrapper: Wrapper });
+}
+
+function renderSetupPage(state: SetupState) {
+  const queryClient = createQueryClient(state);
   const RouterStub = createRoutesStub([
     {
       path: "/super-admin",
       Component: () => <div data-testid="dashboard-stub" />,
     },
     { path: "/super-admin/setup", Component: SuperAdminSetupGuide },
-    { path: "/super-admin/instance", Component: () => <div /> },
-    { path: "/settings/org-defaults", Component: () => <div /> },
   ]);
-  return render(<RouterStub initialEntries={["/super-admin/setup"]} />);
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterStub initialEntries={["/super-admin/setup"]} />
+    </QueryClientProvider>,
+  );
+  return queryClient;
 }
 
+beforeEach(() => {
+  vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+    createMockWebClientConfig({
+      feature_flags: {
+        ...createMockWebClientConfig().feature_flags,
+        enable_super_admin: true,
+      },
+    }),
+  );
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("useSuperAdminSetup", () => {
+  it("marks done only the steps the server reports for the guide's organization", () => {
+    // Arrange
+    const state = guideState({ ...NO_STEPS_DONE, org_llm: true });
+
+    // Act
+    const { result } = renderSetupHook(state);
+
+    // Assert
+    expect([...result.current.completed]).toEqual(["create-org", "add-llm"]);
+    expect(result.current.nextStep?.id).toBe("add-integration");
+    expect(result.current.completedCount).toBe(2);
+    expect(result.current.totalCount).toBe(5);
+    expect(result.current.visible).toBe(true);
+  });
+
+  it("finishes the guide without the optional SAML step and stops showing it", () => {
+    // Arrange
+    const state = guideState(ALL_STEPS_DONE);
+
+    // Act
+    const { result } = renderSetupHook(state);
+
+    // Assert
+    expect(result.current.completed.has("optional-saml")).toBe(false);
+    expect(result.current.nextStep).toBeNull();
+    expect(result.current.progress).toBe(1);
+    expect(result.current.visible).toBe(false);
+  });
+
+  it.each([
+    {
+      who: "a user the server gives no guide",
+      state: {
+        wizard_pending: false,
+        guide_org_id: null,
+        guide_dismissed: false,
+        guide_steps: null,
+      },
+    },
+    {
+      who: "a first Super Admin who dismissed the guide",
+      state: {
+        wizard_pending: false,
+        guide_org_id: "guide-org",
+        guide_dismissed: true,
+        guide_steps: null,
+      },
+    },
+  ])("does not show the guide to $who", ({ state }) => {
+    // Act
+    const { result } = renderSetupHook(state);
+
+    // Assert
+    expect(result.current.active).toBe(false);
+    expect(result.current.visible).toBe(false);
+    expect(result.current.completedCount).toBe(0);
+  });
+});
+
 describe("SuperAdminSetupGuide", () => {
-  beforeEach(() => {
-    window.localStorage.removeItem(SUPER_ADMIN_SETUP_STORAGE_KEY);
-    resetSuperAdminSetupState();
-  });
-
-  it("starts with Create an organization as the first incomplete step", () => {
-    renderSetup();
-
-    expect(screen.getByTestId("super-admin-setup")).toBeInTheDocument();
-    expect(
-      screen.getAllByText("SUPER_ADMIN$SETUP_NEXT").length,
-    ).toBeGreaterThan(0);
-    expect(getSuperAdminSetupState().nextStep?.id).toBe("create-org");
-    expect(getSuperAdminSetupState().progress).toBe(0);
-    expect(
-      screen.getByTestId("super-admin-setup-toggle-create-org"),
-    ).toHaveAttribute("aria-pressed", "false");
-  });
-
-  it("marks the next step complete and advances progress", async () => {
+  it("saves the dismissal on the server when the guide is removed", async () => {
+    // Arrange
+    const updateSetupState = vi
+      .spyOn(superAdminService, "updateSetupState")
+      .mockResolvedValue({
+        ...guideState(NO_STEPS_DONE),
+        guide_dismissed: true,
+        guide_steps: null,
+      });
     const user = userEvent.setup();
-    renderSetup();
+    renderSetupPage(guideState(NO_STEPS_DONE));
 
-    await user.click(screen.getByTestId("super-admin-setup-toggle-create-org"));
-
-    expect(getSuperAdminSetupState().completed.has("create-org")).toBe(true);
-    expect(getSuperAdminSetupState().nextStep?.id).toBe("add-llm");
-  });
-
-  it("asks to remove the guide after the last step is completed", async () => {
-    const user = userEvent.setup();
-    SUPER_ADMIN_SETUP_STEPS.forEach((step) => {
-      setSuperAdminSetupStepComplete(step.id, step.id !== "optional-saml");
-    });
-    renderSetup();
-
-    await user.click(
-      screen.getByTestId("super-admin-setup-toggle-optional-saml"),
-    );
-
-    expect(screen.getByTestId("confirmation-modal")).toHaveTextContent(
-      "SUPER_ADMIN$SETUP_REMOVE_COMPLETE_CONFIRM",
-    );
-
-    await user.click(screen.getByTestId("confirm-button"));
-
-    expect(getSuperAdminSetupState().visible).toBe(false);
-    expect(screen.getByTestId("dashboard-stub")).toBeInTheDocument();
-  });
-
-  it("can remove the setup guide from the bottom of the page", async () => {
-    const user = userEvent.setup();
-    renderSetup();
-
+    // Act
     await user.click(screen.getByTestId("super-admin-setup-remove"));
-    expect(screen.getByTestId("confirmation-modal")).toHaveTextContent(
-      "SUPER_ADMIN$SETUP_REMOVE_CONFIRM",
+    await user.click(screen.getByTestId("confirm-button"));
+
+    // Assert
+    expect(updateSetupState).toHaveBeenCalledWith({ guide_dismissed: true });
+    expect(await screen.findByTestId("dashboard-stub")).toBeInTheDocument();
+  });
+
+  it("asks to remove the guide when the server reports the last step done", async () => {
+    // Arrange
+    const queryClient = renderSetupPage(
+      guideState({ ...ALL_STEPS_DONE, invite: false }),
     );
 
-    await user.click(screen.getByTestId("confirm-button"));
-    expect(getSuperAdminSetupState().visible).toBe(false);
+    // Act
+    act(() => {
+      queryClient.setQueryData(
+        SUPER_ADMIN_QUERY_KEYS.setupState,
+        guideState(ALL_STEPS_DONE),
+      );
+    });
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByTestId("confirmation-modal")).toHaveTextContent(
+        "SUPER_ADMIN$SETUP_REMOVE_COMPLETE_CONFIRM",
+      ),
+    );
+  });
+
+  it("does not ask again when an already finished guide is opened", () => {
+    // Act
+    renderSetupPage(guideState(ALL_STEPS_DONE));
+
+    // Assert
+    expect(screen.getByTestId("super-admin-setup")).toBeInTheDocument();
+    expect(screen.queryByTestId("confirmation-modal")).not.toBeInTheDocument();
   });
 });

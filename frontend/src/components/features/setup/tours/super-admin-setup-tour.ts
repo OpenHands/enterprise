@@ -4,7 +4,7 @@ import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 const NAV = {
   organizations: '[data-testid="sidebar-settings-/super-admin/organizations"]',
   orgDefaults: '[data-testid="sidebar-settings-/settings/org-defaults"]',
-  integrations: '[data-testid="sidebar-settings-/settings/integrations"]',
+  mcp: '[data-testid="sidebar-settings-/settings/mcp"]',
   members: '[data-testid="sidebar-settings-/settings/org-members"]',
   instance: '[data-testid="sidebar-settings-/super-admin/instance"]',
 } as const;
@@ -105,12 +105,12 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
     {
       id: "add-integration",
       checklistId: "add-integration",
-      route: "/settings/integrations",
+      route: "/settings/mcp",
       anchor:
-        '[data-testid="git-settings-screen"], [data-testid="settings-page-subtitle"], main',
-      alsoHighlight: NAV.integrations,
+        '[data-testid="mcp-settings-screen"], [data-testid="settings-page-subtitle"], main',
+      alsoHighlight: NAV.mcp,
       title: "Add an integration",
-      body: "Connect GitHub, GitLab, or another provider so agents can work with your repositories.",
+      body: "Connect an MCP server so agents can use your organization's tools.",
       side: "bottom",
     },
     {

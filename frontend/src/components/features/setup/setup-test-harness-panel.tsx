@@ -14,10 +14,7 @@ import {
   setSuperAdminNuxStep,
   type SuperAdminNuxStep,
 } from "#/utils/org/super-admin-nux";
-import {
-  resetSuperAdminSetupState,
-  setSuperAdminSetupVisible,
-} from "#/components/features/super-admin/super-admin-setup";
+import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import {
   SETUP_TEST_PERSONA_OPTIONS,
   isSetupTestHarnessEnabled,
@@ -49,6 +46,7 @@ function isMockApiBoot(): boolean {
 
 export function SetupTestHarnessPanel() {
   const navigate = useNavigate();
+  const { mutate: updateSetupState } = useUpdateSetupState();
   const [open, setOpen] = useState(true);
   const persona = useSyncExternalStore(
     subscribeSetupTestPersona,
@@ -70,7 +68,7 @@ export function SetupTestHarnessPanel() {
     setSetupTestPersona(next);
     if (next === "super_admin") {
       setSuperAdminNuxStep("done");
-      setSuperAdminSetupVisible(true);
+      updateSetupState({ guide_dismissed: false });
     }
     navigate(personaHomePath(next));
   };
@@ -79,16 +77,15 @@ export function SetupTestHarnessPanel() {
     stopGuidedTour();
     setSetupTestPersona("super_admin");
     setSuperAdminNuxStep(step);
-    setSuperAdminSetupVisible(true);
+    updateSetupState({ guide_dismissed: false });
     navigate(getSuperAdminNuxPath(step));
   };
 
   const resetAll = () => {
     stopGuidedTour();
     resetSuperAdminNux();
-    resetSuperAdminSetupState();
     setSetupTestPersona("live");
-    setSuperAdminSetupVisible(true);
+    updateSetupState({ guide_dismissed: false });
     navigate("/install");
   };
 
@@ -196,8 +193,7 @@ export function SetupTestHarnessPanel() {
               data-testid="setup-test-reset-sa-setup"
               onClick={() => {
                 stopGuidedTour();
-                resetSuperAdminSetupState();
-                setSuperAdminSetupVisible(true);
+                updateSetupState({ guide_dismissed: false });
               }}
               className={cn(
                 "rounded border border-[var(--oh-border)] px-2 py-1.5 text-left",

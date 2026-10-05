@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 import {
   InstanceSettings,
+  SetupGuideSteps,
   SetupState,
   SetupStateUpdate,
 } from "#/api/super-admin-service/super-admin-service.api";
@@ -110,9 +111,26 @@ const MOCK_SETUP_STATE: SetupState = {
   wizard_pending: true,
   guide_org_id: null,
   guide_dismissed: false,
+  guide_steps: null,
+};
+
+const MOCK_GUIDE_STEPS: SetupGuideSteps = {
+  org_llm: false,
+  mcp_server: false,
+  automation: false,
+  invite: false,
 };
 
 let setupState = { ...MOCK_SETUP_STATE };
+
+// Like the server, steps are reported only while the guide has an org and is not dismissed.
+const setupStateResponse = (): SetupState => ({
+  ...setupState,
+  guide_steps:
+    setupState.guide_org_id && !setupState.guide_dismissed
+      ? MOCK_GUIDE_STEPS
+      : null,
+});
 
 const FRESH_SA_ADMIN_ORG = {
   id: "2",
@@ -612,7 +630,9 @@ export const SUPER_ADMIN_HANDLERS = [
     return HttpResponse.json(instanceSettings);
   }),
 
-  http.get("/api/admin/setup-state", () => HttpResponse.json(setupState)),
+  http.get("/api/admin/setup-state", () =>
+    HttpResponse.json(setupStateResponse()),
+  ),
 
   http.patch("/api/admin/setup-state", async ({ request }) => {
     const { wizard_completed: wizardCompleted, ...guide } =
@@ -624,6 +644,6 @@ export const SUPER_ADMIN_HANDLERS = [
         ? {}
         : { wizard_pending: !wizardCompleted }),
     };
-    return HttpResponse.json(setupState);
+    return HttpResponse.json(setupStateResponse());
   }),
 ];

@@ -61,11 +61,21 @@ export interface InstanceSettings {
   logo: string | null;
 }
 
+/** Setup-guide steps done in the guide's organization, read from real data. */
+export interface SetupGuideSteps {
+  org_llm: boolean;
+  mcp_server: boolean;
+  automation: boolean;
+  invite: boolean;
+}
+
 /** First-install state for the signed-in user. Only the first Super Admin gets real values. */
 export interface SetupState {
   wizard_pending: boolean;
   guide_org_id: string | null;
   guide_dismissed: boolean;
+  /** Set while the guide has an organization and is not dismissed. */
+  guide_steps: SetupGuideSteps | null;
 }
 
 export interface SetupStateUpdate {

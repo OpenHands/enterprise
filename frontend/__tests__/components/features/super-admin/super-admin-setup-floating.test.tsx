@@ -1,17 +1,17 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Outlet, createRoutesStub, useNavigate } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  superAdminService,
+  type SetupGuideSteps,
+  type SetupState,
+} from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
-import {
-  SUPER_ADMIN_SETUP_STORAGE_KEY,
-  resetSuperAdminSetupState,
-} from "#/components/features/super-admin/super-admin-setup";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
-import {
-  resetSuperAdminNux,
-  setSuperAdminNuxStep,
-} from "#/utils/org/super-admin-nux";
+import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
+import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
 import { stopGuidedTour } from "#/components/features/setup/tours/tour-engine";
 
 vi.mock("#/hooks/query/use-me", () => ({
@@ -26,6 +26,20 @@ vi.mock("#/hooks/query/use-config", () => ({
   }),
 }));
 
+const NO_STEPS_DONE: SetupGuideSteps = {
+  org_llm: false,
+  mcp_server: false,
+  automation: false,
+  invite: false,
+};
+
+const GUIDE_STATE: SetupState = {
+  wizard_pending: false,
+  guide_org_id: "guide-org",
+  guide_dismissed: false,
+  guide_steps: NO_STEPS_DONE,
+};
+
 function Jump({ to, label }: { to: string; label: string }) {
   const navigate = useNavigate();
   return (
@@ -39,7 +53,12 @@ function Jump({ to, label }: { to: string; label: string }) {
   );
 }
 
-function renderWidget(initialPath: string) {
+function renderWidget(initialPath: string, state: SetupState = GUIDE_STATE) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  // Server state already loaded; any refetch reads the spied service.
+  queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, state);
   const RouterStub = createRoutesStub([
     {
       path: "/super-admin",
@@ -70,16 +89,23 @@ function renderWidget(initialPath: string) {
     },
   ]);
 
-  return render(<RouterStub initialEntries={[initialPath]} />);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterStub initialEntries={[initialPath]} />
+    </QueryClientProvider>,
+  );
 }
 
 describe("SuperAdminSetupFloatingWidget", () => {
   beforeEach(() => {
-    window.localStorage.removeItem(SUPER_ADMIN_SETUP_STORAGE_KEY);
-    resetSuperAdminSetupState();
+    // The guide no longer depends on this browser having walked the wizard.
     resetSuperAdminNux();
-    setSuperAdminNuxStep("done");
     stopGuidedTour();
+    vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(GUIDE_STATE);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("starts closed on the setup guide and opens after leaving that page", async () => {
@@ -130,5 +156,37 @@ describe("SuperAdminSetupFloatingWidget", () => {
     expect(
       screen.getByTestId("super-admin-setup-floating-panel"),
     ).toBeInTheDocument();
+  });
+
+  it("shows progress from the server and re-reads it on the next page", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+    expect(screen.getByText("1/5")).toBeInTheDocument();
+    vi.mocked(superAdminService.getSetupState).mockResolvedValue({
+      ...GUIDE_STATE,
+      guide_steps: { ...NO_STEPS_DONE, org_llm: true },
+    });
+
+    // Act
+    await user.click(screen.getByTestId("go-instance"));
+
+    // Assert
+    expect(await screen.findByText("2/5")).toBeInTheDocument();
+  });
+
+  it("is not shown to a user the server gives no guide", () => {
+    // Act
+    renderWidget(SUPER_ADMIN_PATHS.organizations, {
+      wizard_pending: false,
+      guide_org_id: null,
+      guide_dismissed: false,
+      guide_steps: null,
+    });
+
+    // Assert
+    expect(
+      screen.queryByTestId("super-admin-setup-floating"),
+    ).not.toBeInTheDocument();
   });
 });

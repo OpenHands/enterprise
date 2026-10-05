@@ -237,14 +237,14 @@ const GROUPS: CatalogGroup[] = [
   {
     ticket: "OHE-3384 · PRD OHE-651",
     title: "Onboarding guide to the aha moment",
-    flow: "After install, the setup guide follows the Super Admin across the product: organization, LLM, integration, automation, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. There is no automation-template screen here; the guide links to /automations. Guide progress is local storage, not a server flag, so it does not yet know that an org is fully configured.",
+    flow: "After install, the setup guide follows the Super Admin across the product: organization, LLM, MCP integration, automation, invite, then optional SAML. It is for the first organization they own. A new admin of an organization that is already configured should not see it. There is no automation-template screen here; the guide links to /automations. The server checks each step against the organization's real LLM profiles, MCP servers, automations, members and invitations, and saves dismissal, so progress is the same on every browser.",
     entries: [
       PAGE(
         "Setup guide",
         "/super-admin/setup",
         "Checklist after install. Dismissing it hides the guide.",
         [
-          "Steps for org, LLM, integration, automation, invite, and optional SAML",
+          "Steps for org, LLM, MCP integration, automation, invite, and optional SAML",
           "The active step stays open while another step is previewed",
           "The guide can be dismissed",
         ],
@@ -255,7 +255,7 @@ const GROUPS: CatalogGroup[] = [
         "remove-setup",
         "Confirms hiding the setup guide.",
         ["Confirms hiding the setup guide", "The guide can be started again"],
-        "Dismiss should only flip the local setup-guide flag. It must not clear oh-sa-nux or org data.",
+        "Dismiss should only set the server's guide_dismissed flag. It must not clear oh-sa-nux or org data.",
       ),
       PAGE(
         "Integrations",

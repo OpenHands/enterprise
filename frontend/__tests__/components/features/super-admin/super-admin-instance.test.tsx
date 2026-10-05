@@ -157,4 +157,36 @@ describe("Super Admin Instance page", () => {
     );
     expect(updateInstanceSettings).toHaveBeenCalledWith({ logo: null });
   });
+
+  it("saves hiding the setup guide on the server", async () => {
+    // Arrange
+    mockSuperAdminConfig();
+    vi.spyOn(superAdminService, "getSetupState").mockResolvedValue({
+      wizard_pending: false,
+      guide_org_id: "guide-org",
+      guide_dismissed: false,
+      guide_steps: null,
+    });
+    const updateSetupState = vi
+      .spyOn(superAdminService, "updateSetupState")
+      .mockResolvedValue({
+        wizard_pending: false,
+        guide_org_id: "guide-org",
+        guide_dismissed: true,
+        guide_steps: null,
+      });
+    const user = userEvent.setup();
+    await renderInstancePage();
+    const setupGuideSwitch = await screen.findByTestId(
+      "super-admin-instance-setup-guide",
+    );
+    await waitFor(() => expect(setupGuideSwitch).toBeChecked());
+
+    // Act
+    await user.click(setupGuideSwitch);
+
+    // Assert
+    expect(updateSetupState).toHaveBeenCalledWith({ guide_dismissed: true });
+    await waitFor(() => expect(setupGuideSwitch).not.toBeChecked());
+  });
 });
