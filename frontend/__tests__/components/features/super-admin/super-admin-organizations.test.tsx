@@ -216,6 +216,40 @@ describe("Super Admin Organizations page", () => {
     );
   });
 
+  it("invites a person into the organization chosen from its row menu", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(organizationService, "getPendingInvitations").mockResolvedValue({
+      items: [],
+      email_delivery_configured: true,
+      auto_add_enabled: false,
+    });
+    const inviteMembers = vi
+      .spyOn(organizationService, "inviteMembers")
+      .mockResolvedValue({
+        successful: [],
+        failed: [],
+        email_delivery_configured: true,
+      });
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-invite-2");
+    const modal = await screen.findByTestId("invite-modal");
+    await user.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "new@acme.org ",
+    );
+    await user.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembers).toHaveBeenCalledExactlyOnceWith({
+      orgId: "2",
+      emails: ["new@acme.org"],
+      role: "member",
+    });
+  });
+
   it("does not offer to open or act on another user's personal workspace", async () => {
     // Arrange
     vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
@@ -272,6 +306,9 @@ describe("Super Admin Organizations page", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByTestId("super-admin-org-remove-7"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-invite-7"),
     ).not.toBeInTheDocument();
   });
 });

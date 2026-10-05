@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
+import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import type { ProvisionUserResponse } from "#/api/super-admin-service/super-admin-service.api";
@@ -105,6 +106,7 @@ export function SuperAdminOrganizations() {
   const copy = navCopy(SUPER_ADMIN_PATHS.organizations);
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [inviteOrgId, setInviteOrgId] = useState<string | null>(null);
   const [pendingOrgAction, setPendingOrgAction] = useState<{
     action: "suspend" | "remove";
     org: SuperAdminOrgRow;
@@ -251,6 +253,11 @@ export function SuperAdminOrganizations() {
                     ...(row.isPersonal
                       ? []
                       : [
+                          {
+                            label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
+                            testId: `super-admin-org-invite-${row.id}`,
+                            onSelect: () => setInviteOrgId(row.id),
+                          },
                           row.status === "active"
                             ? {
                                 label: t(I18nKey.SUPER_ADMIN$SUSPEND),
@@ -293,6 +300,15 @@ export function SuperAdminOrganizations() {
           onClose={() => setCreateOpen(false)}
         />
       )}
+      {inviteOrgId ? (
+        <InviteOrganizationMemberModal
+          organizations={orgs
+            .filter((org) => !org.isPersonal)
+            .map((org) => ({ id: org.id, name: org.name }))}
+          defaultOrgId={inviteOrgId}
+          onClose={() => setInviteOrgId(null)}
+        />
+      ) : null}
       {pendingOrgAction ? (
         <OrgModal
           testId="super-admin-org-confirm"
@@ -347,6 +363,7 @@ export function SuperAdminUsers() {
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
   const [provisionOpen, setProvisionOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [orgRoles, setOrgRoles] = useState<
     Record<string, "member" | "admin" | "owner">
@@ -456,19 +473,30 @@ export function SuperAdminUsers() {
             : t(I18nKey.SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION)
         }
         action={
-          provisioningEnabled ? (
+          <div className="flex gap-2">
             <BrandButton
               type="button"
-              variant="primary"
+              variant={provisioningEnabled ? "secondary" : "primary"}
+              testId="super-admin-invite-user"
               startContent={<Plus className="h-4 w-4" />}
-              onClick={() => {
-                setProvisionResult(null);
-                setProvisionOpen(true);
-              }}
+              onClick={() => setInviteOpen(true)}
             >
-              {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
+              {t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL)}
             </BrandButton>
-          ) : undefined
+            {provisioningEnabled ? (
+              <BrandButton
+                type="button"
+                variant="primary"
+                startContent={<Plus className="h-4 w-4" />}
+                onClick={() => {
+                  setProvisionResult(null);
+                  setProvisionOpen(true);
+                }}
+              >
+                {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
+              </BrandButton>
+            ) : null}
+          </div>
         }
       />
       <SuperAdminSearchField
@@ -677,6 +705,15 @@ export function SuperAdminUsers() {
             </div>
           )}
         </OrgModal>
+      )}
+      {inviteOpen && (
+        <InviteOrganizationMemberModal
+          organizations={teamOrgs.map((org) => ({
+            id: org.id,
+            name: org.name,
+          }))}
+          onClose={() => setInviteOpen(false)}
+        />
       )}
       {managedUser ? (
         <SuperAdminUserGroupsModal

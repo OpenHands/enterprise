@@ -171,6 +171,8 @@ const ZH_CN: Record<string, string> = {
     "列出、创建、打开、暂停和恢复组织。已有组织默认是活跃的。",
   "Create, open, suspend, and resume organizations":
     "创建、打开、暂停和恢复组织",
+  "Invite someone by email from a team organization's menu":
+    "从团队组织的菜单里通过邮箱邀请某人",
   "Suspend blocks usage and can be reversed": "暂停会挡住使用，并且可以恢复",
   "Opening an org you are not in asks you to join first":
     "打开一个你不在其中的组织时，会先要求你加入",
@@ -188,8 +190,10 @@ const ZH_CN: Record<string, string> = {
     "确认存下来的是所有者和联系邮箱，并且组织创建后是活跃的。",
   Membership: "成员关系",
   Users: "用户",
-  "Everyone on the instance. Provision a user and edit membership across organizations.":
-    "实例上的所有人。开通用户，并跨组织编辑成员关系。",
+  "Everyone on the instance. Invite or provision a user and edit membership across organizations.":
+    "实例上的所有人。邀请或开通用户，并跨组织编辑成员关系。",
+  "Invite someone by email into a team organization":
+    "通过邮箱邀请某人加入团队组织",
   "Provision a user into one or more organizations":
     "把用户开通到一个或多个组织",
   "Role is chosen per organization": "每个组织单独选择角色",
@@ -215,6 +219,15 @@ const ZH_CN: Record<string, string> = {
   "Copy to clipboard": "复制到剪贴板",
   "The LiteLLM key is plain text. Confirm it is not logged or written to localStorage, and that closing the dialog removes it from the page.":
     "LiteLLM 密钥是明文。确认它不会被记入日志或写入 localStorage，并且关掉对话框后页面上不再有它。",
+  "Invite by email": "通过邮箱邀请",
+  "Invites people by email into a team organization the Super Admin may not belong to.":
+    "通过邮箱把人邀请进一个团队组织，超级管理员不必是它的成员。",
+  "Pick the team organization and the role, including owner":
+    "选择团队组织和角色，包括所有者",
+  "Shows each invite link when email delivery is off":
+    "邮件发送没开启时，显示每个邀请链接",
+  "Confirm a Super Admin who is not a member can invite, personal workspaces are not offered, and the link works for someone with no account.":
+    "确认不是成员的超级管理员也能邀请，个人工作区不会出现在选项里，并且没有账号的人也能用这个链接加入。",
   "Manage user": "管理用户",
   "Membership and role for one person across organizations. Watch the last-owner rule.":
     "一个人在各个组织里的成员关系和角色。注意最后一位所有者的规则。",
@@ -505,6 +518,8 @@ const ZH_TW: Record<string, string> = {
     "列出、建立、開啟、暫停和恢復組織。已有組織預設是活躍的。",
   "Create, open, suspend, and resume organizations":
     "建立、開啟、暫停和恢復組織",
+  "Invite someone by email from a team organization's menu":
+    "從團隊組織的選單裡透過郵箱邀請某人",
   "Suspend blocks usage and can be reversed": "暫停會擋住使用，並且可以恢復",
   "Opening an org you are not in asks you to join first":
     "開啟一個你不在其中的組織時，會先要求你加入",
@@ -522,8 +537,10 @@ const ZH_TW: Record<string, string> = {
     "確認存下來的是所有者和聯絡郵箱，並且組織建立後是活躍的。",
   Membership: "成員關係",
   Users: "使用者",
-  "Everyone on the instance. Provision a user and edit membership across organizations.":
-    "例項上的所有人。開通使用者，並跨組織編輯成員關係。",
+  "Everyone on the instance. Invite or provision a user and edit membership across organizations.":
+    "例項上的所有人。邀請或開通使用者，並跨組織編輯成員關係。",
+  "Invite someone by email into a team organization":
+    "透過郵箱邀請某人加入團隊組織",
   "Provision a user into one or more organizations":
     "把使用者開通到一個或多個組織",
   "Role is chosen per organization": "每個組織單獨選擇角色",
@@ -549,6 +566,15 @@ const ZH_TW: Record<string, string> = {
   "Copy to clipboard": "複製到剪貼簿",
   "The LiteLLM key is plain text. Confirm it is not logged or written to localStorage, and that closing the dialog removes it from the page.":
     "LiteLLM 金鑰是明文。確認它不會被記入日誌或寫入 localStorage，並且關掉對話框後頁面上不再有它。",
+  "Invite by email": "透過郵箱邀請",
+  "Invites people by email into a team organization the Super Admin may not belong to.":
+    "透過郵箱把人邀請進一個團隊組織，超級管理員不必是它的成員。",
+  "Pick the team organization and the role, including owner":
+    "選擇團隊組織和角色，包括所有者",
+  "Shows each invite link when email delivery is off":
+    "郵件寄送沒開啟時，顯示每個邀請連結",
+  "Confirm a Super Admin who is not a member can invite, personal workspaces are not offered, and the link works for someone with no account.":
+    "確認不是成員的超級管理員也能邀請，個人工作區不會出現在選項裡，並且沒有帳號的人也能用這個連結加入。",
   "Manage user": "管理使用者",
   "Membership and role for one person across organizations. Watch the last-owner rule.":
     "一個人在各個組織里的成員關係和角色。注意最後一位所有者的規則。",

@@ -104,6 +104,8 @@ const SOURCE: Record<string, string> = {
     "frontend/src/components/features/super-admin/super-admin-pages.tsx",
   "provision-credentials":
     "frontend/src/components/features/super-admin/super-admin-pages.tsx",
+  "super-admin-invite":
+    "frontend/src/components/features/org/invite-organization-member-modal.tsx",
   "manage-user":
     "frontend/src/components/features/super-admin/super-admin-user-groups-modal.tsx",
   "grant-self":
@@ -373,6 +375,7 @@ const GROUPS: CatalogGroup[] = [
         "List, create, open, suspend, and resume organizations. Existing orgs default to active.",
         [
           "Create, open, suspend, and resume organizations",
+          "Invite someone by email from a team organization's menu",
           "Suspend blocks usage and can be reversed",
           "Opening an org you are not in asks you to join first",
           "Existing organizations default to active",
@@ -394,8 +397,9 @@ const GROUPS: CatalogGroup[] = [
       PAGE(
         "Users",
         "/super-admin/users",
-        "Everyone on the instance. Provision a user and edit membership across organizations.",
+        "Everyone on the instance. Invite or provision a user and edit membership across organizations.",
         [
+          "Invite someone by email into a team organization",
           "Provision a user into one or more organizations",
           "Role is chosen per organization",
           "Manage that person's access across organizations",
@@ -427,6 +431,17 @@ const GROUPS: CatalogGroup[] = [
         ],
         "The LiteLLM key is plain text. Confirm it is not logged or written to localStorage, and that closing the dialog removes it from the page.",
         "Provisioning",
+      ),
+      MODAL(
+        "Invite by email",
+        "super-admin-invite",
+        "Invites people by email into a team organization the Super Admin may not belong to.",
+        [
+          "Pick the team organization and the role, including owner",
+          "Shows each invite link when email delivery is off",
+        ],
+        "Confirm a Super Admin who is not a member can invite, personal workspaces are not offered, and the link works for someone with no account.",
+        "Membership",
       ),
       MODAL(
         "Manage user",

@@ -193,6 +193,16 @@ function FrameBody({ frameId }: { frameId: string }) {
       return <ProvisionFrame />;
     case "provision-credentials":
       return <ProvisionCredentialsFrame />;
+    case "super-admin-invite":
+      return (
+        <InviteOrganizationMemberModal
+          organizations={[
+            { id: "2", name: "Acme Corp" },
+            { id: "3", name: "Beta LLC" },
+          ]}
+          onClose={noop}
+        />
+      );
     case "manage-user":
       return (
         <SuperAdminUserGroupsModal
