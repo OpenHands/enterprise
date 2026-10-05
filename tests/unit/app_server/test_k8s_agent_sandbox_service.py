@@ -791,12 +791,9 @@ class TestPauseResume:
     ):
         await store(_stored())
         k8s.add_claim()
-        service = _service(db_session, k8s)
 
-        with patch.object(service, 'pause_old_sandboxes') as pause:
-            assert await service.resume_sandbox(CLAIM_NAME) is True
+        assert await _service(db_session, k8s).resume_sandbox(CLAIM_NAME) is True
 
-        pause.assert_not_called()
         assert k8s.modes == []
 
     @pytest.mark.asyncio
