@@ -1,13 +1,14 @@
-"""Tests for the dev IDP module — a real ``oauth_providers`` row that plugs
-into the OAuth v2 flow as an email+password login (OHE-3381).
+"""Tests for the dev IDP module — an in-memory sentinel IDP that plugs into
+the OAuth v2 flow as an email+password login (OHE-3381).
 
 These tests exercise:
 
 * ``derive_dev_idp_user_id`` — deterministic, case-insensitive UUID derivation
 * ``is_dev_idp_available`` — gating logic (self-hosted + no real IDP)
-* ``GET /oauth/idp-login`` — redirects to the dev IDP's real provider row
-* ``GET /oauth/{id}/login`` — redirects dev-idp-category rows to the
-  dedicated email+password pages instead of starting an OAuth flow
+* ``get_dev_idp_if_available`` — sentinel returned when available
+* ``GET /oauth/idp-login`` — redirects to the dev IDP sentinel provider
+* ``GET /oauth/{DEV_IDP_PROVIDER_ID}/login`` — redirects to the dedicated
+  email+password pages instead of starting an OAuth flow
 * ``GET /oauth/dev-idp/login`` / ``GET /oauth/dev-idp/signup`` — serve the
   HTML forms
 * ``POST /oauth/dev-idp/signup`` — creates an account, hashes the password,
@@ -32,8 +33,11 @@ from server.auth.password_hashing import hash_password
 from server.routes import dev_idp
 from server.routes.dev_idp import (
     DEV_IDP_LOGIN_PATH,
+    DEV_IDP_PROVIDER_ID,
     DEV_IDP_SIGNUP_PATH,
+    DevIdpProvider,
     derive_dev_idp_user_id,
+    get_dev_idp_if_available,
     is_dev_idp_available,
 )
 
@@ -76,17 +80,6 @@ def _mock_user(
     user.user_consents_to_analytics = False
     user.password_hash = password_hash
     return user
-
-
-def _fake_provider(provider_id: int = 1, category: str = 'dev_idp'):
-    from storage.oauth_provider import OAuthProvider
-
-    provider = MagicMock(spec=OAuthProvider)
-    provider.id = provider_id
-    provider.provider_category = category
-    provider.is_idp = True
-    provider.authorization_url = None
-    return provider
 
 
 @contextmanager
@@ -190,46 +183,56 @@ class TestIsDevIdpAvailable:
         assert result is False
 
 
-# ── OAuthProviderStore._has_real_idp excludes the dev IDP's own row ───────
+# ── get_dev_idp_if_available (sentinel) ────────────────────────────────────
 
 
-class TestHasRealIdpExcludesDevIdp:
-    @pytest.mark.asyncio
-    async def test_dev_idp_row_alone_is_not_a_real_idp(self):
-        """A lone ``is_idp=True`` row with category ``dev_idp`` doesn't count."""
-        from storage.oauth_provider_store import OAuthProviderStore
+class TestGetDevIdpIfAvailable:
+    def test_returns_sentinel_when_available(self):
+        with _available():
+            import asyncio
 
-        fake_session = MagicMock()
-        fake_result = MagicMock()
-        fake_result.scalar_one_or_none.return_value = None
-        fake_session.execute = AsyncMock(return_value=fake_result)
-        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-        fake_session.__aexit__ = AsyncMock(return_value=False)
+            result = asyncio.run(get_dev_idp_if_available())
+        assert result is not None
+        assert isinstance(result, DevIdpProvider)
+        assert result.id == DEV_IDP_PROVIDER_ID
 
-        with patch(
-            'storage.oauth_provider_store.a_session_maker',
-            return_value=fake_session,
+    def test_returns_none_on_cloud(self):
+        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+            import asyncio
+
+            result = asyncio.run(get_dev_idp_if_available())
+        assert result is None
+
+    def test_returns_none_when_real_idp_configured(self):
+        with (
+            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            patch(
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
-            result = await OAuthProviderStore()._has_real_idp()
-        assert result is False
+            import asyncio
+
+            result = asyncio.run(get_dev_idp_if_available())
+        assert result is None
 
 
 # ── GET /oauth/idp-login redirect ─────────────────────────────────────────
 
 
 class TestIdpLoginRedirect:
-    def test_redirects_to_dev_idp_provider_row(self, client):
-        """``/oauth/idp-login`` redirects to ``/oauth/{id}/login`` of the
-        real (seeded) dev IDP row when it's the only IDP available."""
-        provider = _fake_provider(provider_id=3, category='dev_idp')
+    def test_redirects_to_dev_idp_sentinel(self, client):
+        """``/oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``
+        when the dev IDP sentinel is the only IDP available."""
         with patch(
             'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
-            return_value=provider,
+            return_value=DevIdpProvider(),
         ):
             response = client.get('/oauth/idp-login', follow_redirects=False)
         assert response.status_code == 302
-        assert '/oauth/3/login' in response.headers['location']
+        assert f'/oauth/{DEV_IDP_PROVIDER_ID}/login' in response.headers['location']
 
     def test_returns_404_when_no_idp_configured(self, client):
         with patch(
@@ -241,36 +244,22 @@ class TestIdpLoginRedirect:
         assert response.status_code == 404
 
 
-# ── GET /oauth/{id}/login redirects dev-idp rows to the dedicated pages ───
+# ── GET /oauth/{DEV_IDP_PROVIDER_ID}/login redirects to the dedicated pages ──
 
 
 class TestOAuthV2LoginRedirectsDevIdp:
     def test_redirects_to_dev_idp_login_page(self, client):
-        provider = _fake_provider(provider_id=5, category='dev_idp')
-        with (
-            _available(),
-            patch(
-                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
-                new_callable=AsyncMock,
-                return_value=provider,
-            ),
-        ):
-            response = client.get('/oauth/5/login', follow_redirects=False)
+        with _available():
+            response = client.get(
+                f'/oauth/{DEV_IDP_PROVIDER_ID}/login', follow_redirects=False
+            )
         assert response.status_code == 302
         assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.headers['location']
 
     def test_forwards_redirect_url(self, client):
-        provider = _fake_provider(provider_id=5, category='dev_idp')
-        with (
-            _available(),
-            patch(
-                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
-                new_callable=AsyncMock,
-                return_value=provider,
-            ),
-        ):
+        with _available():
             response = client.get(
-                '/oauth/5/login',
+                f'/oauth/{DEV_IDP_PROVIDER_ID}/login',
                 params={'redirect_url': '/dashboard'},
                 follow_redirects=False,
             )
@@ -278,46 +267,23 @@ class TestOAuthV2LoginRedirectsDevIdp:
         assert 'redirect_url=%2Fdashboard' in location
 
     def test_404_when_unavailable(self, client):
-        provider = _fake_provider(provider_id=5, category='dev_idp')
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'),
-            patch(
-                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
-                new_callable=AsyncMock,
-                return_value=provider,
-            ),
-        ):
-            response = client.get('/oauth/5/login', follow_redirects=False)
+        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+            response = client.get(
+                f'/oauth/{DEV_IDP_PROVIDER_ID}/login', follow_redirects=False
+            )
         assert response.status_code == 404
 
 
-# ── GET /oauth/{id}/callback 404s for the dev IDP row ─────────────────────
+# ── GET /oauth/{DEV_IDP_PROVIDER_ID}/callback 404s ────────────────────────
 
 
 class TestOAuthV2CallbackRejectsDevIdp:
     def test_404_for_dev_idp_provider(self, client):
-        provider = _fake_provider(provider_id=5, category='dev_idp')
-        with (
-            patch(
-                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
-                new_callable=AsyncMock,
-                return_value=provider,
-            ),
-            patch(
-                'server.routes.oauth_v2._decrypt_state',
-                return_value={
-                    'redirect_url': '/',
-                    'mode': 'login',
-                    'user_id': None,
-                    'nonce': 'n',
-                },
-            ),
-        ):
-            response = client.get(
-                '/oauth/5/callback',
-                params={'code': 'x', 'state': 'y'},
-                follow_redirects=False,
-            )
+        response = client.get(
+            f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
+            params={'code': 'x', 'state': 'y'},
+            follow_redirects=False,
+        )
         assert response.status_code == 404
 
 
@@ -703,9 +669,7 @@ class TestCompleteDevIdpLogin:
         from datetime import datetime, timezone
 
         user_id = derive_dev_idp_user_id('dev@example.com')
-        mock_user = _mock_user(
-            user_id=user_id, accepted_tos=datetime.now(timezone.utc)
-        )
+        mock_user = _mock_user(user_id=user_id, accepted_tos=datetime.now(timezone.utc))
         request = MagicMock()
 
         with (

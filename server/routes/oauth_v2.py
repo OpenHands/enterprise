@@ -36,7 +36,7 @@ from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.encrypt_utils import get_jwt_service
-from storage.oauth_provider import DEV_IDP_CATEGORY, OAuthProvider
+from storage.oauth_provider import OAuthProvider
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token_store import OAuthTokenStore
@@ -399,15 +399,16 @@ async def oauth_v2_login(
     Encodes an encrypted state blob (redirect URL, mode, nonce) and redirects
     the browser to the provider's authorization URL.
     """
-    provider = await _get_provider(provider_id)
+    # Dev IDP is handled by its own routes (registered before this router).
+    # The sentinel provider id (-1) never matches a real DB row, so intercept
+    # it here and redirect to the dedicated email+password login page.
+    from server.routes.dev_idp import (
+        DEV_IDP_LOGIN_PATH,
+        DEV_IDP_PROVIDER_ID,
+        is_dev_idp_available,
+    )
 
-    # The dev IDP is a real ``oauth_providers`` row but has no external
-    # authorization endpoint — it's handled by its own email+password routes
-    # in ``server.routes.dev_idp``. Redirect there instead of trying (and
-    # failing, since ``authorization_url`` is NULL) to start an OAuth flow.
-    from server.routes.dev_idp import DEV_IDP_LOGIN_PATH, is_dev_idp_available
-
-    if provider.provider_category == DEV_IDP_CATEGORY:
+    if provider_id == DEV_IDP_PROVIDER_ID:
         if not await is_dev_idp_available():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -423,6 +424,8 @@ async def oauth_v2_login(
         if params:
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
+
+    provider = await _get_provider(provider_id)
 
     auth_url = provider.authorization_url
     if not auth_url:
@@ -468,6 +471,15 @@ async def oauth_v2_callback(
     Exchanges the code, persists tokens, and either links the provider to the
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
+    # Dev IDP callbacks are handled by dedicated routes.
+    from server.routes.dev_idp import DEV_IDP_PROVIDER_ID
+
+    if provider_id == DEV_IDP_PROVIDER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Development IDP callback must use POST with email field',
+        )
+
     if error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -488,17 +500,6 @@ async def oauth_v2_callback(
         ) from exc
 
     provider = await _get_provider(provider_id)
-
-    # The dev IDP has no external redirect — its login/signup POST routes
-    # (``server.routes.dev_idp``) complete the flow directly.
-    if provider.provider_category == DEV_IDP_CATEGORY:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                'Development IDP has no OAuth callback; '
-                'use POST /oauth/dev-idp/login or /oauth/dev-idp/signup'
-            ),
-        )
 
     web_url = get_web_url(request)
     redirect_uri = f'{web_url}/oauth/{provider_id}/callback'

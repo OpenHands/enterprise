@@ -1,9 +1,9 @@
-"""Revision 175 adds ``user.password_hash`` and seeds the dev IDP row.
+"""Revision 175 adds ``user.password_hash`` for the dev IDP password login.
 
-Unlike most of the schema, this migration also inserts data (the single dev
-IDP ``oauth_providers`` row) unconditionally on every deployment. These tests
-run against a freshly-migrated database rather than the shared ``test_database``
-fixture, because the per-test template has its seeded rows truncated (see
+The dev IDP is an in-memory sentinel (not a row in ``oauth_providers``), so
+this migration only adds the ``password_hash`` column. These tests run against
+a freshly-migrated database rather than the shared ``test_database`` fixture,
+because the per-test template has its seeded rows truncated (see
 ``tests.postgres_testdb._empty_tables``) so other tests get a blank slate.
 """
 
@@ -38,9 +38,7 @@ def fresh_database(
 def fresh_engine(
     postgres_server: postgres_testdb.PostgresServer, fresh_database: str
 ) -> Iterator[Engine]:
-    engine = create_engine(
-        postgres_server.sync_url(fresh_database), poolclass=NullPool
-    )
+    engine = create_engine(postgres_server.sync_url(fresh_database), poolclass=NullPool)
     try:
         yield engine
     finally:
@@ -56,7 +54,7 @@ def test_upgrade_adds_password_hash_column(
     with fresh_engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT data_type, is_nullable FROM information_schema.columns "
+                'SELECT data_type, is_nullable FROM information_schema.columns '
                 "WHERE table_name = 'user' AND column_name = 'password_hash'"
             )
         ).one()
@@ -64,29 +62,7 @@ def test_upgrade_adds_password_hash_column(
     assert row.is_nullable == 'YES'
 
 
-def test_upgrade_seeds_exactly_one_dev_idp_row(
-    postgres_server: postgres_testdb.PostgresServer,
-    fresh_database: str,
-    fresh_engine: Engine,
-):
-    postgres_testdb.run_alembic(postgres_server, fresh_database, 'upgrade', 'head')
-    with fresh_engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                'SELECT provider_category, display_name, is_idp, client_id, '
-                'client_secret, authorization_url '
-                "FROM oauth_providers WHERE provider_category = 'dev_idp'"
-            )
-        ).all()
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.is_idp is True
-    assert row.client_id == 'dev-idp'
-    assert row.client_secret is None
-    assert row.authorization_url is None
-
-
-def test_downgrade_removes_column_and_seeded_row(
+def test_downgrade_removes_password_hash_column(
     postgres_server: postgres_testdb.PostgresServer,
     fresh_database: str,
     fresh_engine: Engine,
@@ -97,25 +73,8 @@ def test_downgrade_removes_column_and_seeded_row(
     with fresh_engine.connect() as conn:
         column_count = conn.execute(
             text(
-                "SELECT count(*) FROM information_schema.columns "
+                'SELECT count(*) FROM information_schema.columns '
                 "WHERE table_name = 'user' AND column_name = 'password_hash'"
             )
         ).scalar_one()
-        provider_count = conn.execute(
-            text(
-                "SELECT count(*) FROM oauth_providers "
-                "WHERE provider_category = 'dev_idp'"
-            )
-        ).scalar_one()
     assert column_count == 0
-    assert provider_count == 0
-
-    postgres_testdb.run_alembic(postgres_server, fresh_database, 'upgrade', 'head')
-    with fresh_engine.connect() as conn:
-        provider_count = conn.execute(
-            text(
-                "SELECT count(*) FROM oauth_providers "
-                "WHERE provider_category = 'dev_idp'"
-            )
-        ).scalar_one()
-    assert provider_count == 1

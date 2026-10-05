@@ -35,23 +35,13 @@ from storage.encrypt_utils import EncryptedJSON
 # IDP actually rejects it.
 DEFAULT_PERMITTED_DRIFT_SECONDS = 60
 
-# ``provider_category`` of the dev IDP row seeded by migration 175 — an
-# email+password login that works without any external OAuth/OIDC provider.
-# Not a ``ProviderType`` enum member: it is never a *git* provider, and it
-# never leaves this process to talk to an external authorization/token/
-# userinfo endpoint (those three columns are ``NULL`` on its row). See
-# ``server.routes.dev_idp`` for the login/sign-up routes and the
-# ``DEPLOYMENT_MODE`` + "no other real IDP configured" availability gate.
-DEV_IDP_CATEGORY = 'dev_idp'
-
 
 class OAuthProvider(Base):
     """Per-provider OAuth/OIDC configuration.
 
     Seeded by migration 168 from environment variables (one row for the IDP —
-    Keycloak — and one row per configured git provider) and by migration 175
-    (the dev IDP's own row, unconditionally). Runtime config changes go
-    through ``OAuthProviderStore``.
+    Keycloak — and one row per configured git provider). Runtime config changes
+    go through ``OAuthProviderStore``.
     """
 
     __tablename__ = 'oauth_providers'

@@ -4,22 +4,17 @@ This module provides a login path that does **not** depend on Keycloak or any
 external identity provider. It is intended for self-hosted / trial installs
 that have no real IDP configured yet.
 
-**Design**: the dev IDP is a *real* row in ``oauth_providers``
-(``provider_category = 'dev_idp'``, ``is_idp = True``), seeded by migration
-175 — not a synthetic/in-memory object. It plugs into the existing OAuth v2
-flow like any other IDP:
+**Design**: the dev IDP plugs into the existing OAuth v2 flow as if it were a
+regular IDP provider, but is modeled as an in-memory sentinel
+(``DevIdpProvider``, id = ``DEV_IDP_PROVIDER_ID``) rather than a row in
+``oauth_providers``. When no real IDP is configured and the deployment is
+self-hosted:
 
-* ``OAuthProviderStore.get_first_idp()`` / ``get_idp_providers()`` include the
-  dev IDP row only when it is *active* — ``DEPLOYMENT_MODE == 'self_hosted'``
-  and no other real IDP is configured (``_has_real_idp()`` excludes the dev
-  IDP's own row, so configuring a real IDP later disables it).
-* ``GET /oauth/idp-login`` redirects to ``/oauth/{id}/login``, where ``id`` is
-  the dev IDP row's real (positive) database id. ``GET /oauth/{id}/login``
-  (in ``server.routes.oauth_v2``) recognizes the row by
-  ``provider_category == DEV_IDP_CATEGORY`` and redirects to
-  ``/oauth/dev-idp/login`` — a dedicated, fixed path (not keyed by the row's
-  id, which depends on insert order and isn't worth hardcoding) served by
-  this module.
+* ``OAuthProviderStore.get_first_idp()`` returns the ``DevIdpProvider``
+  sentinel.
+* ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
+  which ``oauth_v2`` intercepts and redirects to the fixed
+  ``/oauth/dev-idp/login`` page served by this module.
 * Unlike a real IDP, the dev IDP requires a **password**: ``GET
   /oauth/dev-idp/login`` and ``GET /oauth/dev-idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
@@ -29,8 +24,8 @@ flow like any other IDP:
   ``User.password_hash`` — never sent anywhere but this process, and never
   accepted via query string/GET.
 
-When the dev IDP is not active (real IDP configured, or cloud deployment),
-every route in this module returns ``404``.
+When a real IDP is configured, the sentinel is not returned and every route
+in this module returns ``404``.
 
 **This IDP is intentionally insecure** (no rate limiting, no email
 verification, no password-reset flow). It must never be enabled on cloud
@@ -40,6 +35,7 @@ verification, no password-reset flow). It must never be enabled on cloud
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -59,17 +55,20 @@ from server.auth.password_hashing import (
 from server.constants import DEPLOYMENT_MODE
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
-from storage.oauth_provider import DEV_IDP_CATEGORY
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.user import User
 from storage.user_store import UserStore
 
 dev_idp_router = APIRouter(prefix='/oauth', tags=['Dev IDP'])
 
+# Sentinel provider ID used by the dev IDP.  Negative so it can never collide
+# with a real DB row (Identity columns start at 1).
+DEV_IDP_PROVIDER_ID = -1
+DEV_IDP_CATEGORY = 'dev_idp'
+
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
-# the seeded row's database id (which depends on insert order and isn't worth
-# hardcoding). ``server.routes.oauth_v2`` redirects here once it resolves a
-# provider row to have ``provider_category == DEV_IDP_CATEGORY``.
+# the sentinel provider id. ``server.routes.oauth_v2`` redirects here once it
+# intercepts ``provider_id == DEV_IDP_PROVIDER_ID``.
 DEV_IDP_LOGIN_PATH = 'dev-idp/login'
 DEV_IDP_SIGNUP_PATH = 'dev-idp/signup'
 
@@ -78,6 +77,28 @@ DEV_IDP_SIGNUP_PATH = 'dev-idp/signup'
 # must be stable across calls for the same external identity (there is no
 # Keycloak ``sub`` for the dev IDP, so the email itself fills that role).
 _DEV_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+
+
+@dataclass(frozen=True)
+class DevIdpProvider:
+    """Sentinel that quacks like ``OAuthProvider`` for the OAuth v2 flow.
+
+    Returned by ``OAuthProviderStore.get_first_idp()`` when no real IDP is
+    configured on a self-hosted deployment. The OAuth v2 routes check
+    ``provider.id == DEV_IDP_PROVIDER_ID`` to intercept and redirect to the
+    dev IDP email+password form instead of building an external OAuth URL.
+    """
+
+    id: int = DEV_IDP_PROVIDER_ID
+    provider_category: str = DEV_IDP_CATEGORY
+    display_name: str = 'Development IDP'
+    is_idp: bool = True
+    authorization_url: str | None = None
+    token_url: str | None = None
+    userinfo_url: str | None = None
+    scopes: list[str] | None = None
+    client_id: str = 'dev-idp'
+    client_secret: dict[str, str] | None = None
 
 
 def derive_dev_idp_user_id(email: str) -> str:
@@ -96,19 +117,33 @@ async def is_dev_idp_available() -> bool:
 
     Available when:
     * ``DEPLOYMENT_MODE == 'self_hosted'`` (never on cloud), AND
-    * No *other* real IDP is configured in ``oauth_providers`` — the dev
-      IDP's own seeded row is excluded from ``_has_real_idp()``. Once an
-      admin configures a real IDP, the dev IDP is disabled even though its
-      row remains in the table.
+    * No real IDP is configured in ``oauth_providers`` (no row with
+      ``is_idp = True``). Once an admin configures a real IDP, the dev
+      IDP is disabled.
+
+    Uses ``_has_real_idp()`` (direct DB query) instead of
+    ``get_idp_providers()`` to avoid infinite recursion: ``get_idp_providers``
+    calls ``get_dev_idp_if_available`` → ``is_dev_idp_available``.
     """
     if DEPLOYMENT_MODE != 'self_hosted':
         return False
     return not await OAuthProviderStore()._has_real_idp()
 
 
-def is_dev_idp_provider(provider) -> bool:
-    """Whether ``provider`` (an ``OAuthProvider`` row) is the dev IDP."""
-    return provider.provider_category == DEV_IDP_CATEGORY
+async def get_dev_idp_if_available() -> DevIdpProvider | None:
+    """Return the dev IDP sentinel if available, else ``None``.
+
+    Used by ``OAuthProviderStore.get_first_idp()`` and ``get_idp_providers()``
+    to make the dev IDP appear as a regular IDP when no real one is configured.
+    """
+    if await is_dev_idp_available():
+        return DevIdpProvider()
+    return None
+
+
+def is_dev_idp_provider_id(provider_id: int) -> bool:
+    """Whether ``provider_id`` refers to the dev IDP sentinel."""
+    return provider_id == DEV_IDP_PROVIDER_ID
 
 
 # ── dev IDP login / sign-up forms (served as HTML, no frontend changes) ────
