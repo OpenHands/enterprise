@@ -34,6 +34,15 @@ class User(Base):
     # Instance-level super role; org membership roles live on OrgMember.role_id.
     # Effective permissions are defined by SUPER_ROLE_PERMISSIONS.
     role_id: Mapped[int | None] = mapped_column(ForeignKey('role.id'), nullable=True)
+    is_disabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    deletion_pending: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     accepted_tos: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

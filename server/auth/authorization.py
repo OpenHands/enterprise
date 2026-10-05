@@ -115,6 +115,7 @@ class Permission(str, Enum):
     # role (``user.role_id``) on other users. This is deliberately a distinct,
     # explicit permission -- it is NOT implied by any org-scoped role and is
     # granted only to the ``superadmin`` super role.
+    MANAGE_USERS = 'manage_users'
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
 
     # Instance-level feature flag administration: create/update/delete flags
@@ -271,6 +272,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             Permission.INVITE_USER_TO_ORGANIZATION,
             Permission.MANAGE_SUPER_ADMINS,
+            Permission.MANAGE_USERS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
         ]

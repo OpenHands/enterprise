@@ -1095,6 +1095,7 @@ class UserStore:
         """
         target_uuid = uuid.UUID(user_id)
         async with a_session_maker() as session:
+            await session.execute(text('SELECT pg_advisory_xact_lock(176, 0)'))
             admin_role_id = await UserStore._get_super_admin_role_id(session)
             result = await session.execute(
                 select(User).filter(User.role_id == admin_role_id).with_for_update()
@@ -1112,7 +1113,10 @@ class UserStore:
                     else SuperAdminRevokeResult.NOT_SUPER_ADMIN
                 )
 
-            if len(super_admins) <= 1:
+            if (
+                not target.is_disabled
+                and sum(not u.is_disabled for u in super_admins) <= 1
+            ):
                 logger.warning(
                     'user_store:revoke_super_admin:refused_last_super_admin',
                     extra={'user_id': user_id},

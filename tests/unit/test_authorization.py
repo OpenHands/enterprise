@@ -1482,6 +1482,7 @@ class TestSuperRolePermissions:
                 Permission.PROVISION_USER,
                 Permission.INVITE_USER_TO_ORGANIZATION,
                 Permission.MANAGE_SUPER_ADMINS,
+                Permission.MANAGE_USERS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_ORG_QUOTA,
             ]

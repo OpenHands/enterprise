@@ -15,6 +15,7 @@ from server.auth.user.user_authorizer import (
 )
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
+from storage.user_store import UserStore
 
 logger = logging.getLogger(__name__)
 token_manager = TokenManager()
@@ -36,6 +37,9 @@ class DefaultUserAuthorizer(UserAuthorizer):
         email = user_info.email
         provider_type = user_info.identity_provider
         try:
+            user = await UserStore.get_user_by_id(user_id)
+            if user and user.is_disabled:
+                return UserAuthorizationResponse(success=False, error_detail='disabled')
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')
                 return UserAuthorizationResponse(
