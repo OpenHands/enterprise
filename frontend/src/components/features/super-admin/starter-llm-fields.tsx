@@ -9,71 +9,47 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { SettingsInput } from "#/components/features/settings/settings-input";
+import { useConfig } from "#/hooks/query/use-config";
+import { useProviderModels } from "#/hooks/query/use-provider-models";
+import { useSearchProviders } from "#/hooks/query/use-search-providers";
 import { I18nKey } from "#/i18n/declaration";
 import { ComboboxCaretInline } from "#/ui/combobox-caret";
 import { formControlFieldClassName } from "#/utils/form-control-classes";
+import { mapProvider } from "#/utils/map-provider";
 import { cn } from "#/utils/utils";
-
-const PROVIDERS = [
-  {
-    key: "openai",
-    label: "OpenAI",
-    models: [
-      { key: "gpt-4o", label: "GPT-4o" },
-      { key: "gpt-4o-mini", label: "GPT-4o mini" },
-    ],
-  },
-  {
-    key: "anthropic",
-    label: "Anthropic",
-    models: [
-      { key: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
-      { key: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
-    ],
-  },
-  {
-    key: "openhands",
-    label: "OpenHands",
-    models: [
-      { key: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
-      { key: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
-    ],
-  },
-] as const;
 
 type ModelOption = { key: string; label: string };
 
+export interface StarterLlmSelection {
+  provider: string | null;
+  model: string | null;
+  apiKey: string;
+}
+
 /**
- * Multi-select model menu. The closed control matches the provider dropdown;
- * the open panel keeps the checkboxes and All action.
+ * Single-select model menu. The closed control matches the provider dropdown;
+ * the open panel lists one radio per model.
  */
 function ModelSelect({
   models,
   selected,
   disabled,
   placeholder,
-  allLabel,
   label,
-  onToggle,
-  onSelectAll,
+  onSelect,
 }: {
   models: readonly ModelOption[];
-  selected: string[];
+  selected: string | null;
   disabled: boolean;
   placeholder: string;
-  allLabel: string;
   label: string;
-  onToggle: (key: string) => void;
-  onSelectAll: () => void;
+  onSelect: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<CSSProperties>();
-  const summary = models
-    .filter((item) => selected.includes(item.key))
-    .map((item) => item.label)
-    .join(", ");
+  const summary = models.find((item) => item.key === selected)?.label;
 
   useLayoutEffect(() => {
     if (!open) {
@@ -164,27 +140,23 @@ function ModelSelect({
               className="fixed overflow-hidden rounded-xl border border-[var(--oh-border)] bg-content1 text-white shadow-lg"
               style={menuStyle}
             >
-              <div className="flex items-center justify-end border-b border-[var(--oh-border)] px-2 py-1.5">
-                <button
-                  type="button"
-                  data-testid="sa-nux-llm-model-all"
-                  className="rounded-md border border-[var(--oh-border)] bg-transparent px-2 py-0.5 text-xs text-white hover:border-white"
-                  onClick={onSelectAll}
-                >
-                  {allLabel}
-                </button>
-              </div>
-              <ul role="listbox" aria-label={label} aria-multiselectable="true">
+              <ul
+                role="listbox"
+                aria-label={label}
+                className="max-h-64 overflow-y-auto"
+              >
                 {models.map((item) => {
-                  const checked = selected.includes(item.key);
+                  const checked = item.key === selected;
                   return (
                     <li key={item.key} role="option" aria-selected={checked}>
                       <label className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm text-white hover:bg-white/5">
                         <input
-                          type="checkbox"
+                          type="radio"
                           className="h-4 w-4 accent-[#FFFF8B]"
                           checked={checked}
-                          onChange={() => onToggle(item.key)}
+                          onChange={() => onSelect(item.key)}
+                          // Click, not change, so picking the current model also closes the menu.
+                          onClick={() => setOpen(false)}
                         />
                         <span>{item.label}</span>
                       </label>
@@ -204,27 +176,30 @@ function ModelSelect({
  * The first LLM settings controls, so a new install can pick a provider
  * without leaving the starter modal.
  */
-export function StarterLlmFields() {
+export function StarterLlmFields({
+  value,
+  onChange,
+}: {
+  value: StarterLlmSelection;
+  onChange: (next: StarterLlmSelection) => void;
+}) {
   const { t } = useTranslation();
-  const [provider, setProvider] = useState<string | null>(null);
-  const [modelsSelected, setModelsSelected] = useState<string[]>([]);
-  const [apiKey, setApiKey] = useState("");
-  const models = PROVIDERS.find((item) => item.key === provider)?.models ?? [];
-  const allSelected =
-    models.length > 0 &&
-    models.every((item) => modelsSelected.includes(item.key));
-
-  const toggleModel = (key: string) => {
-    setModelsSelected((current) =>
-      current.includes(key)
-        ? current.filter((item) => item !== key)
-        : [...current, key],
-    );
-  };
-
-  const selectAllModels = () => {
-    setModelsSelected(allSelected ? [] : models.map((item) => item.key));
-  };
+  const { data: config } = useConfig();
+  const { data: providers = [] } = useSearchProviders();
+  const { data: providerModels = [] } = useProviderModels(value.provider);
+  // Same list as the org LLM form's ModelSelector: hidden aliases are left
+  // out and verified models come first.
+  const visibleModels = providerModels.filter((item) => !item.hidden);
+  const models = [
+    ...visibleModels.filter((item) => item.verified),
+    ...visibleModels.filter((item) => !item.verified),
+  ].map((item) => ({ key: item.name, label: item.name }));
+  // Same rule as the org LLM form: no key for OpenHands models, or when the
+  // install turns off user LLM configuration.
+  const showApiKey =
+    !!value.provider &&
+    value.provider !== "openhands" &&
+    config?.feature_flags?.allow_user_llm_configuration !== false;
 
   return (
     <div
@@ -236,30 +211,35 @@ export function StarterLlmFields() {
         name="provider"
         label={t(I18nKey.LLM$PROVIDER)}
         placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
-        items={PROVIDERS.map(({ key, label }) => ({ key, label }))}
-        selectedKey={provider}
+        items={providers.map((item) => ({
+          key: item.name,
+          label: mapProvider(item.name),
+        }))}
+        selectedKey={value.provider}
         onSelectionChange={(key) => {
-          setProvider(key == null ? null : String(key));
-          setModelsSelected([]);
+          // A key typed for another provider is never sent with this one.
+          onChange({
+            provider: key == null ? null : String(key),
+            model: null,
+            apiKey: "",
+          });
         }}
       />
       <ModelSelect
         label={t(I18nKey.LLM$MODEL)}
         placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-        allLabel={t(I18nKey.SETTINGS$ALL)}
         models={models}
-        selected={modelsSelected}
-        disabled={!provider}
-        onToggle={toggleModel}
-        onSelectAll={selectAllModels}
+        selected={value.model}
+        disabled={models.length === 0}
+        onSelect={(model) => onChange({ ...value, model })}
       />
-      {provider && provider !== "openhands" ? (
+      {showApiKey ? (
         <SettingsInput
           testId="sa-nux-llm-api-key"
           label={t(I18nKey.SETTINGS_FORM$API_KEY)}
           type="password"
-          value={apiKey}
-          onChange={setApiKey}
+          value={value.apiKey}
+          onChange={(apiKey) => onChange({ ...value, apiKey })}
           autoComplete="off"
         />
       ) : null}
