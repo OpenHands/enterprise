@@ -1,6 +1,7 @@
 """Store for ``oauth_providers`` — CRUD + IDP/git provider lookups.
 
-The provider table is seeded by migration 168 from environment variables, but
+The provider table is seeded by migration 168 from environment variables
+(real IDP/git providers) and migration 175 (the dev IDP's own row), but
 runtime reads and (future) config mutations go through this store.
 """
 
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.database import a_session_maker
-from storage.oauth_provider import OAuthProvider
+from storage.oauth_provider import DEV_IDP_CATEGORY, OAuthProvider
 
 
 @dataclass
@@ -39,60 +40,64 @@ class OAuthProviderStore:
             return list(result.scalars().all())
 
     async def _has_real_idp(self) -> bool:
-        """Whether any real IDP provider exists in ``oauth_providers``.
+        """Whether any *real* (non-dev) IDP provider exists in ``oauth_providers``.
 
-        Queries the DB directly without the dev IDP sentinel fallback so it
-        is safe to call from ``is_dev_idp_available()`` (which would otherwise
-        recurse through ``get_idp_providers`` → ``get_dev_idp_if_available``).
+        Excludes the dev IDP's own seeded row (``DEV_IDP_CATEGORY``) so this
+        stays safe to call from ``is_dev_idp_available()`` — otherwise the
+        dev IDP row's mere existence would make it permanently unavailable.
         """
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProvider.id).where(OAuthProvider.is_idp.is_(True)).limit(1)
+                select(OAuthProvider.id)
+                .where(OAuthProvider.is_idp.is_(True))
+                .where(OAuthProvider.provider_category != DEV_IDP_CATEGORY)
+                .limit(1)
             )
             return result.scalar_one_or_none() is not None
 
-    async def get_idp_providers(self) -> list:
-        """Return all IDP providers, including the dev IDP sentinel if active.
+    async def _dev_idp_active(self) -> bool:
+        """Whether the dev IDP row should be surfaced as a usable IDP.
 
-        When no real IDP is configured and the deployment is self-hosted, the
-        dev IDP sentinel (``DevIdpProvider``) is prepended to the list so the
-        OAuth v2 flow treats it as a regular IDP.
+        Deferred import: ``server.routes.dev_idp`` imports ``OAuthProviderStore``
+        at module level, so importing it back here at module level would be
+        circular. This re-shares ``is_dev_idp_available()`` as the single
+        source of truth for the gate (self-hosted + no other real IDP
+        configured) instead of duplicating its logic.
+        """
+        from server.routes.dev_idp import is_dev_idp_available
+
+        return await is_dev_idp_available()
+
+    async def get_idp_providers(self) -> list[OAuthProvider]:
+        """Return all IDP providers.
+
+        The dev IDP's seeded row is excluded unless it is *active*
+        (self-hosted, no other real IDP configured) — see ``_dev_idp_active``.
+        Because ``_has_real_idp`` already requires the dev IDP to be the only
+        ``is_idp`` row for it to be active, this never mixes the dev IDP with
+        a real one.
         """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(OAuthProvider)
-                .where(OAuthProvider.is_idp.is_(True))
-                .order_by(OAuthProvider.id)
-            )
-            providers = list(result.scalars().all())
-        if not providers:
-            from server.routes.dev_idp import get_dev_idp_if_available
+            query = select(OAuthProvider).where(OAuthProvider.is_idp.is_(True))
+            if not await self._dev_idp_active():
+                query = query.where(OAuthProvider.provider_category != DEV_IDP_CATEGORY)
+            result = await session.execute(query.order_by(OAuthProvider.id))
+            return list(result.scalars().all())
 
-            dev = await get_dev_idp_if_available()
-            if dev is not None:
-                return [dev]
-        return providers
+    async def get_first_idp(self) -> OAuthProvider | None:
+        """Return the first IDP provider (lowest id), or ``None`` if none.
 
-    async def get_first_idp(self):
-        """Return the first IDP provider, or the dev IDP sentinel if active.
-
-        When no real IDP is configured and the deployment is self-hosted, the
-        dev IDP sentinel (``DevIdpProvider``) is returned so ``/oauth/idp-login``
-        redirects to the dev IDP email-entry form instead of returning 404.
+        The dev IDP's seeded row is excluded unless it is *active* — see
+        ``get_idp_providers``.
         """
         async with a_session_maker() as session:
+            query = select(OAuthProvider).where(OAuthProvider.is_idp.is_(True))
+            if not await self._dev_idp_active():
+                query = query.where(OAuthProvider.provider_category != DEV_IDP_CATEGORY)
             result = await session.execute(
-                select(OAuthProvider)
-                .where(OAuthProvider.is_idp.is_(True))
-                .order_by(OAuthProvider.id)
-                .limit(1)
+                query.order_by(OAuthProvider.id).limit(1)
             )
-            provider = result.scalars().one_or_none()
-        if provider is not None:
-            return provider
-        from server.routes.dev_idp import get_dev_idp_if_available
-
-        return await get_dev_idp_if_available()
+            return result.scalars().one_or_none()
 
     async def get_first_by_category(self, category: str) -> OAuthProvider | None:
         """Return the first provider matching ``provider_category`` (lowest ``id``).

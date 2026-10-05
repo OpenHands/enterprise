@@ -1,30 +1,38 @@
-"""Tests for the dev IDP module — virtual IDP that plugs into the OAuth v2 flow.
+"""Tests for the dev IDP module — a real ``oauth_providers`` row that plugs
+into the OAuth v2 flow as an email+password login (OHE-3381).
 
 These tests exercise:
 
 * ``derive_dev_idp_user_id`` — deterministic, case-insensitive UUID derivation
 * ``is_dev_idp_available`` — gating logic (self-hosted + no real IDP)
-* ``DevIdpProvider`` sentinel — shape and fields
-* ``get_first_idp`` — returns the sentinel when no real IDP is configured
-* ``GET /oauth/idp-login`` — redirects to the dev IDP login form
-* ``GET /oauth/-1/login`` — serves the HTML email-entry form
-* ``POST /oauth/-1/callback`` — completes login (user creation, cookie, redirect)
-* ``GET /oauth/-1/callback`` — redirects to form when no email, handles email
-* Error cases — 404 when dev IDP unavailable
+* ``GET /oauth/idp-login`` — redirects to the dev IDP's real provider row
+* ``GET /oauth/{id}/login`` — redirects dev-idp-category rows to the
+  dedicated email+password pages instead of starting an OAuth flow
+* ``GET /oauth/dev-idp/login`` / ``GET /oauth/dev-idp/signup`` — serve the
+  HTML forms
+* ``POST /oauth/dev-idp/signup`` — creates an account, hashes the password,
+  completes the login
+* ``POST /oauth/dev-idp/login`` — verifies the password, completes the login
+* Error cases — 404 when unavailable, invalid credentials, taken email,
+  password validation
 """
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
+from server.auth.password_hashing import hash_password
 from server.routes import dev_idp
 from server.routes.dev_idp import (
-    DEV_IDP_PROVIDER_ID,
-    DevIdpProvider,
+    DEV_IDP_LOGIN_PATH,
+    DEV_IDP_SIGNUP_PATH,
     derive_dev_idp_user_id,
     is_dev_idp_available,
 )
@@ -38,8 +46,8 @@ def app():
     from server.routes import oauth_v2
 
     application = FastAPI()
-    # Register dev_idp first (as in saas_server.py) so literal routes match
-    # before the parameterized oauth_v2 routes.
+    # Register dev_idp first (as in saas_server.py) so its literal routes
+    # match before the parameterized oauth_v2 routes.
     application.include_router(dev_idp.dev_idp_router)
     application.include_router(dev_idp.dev_idp_status_router)
     application.include_router(oauth_v2.oauth_v2_router)
@@ -52,7 +60,11 @@ def client(app):
 
 
 def _mock_user(
-    *, user_id: str | None = None, email: str = 'dev@example.com', accepted_tos=None
+    *,
+    user_id: str | None = None,
+    email: str = 'dev@example.com',
+    accepted_tos=None,
+    password_hash: str | None = None,
 ):
     """Create a mock User object."""
     import uuid
@@ -62,7 +74,43 @@ def _mock_user(
     user.email = email
     user.accepted_tos = accepted_tos
     user.user_consents_to_analytics = False
+    user.password_hash = password_hash
     return user
+
+
+def _fake_provider(provider_id: int = 1, category: str = 'dev_idp'):
+    from storage.oauth_provider import OAuthProvider
+
+    provider = MagicMock(spec=OAuthProvider)
+    provider.id = provider_id
+    provider.provider_category = category
+    provider.is_idp = True
+    provider.authorization_url = None
+    return provider
+
+
+@contextmanager
+def _available():
+    """Make the dev IDP available (self-hosted, no real IDP configured)."""
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted')
+        )
+        stack.enter_context(
+            patch(
+                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                new_callable=AsyncMock,
+                return_value=False,
+            )
+        )
+        yield
+
+
+def _patch_complete_login():
+    return patch(
+        'server.routes.dev_idp._complete_dev_idp_login',
+        new_callable=AsyncMock,
+    )
 
 
 # ── derive_dev_idp_user_id ────────────────────────────────────────────────
@@ -100,24 +148,6 @@ class TestDeriveDevIdpUserId:
         uid = derive_dev_idp_user_id('dev@example.com')
         parsed = uuid.UUID(uid)
         assert parsed.version == 5
-
-
-# ── DevIdpProvider sentinel ───────────────────────────────────────────────
-
-
-class TestDevIdpProvider:
-    def test_default_fields(self):
-        provider = DevIdpProvider()
-        assert provider.id == DEV_IDP_PROVIDER_ID
-        assert provider.is_idp is True
-        assert provider.provider_category == 'dev_idp'
-        assert provider.display_name == 'Development IDP'
-
-    def test_is_frozen(self):
-        """DevIdpProvider is a frozen dataclass."""
-        provider = DevIdpProvider()
-        with pytest.raises(AttributeError):
-            provider.id = 999
 
 
 # ── is_dev_idp_available ──────────────────────────────────────────────────
@@ -160,155 +190,272 @@ class TestIsDevIdpAvailable:
         assert result is False
 
 
-# ── OAuthProviderStore.get_first_idp returns sentinel ─────────────────────
+# ── OAuthProviderStore._has_real_idp excludes the dev IDP's own row ───────
 
 
-class TestGetFirstIdp:
-    def test_returns_dev_idp_when_no_real_idp(self):
-        """When no real IDP exists, get_first_idp returns the DevIdpProvider sentinel."""
+class TestHasRealIdpExcludesDevIdp:
+    @pytest.mark.asyncio
+    async def test_dev_idp_row_alone_is_not_a_real_idp(self):
+        """A lone ``is_idp=True`` row with category ``dev_idp`` doesn't count."""
         from storage.oauth_provider_store import OAuthProviderStore
 
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch.object(
-                OAuthProviderStore,
-                'get_by_id',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
+        fake_session = MagicMock()
+        fake_result = MagicMock()
+        fake_result.scalar_one_or_none.return_value = None
+        fake_session.execute = AsyncMock(return_value=fake_result)
+        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            'storage.oauth_provider_store.a_session_maker',
+            return_value=fake_session,
         ):
-            # Simulate what get_first_idp does: query DB (returns None),
-            # then fall back to dev IDP.
-            import asyncio
-
-            from server.routes.dev_idp import get_dev_idp_if_available
-
-            result = asyncio.run(get_dev_idp_if_available())
-        assert result is not None
-        assert result.id == DEV_IDP_PROVIDER_ID
-        assert result.is_idp is True
+            result = await OAuthProviderStore()._has_real_idp()
+        assert result is False
 
 
 # ── GET /oauth/idp-login redirect ─────────────────────────────────────────
 
 
 class TestIdpLoginRedirect:
-    def test_redirects_to_dev_idp_when_no_real_idp(self, client):
-        """``/oauth/idp-login`` redirects to the dev IDP login form."""
-        from server.routes.dev_idp import DevIdpProvider
-
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
-                new_callable=AsyncMock,
-                return_value=DevIdpProvider(),
-            ),
+    def test_redirects_to_dev_idp_provider_row(self, client):
+        """``/oauth/idp-login`` redirects to ``/oauth/{id}/login`` of the
+        real (seeded) dev IDP row when it's the only IDP available."""
+        provider = _fake_provider(provider_id=3, category='dev_idp')
+        with patch(
+            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            new_callable=AsyncMock,
+            return_value=provider,
         ):
             response = client.get('/oauth/idp-login', follow_redirects=False)
         assert response.status_code == 302
-        assert f'/oauth/{DEV_IDP_PROVIDER_ID}/login' in response.headers['location']
+        assert '/oauth/3/login' in response.headers['location']
 
-    def test_returns_404_when_dev_idp_unavailable(self, client):
-        """``/oauth/idp-login`` returns 404 when dev IDP is not available."""
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
+    def test_returns_404_when_no_idp_configured(self, client):
+        with patch(
+            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             response = client.get('/oauth/idp-login', follow_redirects=False)
         assert response.status_code == 404
 
 
-# ── GET /oauth/-1/login (HTML form) ───────────────────────────────────────
+# ── GET /oauth/{id}/login redirects dev-idp rows to the dedicated pages ───
+
+
+class TestOAuthV2LoginRedirectsDevIdp:
+    def test_redirects_to_dev_idp_login_page(self, client):
+        provider = _fake_provider(provider_id=5, category='dev_idp')
+        with (
+            _available(),
+            patch(
+                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
+                new_callable=AsyncMock,
+                return_value=provider,
+            ),
+        ):
+            response = client.get('/oauth/5/login', follow_redirects=False)
+        assert response.status_code == 302
+        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.headers['location']
+
+    def test_forwards_redirect_url(self, client):
+        provider = _fake_provider(provider_id=5, category='dev_idp')
+        with (
+            _available(),
+            patch(
+                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
+                new_callable=AsyncMock,
+                return_value=provider,
+            ),
+        ):
+            response = client.get(
+                '/oauth/5/login',
+                params={'redirect_url': '/dashboard'},
+                follow_redirects=False,
+            )
+        location = response.headers['location']
+        assert 'redirect_url=%2Fdashboard' in location
+
+    def test_404_when_unavailable(self, client):
+        provider = _fake_provider(provider_id=5, category='dev_idp')
+        with (
+            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'),
+            patch(
+                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
+                new_callable=AsyncMock,
+                return_value=provider,
+            ),
+        ):
+            response = client.get('/oauth/5/login', follow_redirects=False)
+        assert response.status_code == 404
+
+
+# ── GET /oauth/{id}/callback 404s for the dev IDP row ─────────────────────
+
+
+class TestOAuthV2CallbackRejectsDevIdp:
+    def test_404_for_dev_idp_provider(self, client):
+        provider = _fake_provider(provider_id=5, category='dev_idp')
+        with (
+            patch(
+                'server.routes.oauth_v2.OAuthProviderStore.get_by_id',
+                new_callable=AsyncMock,
+                return_value=provider,
+            ),
+            patch(
+                'server.routes.oauth_v2._decrypt_state',
+                return_value={
+                    'redirect_url': '/',
+                    'mode': 'login',
+                    'user_id': None,
+                    'nonce': 'n',
+                },
+            ),
+        ):
+            response = client.get(
+                '/oauth/5/callback',
+                params={'code': 'x', 'state': 'y'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 404
+
+
+# ── GET /oauth/dev-idp/login (HTML form) ──────────────────────────────────
 
 
 class TestDevIdpLoginForm:
     def test_serves_html_form(self, client):
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
-            response = client.get(f'/oauth/{DEV_IDP_PROVIDER_ID}/login')
+        with _available():
+            response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert response.status_code == 200
         assert 'text/html' in response.headers.get('content-type', '')
         assert 'email' in response.text.lower()
+        assert 'password' in response.text.lower()
         assert 'Development Login' in response.text
 
     def test_404_when_unavailable(self, client):
         with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
-            response = client.get(f'/oauth/{DEV_IDP_PROVIDER_ID}/login')
+            response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert response.status_code == 404
 
-    def test_form_posts_to_callback(self, client):
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
-            response = client.get(f'/oauth/{DEV_IDP_PROVIDER_ID}/login')
-        assert f'/oauth/{DEV_IDP_PROVIDER_ID}/callback' in response.text
+    def test_posts_to_login_path(self, client):
+        with _available():
+            response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
+        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.text
+
+    def test_links_to_signup(self, client):
+        with _available():
+            response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
+        assert f'/oauth/{DEV_IDP_SIGNUP_PATH}' in response.text
+
+    def test_shows_error_message(self, client):
+        with _available():
+            response = client.get(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}', params={'error': 'invalid_credentials'}
+            )
+        assert 'Invalid email or password' in response.text
 
 
-# ── POST /oauth/-1/callback (login completion) ───────────────────────────
+# ── GET /oauth/dev-idp/signup (HTML form) ─────────────────────────────────
 
 
-class TestDevIdpCallback:
+class TestDevIdpSignupForm:
+    def test_serves_html_form(self, client):
+        with _available():
+            response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
+        assert response.status_code == 200
+        assert 'confirm_password' in response.text
+        assert 'Development Sign Up' in response.text
+
+    def test_404_when_unavailable(self, client):
+        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+            response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
+        assert response.status_code == 404
+
+    def test_links_to_login(self, client):
+        with _available():
+            response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
+        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.text
+
+
+# ── POST /oauth/dev-idp/signup ────────────────────────────────────────────
+
+
+class TestDevIdpSignup:
     def test_404_when_unavailable(self, client):
         with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
             response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
             )
         assert response.status_code == 404
 
-    def test_invalid_email_returns_422(self, client):
+    def test_password_mismatch_redirects_with_error(self, client):
+        with _available():
+            response = client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'different123',
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        location = response.headers['location']
+        assert DEV_IDP_SIGNUP_PATH in location
+        query = parse_qs(urlparse(location).query)
+        assert query['error'] == ['password_mismatch']
+
+    def test_password_too_short_redirects_with_error(self, client):
+        with _available():
+            response = client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'short',
+                    'confirm_password': 'short',
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['password_too_short']
+
+    def test_email_taken_redirects_with_error(self, client):
+        existing = _mock_user(email='dev@example.com')
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            _available(),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value=existing,
             ),
         ):
             response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'not-an-email'},
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
             )
-        assert response.status_code == 422
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_taken']
 
-    def test_new_user_login(self, client):
-        """New user is created, cookie is set, and redirect happens."""
+    def test_creates_user_and_hashes_password(self, client):
         user_id = derive_dev_idp_user_id('dev@example.com')
         mock_user = _mock_user(user_id=user_id, accepted_tos=None)
 
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
+            _available(),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -323,258 +470,35 @@ class TestDevIdpCallback:
                 'server.routes.dev_idp.UserStore.create_user',
                 new_callable=AsyncMock,
                 return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp._accept_tos_for_dev_user',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.record_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp.DefaultOrgBootstrapService.apply_for_user',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp._track_dev_idp_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch('server.routes.dev_idp._set_dev_idp_cookie'),
-        ):
-            response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
-                follow_redirects=False,
-            )
-        assert response.status_code == 302
-
-    def test_existing_user_login(self, client):
-        """Existing user is reused (no create_user call)."""
-        user_id = derive_dev_idp_user_id('dev@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.create_user',
-                new_callable=AsyncMock,
             ) as mock_create,
             patch(
-                'server.routes.dev_idp._accept_tos_for_dev_user',
+                'server.routes.dev_idp._set_password_hash',
                 new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.record_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._track_dev_idp_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch('server.routes.dev_idp._set_dev_idp_cookie'),
+            ) as mock_set_hash,
+            _patch_complete_login() as mock_complete,
         ):
-            response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
-                follow_redirects=False,
-            )
-        assert response.status_code == 302
-        mock_create.assert_not_called()
-
-    def test_existing_user_by_email_fallback(self, client):
-        """User created by real IDP (different id) is found by email."""
-        # User doesn't exist by derived id, but exists by email
-        mock_user = _mock_user(
-            user_id='12345678-1234-1234-1234-123456789012',
-            email='dev@example.com',
-            accepted_tos=None,
-        )
-
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_email',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.create_user',
-                new_callable=AsyncMock,
-            ) as mock_create,
-            patch(
-                'server.routes.dev_idp._accept_tos_for_dev_user',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.record_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._track_dev_idp_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch('server.routes.dev_idp._set_dev_idp_cookie'),
-        ):
-            response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
-                follow_redirects=False,
-            )
-        assert response.status_code == 302
-        mock_create.assert_not_called()
-
-    def test_tos_auto_accepted(self, client):
-        """TOS is auto-accepted for new users."""
-        user_id = derive_dev_idp_user_id('dev@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_email',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.create_user',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp._accept_tos_for_dev_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
-            patch(
-                'server.routes.dev_idp.UserStore.record_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp.DefaultOrgBootstrapService.apply_for_user',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp._track_dev_idp_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch('server.routes.dev_idp._set_dev_idp_cookie'),
-        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
             client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
                 follow_redirects=False,
             )
-        mock_accept_tos.assert_called_once_with(user_id)
 
-    def test_tos_skip_if_already_accepted(self, client):
-        """TOS is not re-accepted if already accepted."""
-        user_id = derive_dev_idp_user_id('dev@example.com')
-        from datetime import datetime, timezone
-
-        mock_user = _mock_user(
-            user_id=user_id,
-            accepted_tos=datetime.now(timezone.utc),
-        )
-
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                'server.routes.dev_idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ),
-            patch(
-                'server.routes.dev_idp._accept_tos_for_dev_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
-            patch(
-                'server.routes.dev_idp.UserStore.record_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._track_dev_idp_login',
-                new_callable=AsyncMock,
-            ),
-            patch(
-                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch('server.routes.dev_idp._set_dev_idp_cookie'),
-        ):
-            client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
-                follow_redirects=False,
-            )
-        mock_accept_tos.assert_not_called()
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.args[0] == user_id
+        mock_set_hash.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == user_id
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is True
+        assert mock_complete.call_args.kwargs['user'] is mock_user
 
     def test_create_user_failure_returns_500(self, client):
-        """If create_user returns None, the callback returns 500."""
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
+            _available(),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -592,32 +516,230 @@ class TestDevIdpCallback:
             ),
         ):
             response = client.post(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
-                data={'email': 'dev@example.com'},
-                follow_redirects=False,
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
             )
         assert response.status_code == 500
 
 
-# ── GET /oauth/-1/callback (convenience GET) ─────────────────────────────
+# ── POST /oauth/dev-idp/login ─────────────────────────────────────────────
 
 
-class TestDevIdpCallbackGet:
-    def test_redirects_to_form_when_no_email(self, client):
+class TestDevIdpLogin:
+    def test_404_when_unavailable(self, client):
+        with patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'cloud'):
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'password123'},
+            )
+        assert response.status_code == 404
+
+    def test_unknown_email_redirects_with_error(self, client):
         with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
+            _available(),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
-            response = client.get(
-                f'/oauth/{DEV_IDP_PROVIDER_ID}/callback',
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'password123'},
                 follow_redirects=False,
             )
         assert response.status_code == 302
-        assert f'/oauth/{DEV_IDP_PROVIDER_ID}/login' in response.headers['location']
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['invalid_credentials']
+
+    def test_wrong_password_redirects_with_error(self, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'wrong-password'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['invalid_credentials']
+
+    def test_no_password_set_redirects_with_error(self, client):
+        """A user with no ``password_hash`` (e.g. legacy/real-IDP row) can't
+        log in via the dev IDP, regardless of what password is guessed."""
+        mock_user = _mock_user(password_hash=None)
+        with (
+            _available(),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'anything'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['invalid_credentials']
+
+    def test_correct_password_logs_in(self, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is False
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+        assert response.status_code == 302
+
+    def test_falls_back_to_email_lookup(self, client):
+        """A user found by email (not the derived id) can still log in."""
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        mock_complete.assert_awaited_once()
+
+
+# ── _complete_dev_idp_login — shared post-auth steps ──────────────────────
+
+
+class TestCompleteDevIdpLogin:
+    @pytest.mark.asyncio
+    async def test_tos_auto_accepted_for_new_user(self):
+        user_id = derive_dev_idp_user_id('dev@example.com')
+        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
+        request = MagicMock()
+
+        with (
+            patch(
+                'server.routes.dev_idp._accept_tos_for_dev_user',
+                new_callable=AsyncMock,
+            ) as mock_accept_tos,
+            patch(
+                'server.routes.dev_idp.UserStore.record_login',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp.DefaultOrgBootstrapService.apply_for_user',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            patch(
+                'server.routes.dev_idp._track_dev_idp_login',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch('server.routes.dev_idp._set_dev_idp_cookie'),
+            patch(
+                'server.routes.dev_idp.get_web_url',
+                return_value='http://testserver',
+            ),
+        ):
+            response = await dev_idp._complete_dev_idp_login(
+                request=request,
+                user=mock_user,
+                is_new_user=True,
+                email='dev@example.com',
+                redirect_url='',
+            )
+        mock_accept_tos.assert_awaited_once_with(user_id)
+        assert response.status_code == 302
+
+    @pytest.mark.asyncio
+    async def test_tos_skip_if_already_accepted(self):
+        from datetime import datetime, timezone
+
+        user_id = derive_dev_idp_user_id('dev@example.com')
+        mock_user = _mock_user(
+            user_id=user_id, accepted_tos=datetime.now(timezone.utc)
+        )
+        request = MagicMock()
+
+        with (
+            patch(
+                'server.routes.dev_idp._accept_tos_for_dev_user',
+                new_callable=AsyncMock,
+            ) as mock_accept_tos,
+            patch(
+                'server.routes.dev_idp.UserStore.record_login',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp._track_dev_idp_login',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp._should_redirect_to_onboarding_dev',
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch('server.routes.dev_idp._set_dev_idp_cookie'),
+            patch(
+                'server.routes.dev_idp.get_web_url',
+                return_value='http://testserver',
+            ),
+        ):
+            await dev_idp._complete_dev_idp_login(
+                request=request,
+                user=mock_user,
+                is_new_user=False,
+                email='dev@example.com',
+                redirect_url='',
+            )
+        mock_accept_tos.assert_not_called()
 
 
 # ── status endpoint ───────────────────────────────────────────────────────
@@ -625,14 +747,7 @@ class TestDevIdpCallbackGet:
 
 class TestDevIdpStatus:
     def test_returns_enabled_true(self, client):
-        with (
-            patch('server.routes.dev_idp.DEPLOYMENT_MODE', 'self_hosted'),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
+        with _available():
             response = client.get('/api/dev-idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is True
