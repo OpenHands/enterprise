@@ -2605,6 +2605,127 @@ async def test_revoke_unknown_user_reports_not_found(async_session_maker):
     assert result is SuperAdminRevokeResult.NOT_FOUND
 
 
+@pytest.mark.asyncio
+async def test_revoke_super_admin_refused_when_the_other_super_admin_is_disabled(
+    async_session_maker,
+):
+    """A disabled super admin does not count toward keeping one on the instance."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')
+    other = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'other@example.com'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(other), True)
+
+        # Act
+        result = await UserStore.revoke_super_admin(me)
+
+    # Assert
+    assert result is SuperAdminRevokeResult.LAST_SUPER_ADMIN
+
+
+# --- Tests for disabling a user ---
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_disables_the_user(async_session_maker):
+    """A disabled user is reported as disabled."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(user_id), True)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(user_id) is True
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_false_re_enables_the_user(async_session_maker):
+    """Re-enabling a disabled user clears the flag."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(user_id), True)
+
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(user_id), False)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(user_id) is False
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_refuses_the_last_enabled_super_admin(
+    async_session_maker,
+):
+    """The only enabled super admin cannot be disabled, even if others are disabled."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')
+    other = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'other@example.com'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(other), True)
+
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(me), True)
+
+        # Assert
+        assert applied is False
+        assert await UserStore.is_user_disabled(me) is False
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_allows_a_super_admin_while_another_is_enabled(
+    async_session_maker,
+):
+    """A super admin can be disabled while another enabled super admin remains."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    target = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'target@example.com'
+    )
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'other@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(target), True)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(target) is True
+
+
+@pytest.mark.asyncio
+async def test_is_user_disabled_is_false_for_an_unknown_user(async_session_maker):
+    """A user with no row yet (first sign-in) is not treated as disabled."""
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        assert await UserStore.is_user_disabled(str(uuid.uuid4())) is False
+
+
 # --- Tests for delete_user ---
 
 

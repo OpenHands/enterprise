@@ -13,6 +13,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
     accept_tos,
@@ -214,6 +215,49 @@ async def test_keycloak_callback_user_not_authorized(
 
         assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
         assert exc_info.value.detail == 'blocked'
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_refuses_a_disabled_user(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A disabled user is refused at sign-in, before any login side effects."""
+    # Arrange
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=True),
+        ),
+    ):
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub=str(uuid.uuid4()),
+                email='disabled@example.com',
+                identity_provider='github',
+                email_verified=True,
+            )
+        )
+        mock_user_store.record_login = AsyncMock()
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await keycloak_callback(
+                code='test_code',
+                state='test_state',
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
+            )
+
+    # Assert
+    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+    assert exc_info.value.detail == 'account_disabled'
+    mock_user_store.record_login.assert_not_called()
 
 
 @pytest.mark.asyncio

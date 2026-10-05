@@ -982,6 +982,10 @@ class SaasUserAuth(UserAuth):
         if instance is None:
             logger.debug('saas_user_auth_get_instance:no_credentials')
             raise NoCredentialsError('failed to authenticate')
+        # Checked here rather than per credential type, so a disabled user is
+        # refused with an API key, a legacy cookie or an OAuth v2 cookie alike.
+        if instance.user_id and await UserStore.is_user_disabled(instance.user_id):
+            raise AuthError('User account is disabled')
         # Capture the raw X-Org-Id header (if any) so it can be validated
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.

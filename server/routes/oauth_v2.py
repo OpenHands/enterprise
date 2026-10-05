@@ -493,6 +493,11 @@ async def oauth_v2_callback(
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
+        if await UserStore.is_user_disabled(user_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='account_disabled',
+            )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),

@@ -77,9 +77,6 @@ function deriveUserStatus(
   if (memberships.length === 0) {
     return "active";
   }
-  if (memberships.every((m) => m.status === "inactive")) {
-    return "inactive";
-  }
   if (memberships.some((m) => m.status === "invited")) {
     return "invited";
   }

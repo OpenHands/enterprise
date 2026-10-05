@@ -44,6 +44,20 @@ def _org_usable_for_product():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _user_not_disabled():
+    """Report every user as enabled to the check run by ``get_instance``.
+
+    The lookup itself needs the database and is covered by
+    ``tests/unit/test_user_store.py``.
+    """
+    with patch(
+        'storage.user_store.UserStore.is_user_disabled',
+        AsyncMock(return_value=False),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_request():
     request = MagicMock(spec=Request)
@@ -712,6 +726,30 @@ async def test_get_instance_no_auth(mock_request):
 
         mock_from_bearer.assert_called_once_with(mock_request)
         mock_from_cookie.assert_called_once_with(mock_request)
+
+
+@pytest.mark.asyncio
+async def test_get_instance_rejects_a_disabled_user(mock_request):
+    """A disabled user's API key or session no longer authenticates."""
+    # Arrange
+    mock_auth = MagicMock()
+    mock_auth.user_id = 'disabled_user_id'
+
+    with (
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=True),
+        ) as is_user_disabled,
+    ):
+        # Act / Assert
+        with pytest.raises(AuthError, match='disabled'):
+            await SaasUserAuth.get_instance(mock_request)
+
+    is_user_disabled.assert_awaited_once_with('disabled_user_id')
 
 
 @pytest.mark.asyncio

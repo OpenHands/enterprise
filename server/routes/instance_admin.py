@@ -53,7 +53,7 @@ from storage.user_store import SuperAdminRevokeResult, UserStore
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
 OrgStatus = Literal['active', 'suspended']
-UserMembershipStatus = Literal['active', 'inactive']
+UserAccountStatus = Literal['active', 'inactive']
 
 MAX_LOGO_BYTES = 512 * 1024
 _LOGO_DATA_URL = re.compile(r'data:image/(?:png|jpeg|webp);base64,(?P<payload>.*)')
@@ -102,7 +102,7 @@ class AdminUserResponse(BaseModel):
     email: str | None = None
     name: str | None = None
     memberships: list[AdminMembershipResponse] = Field(default_factory=list)
-    status: UserMembershipStatus = 'active'
+    status: UserAccountStatus = 'active'
 
 
 class AdminUserListResponse(BaseModel):
@@ -112,9 +112,9 @@ class AdminUserListResponse(BaseModel):
 
 
 class AdminUserStatusUpdate(BaseModel):
-    """Suspend or resume a user across all memberships."""
+    """Disable (``inactive``) or re-enable (``active``) a user's sign-in."""
 
-    status: UserMembershipStatus
+    status: UserAccountStatus
 
 
 class AdminUserGroupsUpdate(BaseModel):
@@ -191,14 +191,6 @@ def _display_name(user: User) -> str | None:
     return user.email
 
 
-def _derive_user_status(
-    memberships: list[AdminMembershipResponse],
-) -> UserMembershipStatus:
-    if memberships and all(m.status == 'inactive' for m in memberships):
-        return 'inactive'
-    return 'active'
-
-
 def _plain_llm_api_key(settings: object) -> str:
     """Read a LiteLLM key off settings without treating mocks as secrets."""
     agent_settings = getattr(settings, 'agent_settings', None)
@@ -233,7 +225,7 @@ async def _admin_user_response(user: User) -> AdminUserResponse:
         email=user.email,
         name=_display_name(user),
         memberships=memberships,
-        status=_derive_user_status(memberships),
+        status='inactive' if user.is_disabled else 'active',
     )
 
 
@@ -392,7 +384,7 @@ async def list_admin_users(
                 email=user.email,
                 name=_display_name(user),
                 memberships=memberships,
-                status=_derive_user_status(memberships),
+                status='inactive' if user.is_disabled else 'active',
             )
         )
     return AdminUserListResponse(users=users_out)
@@ -407,10 +399,11 @@ async def update_admin_user_status(
     body: AdminUserStatusUpdate,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminUserResponse:
-    """Suspend or resume a user across all org memberships.
+    """Disable or re-enable a user's sign-in, sessions and API keys.
 
-    Sets every ``org_member.status`` for the user to ``inactive`` (suspend)
-    or ``active`` (resume). Requires ``MANAGE_SUPER_ADMINS``.
+    ``inactive`` blocks the user whatever organizations they are in;
+    ``active`` restores access. Refuses with ``409`` to disable the last
+    enabled Super Admin. Requires ``MANAGE_SUPER_ADMINS``.
     """
     if body.status == 'inactive' and str(user_id) == caller_user_id:
         raise HTTPException(
@@ -424,12 +417,13 @@ async def update_admin_user_status(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
         )
 
-    try:
-        await OrgMemberStore.set_all_membership_statuses(user_id, body.status)
-    except ValueError as exc:
+    disabled = body.status == 'inactive'
+    if not await UserStore.set_user_disabled(user_id, disabled):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Cannot disable the last Super Admin',
+        )
+    user.is_disabled = disabled
 
     logger.info(
         'admin:users:status',

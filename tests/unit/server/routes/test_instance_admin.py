@@ -128,6 +128,7 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
     user.id = user_id
     user.email = 'me@acme.example'
     user.git_user_name = 'openhands'
+    user.is_disabled = True
 
     org_member = MagicMock()
     org_member.user_id = user_id
@@ -160,6 +161,7 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
     assert len(body['users']) == 1
     assert body['users'][0]['email'] == 'me@acme.example'
     assert body['users'][0]['memberships'][0]['role'] == 'owner'
+    assert body['users'][0]['status'] == 'inactive'
 
 
 @pytest.mark.asyncio
@@ -292,15 +294,17 @@ async def test_update_user_status_success(mock_app, grant_manage_super_admins):
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.is_disabled = False
 
     org = MagicMock()
     org.id = uuid.uuid4()
     org.name = 'Acme'
     member = MagicMock()
     member.role_id = 1
-    member.status = 'inactive'
+    member.status = 'active'
     role = MagicMock()
     role.name = 'member'
+    set_disabled = AsyncMock(return_value=True)
 
     with (
         patch(
@@ -308,8 +312,8 @@ async def test_update_user_status_success(mock_app, grant_manage_super_admins):
             AsyncMock(return_value=user),
         ),
         patch(
-            'server.routes.instance_admin.OrgMemberStore.set_all_membership_statuses',
-            AsyncMock(return_value=1),
+            'server.routes.instance_admin.UserStore.set_user_disabled',
+            set_disabled,
         ),
         patch(
             'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
@@ -328,6 +332,7 @@ async def test_update_user_status_success(mock_app, grant_manage_super_admins):
 
     assert resp.status_code == 200
     assert resp.json()['status'] == 'inactive'
+    set_disabled.assert_awaited_once_with(user_id, True)
 
 
 @pytest.mark.asyncio
@@ -338,7 +343,7 @@ async def test_update_user_status_rejects_suspending_self(
     caller.id = uuid.UUID(CALLER_USER_ID)
     caller.email = 'admin@acme.example'
     caller.git_user_name = 'Admin'
-    set_status = AsyncMock()
+    set_disabled = AsyncMock()
 
     with (
         patch(
@@ -346,12 +351,8 @@ async def test_update_user_status_rejects_suspending_self(
             AsyncMock(return_value=caller),
         ),
         patch(
-            'server.routes.instance_admin.OrgMemberStore.set_all_membership_statuses',
-            set_status,
-        ),
-        patch(
-            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
-            AsyncMock(return_value=[]),
+            'server.routes.instance_admin.UserStore.set_user_disabled',
+            set_disabled,
         ),
     ):
         async with _client(mock_app) as client:
@@ -361,7 +362,34 @@ async def test_update_user_status_rejects_suspending_self(
             )
 
     assert resp.status_code == 403
-    set_status.assert_not_awaited()
+    set_disabled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_status_refuses_the_last_super_admin(
+    mock_app, grant_manage_super_admins
+):
+    user = MagicMock()
+    user.id = uuid.uuid4()
+
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.routes.instance_admin.UserStore.set_user_disabled',
+            AsyncMock(return_value=False),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/users/{user.id}',
+                json={'status': 'inactive'},
+            )
+
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'Cannot disable the last Super Admin'
 
 
 @contextmanager

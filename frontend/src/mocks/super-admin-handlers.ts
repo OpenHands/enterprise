@@ -374,10 +374,6 @@ export const SUPER_ADMIN_HANDLERS = [
       );
     }
     target.status = body.status;
-    target.memberships = target.memberships.map((membership) => ({
-      ...membership,
-      status: body.status!,
-    }));
     return HttpResponse.json(target);
   }),
 
@@ -495,11 +491,6 @@ export const SUPER_ADMIN_HANDLERS = [
           ? { ...membership, status }
           : membership,
       );
-      target.status = target.memberships.every(
-        (membership) => membership.status === "inactive",
-      )
-        ? "inactive"
-        : "active";
       return HttpResponse.json(target);
     }
 
