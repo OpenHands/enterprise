@@ -392,11 +392,13 @@ async def dev_idp_signup(
     confirm_password: str = Form(...),
     redirect_url: str = Form(''),
 ):
-    """Create a dev IDP account (email + password) and complete the login.
+    """Create or claim a dev IDP account (email + password) and complete login.
 
-    Returns ``404`` if the dev IDP is not available. Redirects back to the
-    sign-up form with an error on a taken email, a too-short password, or a
-    confirm-password mismatch.
+    Returns ``404`` if the dev IDP is not available. If the email belongs to an
+    existing user with no ``password_hash`` (e.g. an OAuth-provisioned account),
+    sign-up sets the password and claims the account. Redirects back to the
+    sign-up form with an error on a taken email (password already set),
+    a too-short password, or a confirm-password mismatch.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
@@ -421,7 +423,12 @@ async def dev_idp_signup(
     existing = await UserStore.get_user_by_id(user_id)
     if existing is None:
         existing = await UserStore.get_user_by_email(email_str)
-    if existing is not None:
+
+    # If the user already has a password, the account is claimed — don't
+    # allow overwriting it via sign-up (would be a password-reset bypass).
+    # If the user exists but password_hash is NULL (e.g. created via OAuth
+    # or provisioned without a password), allow sign-up to set one.
+    if existing is not None and existing.password_hash is not None:
         return _form_redirect(
             web_url,
             mode='signup',
@@ -429,25 +436,35 @@ async def dev_idp_signup(
             redirect_url=redirect_url,
         )
 
-    user_info = {
-        'email': email_str,
-        'email_verified': True,
-        'preferred_username': email_str,
-    }
-    created = await UserStore.create_user(user_id, user_info)
-    if created is None:
-        logger.error('dev_idp:failed_to_create_user', extra={'email': email_str})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to create user',
-        )
+    hashed = hash_password(password)
 
-    await _set_password_hash(user_id, hash_password(password))
+    user: User | None
+    if existing is not None:
+        # Claim an existing passwordless account.
+        await _set_password_hash(str(existing.id), hashed)
+        user = existing
+        is_new_user = False
+    else:
+        # Create a brand-new account.
+        user_info = {
+            'email': email_str,
+            'email_verified': True,
+            'preferred_username': email_str,
+        }
+        user = await UserStore.create_user(user_id, user_info)
+        if user is None:
+            logger.error('dev_idp:failed_to_create_user', extra={'email': email_str})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Failed to create user',
+            )
+        await _set_password_hash(str(user.id), hashed)
+        is_new_user = True
 
     return await _complete_dev_idp_login(
         request=request,
-        user=created,
-        is_new_user=True,
+        user=user,
+        is_new_user=is_new_user,
         email=email_str,
         redirect_url=redirect_url,
     )

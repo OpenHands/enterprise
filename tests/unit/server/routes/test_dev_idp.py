@@ -425,7 +425,7 @@ class TestDevIdpSignup:
         assert query['error'] == ['password_too_short']
 
     def test_email_taken_redirects_with_error(self, client):
-        existing = _mock_user(email='dev@example.com')
+        existing = _mock_user(email='dev@example.com', password_hash='existing_hash')
         with (
             _available(),
             patch(
@@ -446,6 +446,51 @@ class TestDevIdpSignup:
         assert response.status_code == 302
         query = parse_qs(urlparse(response.headers['location']).query)
         assert query['error'] == ['email_taken']
+
+    def test_claims_existing_passwordless_account(self, client):
+        """Sign-up on an existing user with ``password_hash=None`` sets the
+        password and completes login instead of rejecting with ``email_taken``.
+        """
+        user_id = derive_dev_idp_user_id('dev@example.com')
+        existing = _mock_user(
+            user_id=user_id, email='dev@example.com', password_hash=None
+        )
+
+        with (
+            _available(),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=existing,
+            ),
+            patch(
+                'server.routes.dev_idp._set_password_hash',
+                new_callable=AsyncMock,
+            ) as mock_set_hash,
+            patch(
+                'server.routes.dev_idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+
+        # Password was set on the existing user, no new user created.
+        mock_set_hash.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == str(existing.id)
+        mock_create.assert_not_awaited()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is False
+        assert mock_complete.call_args.kwargs['user'] is existing
 
     def test_creates_user_and_hashes_password(self, client):
         user_id = derive_dev_idp_user_id('dev@example.com')
