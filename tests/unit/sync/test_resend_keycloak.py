@@ -207,6 +207,11 @@ class TestLocalUserQueries:
 class TestSendWelcomeEmail:
     """Tests for send_welcome_email function."""
 
+    def test_send_welcome_email_requires_user_id(self) -> None:
+        """A welcome email must not be sendable without a user id keying it."""
+        with pytest.raises(TypeError):
+            send_welcome_email(email='test@example.com')
+
     @patch('sync.resend_keycloak.resend.Emails.send')
     def test_send_welcome_email_success(self, mock_send: MagicMock) -> None:
         """Test successful welcome email sending."""
@@ -479,3 +484,40 @@ class TestSyncUsersToResend:
             'new@example.com', None, None, user_id='user-1'
         )
         assert mock_sleep.call_count == 2
+
+    @patch('sync.resend_keycloak.time.sleep')
+    @patch('sync.resend_keycloak.send_welcome_email')
+    @patch('sync.resend_keycloak.add_contact_to_resend')
+    @patch('sync.resend_keycloak.get_local_users')
+    @patch('sync.resend_keycloak.get_total_local_users')
+    @patch('sync.resend_keycloak._backfill_existing_resend_contacts')
+    @patch('sync.resend_keycloak._get_resend_synced_user_store')
+    def test_sync_continues_when_welcome_email_fails(
+        self,
+        mock_get_store: MagicMock,
+        mock_backfill: MagicMock,
+        mock_get_total: MagicMock,
+        mock_get_local_users: MagicMock,
+        mock_add_contact: MagicMock,
+        mock_send_welcome: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        """A failing welcome email must not abort the rest of the sync."""
+        store = MagicMock()
+        store.get_synced_emails_for_audience.return_value = set()
+        mock_get_store.return_value = store
+        mock_backfill.return_value = 0
+        mock_get_total.return_value = 2
+        mock_get_local_users.return_value = [
+            ResendUser(id='user-1', email='a@example.com'),
+            ResendUser(id='user-2', email='b@example.com'),
+        ]
+        mock_add_contact.return_value = {'id': 'contact_123'}
+        mock_send_welcome.side_effect = RuntimeError('resend down')
+
+        sync_users_to_resend()
+
+        assert mock_send_welcome.call_count == 2
+        mock_send_welcome.assert_any_call('a@example.com', None, None, user_id='user-1')
+        mock_send_welcome.assert_any_call('b@example.com', None, None, user_id='user-2')
+        assert mock_add_contact.call_count == 2
