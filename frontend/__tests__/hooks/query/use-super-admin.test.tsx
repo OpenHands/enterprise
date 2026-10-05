@@ -7,10 +7,14 @@ import OptionService from "#/api/option-service/option-service.api";
 import {
   superAdminService,
   type SetupState,
+  type SuperAdminApiAdmin,
 } from "#/api/super-admin-service/super-admin-service.api";
-import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
+import {
+  useRemoveSuperAdminUser,
+  useUpdateSetupState,
+} from "#/hooks/mutation/use-super-admin-mutations";
 import { useConfig } from "#/hooks/query/use-config";
-import { useSetupState } from "#/hooks/query/use-super-admin";
+import { useSetupState, useSuperAdmins } from "#/hooks/query/use-super-admin";
 
 const PENDING_SETUP_STATE: SetupState = {
   wizard_pending: true,
@@ -108,5 +112,42 @@ describe("useSetupState", () => {
     await waitFor(() =>
       expect(result.current.setupState.data).toEqual(savedState),
     );
+  });
+});
+
+describe("useRemoveSuperAdminUser", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("refreshes the Super Admin list after deleting a Super Admin", async () => {
+    // Arrange
+    const admin: SuperAdminApiAdmin = {
+      user_id: "admin-2",
+      email: "admin2@acme.dev",
+    };
+    vi.spyOn(superAdminService, "listSuperAdmins")
+      .mockResolvedValueOnce([admin])
+      .mockResolvedValueOnce([]);
+    vi.spyOn(superAdminService, "removeUser").mockResolvedValue({
+      message: "User deleted",
+      user_id: admin.user_id,
+    });
+    const { result } = renderHook(
+      () => ({
+        admins: useSuperAdmins(),
+        removeUser: useRemoveSuperAdminUser(),
+      }),
+      { wrapper: createWrapper() },
+    );
+    await waitFor(() => expect(result.current.admins.data).toEqual([admin]));
+
+    // Act
+    await act(async () => {
+      await result.current.removeUser.mutateAsync({ userId: admin.user_id });
+    });
+
+    // Assert
+    await waitFor(() => expect(result.current.admins.data).toEqual([]));
   });
 });

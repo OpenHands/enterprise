@@ -6,7 +6,7 @@ import base64
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -23,6 +23,7 @@ from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.user import User
+from storage.user_store import SuperAdminRevokeResult
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -363,21 +364,29 @@ async def test_update_user_status_rejects_suspending_self(
     set_status.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_remove_user_blocks_last_owner(mock_app, grant_manage_super_admins):
-    user_id = uuid.uuid4()
-    user = MagicMock()
-    user.id = user_id
-    user.email = 'owner@acme.example'
-    user.git_user_name = 'Owner'
-
+@contextmanager
+def _delete_user_patches(
+    user,
+    role_name: str = 'member',
+    is_last_owner: bool = False,
+    revoke_result: SuperAdminRevokeResult = SuperAdminRevokeResult.NOT_SUPER_ADMIN,
+):
+    """Patch the delete-user route's stores; yields its cleanup steps, in order."""
     org = MagicMock()
     org.id = uuid.uuid4()
     org.name = 'Acme'
     member = MagicMock()
     member.role_id = 1
     role = MagicMock()
-    role.name = 'owner'
+    role.name = role_name
+    token_manager = MagicMock()
+    token_manager.delete_keycloak_user = AsyncMock(return_value=True)
+    steps = MagicMock()
+    steps.attach_mock(AsyncMock(return_value=revoke_result), 'revoke_super_admin')
+    steps.attach_mock(AsyncMock(), 'delete_user')
+    steps.attach_mock(AsyncMock(), 'delete_org_cascade')
+    steps.attach_mock(AsyncMock(), 'delete_litellm_user')
+    steps.attach_mock(token_manager.delete_keycloak_user, 'delete_keycloak_user')
 
     with (
         patch(
@@ -394,104 +403,121 @@ async def test_remove_user_blocks_last_owner(mock_app, grant_manage_super_admins
         ),
         patch(
             'server.routes.instance_admin.OrgMemberService._is_last_owner',
-            AsyncMock(return_value=True),
+            AsyncMock(return_value=is_last_owner),
+        ),
+        patch(
+            'server.routes.instance_admin.UserStore.revoke_super_admin',
+            steps.revoke_super_admin,
+        ),
+        patch('server.routes.instance_admin.UserStore.delete_user', steps.delete_user),
+        patch(
+            'server.routes.instance_admin.OrgStore.delete_org_cascade',
+            steps.delete_org_cascade,
+        ),
+        patch(
+            'server.routes.instance_admin.LiteLlmManager.delete_user',
+            steps.delete_litellm_user,
+        ),
+        patch(
+            'server.routes.instance_admin.TokenManager',
+            MagicMock(return_value=token_manager),
         ),
     ):
+        yield steps
+
+
+def _target_user(user_id: uuid.UUID) -> MagicMock:
+    user = MagicMock()
+    user.id = user_id
+    user.email = 'dev@acme.example'
+    user.git_user_name = 'Dev'
+    return user
+
+
+@pytest.mark.asyncio
+async def test_delete_user_blocks_last_owner(mock_app, grant_manage_super_admins):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(
+        _target_user(user_id), role_name='owner', is_last_owner=True
+    ) as steps:
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{user_id}')
 
     assert resp.status_code == 409
+    assert resp.json()['detail'] == 'Cannot delete user: last owner of Acme'
+    steps.revoke_super_admin.assert_not_awaited()
+    steps.delete_user.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_remove_user_rejects_self(mock_app, grant_manage_super_admins):
-    caller = MagicMock()
-    caller.id = uuid.UUID(CALLER_USER_ID)
+async def test_delete_user_rejects_self(mock_app, grant_manage_super_admins):
+    caller_id = uuid.UUID(CALLER_USER_ID)
 
-    org = MagicMock()
-    org.id = uuid.uuid4()
-    org.name = 'Acme'
-    member = MagicMock()
-    member.role_id = 1
-    role = MagicMock()
-    role.name = 'member'
-    remove_member = AsyncMock(return_value=True)
-
-    with (
-        patch(
-            'server.routes.instance_admin.UserStore.get_user_by_id',
-            AsyncMock(return_value=caller),
-        ),
-        patch(
-            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
-            AsyncMock(return_value=[(member, org)]),
-        ),
-        patch(
-            'server.routes.instance_admin.RoleStore.get_role_by_id',
-            AsyncMock(return_value=role),
-        ),
-        patch(
-            'server.routes.instance_admin.OrgMemberStore.remove_user_from_org',
-            remove_member,
-        ),
-    ):
+    with _delete_user_patches(_target_user(caller_id)) as steps:
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{CALLER_USER_ID}')
 
     assert resp.status_code == 403
-    remove_member.assert_not_awaited()
+    steps.revoke_super_admin.assert_not_awaited()
+    steps.delete_user.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_remove_user_resets_current_org_and_leaves_litellm_team(
+async def test_delete_user_refuses_the_last_super_admin(
     mock_app, grant_manage_super_admins
 ):
     user_id = uuid.uuid4()
-    org = MagicMock()
-    org.id = uuid.uuid4()
-    org.name = 'Acme'
-    user = MagicMock()
-    user.id = user_id
-    user.current_org_id = org.id
-    member = MagicMock()
-    member.role_id = 1
-    role = MagicMock()
-    role.name = 'member'
-    update_current_org = AsyncMock()
-    remove_from_team = AsyncMock()
 
-    with (
-        patch(
-            'server.routes.instance_admin.UserStore.get_user_by_id',
-            AsyncMock(return_value=user),
-        ),
-        patch(
-            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
-            AsyncMock(return_value=[(member, org)]),
-        ),
-        patch(
-            'server.routes.instance_admin.RoleStore.get_role_by_id',
-            AsyncMock(return_value=role),
-        ),
-        patch(
-            'server.services.org_member_service.OrgMemberStore.remove_user_from_org',
-            AsyncMock(return_value=True),
-        ),
-        patch(
-            'server.services.org_member_service.UserStore.update_current_org',
-            update_current_org,
-        ),
-        patch(
-            'server.services.org_member_service.LiteLlmManager.remove_user_from_team',
-            remove_from_team,
-        ),
-    ):
+    with _delete_user_patches(
+        _target_user(user_id),
+        revoke_result=SuperAdminRevokeResult.LAST_SUPER_ADMIN,
+    ) as steps:
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{user_id}')
+
+    assert resp.status_code == 409
+    assert resp.json()['detail'] == 'Cannot delete the last Super Admin'
+    steps.delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_deletes_the_account_then_its_external_records(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)) as steps:
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{user_id}')
 
     assert resp.status_code == 200
-    update_current_org.assert_awaited_once_with(str(user_id), user_id)
-    remove_from_team.assert_awaited_once_with(str(user_id), str(org.id))
+    assert resp.json() == {'message': 'User deleted', 'user_id': str(user_id)}
+    assert steps.mock_calls == [
+        call.revoke_super_admin(str(user_id)),
+        call.delete_user(user_id),
+        call.delete_org_cascade(user_id),
+        call.delete_litellm_user(str(user_id)),
+        call.delete_keycloak_user(str(user_id)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_user_succeeds_when_external_cleanup_fails(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)) as steps:
+        steps.delete_org_cascade.side_effect = RuntimeError('litellm down')
+        steps.delete_litellm_user.side_effect = httpx.ConnectError('litellm down')
+        steps.delete_keycloak_user.side_effect = RuntimeError('keycloak down')
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{user_id}')
+
+    assert resp.status_code == 200
+    steps.delete_user.assert_awaited_once_with(user_id)
+    steps.delete_keycloak_user.assert_awaited_once_with(str(user_id))
 
 
 @pytest.mark.asyncio

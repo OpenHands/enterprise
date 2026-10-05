@@ -25,6 +25,7 @@ from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
+from server.auth.token_manager import TokenManager
 from server.constants import ROLE_MEMBER, ROLE_OWNER
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -37,6 +38,7 @@ from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
+from storage.lite_llm_manager import LiteLlmManager
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
@@ -46,7 +48,7 @@ from storage.org_store import OrgStore
 from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
-from storage.user_store import UserStore
+from storage.user_store import SuperAdminRevokeResult, UserStore
 
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
@@ -444,20 +446,21 @@ async def update_admin_user_status(
     '/users/{user_id}',
     status_code=status.HTTP_200_OK,
 )
-async def remove_admin_user_from_orgs(
+async def delete_admin_user(
     user_id: UUID,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> dict:
-    """Remove a user from every team organization.
+    """Delete a user's account and the data they own in every organization.
 
-    Keeps the personal workspace (``org.id == user.id``) so the account can
-    still sign in. Refuses with ``409`` if the user is the last owner of any
-    team org. Requires ``MANAGE_SUPER_ADMINS``.
+    Refuses with ``409`` if the user is the last owner of any team org or
+    the last Super Admin. The account and its rows go in one transaction.
+    The personal workspace, the LiteLLM user and the Keycloak account are
+    then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail='Cannot remove yourself from every team organization',
+            detail='Cannot delete your own account',
         )
 
     user = await UserStore.get_user_by_id(str(user_id))
@@ -481,28 +484,49 @@ async def remove_admin_user_from_orgs(
     if blocked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=('Cannot remove user: last owner of ' + ', '.join(sorted(blocked))),
+            detail=('Cannot delete user: last owner of ' + ', '.join(sorted(blocked))),
         )
 
-    removed: list[str] = []
-    for _, org in team_memberships:
-        ok = await OrgMemberService.remove_member_with_cleanup(org.id, user_id)
-        if ok:
-            removed.append(str(org.id))
+    # Locks the Super Admin set, so two admins deleting each other cannot
+    # leave the instance without one.
+    revoked = await UserStore.revoke_super_admin(str(user_id))
+    if revoked is SuperAdminRevokeResult.LAST_SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Cannot delete the last Super Admin',
+        )
+
+    await UserStore.delete_user(user_id)
+
+    # The account is gone. A failure below only leaves an empty personal
+    # workspace, a LiteLLM user or a Keycloak account behind.
+    try:
+        await OrgStore.delete_org_cascade(user_id)
+    except Exception as exc:
+        logger.warning(
+            'admin:users:delete:personal_workspace_failed',
+            extra={'target_user_id': str(user_id), 'error': str(exc)},
+        )
+    try:
+        await LiteLlmManager.delete_user(str(user_id))
+    except Exception as exc:
+        logger.warning(
+            'admin:users:delete:litellm_failed',
+            extra={'target_user_id': str(user_id), 'error': str(exc)},
+        )
+    try:
+        await TokenManager().delete_keycloak_user(str(user_id))
+    except Exception as exc:
+        logger.warning(
+            'admin:users:delete:keycloak_failed',
+            extra={'target_user_id': str(user_id), 'error': str(exc)},
+        )
 
     logger.info(
-        'admin:users:remove',
-        extra={
-            'caller_user_id': caller_user_id,
-            'target_user_id': str(user_id),
-            'removed_org_ids': removed,
-        },
+        'admin:users:delete',
+        extra={'caller_user_id': caller_user_id, 'target_user_id': str(user_id)},
     )
-    return {
-        'message': 'User removed from team organizations',
-        'user_id': str(user_id),
-        'removed_org_ids': removed,
-    }
+    return {'message': 'User deleted', 'user_id': str(user_id)}
 
 
 async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:

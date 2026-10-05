@@ -387,17 +387,17 @@ export const SUPER_ADMIN_HANDLERS = [
     if (!target) {
       return HttpResponse.json({ detail: "User not found" }, { status: 404 });
     }
-    const removed = target.memberships
-      .filter((membership) => membership.org_id !== userId)
-      .map((membership) => membership.org_id);
-    target.memberships = target.memberships.filter(
-      (membership) => membership.org_id === userId,
-    );
-    return HttpResponse.json({
-      message: "User removed from team organizations",
-      user_id: userId,
-      removed_org_ids: removed,
-    });
+    const orgIds = target.memberships.map((membership) => membership.org_id);
+    adminUsers = adminUsers.filter((user) => user.user_id !== userId);
+    superAdmins = superAdmins.filter((admin) => admin.user_id !== userId);
+    adminOrgs = adminOrgs
+      .filter((org) => org.id !== userId)
+      .map((org) =>
+        orgIds.includes(org.id)
+          ? { ...org, member_count: Math.max(0, org.member_count - 1) }
+          : org,
+      );
+    return HttpResponse.json({ message: "User deleted", user_id: userId });
   }),
 
   http.post("/api/organizations/provision-user", async ({ request }) => {
