@@ -328,15 +328,10 @@ async def test_release_quota_uses_enterprise_service_and_swallows_errors():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('status', 'expected_releases'),
-    [
-        (AppConversationStartTaskStatus.READY, 0),
-        (AppConversationStartTaskStatus.ERROR, 1),
-    ],
+    'status',
+    [AppConversationStartTaskStatus.READY, AppConversationStartTaskStatus.ERROR],
 )
-async def test_consume_remaining_handles_terminal_quota_status(
-    status, expected_releases
-):
+async def test_consume_remaining_closes_resources(status):
     task = AppConversationStartTask(
         created_by_user_id='user-id',
         request=AppConversationStartRequest(),
@@ -348,44 +343,21 @@ async def test_consume_remaining_handles_terminal_quota_status(
 
     db_session = AsyncMock()
     httpx_client = AsyncMock()
-    with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-        new_callable=AsyncMock,
-    ) as release:
-        await _consume_remaining(
-            tasks(),
-            db_session,
-            httpx_client,
-            quota_user_id='user-id',
-            quota_reserved=True,
-        )
-
-    assert release.await_count == expected_releases
+    await _consume_remaining(tasks(), db_session, httpx_client)
     db_session.close.assert_awaited_once()
     httpx_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_consume_remaining_releases_quota_on_failure():
+async def test_consume_remaining_closes_resources_on_failure():
     async def failing_tasks():
         raise RuntimeError('stream failed')
         yield  # pragma: no cover
 
     db_session = AsyncMock()
     httpx_client = AsyncMock()
-    with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-        new_callable=AsyncMock,
-    ) as release:
-        with pytest.raises(RuntimeError, match='stream failed'):
-            await _consume_remaining(
-                failing_tasks(),
-                db_session,
-                httpx_client,
-                quota_user_id='user-id',
-                quota_reserved=True,
-            )
-    release.assert_awaited_once_with('user-id')
+    with pytest.raises(RuntimeError, match='stream failed'):
+        await _consume_remaining(failing_tasks(), db_session, httpx_client)
     db_session.close.assert_awaited_once()
     httpx_client.aclose.assert_awaited_once()
 
@@ -403,13 +375,10 @@ class _ServiceContext:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('status', 'expected_releases'),
-    [
-        (AppConversationStartTaskStatus.READY, 0),
-        (AppConversationStartTaskStatus.ERROR, 1),
-    ],
+    'status',
+    [AppConversationStartTaskStatus.READY, AppConversationStartTaskStatus.ERROR],
 )
-async def test_stream_start_handles_terminal_quota_status(status, expected_releases):
+async def test_stream_start_leaves_quota_cleanup_to_service(status):
     request = AppConversationStartRequest()
     task = AppConversationStartTask(
         created_by_user_id='user-id', request=request, status=status
@@ -423,6 +392,7 @@ async def test_stream_start_handles_terminal_quota_status(status, expected_relea
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
+    user_context._daily_quota_reserved = False
     with (
         patch(
             'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
@@ -446,11 +416,11 @@ async def test_stream_start_handles_terminal_quota_status(status, expected_relea
     assert chunks[0] == '[\n'
     assert chunks[-1] == ']'
     assert status.value in ''.join(chunks)
-    assert release.await_count == expected_releases
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_stream_start_releases_quota_on_failure():
+async def test_stream_start_does_not_release_consumed_reservation_on_failure():
     async def start(_request):
         raise RuntimeError('start failed')
         yield  # pragma: no cover
@@ -460,6 +430,7 @@ async def test_stream_start_releases_quota_on_failure():
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
+    user_context._daily_quota_reserved = False
     with (
         patch(
             'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
@@ -483,7 +454,7 @@ async def test_stream_start_releases_quota_on_failure():
                 )
             ]
 
-    release.assert_awaited_once_with('user-id')
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -537,6 +508,7 @@ async def test_stream_start_serializes_multiple_tasks_with_commas():
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
+    user_context._daily_quota_reserved = False
     with (
         patch(
             'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
