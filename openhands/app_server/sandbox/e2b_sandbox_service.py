@@ -4,7 +4,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from posixpath import dirname
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, ClassVar
 
 import base62
 import httpx
@@ -19,12 +19,14 @@ from e2b import (
 from e2b import SandboxInfo as E2BSandboxInfo
 from fastapi import Request
 from pydantic import Field, SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import (
     E2BSandboxSpecInfo,
+)
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
+    ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -50,7 +52,6 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     E2B_BACKEND,
     StoredSandbox,
-    get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
@@ -58,7 +59,6 @@ from openhands.app_server.sandbox.sandbox_store import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN
-from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ MISSING_INIT_API_KEY = (
 
 
 @dataclass
-class E2BSandboxService(SandboxService):
+class E2BSandboxService(ManagedSandboxService):
     """Sandbox service backed by E2B Firecracker microVMs.
 
     Sandboxes are created from an E2B template that boots the agent server in
@@ -136,14 +136,13 @@ class E2BSandboxService(SandboxService):
     started against a localhost app server will not receive events.
     """
 
+    backend: ClassVar[str] = E2B_BACKEND
+
     sandbox_spec_service: SandboxSpecService
-    user_context: UserContext
     httpx_client: httpx.AsyncClient
-    db_session: AsyncSession
     api_key: str
     domain: str
     timeout_seconds: int
-    max_num_sandboxes: int
     init_timeout_seconds: int
     init_poll_interval: float
     resume_retries: int
@@ -164,16 +163,6 @@ class E2BSandboxService(SandboxService):
         if self.api_url:
             params['api_url'] = self.api_url
         return params
-
-    # ------------------------------------------------------------------
-    # Ownership
-    # ------------------------------------------------------------------
-
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
-        """Get a sandbox row, or None when the caller may not see it."""
-        return await get_stored_sandbox(
-            self.db_session, self.user_context, E2B_BACKEND, sandbox_id
-        )
 
     async def _get_info(self, e2b_sandbox_id: str) -> E2BSandboxInfo | None:
         """Get E2B's info for a sandbox, or None when E2B has no such one."""
@@ -472,14 +461,12 @@ class E2BSandboxService(SandboxService):
 
         e2b_sandbox_id = sandbox.sandbox_id
         session_api_key = base62.encodebytes(os.urandom(32))
-        stored_sandbox = StoredSandbox(
+        stored_sandbox = self._new_stored_sandbox(
             id=e2b_sandbox_id,
-            backend=E2B_BACKEND,
             created_by_user_id=user_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
             session_api_key=SecretStr(session_api_key),
-            created_at=utc_now(),
         )
         try:
             # E2B assigns the id, so the row can only be written after create.
@@ -635,8 +622,10 @@ class E2BSandboxService(SandboxService):
 
         return body
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _resume_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Resume the microVM by connecting to it.
 
         The session API key is unchanged across pause and resume: the sandbox
         keeps its id and host, and the agent server process is restored from
@@ -648,12 +637,11 @@ class E2BSandboxService(SandboxService):
         The retry loop covers that window - a user who pauses a conversation and
         immediately resumes it would otherwise be told the sandbox is gone.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
-
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
+        sandbox_id = stored_sandbox.id
+        info = await self._get_info(sandbox_id)
+        if info is None:
+            return ProviderOutcome.FAILED
+        was_paused = info.state == SandboxState.PAUSED
         for attempt in range(1, self.resume_retries + 1):
             try:
                 # E2B has no resume(); connecting to a paused sandbox resumes
@@ -661,37 +649,39 @@ class E2BSandboxService(SandboxService):
                 await AsyncSandbox.connect(
                     sandbox_id, timeout=self.timeout_seconds, **self._api_params
                 )
-                return True
+                if was_paused:
+                    return ProviderOutcome.CHANGED
+                return ProviderOutcome.ALREADY_DONE
             except AuthenticationException as exc:
                 raise _auth_error(exc) from exc
             except SandboxNotFoundException:
-                return False
+                return ProviderOutcome.FAILED
             except SandboxException as exc:
                 if attempt == self.resume_retries:
                     _logger.exception(
                         f'Error resuming sandbox {sandbox_id}', stack_info=True
                     )
-                    return False
+                    return ProviderOutcome.FAILED
                 _logger.info(
                     f'Retrying resume of sandbox {sandbox_id} after {exc}',
                 )
                 await asyncio.sleep(self.resume_retry_interval)
-        return False
+        return ProviderOutcome.FAILED
 
-    async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox.
+    async def _pause_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Pause the microVM, with its memory and processes.
 
         The stored key is kept, because the sandbox resumes holding the same
-        key (see ``resume_sandbox``).
+        key (see ``_resume_at_provider``).
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
+        sandbox_id = stored_sandbox.id
         info = await self._get_info(sandbox_id)
         if info is None:
-            return False
+            return ProviderOutcome.FAILED
         if info.state == SandboxState.PAUSED:
-            return True
+            return ProviderOutcome.ALREADY_DONE
         try:
             # A False result means the sandbox was already paused, which the
             # caller asked for either way.
@@ -700,26 +690,19 @@ class E2BSandboxService(SandboxService):
             raise _auth_error(exc) from exc
         except SandboxException:
             _logger.exception(f'Error pausing sandbox {sandbox_id}', stack_info=True)
-            return False
-        return True
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox and its row.
-
-        Returns False only when there is no such sandbox or the caller may not
-        see it. A transient E2B failure raises ``SandboxDeleteRetryError`` and
-        keeps the row, so a live sandbox is never reported as gone.
-        """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
+    async def _delete_at_provider(self, stored_sandbox: StoredSandbox) -> None:
+        """Kill the microVM."""
+        sandbox_id = stored_sandbox.id
         try:
             # A False result means the sandbox was already gone.
             await AsyncSandbox.kill(sandbox_id, **self._api_params)
         except AuthenticationException as exc:
             raise _auth_error(exc) from exc
         except SandboxNotFoundException:
-            # E2B reaped it already. Remove the row rather than asking the
+            # E2B reaped it already. The row is removed rather than asking the
             # caller to retry a delete that has nothing left to delete.
             _logger.info(f'Sandbox {sandbox_id} already gone at E2B; removing row')
         except SandboxException as exc:
@@ -727,8 +710,6 @@ class E2BSandboxService(SandboxService):
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {sandbox_id}: {exc}'
             ) from exc
-        await self.db_session.delete(stored_sandbox)
-        return True
 
 
 class E2BSandboxServiceInjector(SandboxServiceInjector):
