@@ -216,6 +216,32 @@ describe("Super Admin Organizations page", () => {
     );
   });
 
+  it("resumes a suspended organization without asking for confirmation", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      { ...ACME, status: "suspended" },
+    ]);
+    const updateOrganizationStatus = vi
+      .spyOn(superAdminService, "updateOrganizationStatus")
+      .mockResolvedValue(ACME);
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-resume-2");
+
+    // Assert
+    await waitFor(() =>
+      expect(updateOrganizationStatus).toHaveBeenCalledWith({
+        orgId: "2",
+        status: "active",
+      }),
+    );
+    expect(
+      screen.queryByTestId("super-admin-org-confirm"),
+    ).not.toBeInTheDocument();
+  });
+
   it("invites a person into the organization chosen from its row menu", async () => {
     // Arrange
     const user = userEvent.setup();
