@@ -31,7 +31,13 @@ def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
         or (
             is_openhands_model(existing.model)
             and (
-                not existing.base_url or is_openhands_proxy_base_url(existing.base_url)
+                not existing.base_url
+                or is_openhands_proxy_base_url(existing.base_url)
+                # The bundled proxy's URL, left behind after LiteLLM was turned off.
+                or (
+                    not constants.ENABLE_LEGACY_LITELLM
+                    and constants.is_in_cluster_url(existing.base_url)
+                )
             )
             and not getattr(existing, 'provider_connection_id', None)
         )
