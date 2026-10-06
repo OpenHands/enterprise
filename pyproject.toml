@@ -113,7 +113,7 @@ dependencies = [
   "tornado==6.5.8",
   "tree-sitter-language-pack>=0.7.3",
   "types-toml",
-  "urllib3==2.7.0",
+  "urllib3==2.8.0",
   "uvicorn",
   "whatthepatch==1.0.7",
   "zope-interface==7.2",
