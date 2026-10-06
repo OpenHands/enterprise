@@ -20,6 +20,7 @@ from openhands.app_server.sandbox.docker_sandbox_service import (
 from openhands.app_server.sandbox.lifecycle import tasks
 from openhands.app_server.sandbox.lifecycle.rules import Action, Reason
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
+from openhands.app_server.sandbox.lifecycle.sweep import find_due_sandbox_ids
 from openhands.app_server.sandbox.remote_sandbox_service import (
     RemoteSandboxServiceInjector,
 )
@@ -38,6 +39,11 @@ from tests.unit.app_server.test_sandbox_lifecycle_contract import (
 
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
+FAILED_BEFORE_A_POD = {
+    'type': 'Ready',
+    'status': 'False',
+    'reason': 'TemplateNotFound',
+}
 
 
 class FakeAgentServer:
@@ -105,10 +111,13 @@ async def _check(
     db_session,
     agent_server: FakeAgentServer,
     settings: SandboxLifecycleSettings | None = None,
+    **service_fields,
 ):
     row = harness.row()
     service = harness.service(db_session)
     service.httpx_client = agent_server  # type: ignore[assignment]
+    for name, value in service_fields.items():
+        setattr(service, name, value)
     return await tasks.check_sandbox(
         harness.sandbox_id,
         backend=row.backend,
@@ -117,6 +126,10 @@ async def _check(
         sandbox_service=service,
         now=datetime.now(UTC),
     )
+
+
+def _messages(log_method) -> list[str]:
+    return [call.args[0] for call in log_method.call_args_list]
 
 
 async def _reload(db_session, sandbox_id: str) -> StoredSandbox | None:
@@ -201,6 +214,57 @@ class TestCheck:
         )
 
         assert decision.action == Action.PAUSE
+
+    @pytest.mark.parametrize('harness', ['docker'], indirect=True)
+    async def test_a_hung_agent_server_is_paused(
+        self, harness, db_session, add_sandbox
+    ):
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        container = harness.containers[harness.sandbox_id]
+        container.attrs['State']['StartedAt'] = (
+            datetime.now(UTC) - 2 * HOUR
+        ).isoformat()
+        agent_server = FakeAgentServer(error=httpx.ReadTimeout('timed out'))
+
+        with patch.object(tasks._logger, 'info') as info:
+            decision = await _check(
+                harness, db_session, agent_server, health_check_path='/health'
+            )
+
+        assert decision.action == Action.PAUSE
+        assert decision.reason == Reason.IDLE
+        assert [url.rsplit('/', 1)[-1] for url in agent_server.urls] == ['health']
+        assert container.status == 'exited'
+        assert _messages(info) == ['sandbox_lifecycle.paused']
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.PAUSED
+        due = await find_due_sandbox_ids(
+            db_session,
+            DOCKER_BACKEND,
+            SandboxLifecycleSettings(),
+            now=datetime.now(UTC),
+            limit=10,
+        )
+        assert due == []
+
+    @pytest.mark.parametrize('harness', ['docker', 'k8s-agent-sandbox'], indirect=True)
+    async def test_a_pause_the_provider_skips_is_not_logged_as_paused(
+        self, harness, db_session, add_sandbox
+    ):
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        if isinstance(harness, DockerHarness):
+            harness.containers[harness.sandbox_id].status = 'dead'
+        else:
+            harness.k8s.add_claim(ready=FAILED_BEFORE_A_POD, sandbox_name=None)
+
+        with patch.object(tasks._logger, 'info') as info:
+            decision = await _check(harness, db_session, FakeAgentServer())
+
+        assert decision.action == Action.PAUSE
+        assert _messages(info) == ['sandbox_lifecycle.pause_skipped']
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.RUNNING
+        assert harness.pause_calls() == 0
 
     async def test_a_pause_the_provider_made_is_recorded(
         self, harness, db_session, add_sandbox
