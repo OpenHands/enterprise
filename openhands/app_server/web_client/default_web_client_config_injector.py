@@ -198,7 +198,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     enable_billing here is only the env-var fallback: ``get_web_client_config``
     re-resolves it against the DB-backed default flag on every request
-    (see ``_resolve_flag``).
+    (see ``_resolve_flag``). enable_integrated_idp is not set here at all —
+    it depends on whether a real IDP is configured in the DB, so it is
+    resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
+    and defaults to False until then.
     """
     return WebClientFeatureFlags(
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
@@ -266,7 +269,7 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     return await feature_flag_service.resolve(key)
 
 
-async def _resolve_integrated_idp_enabled() -> bool:
+async def _resolve_enable_integrated_idp() -> bool:
     """Whether the integrated, locally-hosted IDP (email+password) is available.
 
     Delegates to ``server.routes.dev_idp.is_dev_idp_available`` so the config
@@ -325,10 +328,6 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         default_factory=_get_jira_dc_service_account_config_error
     )
     jira_oauth_enabled: bool = Field(default_factory=_get_jira_oauth_enabled)
-    # Integrated IDP availability is resolved at request time in
-    # get_web_client_config (it depends on whether a real IDP is configured
-    # in the DB). Defaults to False.
-    integrated_idp_enabled: bool = False
     acp_providers: list[ACPProviderConfig] = Field(
         default_factory=lambda: [
             ACPProviderConfig(
@@ -353,12 +352,15 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         config = get_global_config()
         # enable_billing is a registered default flag (ENABLE_BILLING): the
         # database overlay wins, the env var baked into self.feature_flags at
-        # init is the fallback.
+        # init is the fallback. enable_integrated_idp depends on whether a
+        # real IDP is configured in the DB, so it is also resolved here
+        # rather than at injector init time.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
-                )
+                ),
+                'enable_integrated_idp': await _resolve_enable_integrated_idp(),
             }
         )
         result = WebClientConfig(
@@ -387,6 +389,5 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             ),
             jira_oauth_enabled=self.jira_oauth_enabled,
             acp_providers=self.acp_providers,
-            integrated_idp_enabled=await _resolve_integrated_idp_enabled(),
         )
         return result
