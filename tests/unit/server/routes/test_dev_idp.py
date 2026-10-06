@@ -4,7 +4,8 @@ the OAuth v2 flow as an email+password login (OHE-3381).
 These tests exercise:
 
 * ``derive_dev_idp_user_id`` — deterministic, case-insensitive UUID derivation
-* ``is_dev_idp_available`` — gating logic (self-hosted + no real IDP)
+* ``is_dev_idp_available`` — gating logic (``ENABLE_INTEGRATED_IDP`` env var
+  only; independent of whether a real IDP is also configured)
 * ``get_dev_idp_if_available`` — sentinel returned when available
 * ``GET /oauth/idp-login`` — redirects to the dev IDP sentinel provider
 * ``GET /oauth/{DEV_IDP_PROVIDER_ID}/login`` — redirects to the dedicated
@@ -84,7 +85,7 @@ def _mock_user(
 
 @contextmanager
 def _available(has_password_super_admin: bool = True):
-    """Make the dev IDP available (env var enabled, no real IDP configured).
+    """Make the dev IDP available (``ENABLE_INTEGRATED_IDP`` env var on).
 
     ``has_password_super_admin`` simulates whether a super admin who can log
     in with a password already exists (default ``True``, the common case —
@@ -97,14 +98,7 @@ def _available(has_password_super_admin: bool = True):
     state machine.
     """
     with ExitStack() as stack:
-        stack.enter_context(patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', True))
-        stack.enter_context(
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            )
-        )
+        stack.enter_context(patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True))
         stack.enter_context(
             patch(
                 'server.routes.dev_idp.UserStore.has_super_admin_with_password',
@@ -164,29 +158,26 @@ class TestDeriveDevIdpUserId:
 
 class TestIsDevIdpAvailable:
     def test_disabled_when_env_var_off(self):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
         assert result is False
 
     def test_enabled_no_idp(self):
-        with (
-            patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', True),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
         assert result is True
 
-    def test_disabled_when_real_idp_configured(self):
+    def test_enabled_even_when_real_idp_configured(self):
+        """The flag alone governs availability: a configured real IDP does
+        not disable the dev IDP — ``get_first_idp`` uses this to prefer the
+        dev IDP over the real one for ``/oauth/idp-login`` (see
+        ``storage.oauth_provider_store``)."""
         with (
-            patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', True),
+            patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -196,7 +187,7 @@ class TestIsDevIdpAvailable:
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
-        assert result is False
+        assert result is True
 
     def test_env_var_accepts_1_as_truthy(self, monkeypatch):
         """Older Helm charts default to '1' rather than 'true'."""
@@ -204,9 +195,9 @@ class TestIsDevIdpAvailable:
 
         import server.constants
 
-        monkeypatch.setenv('INTEGRATED_IDP_ENABLED', '1')
+        monkeypatch.setenv('ENABLE_INTEGRATED_IDP', '1')
         importlib.reload(server.constants)
-        assert server.constants.INTEGRATED_IDP_ENABLED is True
+        assert server.constants.ENABLE_INTEGRATED_IDP is True
 
     @pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'True'])
     def test_env_var_truthy_values(self, monkeypatch, value):
@@ -214,9 +205,9 @@ class TestIsDevIdpAvailable:
 
         import server.constants
 
-        monkeypatch.setenv('INTEGRATED_IDP_ENABLED', value)
+        monkeypatch.setenv('ENABLE_INTEGRATED_IDP', value)
         importlib.reload(server.constants)
-        assert server.constants.INTEGRATED_IDP_ENABLED is True
+        assert server.constants.ENABLE_INTEGRATED_IDP is True
 
     @pytest.mark.parametrize('value', ['0', 'false', '', 'no', None])
     def test_env_var_falsy_values(self, monkeypatch, value):
@@ -225,11 +216,11 @@ class TestIsDevIdpAvailable:
         import server.constants
 
         if value is None:
-            monkeypatch.delenv('INTEGRATED_IDP_ENABLED', raising=False)
+            monkeypatch.delenv('ENABLE_INTEGRATED_IDP', raising=False)
         else:
-            monkeypatch.setenv('INTEGRATED_IDP_ENABLED', value)
+            monkeypatch.setenv('ENABLE_INTEGRATED_IDP', value)
         importlib.reload(server.constants)
-        assert server.constants.INTEGRATED_IDP_ENABLED is False
+        assert server.constants.ENABLE_INTEGRATED_IDP is False
 
 
 # ── get_dev_idp_if_available (sentinel) ────────────────────────────────────
@@ -246,15 +237,15 @@ class TestGetDevIdpIfAvailable:
         assert result.id == DEV_IDP_PROVIDER_ID
 
     def test_returns_none_on_cloud(self):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             import asyncio
 
             result = asyncio.run(get_dev_idp_if_available())
         assert result is None
 
-    def test_returns_none_when_real_idp_configured(self):
+    def test_returns_sentinel_even_when_real_idp_configured(self):
         with (
-            patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', True),
+            patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -264,7 +255,8 @@ class TestGetDevIdpIfAvailable:
             import asyncio
 
             result = asyncio.run(get_dev_idp_if_available())
-        assert result is None
+        assert result is not None
+        assert isinstance(result, DevIdpProvider)
 
 
 # ── GET /oauth/idp-login redirect ─────────────────────────────────────────
@@ -316,7 +308,7 @@ class TestOAuthV2LoginRedirectsDevIdp:
         assert 'redirect_url=%2Fdashboard' in location
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.get(
                 f'/oauth/{DEV_IDP_PROVIDER_ID}/login', follow_redirects=False
             )
@@ -352,7 +344,7 @@ class TestDevIdpLoginForm:
         assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert response.status_code == 404
 
@@ -408,7 +400,7 @@ class TestDevIdpSignupForm:
         assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
         assert response.status_code == 404
 
@@ -443,7 +435,7 @@ class TestDevIdpSignupForm:
 
 class TestDevIdpSignup:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.post(
                 f'/oauth/{DEV_IDP_SIGNUP_PATH}',
                 data={
@@ -744,7 +736,7 @@ class TestDevIdpSignup:
 
 class TestDevIdpLogin:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.post(
                 f'/oauth/{DEV_IDP_LOGIN_PATH}',
                 data={'email': 'dev@example.com', 'password': 'password123'},
@@ -977,7 +969,7 @@ class TestDevIdpStatus:
         assert response.json()['enabled'] is True
 
     def test_returns_enabled_false_on_cloud(self, client):
-        with patch('server.routes.dev_idp.INTEGRATED_IDP_ENABLED', False):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
             response = client.get('/api/dev-idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is False

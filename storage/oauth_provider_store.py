@@ -41,9 +41,10 @@ class OAuthProviderStore:
     async def _has_real_idp(self) -> bool:
         """Whether any real IDP provider exists in ``oauth_providers``.
 
-        Queries the DB directly without the dev IDP sentinel fallback so it
-        is safe to call from ``is_dev_idp_available()`` (which would otherwise
-        recurse through ``get_idp_providers`` → ``get_dev_idp_if_available``).
+        Queries the DB directly without the dev IDP sentinel fallback. Used
+        by ``_v2_get_idp_access_token`` to tell a dev-IDP-only session (no
+        IDP token to refresh, by design) apart from a real-IDP session with
+        a stale/missing token row (should raise ``ExpiredError``).
         """
         async with a_session_maker() as session:
             result = await session.execute(
@@ -54,9 +55,14 @@ class OAuthProviderStore:
     async def get_idp_providers(self) -> list:
         """Return all IDP providers, including the dev IDP sentinel if active.
 
-        When no real IDP is configured and the deployment is self-hosted, the
-        dev IDP sentinel (``DevIdpProvider``) is prepended to the list so the
-        OAuth v2 flow treats it as a regular IDP.
+        When no real IDP is configured, the dev IDP sentinel (``DevIdpProvider``)
+        is returned in its place so the OAuth v2 flow treats it as a regular
+        IDP. Unlike ``get_first_idp``, a configured real IDP is never
+        superseded by the dev IDP here: this list backs IDP-token-refresh
+        iteration for already-authenticated sessions (see
+        ``_v2_get_idp_access_token``), not the ``/oauth/idp-login`` entry
+        point, so an existing real-IDP session must keep seeing its real
+        provider even when ``ENABLE_INTEGRATED_IDP`` is also on.
         """
         async with a_session_maker() as session:
             result = await session.execute(
@@ -74,12 +80,21 @@ class OAuthProviderStore:
         return providers
 
     async def get_first_idp(self):
-        """Return the first IDP provider, or the dev IDP sentinel if active.
+        """Return the IDP that ``/oauth/idp-login`` should use.
 
-        When no real IDP is configured and the deployment is self-hosted, the
-        dev IDP sentinel (``DevIdpProvider``) is returned so ``/oauth/idp-login``
-        redirects to the dev IDP email-entry form instead of returning 404.
+        The dev IDP sentinel (``DevIdpProvider``) takes priority whenever
+        ``ENABLE_INTEGRATED_IDP`` is on: the integrated email+password login
+        is used instead of any configured real IDP, not merely as a fallback
+        for when none is configured. Only when the flag is off is a
+        configured real IDP used — exclusively; the dev IDP is never
+        returned in that case. Returns ``None`` when neither is available.
         """
+        from server.routes.dev_idp import get_dev_idp_if_available
+
+        dev = await get_dev_idp_if_available()
+        if dev is not None:
+            return dev
+
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
@@ -87,12 +102,7 @@ class OAuthProviderStore:
                 .order_by(OAuthProvider.id)
                 .limit(1)
             )
-            provider = result.scalars().one_or_none()
-        if provider is not None:
-            return provider
-        from server.routes.dev_idp import get_dev_idp_if_available
-
-        return await get_dev_idp_if_available()
+            return result.scalars().one_or_none()
 
     async def get_first_by_category(self, category: str) -> OAuthProvider | None:
         """Return the first provider matching ``provider_category`` (lowest ``id``).
