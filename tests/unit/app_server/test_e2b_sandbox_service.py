@@ -40,6 +40,7 @@ from openhands.app_server.sandbox.e2b_sandbox_service import (
     E2BSandboxService,
 )
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import E2BSandboxSpecInfo
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -222,6 +223,7 @@ def _service(
     init_api_key: str | None = INIT_API_KEY,
     init_timeout_seconds: int = 5,
     resume_retries: int = 3,
+    lifecycle: SandboxLifecycleSettings | None = None,
 ) -> E2BSandboxService:
     spec = E2BSandboxSpecInfo(
         id=TEMPLATE,
@@ -245,6 +247,7 @@ def _service(
         api_url='https://api.e2b.example.com',
         web_url=web_url,
         permitted_cors_origins=permitted_cors_origins or [],
+        lifecycle=lifecycle or SandboxLifecycleSettings(),
     )
 
 
@@ -431,6 +434,26 @@ class TestInitHandshake:
         assert env[WORKER_2] == str(WORKER_2_PORT)
         assert env['LLM_API_KEY'] == 'sk-secret'
         assert env['LLM_TIMEOUT'] == '3600'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('idle_seconds', 'expected'),
+        [(1200, '1200'), (0, None)],
+    )
+    async def test_env_caps_terminal_commands_below_the_idle_pause(
+        self, sdk, db_session, idle_seconds, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session,
+            httpx_client=agent_server,
+            lifecycle=SandboxLifecycleSettings(idle_seconds=idle_seconds),
+        ).start_sandbox()
+
+        env = agent_server.init_post_bodies[0]['env']
+        assert env.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
 
     @pytest.mark.asyncio
     async def test_cors_origins_include_permitted_origins(self, sdk, db_session):
