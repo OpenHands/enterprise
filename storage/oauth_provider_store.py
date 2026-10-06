@@ -38,17 +38,48 @@ class OAuthProviderStore:
             )
             return list(result.scalars().all())
 
-    async def get_idp_providers(self) -> list[OAuthProvider]:
+    async def _has_real_idp(self) -> bool:
+        """Whether any real IDP provider exists in ``oauth_providers``.
+
+        Queries the DB directly without the dev IDP sentinel fallback so it
+        is safe to call from ``is_dev_idp_available()`` (which would otherwise
+        recurse through ``get_idp_providers`` → ``get_dev_idp_if_available``).
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider.id).where(OAuthProvider.is_idp.is_(True)).limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
+    async def get_idp_providers(self) -> list:
+        """Return all IDP providers, including the dev IDP sentinel if active.
+
+        When no real IDP is configured and the deployment is self-hosted, the
+        dev IDP sentinel (``DevIdpProvider``) is prepended to the list so the
+        OAuth v2 flow treats it as a regular IDP.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
                 .where(OAuthProvider.is_idp.is_(True))
                 .order_by(OAuthProvider.id)
             )
-            return list(result.scalars().all())
+            providers = list(result.scalars().all())
+        if not providers:
+            from server.routes.dev_idp import get_dev_idp_if_available
 
-    async def get_first_idp(self) -> OAuthProvider | None:
-        """Return the first IDP provider (lowest ``id``), or ``None``."""
+            dev = await get_dev_idp_if_available()
+            if dev is not None:
+                return [dev]
+        return providers
+
+    async def get_first_idp(self):
+        """Return the first IDP provider, or the dev IDP sentinel if active.
+
+        When no real IDP is configured and the deployment is self-hosted, the
+        dev IDP sentinel (``DevIdpProvider``) is returned so ``/oauth/idp-login``
+        redirects to the dev IDP email-entry form instead of returning 404.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
@@ -56,7 +87,12 @@ class OAuthProviderStore:
                 .order_by(OAuthProvider.id)
                 .limit(1)
             )
-            return result.scalars().one_or_none()
+            provider = result.scalars().one_or_none()
+        if provider is not None:
+            return provider
+        from server.routes.dev_idp import get_dev_idp_if_available
+
+        return await get_dev_idp_if_available()
 
     async def get_first_by_category(self, category: str) -> OAuthProvider | None:
         """Return the first provider matching ``provider_category`` (lowest ``id``).

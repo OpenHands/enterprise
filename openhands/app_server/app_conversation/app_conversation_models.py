@@ -252,6 +252,10 @@ class AppConversation(AppConversationInfo):  # type: ignore
     conversation_url: str | None = Field(
         default=None, description='The URL where the conversation may be accessed'
     )
+    conversation_ui_url: str | None = Field(
+        default=None,
+        description='Browser URL that opens the conversation in Agent Canvas',
+    )
     session_api_key: str | None = Field(
         default=None, description='The Session Api Key for REST operations.'
     )

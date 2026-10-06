@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.66.0"
+version = "1.68.1"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -14,6 +14,7 @@ dependencies = [
   "alembic==1.18.4",
   "anthropic[vertex]",
   "anyio==4.14.2",
+  "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.30.0",
   "authlib==1.6.12",                                # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
@@ -57,9 +58,9 @@ dependencies = [
   "memory-profiler==0.61.0",
   "numpy==2.4.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.49.6",
-  "openhands-sdk==1.49.6",
-  "openhands-tools==1.49.6",
+  "openhands-agent-server==1.50.1",
+  "openhands-sdk==1.50.1",
+  "openhands-tools==1.50.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.11.8",                                 # Pinned to fix CVE-2025-67221
@@ -70,10 +71,12 @@ dependencies = [
   "pillow==12.3.0",
   "playwright==1.58.0",
   "posthog==7.9.12",
+  "procrastinate==3.10.0",
   "prometheus-client==0.24.1",
   "prompt-toolkit==3.0.52",
   "protobuf==5.29.6",                               # Updated to fix CVE-2026-0994
   "psutil==7.2.2",
+  "psycopg[binary,pool]==3.3.6",
   "psycopg2-binary==2.9.11",
   "pybase62==1.0.0",
   "pygithub>=2.5",
@@ -182,7 +185,9 @@ lint.flake8-bugbear.extend-immutable-calls = [
   "Depends",
   "fastapi.Body",
   "fastapi.Depends",
+  "fastapi.Form",
   "fastapi.params.Depends",
+  "Form",
   "openhands.app_server.services.db_session.depends_db_session",
   "server.auth.user.user_authorizer.depends_user_authorizer",
 ]
@@ -207,4 +212,4 @@ omit = [ "tests/*", "**/test_*" ]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false }
+exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" }
