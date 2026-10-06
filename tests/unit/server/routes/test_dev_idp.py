@@ -83,8 +83,15 @@ def _mock_user(
 
 
 @contextmanager
-def _available():
-    """Make the dev IDP available (env var enabled, no real IDP configured)."""
+def _available(has_super_admin: bool = True):
+    """Make the dev IDP available (env var enabled, no real IDP configured).
+
+    ``has_super_admin`` simulates whether this installation has already been
+    bootstrapped (default ``True``, the common case — login works normally,
+    sign-up is unreachable) or is still pre-bootstrap (``False`` — sign-up is
+    the only reachable form, login redirects to it). See the module
+    docstring on ``server.routes.dev_idp`` for the full state machine.
+    """
     with ExitStack() as stack:
         stack.enter_context(patch('server.routes.dev_idp.DEV_IDP_ENABLED', True))
         stack.enter_context(
@@ -92,6 +99,13 @@ def _available():
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=False,
+            )
+        )
+        stack.enter_context(
+            patch(
+                'server.routes.dev_idp.UserStore.has_super_admin',
+                new_callable=AsyncMock,
+                return_value=has_super_admin,
             )
         )
         yield
@@ -323,13 +337,15 @@ class TestOAuthV2CallbackRejectsDevIdp:
 
 class TestDevIdpLoginForm:
     def test_serves_html_form(self, client):
-        with _available():
+        """When a super admin already exists, login renders normally."""
+        with _available(has_super_admin=True):
             response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert response.status_code == 200
         assert 'text/html' in response.headers.get('content-type', '')
         assert 'email' in response.text.lower()
         assert 'password' in response.text.lower()
-        assert 'Development Login' in response.text
+        assert 'Sign In' in response.text
+        assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
         with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
@@ -337,21 +353,41 @@ class TestDevIdpLoginForm:
         assert response.status_code == 404
 
     def test_posts_to_login_path(self, client):
-        with _available():
+        with _available(has_super_admin=True):
             response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
         assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.text
 
-    def test_links_to_signup(self, client):
-        with _available():
+    def test_no_signup_link_when_superadmin_exists(self, client):
+        """Login is the *only* option once an admin account exists — no
+        self-service sign-up link anywhere on the page."""
+        with _available(has_super_admin=True):
             response = client.get(f'/oauth/{DEV_IDP_LOGIN_PATH}')
-        assert f'/oauth/{DEV_IDP_SIGNUP_PATH}' in response.text
+        assert f'/oauth/{DEV_IDP_SIGNUP_PATH}' not in response.text
 
     def test_shows_error_message(self, client):
-        with _available():
+        with _available(has_super_admin=True):
             response = client.get(
                 f'/oauth/{DEV_IDP_LOGIN_PATH}', params={'error': 'invalid_credentials'}
             )
         assert 'Invalid email or password' in response.text
+
+    def test_redirects_to_signup_when_no_superadmin(self, client):
+        """No admin account yet — bootstrap (sign-up) is the only option."""
+        with _available(has_super_admin=False):
+            response = client.get(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}', follow_redirects=False
+            )
+        assert response.status_code == 302
+        assert f'/oauth/{DEV_IDP_SIGNUP_PATH}' in response.headers['location']
+
+    def test_redirect_to_signup_forwards_redirect_url(self, client):
+        with _available(has_super_admin=False):
+            response = client.get(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                params={'redirect_url': '/dashboard'},
+                follow_redirects=False,
+            )
+        assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
 
 # ── GET /oauth/dev-idp/signup (HTML form) ─────────────────────────────────
@@ -359,21 +395,43 @@ class TestDevIdpLoginForm:
 
 class TestDevIdpSignupForm:
     def test_serves_html_form(self, client):
-        with _available():
+        """While no super admin exists, sign-up (bootstrap) renders normally."""
+        with _available(has_super_admin=False):
             response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
         assert response.status_code == 200
         assert 'confirm_password' in response.text
-        assert 'Development Sign Up' in response.text
+        assert 'Create Admin Account' in response.text
+        assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
         with patch('server.routes.dev_idp.DEV_IDP_ENABLED', False):
             response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
         assert response.status_code == 404
 
-    def test_links_to_login(self, client):
-        with _available():
+    def test_no_login_link_while_bootstrapping(self, client):
+        """Sign-up is the *only* option pre-bootstrap — no login link."""
+        with _available(has_super_admin=False):
             response = client.get(f'/oauth/{DEV_IDP_SIGNUP_PATH}')
-        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.text
+        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' not in response.text
+
+    def test_redirects_to_login_when_superadmin_exists(self, client):
+        """An admin account already exists — sign-up is unreachable; the
+        only option is to log in."""
+        with _available(has_super_admin=True):
+            response = client.get(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}', follow_redirects=False
+            )
+        assert response.status_code == 302
+        assert f'/oauth/{DEV_IDP_LOGIN_PATH}' in response.headers['location']
+
+    def test_redirect_to_login_forwards_redirect_url(self, client):
+        with _available(has_super_admin=True):
+            response = client.get(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                params={'redirect_url': '/dashboard'},
+                follow_redirects=False,
+            )
+        assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
 
 # ── POST /oauth/dev-idp/signup ────────────────────────────────────────────
@@ -393,7 +451,7 @@ class TestDevIdpSignup:
         assert response.status_code == 404
 
     def test_password_mismatch_redirects_with_error(self, client):
-        with _available():
+        with _available(has_super_admin=False):
             response = client.post(
                 f'/oauth/{DEV_IDP_SIGNUP_PATH}',
                 data={
@@ -410,7 +468,7 @@ class TestDevIdpSignup:
         assert query['error'] == ['password_mismatch']
 
     def test_password_too_short_redirects_with_error(self, client):
-        with _available():
+        with _available(has_super_admin=False):
             response = client.post(
                 f'/oauth/{DEV_IDP_SIGNUP_PATH}',
                 data={
@@ -427,7 +485,7 @@ class TestDevIdpSignup:
     def test_email_taken_redirects_with_error(self, client):
         existing = _mock_user(email='dev@example.com', password_hash='existing_hash')
         with (
-            _available(),
+            _available(has_super_admin=False),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -457,7 +515,7 @@ class TestDevIdpSignup:
         )
 
         with (
-            _available(),
+            _available(has_super_admin=False),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -497,7 +555,7 @@ class TestDevIdpSignup:
         mock_user = _mock_user(user_id=user_id, accepted_tos=None)
 
         with (
-            _available(),
+            _available(has_super_admin=False),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -540,7 +598,7 @@ class TestDevIdpSignup:
 
     def test_create_user_failure_returns_500(self, client):
         with (
-            _available(),
+            _available(has_super_admin=False),
             patch(
                 'server.routes.dev_idp.UserStore.get_user_by_id',
                 new_callable=AsyncMock,
@@ -567,6 +625,26 @@ class TestDevIdpSignup:
             )
         assert response.status_code == 500
 
+    def test_blocked_when_superadmin_already_exists(self, client):
+        """Sign-up is bootstrap-only: once an admin account exists, POSTing
+        to sign-up (even with valid input) is rejected — redirected to login
+        with an explanatory error, instead of creating another account."""
+        with _available(has_super_admin=True):
+            response = client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'someone-else@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        location = response.headers['location']
+        assert DEV_IDP_LOGIN_PATH in location
+        query = parse_qs(urlparse(location).query)
+        assert query['error'] == ['superadmin_exists']
+
 
 # ── POST /oauth/dev-idp/login ─────────────────────────────────────────────
 
@@ -579,6 +657,18 @@ class TestDevIdpLogin:
                 data={'email': 'dev@example.com', 'password': 'password123'},
             )
         assert response.status_code == 404
+
+    def test_redirects_to_signup_when_no_superadmin(self, client):
+        """No admin account yet — login can't succeed for anyone, so the
+        bootstrap (sign-up) form is where the request is sent instead."""
+        with _available(has_super_admin=False):
+            response = client.post(
+                f'/oauth/{DEV_IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'password123'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        assert f'/oauth/{DEV_IDP_SIGNUP_PATH}' in response.headers['location']
 
     def test_unknown_email_redirects_with_error(self, client):
         with (

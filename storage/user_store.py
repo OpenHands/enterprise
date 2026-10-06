@@ -1040,6 +1040,23 @@ class UserStore:
             return list(result.scalars().all())
 
     @staticmethod
+    async def has_super_admin() -> bool:
+        """Whether any user currently holds the instance-level super-admin role.
+
+        Existence-only check (no row materialization) for callers that just
+        need to branch on "has this installation been bootstrapped yet?" —
+        e.g. the local password-login bootstrap flow in
+        ``server.routes.dev_idp`` decides between showing an admin-account
+        sign-up form (nobody has bootstrapped yet) and a plain login form.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            exists = await session.scalar(
+                select(User.id).filter(User.role_id == admin_role_id).limit(1)
+            )
+            return exists is not None
+
+    @staticmethod
     async def grant_super_admin(user_id: str) -> Optional[User]:
         """Grant the instance-level super-admin role to an existing user.
 

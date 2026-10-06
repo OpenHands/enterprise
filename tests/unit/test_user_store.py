@@ -2458,6 +2458,34 @@ async def test_list_super_admins_only_returns_super_admins(async_session_maker):
 
 
 @pytest.mark.asyncio
+async def test_has_super_admin_false_when_none_exist(async_session_maker):
+    """No user holds the admin role yet — e.g. a fresh, un-bootstrapped
+    installation."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, None, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_true_when_one_exists(async_session_maker):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
 async def test_revoke_super_admin_success_when_another_exists(async_session_maker):
     """Revoking one of several super admins clears their role."""
     admin_role_id = await _seed_admin_role(async_session_maker)

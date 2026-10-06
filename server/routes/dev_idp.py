@@ -1,10 +1,11 @@
-"""Development-only insecure IDP — pretends to be a regular OAuth v2 IDP.
+"""Local password-based IDP — pretends to be a regular OAuth v2 IDP.
 
 This module provides a login path that does **not** depend on Keycloak or any
-external identity provider. It is intended for self-hosted / trial installs
-that have no real IDP configured yet.
+external identity provider. It is intended for self-hosted installs that have
+no real IDP configured yet, with their first administrator account bootstrapped
+directly, instead of standing up an external IDP just to get started.
 
-**Design**: the dev IDP plugs into the existing OAuth v2 flow as if it were a
+**Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
 regular IDP provider, but is modeled as an in-memory sentinel
 (``DevIdpProvider``, id = ``DEV_IDP_PROVIDER_ID``) rather than a row in
 ``oauth_providers``. When no real IDP is configured and the deployment is
@@ -15,7 +16,7 @@ self-hosted:
 * ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
   which ``oauth_v2`` intercepts and redirects to the fixed
   ``/oauth/dev-idp/login`` page served by this module.
-* Unlike a real IDP, the dev IDP requires a **password**: ``GET
+* Unlike a real IDP, this one requires a **password**: ``GET
   /oauth/dev-idp/login`` and ``GET /oauth/dev-idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
   (sign-in) or create an account (sign-up) and set the same ``openhands_auth``
@@ -24,14 +25,25 @@ self-hosted:
   ``User.password_hash`` — never sent anywhere but this process, and never
   accepted via query string/GET.
 
+**Account creation is admin-only, not self-service.** The sign-up form exists
+solely to bootstrap the *first* super admin on a fresh installation
+(``UserStore.create_user`` already designates the first user in an empty
+database as super admin). Once a super admin exists
+(``UserStore.has_super_admin()``), ``/oauth/dev-idp/signup`` redirects to the
+login page instead of rendering — every subsequent account must be created by
+a super admin through the existing user-management APIs, not through
+self-service sign-up. Symmetrically, while no super admin exists yet,
+``/oauth/dev-idp/login`` redirects to the sign-up (bootstrap) page, since
+there is no account to log into.
+
 When a real IDP is configured, the sentinel is not returned and every route
 in this module returns ``404``.
 
-**This IDP is intentionally insecure** (no rate limiting, no email
-verification, no password-reset flow). It must never be enabled on cloud
-(``app.all-hands.dev``) or any deployment where security matters. Gated by
-the ``DEV_IDP_ENABLED`` env var (explicit opt-in) plus the "no real IDP
-configured" check.
+**This IDP is not a substitute for a real identity provider** (no rate
+limiting, no email verification, no password-reset flow, no MFA). It must
+never be enabled on cloud (``app.all-hands.dev``) or any deployment where
+security matters. Gated by the ``DEV_IDP_ENABLED`` env var (explicit opt-in)
+plus the "no real IDP configured" check.
 """
 
 from __future__ import annotations
@@ -93,7 +105,7 @@ class DevIdpProvider:
 
     id: int = DEV_IDP_PROVIDER_ID
     provider_category: str = DEV_IDP_CATEGORY
-    display_name: str = 'Development IDP'
+    display_name: str = 'Password Login'
     is_idp: bool = True
     authorization_url: str | None = None
     token_url: str | None = None
@@ -160,6 +172,9 @@ _ERROR_MESSAGES = {
         f'Password must be at least {MIN_PASSWORD_LENGTH} characters.'
     ),
     'password_mismatch': 'Passwords do not match.',
+    'superadmin_exists': (
+        'An administrator account already exists. Please sign in instead.'
+    ),
 }
 
 _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
@@ -167,7 +182,7 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenHands — Development {mode_title}</title>
+  <title>OpenHands — {mode_title}</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: #1a1a1a; color: #fff; display: flex; align-items: center;
@@ -187,11 +202,6 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
               border: none; background: #fff; color: #1a1a1a; font-size: 14px;
               font-weight: 500; cursor: pointer; }}
     button:hover {{ opacity: 0.9; }}
-    .toggle {{ margin-top: 16px; font-size: 13px; color: #a3a3a3; text-align: center; }}
-    .toggle a {{ color: #818cf8; text-decoration: none; }}
-    .warning {{ margin-top: 20px; padding: 12px; border-radius: 6px;
-                background: rgba(250, 204, 21, 0.1); border: 1px solid rgba(250, 204, 21, 0.3);
-                color: #facc15; font-size: 12px; line-height: 1.4; }}
     .error {{ margin-top: 0; margin-bottom: 16px; padding: 10px; border-radius: 6px;
               background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3);
               color: #ef4444; font-size: 13px; }}
@@ -199,7 +209,7 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
   <div class="card">
-    <h1>Development {mode_title}</h1>
+    <h1>{mode_title}</h1>
     <p class="desc">{description}</p>
     {error_html}
     <form method="POST" action="{form_action}">
@@ -213,11 +223,6 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
       {confirm_password_html}
       <button type="submit">{submit_label}</button>
     </form>
-    <div class="toggle">{toggle_html}</div>
-    <div class="warning">
-      Development mode: this account is not secure. Configure a real
-      identity provider for production use.
-    </div>
   </div>
 </body>
 </html>"""
@@ -236,24 +241,17 @@ def _render_form(
     error: str = '',
     email: str = '',
 ) -> str:
-    """Render the login or sign-up HTML form.
+    """Render the login or admin-account-creation HTML form.
 
     ``mode`` is ``'login'`` or ``'signup'`` — selects the form action, the
-    confirm-password field, and the toggle link to the other mode.
+    title/description, and whether a confirm-password field is shown.
+    Neither form links to the other: while no super admin exists, sign-up
+    (account bootstrap) is the only option; once one exists, login is the
+    only option (see the route handlers for the redirect logic).
     """
     is_signup = mode == 'signup'
     form_action = (
         f'{web_url}/oauth/{DEV_IDP_SIGNUP_PATH if is_signup else DEV_IDP_LOGIN_PATH}'
-    )
-    toggle_target = DEV_IDP_LOGIN_PATH if is_signup else DEV_IDP_SIGNUP_PATH
-    toggle_params = urlencode({'redirect_url': redirect_url}) if redirect_url else ''
-    toggle_url = f'{web_url}/oauth/{toggle_target}'
-    if toggle_params:
-        toggle_url = f'{toggle_url}?{toggle_params}'
-    toggle_html = (
-        f'Already have an account? <a href="{toggle_url}">Sign in</a>'
-        if is_signup
-        else f'Need an account? <a href="{toggle_url}">Sign up</a>'
     )
     error_html = ''
     if error:
@@ -261,11 +259,11 @@ def _render_form(
         error_html = f'<div class="error">{message}</div>'
 
     return _FORM_HTML_TEMPLATE.format(
-        mode_title='Sign Up' if is_signup else 'Login',
+        mode_title='Create Admin Account' if is_signup else 'Sign In',
         description=(
-            'Create a development account. No email verification required.'
+            'Create the first administrator account for this installation.'
             if is_signup
-            else 'Sign in with your development account.'
+            else 'Sign in to your OpenHands account.'
         ),
         error_html=error_html,
         form_action=form_action,
@@ -277,8 +275,7 @@ def _render_form(
             if is_signup
             else ''
         ),
-        submit_label='Create account' if is_signup else 'Sign in',
-        toggle_html=toggle_html,
+        submit_label='Create admin account' if is_signup else 'Sign in',
     )
 
 
@@ -286,8 +283,22 @@ async def _require_dev_idp_available() -> None:
     if not await is_dev_idp_available():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail='Development IDP is not available',
+            detail='Password login is not available',
         )
+
+
+def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
+    """Redirect to the login/sign-up form, with no error, preserving ``redirect_url``.
+
+    Used to steer the caller to whichever of the two pages is currently the
+    "only option" (see module docstring): sign-up while no super admin
+    exists yet, login once one does.
+    """
+    path = DEV_IDP_SIGNUP_PATH if mode == 'signup' else DEV_IDP_LOGIN_PATH
+    target = f'{web_url}/oauth/{path}'
+    if redirect_url:
+        target = f'{target}?{urlencode({"redirect_url": redirect_url})}'
+    return RedirectResponse(target, status_code=302)
 
 
 @dev_idp_router.get(f'/{DEV_IDP_LOGIN_PATH}')
@@ -296,13 +307,16 @@ async def dev_idp_login_form(
     redirect_url: str = '',
     error: str = '',
 ):
-    """Serve the dev IDP email+password login form.
+    """Serve the email+password login form.
 
-    Returns ``404`` if the dev IDP is not available (real IDP configured or
-    cloud deployment).
+    Returns ``404`` if this IDP is not available (real IDP configured or
+    cloud deployment). Redirects to the sign-up (bootstrap) page if no super
+    admin exists yet — there is nothing to log into until one is created.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
+    if not await UserStore.has_super_admin():
+        return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     html = _render_form(
         mode='login', web_url=web_url, redirect_url=redirect_url, error=error
     )
@@ -315,13 +329,17 @@ async def dev_idp_signup_form(
     redirect_url: str = '',
     error: str = '',
 ):
-    """Serve the dev IDP email+password sign-up form.
+    """Serve the email+password admin-account-creation form.
 
-    Returns ``404`` if the dev IDP is not available (real IDP configured or
-    cloud deployment).
+    Returns ``404`` if this IDP is not available (real IDP configured or
+    cloud deployment). Redirects to the login page once a super admin
+    already exists — self-service account creation is bootstrap-only; every
+    subsequent account is created by a super admin, not through this form.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
+    if await UserStore.has_super_admin():
+        return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     html = _render_form(
         mode='signup', web_url=web_url, redirect_url=redirect_url, error=error
     )
@@ -347,15 +365,18 @@ async def dev_idp_login(
     password: str = Form(...),
     redirect_url: str = Form(''),
 ):
-    """Verify email + password and complete the dev IDP login.
+    """Verify email + password and complete the login.
 
-    Returns ``404`` if the dev IDP is not available. On invalid credentials,
+    Returns ``404`` if this IDP is not available. Redirects to the sign-up
+    (bootstrap) page if no super admin exists yet. On invalid credentials,
     redirects back to the login form with an error instead of failing the
     request outright — there is nothing sensitive to protect by
     distinguishing "no such account" from "wrong password" here.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
+    if not await UserStore.has_super_admin():
+        return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
     user = await UserStore.get_user_by_id(derive_dev_idp_user_id(email_str))
@@ -392,16 +413,29 @@ async def dev_idp_signup(
     confirm_password: str = Form(...),
     redirect_url: str = Form(''),
 ):
-    """Create or claim a dev IDP account (email + password) and complete login.
+    """Create the first super-admin account (email + password) and log in.
 
-    Returns ``404`` if the dev IDP is not available. If the email belongs to an
-    existing user with no ``password_hash`` (e.g. an OAuth-provisioned account),
-    sign-up sets the password and claims the account. Redirects back to the
-    sign-up form with an error on a taken email (password already set),
-    a too-short password, or a confirm-password mismatch.
+    Returns ``404`` if this IDP is not available. This endpoint only ever
+    succeeds while **no super admin exists yet** — it is a one-time bootstrap
+    step, not general self-service sign-up. If a super admin already exists
+    (including one created by a request that raced this one — re-checked
+    here, not just by the GET form), redirects to the login form instead;
+    every subsequent account must be created by a super admin through the
+    existing user-management APIs. If the email belongs to an existing user
+    with no ``password_hash`` (e.g. an OAuth-provisioned account), sign-up
+    sets the password and claims the account. Redirects back to the sign-up
+    form with an error on a taken email (password already set), a too-short
+    password, or a confirm-password mismatch.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
+    if await UserStore.has_super_admin():
+        return _form_redirect(
+            web_url,
+            mode='login',
+            error='superadmin_exists',
+            redirect_url=redirect_url,
+        )
     email_str = email.strip().lower()
 
     if password != confirm_password:

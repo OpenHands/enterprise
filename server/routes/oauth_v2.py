@@ -412,7 +412,7 @@ async def oauth_v2_login(
         if not await is_dev_idp_available():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail='Development IDP is not available',
+                detail='Password login is not available',
             )
         web_url = get_web_url(request)
         target = f'{web_url}/oauth/{DEV_IDP_LOGIN_PATH}'
@@ -477,7 +477,7 @@ async def oauth_v2_callback(
     if provider_id == DEV_IDP_PROVIDER_ID:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail='Development IDP callback must use POST with email field',
+            detail='Password login callback must use POST with email field',
         )
 
     if error:
