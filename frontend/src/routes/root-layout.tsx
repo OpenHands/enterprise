@@ -331,9 +331,12 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
-              {config.data?.app_mode === "saas" && (
-                <SuperAdminSetupFloatingWidget />
-              )}
+              {/* The guide reads the API, which signs out a session that has
+                  not accepted the TOS yet, so wait until the user is signed
+                  in and past the intermediate pages. */}
+              {config.data?.app_mode === "saas" &&
+                isAuthed === true &&
+                !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>
