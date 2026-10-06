@@ -79,6 +79,25 @@ RUN apt-get update -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# npm bundles its own undici and brace-expansion and no npm release (including
+# 12.2.0) ships fixed versions yet, so swap them in place. Both are drop-in
+# patch/minor releases with unchanged dependencies. Fixes CVE-2026-19534,
+# CVE-2026-85024 (undici) and CVE-2026-102276, CVE-2026-102277, CVE-2026-102278
+# (brace-expansion). Drop this once the installed npm bundles fixed versions.
+ARG NPM_UNDICI_VERSION=6.28.1
+ARG NPM_BRACE_EXPANSION_VERSION=5.0.12
+RUN set -eux; \
+    npm_modules="$(npm root -g)/npm/node_modules"; \
+    packs="$(mktemp -d)"; \
+    for spec in "undici@${NPM_UNDICI_VERSION}" "brace-expansion@${NPM_BRACE_EXPANSION_VERSION}"; do \
+        name="${spec%@*}"; \
+        tarball="$(npm pack --silent --pack-destination "$packs" "$spec")"; \
+        rm -rf "${npm_modules:?}/${name}"; \
+        mkdir "${npm_modules}/${name}"; \
+        tar -xzf "${packs}/${tarball}" -C "${npm_modules}/${name}" --strip-components=1; \
+    done; \
+    rm -rf "$packs" /root/.npm
+
 # Default is 1000, but OSX is often 501
 RUN sed -i 's/^UID_MIN.*/UID_MIN 499/' /etc/login.defs
 # Default is 60000, but we've seen up to 200000
