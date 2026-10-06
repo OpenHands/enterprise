@@ -16,9 +16,13 @@ would otherwise read as idle right after a resume.
 
 A running sandbox the provider reports as broken is paused by the idle and max
 session rules too. Its agent server can't be read, so the activity recorded on
-its row stands in for its idle time.
+its row stands in for its idle time, over twice the idle period. The sweep
+re-checks a busy sandbox as soon as its recorded activity is one idle period
+old, so a single failed read then says nothing about idleness. A healthy check
+during the second period records activity and resets the clock.
 
-A failed read never leads to a delete. A failed idle probe changes nothing.
+A failed read never leads to a delete, and a single failed read never makes a
+sandbox count as idle.
 """
 
 from dataclasses import dataclass
@@ -109,6 +113,6 @@ def decide(
     ):
         if max_session_due(row, settings, now):
             return Decision(Action.PAUSE, Reason.MAX_SESSION)
-        if _elapsed(settings.idle_seconds, last_ran_at, now):
+        if _elapsed(2 * settings.idle_seconds, last_ran_at, now):
             return Decision(Action.PAUSE, Reason.IDLE, last_ran_at)
     return NOTHING

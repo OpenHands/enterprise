@@ -99,10 +99,18 @@ class TestRunning:
 class TestBroken:
     """The row says running, but the provider reports ERROR."""
 
-    def test_it_is_paused_once_its_recorded_activity_is_idle(self):
-        decision = _decide(_row(changed=5 * HOUR, active=25 * MINUTE), ERROR)
+    def test_it_is_paused_once_its_recorded_activity_is_two_idle_periods_old(self):
+        decision = _decide(_row(changed=5 * HOUR, active=40 * MINUTE), ERROR)
 
-        assert decision == Decision(Action.PAUSE, Reason.IDLE, NOW - 25 * MINUTE)
+        assert decision == Decision(Action.PAUSE, Reason.IDLE, NOW - 40 * MINUTE)
+
+    @pytest.mark.parametrize('active', [5 * MINUTE, 20 * MINUTE, 39 * MINUTE])
+    def test_one_failed_read_does_not_pause_a_busy_sandbox(self, active):
+        """The sweep re-queues a busy sandbox once its recorded activity is an
+        idle period old, so a single ERROR read then is no sign of idleness."""
+        row = _row(changed=5 * HOUR, active=active)
+
+        assert _decide(row, ERROR) == NOTHING
 
     def test_the_max_session_pauses_it(self):
         decision = _decide(_row(changed=13 * HOUR, active=0 * MINUTE), ERROR)
@@ -119,11 +127,6 @@ class TestBroken:
     )
     def test_only_error_counts_as_broken(self, live_status):
         assert _decide(_row(changed=13 * HOUR), live_status) == NOTHING
-
-    def test_recent_activity_keeps_it(self):
-        row = _row(changed=5 * HOUR, active=5 * MINUTE)
-
-        assert _decide(row, ERROR) == NOTHING
 
     def test_a_resumed_sandbox_gets_a_full_idle_period(self):
         row = _row(changed=5 * MINUTE, active=3 * DAY)

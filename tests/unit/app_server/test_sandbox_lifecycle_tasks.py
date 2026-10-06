@@ -37,6 +37,7 @@ from tests.unit.app_server.test_sandbox_lifecycle_contract import (
     K8sHarness,
 )
 
+MINUTE = timedelta(minutes=1)
 HOUR = timedelta(hours=1)
 DAY = timedelta(days=1)
 FAILED_BEFORE_A_POD = {
@@ -246,6 +247,37 @@ class TestCheck:
             limit=10,
         )
         assert due == []
+
+    @pytest.mark.parametrize('harness', ['docker'], indirect=True)
+    async def test_one_failed_health_check_does_not_stop_a_busy_sandbox(
+        self, harness, db_session, add_sandbox
+    ):
+        row = await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        row.last_active_at = datetime.now(UTC) - 21 * MINUTE
+        await db_session.commit()
+        container = harness.containers[harness.sandbox_id]
+        container.attrs['State']['StartedAt'] = (
+            datetime.now(UTC) - 2 * HOUR
+        ).isoformat()
+        agent_server = FakeAgentServer(error=httpx.ReadTimeout('timed out'))
+
+        decision = await _check(
+            harness, db_session, agent_server, health_check_path='/health'
+        )
+
+        assert decision.action == Action.NOTHING
+        assert [url.rsplit('/', 1)[-1] for url in agent_server.urls] == ['health']
+        assert container.status == 'running'
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.RUNNING
+        due = await find_due_sandbox_ids(
+            db_session,
+            DOCKER_BACKEND,
+            SandboxLifecycleSettings(),
+            now=datetime.now(UTC),
+            limit=10,
+        )
+        assert due == [harness.sandbox_id]
 
     @pytest.mark.parametrize('harness', ['docker', 'k8s-agent-sandbox'], indirect=True)
     async def test_a_pause_the_provider_skips_is_not_logged_as_paused(
