@@ -535,6 +535,11 @@ class TestDevIdpSignup:
                 new_callable=AsyncMock,
             ) as mock_set_hash,
             patch(
+                'server.routes.dev_idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+                return_value=existing,
+            ) as mock_grant,
+            patch(
                 'server.routes.dev_idp.UserStore.create_user',
                 new_callable=AsyncMock,
             ) as mock_create,
@@ -551,13 +556,91 @@ class TestDevIdpSignup:
                 follow_redirects=False,
             )
 
-        # Password was set on the existing user, no new user created.
+        # Password was set and the super-admin role granted on the existing
+        # user, no new user created.
         mock_set_hash.assert_awaited_once()
         assert mock_set_hash.call_args.args[0] == str(existing.id)
+        mock_grant.assert_awaited_once_with(str(existing.id))
         mock_create.assert_not_awaited()
         mock_complete.assert_awaited_once()
         assert mock_complete.call_args.kwargs['is_new_user'] is False
         assert mock_complete.call_args.kwargs['user'] is existing
+
+    def test_claim_grants_super_admin_when_existing_user_lacks_role(self, client):
+        """Claiming an existing passwordless *non-admin* account (e.g. a
+        plain OAuth-provisioned user becoming the first admin) grants the
+        super-admin role as part of completing the bootstrap, not just the
+        password."""
+        existing = _mock_user(email='dev@example.com', password_hash=None)
+        granted = _mock_user(email='dev@example.com', password_hash=None)
+
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=existing,
+            ),
+            patch(
+                'server.routes.dev_idp._set_password_hash',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+                return_value=granted,
+            ) as mock_grant,
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+
+        mock_grant.assert_awaited_once_with(str(existing.id))
+        mock_complete.assert_awaited_once()
+        # The (now super-admin) user returned by grant_super_admin is what
+        # gets passed through to complete the login, not the stale `existing`.
+        assert mock_complete.call_args.kwargs['user'] is granted
+
+    def test_claim_grant_failure_returns_500(self, client):
+        """If granting the role on the claimed account fails (e.g. the user
+        was deleted concurrently), fail loudly instead of silently logging
+        someone in without the super-admin role this flow promises."""
+        existing = _mock_user(email='dev@example.com', password_hash=None)
+
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.dev_idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=existing,
+            ),
+            patch(
+                'server.routes.dev_idp._set_password_hash',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.dev_idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            response = client.post(
+                f'/oauth/{DEV_IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+            )
+        assert response.status_code == 500
 
     def test_creates_user_and_hashes_password(self, client):
         user_id = derive_dev_idp_user_id('dev@example.com')

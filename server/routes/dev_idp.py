@@ -441,9 +441,10 @@ async def dev_idp_signup(
     — an OAuth-provisioned account, or a super admin backfilled before
     ``User.password_hash`` existed (migration 138) — sign-up sets the
     password on *that* user and claims the account rather than creating a
-    new one. Redirects back to the sign-up form with an error on a taken
-    email (password already set), a too-short password, or a
-    confirm-password mismatch.
+    new one, granting it the super-admin role too if it doesn't already hold
+    it. Redirects back to the sign-up form with an error on a taken email
+    (password already set), a too-short password, or a confirm-password
+    mismatch.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
@@ -492,9 +493,24 @@ async def dev_idp_signup(
 
     user: User | None
     if existing is not None:
-        # Claim an existing passwordless account.
+        # Claim an existing passwordless account. This form only ever
+        # succeeds while no super admin can log in with a password yet
+        # (checked above), so whoever completes it is bootstrapping *the*
+        # super admin — grant the role too if the claimed account doesn't
+        # already hold it (e.g. a plain OAuth-provisioned account being
+        # claimed as the first admin, as opposed to a super admin from
+        # migration 138's backfill who already holds it and just needs a
+        # password). Idempotent, so always safe to call.
         await _set_password_hash(str(existing.id), hashed)
-        user = existing
+        user = await UserStore.grant_super_admin(str(existing.id))
+        if user is None:
+            logger.error(
+                'dev_idp:signup_claim_grant_failed', extra={'email': email_str}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Failed to grant super-admin role',
+            )
         is_new_user = False
     else:
         # Create a brand-new account.
