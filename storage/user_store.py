@@ -1040,6 +1040,53 @@ class UserStore:
             return list(result.scalars().all())
 
     @staticmethod
+    async def has_super_admin() -> bool:
+        """Whether any user currently holds the instance-level super-admin role.
+
+        Existence-only check (no row materialization) for callers that just
+        need to branch on "has this installation designated a super admin?"
+        Note this says nothing about whether that super admin can actually
+        log in with a password — see ``has_super_admin_with_password()`` for
+        that distinction.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            exists = await session.scalar(
+                select(User.id).filter(User.role_id == admin_role_id).limit(1)
+            )
+            return exists is not None
+
+    @staticmethod
+    async def has_super_admin_with_password() -> bool:
+        """Whether a super admin exists who can log in via the local password IDP.
+
+        Stricter than ``has_super_admin()``: a super admin row can exist
+        with ``password_hash`` still ``NULL`` — e.g. one designated by
+        migration 138's first-user backfill on an installation that
+        predates ``User.password_hash``, or one who has only ever signed in
+        through a real OAuth/OIDC IDP. Such a super admin cannot actually
+        authenticate via a password yet.
+
+        Used by the local password-login bootstrap flow
+        (``server.routes.dev_idp``) to decide whether to keep offering the
+        admin-account-creation form: it should, until *some* super admin has
+        a password set, even if a super admin row already exists — the form
+        then completes that existing super admin's bootstrap (sets their
+        password) rather than blocking them out.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            exists = await session.scalar(
+                select(User.id)
+                .filter(
+                    User.role_id == admin_role_id,
+                    User.password_hash.isnot(None),
+                )
+                .limit(1)
+            )
+            return exists is not None
+
+    @staticmethod
     async def grant_super_admin(user_id: str) -> Optional[User]:
         """Grant the instance-level super-admin role to an existing user.
 
