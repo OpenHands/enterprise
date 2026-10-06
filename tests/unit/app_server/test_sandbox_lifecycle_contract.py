@@ -355,6 +355,21 @@ async def test_resuming_a_running_sandbox_leaves_its_row(
     assert row.last_active_at == LONG_AGO
 
 
+async def test_resume_of_a_sandbox_paused_outside_the_app_records_when_it_resumed(
+    harness, db_session, add_sandbox
+):
+    """The provider paused it (E2B on timeout) before the row caught up."""
+    await add_sandbox(LifecycleState.RUNNING, live_paused=True)
+    before = datetime.now(UTC)
+
+    assert await harness.service(db_session).resume_sandbox(harness.sandbox_id)
+
+    row = await _reload(db_session, harness.sandbox_id)
+    assert row.lifecycle_state == LifecycleState.RUNNING
+    assert row.state_changed_at >= before
+    assert row.last_active_at == row.state_changed_at
+
+
 async def test_resume_corrects_a_row_that_says_paused(harness, db_session, add_sandbox):
     """Someone resumed the sandbox outside the app."""
     await add_sandbox(LifecycleState.PAUSED, live_paused=False)

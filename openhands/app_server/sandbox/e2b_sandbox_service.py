@@ -164,7 +164,11 @@ class E2BSandboxService(ManagedSandboxService):
         return params
 
     async def _get_info(self, e2b_sandbox_id: str) -> E2BSandboxInfo | None:
-        """Get E2B's info for a sandbox, or None when E2B has no such one."""
+        """Get E2B's info for a sandbox, or None when E2B has no such one.
+
+        None also covers a failed lookup (a transient error or a malformed id),
+        so it does not prove the sandbox is gone.
+        """
         try:
             return await AsyncSandbox.get_info(e2b_sandbox_id, **self._api_params)
         except AuthenticationException as exc:

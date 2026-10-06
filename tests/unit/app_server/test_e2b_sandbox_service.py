@@ -1077,6 +1077,17 @@ class TestLifecycle:
         sdk.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_resume_retries_connect_after_a_transient_lookup_error(
+        self, sdk, db_session
+    ):
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+        sdk.connect.side_effect = [SandboxException('503: Service Unavailable'), None]
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        assert sdk.connect.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_resume_after_a_failed_lookup_keeps_a_running_rows_times(
         self, sdk, db_session
     ):
@@ -1100,6 +1111,8 @@ class TestLifecycle:
         sdk.connect.side_effect = SandboxNotFoundException('gone')
 
         assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
+
+        assert sdk.connect.await_count == 1
 
     @pytest.mark.asyncio
     async def test_delete_kills_the_sandbox_and_removes_its_row(self, sdk, db_session):
