@@ -11,8 +11,8 @@ Whether the dev IDP is *usable* is a runtime decision
 (``is_dev_idp_available()`` — ``INTEGRATED_IDP_ENABLED`` env var is set and no
 real IDP configured), re-checked on every request.
 
-Revision ID: 175
-Revises: 174
+Revision ID: 176
+Revises: 175
 Create Date: 2026-10-05 00:00:00.000000
 """
 
@@ -21,8 +21,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '175'
-down_revision: str | None = '174'
+revision: str = '176'
+down_revision: str | None = '175'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
