@@ -1069,6 +1069,52 @@ class TestLifecycle:
         assert sdk.connect.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_resume_survives_a_transient_lookup_error(self, sdk, db_session):
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        sdk.connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resume_retries_connect_after_a_transient_lookup_error(
+        self, sdk, db_session
+    ):
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+        sdk.connect.side_effect = [SandboxException('503: Service Unavailable'), None]
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        assert sdk.connect.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_resume_after_a_failed_lookup_keeps_a_running_rows_times(
+        self, sdk, db_session
+    ):
+        stored_sandbox = await _service(db_session)._get_stored_sandbox(SANDBOX_ID)
+        assert stored_sandbox is not None
+        await db_session.refresh(stored_sandbox)
+        state_changed_at = stored_sandbox.state_changed_at
+        last_active_at = stored_sandbox.last_active_at
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        assert stored_sandbox.state_changed_at == state_changed_at
+        assert stored_sandbox.last_active_at == last_active_at
+
+    @pytest.mark.asyncio
+    async def test_resume_of_a_sandbox_e2b_does_not_know_returns_false(
+        self, sdk, db_session
+    ):
+        sdk.get_info.side_effect = SandboxNotFoundException('gone')
+        sdk.connect.side_effect = SandboxNotFoundException('gone')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
+
+        assert sdk.connect.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_delete_kills_the_sandbox_and_removes_its_row(self, sdk, db_session):
         assert await _service(db_session).delete_sandbox(SANDBOX_ID) is True
 
