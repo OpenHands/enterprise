@@ -51,6 +51,12 @@ export interface WebClientFeatureFlags {
    *  page can distinguish "export disabled on this deployment" from "buy credits
    *  to enable" when billing is off. */
   enable_byor_export?: boolean;
+  /** Whether the integrated, locally-hosted IDP (email+password login) is
+   *  available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
+   *  takes priority over any configured real IDP rather than only filling
+   *  in for a missing one. Used to show an email+password login form
+   *  instead of OAuth provider buttons. */
+  enable_integrated_idp?: boolean;
 }
 
 export interface ACPModelOption {

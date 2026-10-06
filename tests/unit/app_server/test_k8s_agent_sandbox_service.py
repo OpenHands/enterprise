@@ -14,7 +14,7 @@ Kubernetes calls mocked. Focus areas:
 
 import copy
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -276,6 +276,7 @@ def _service(
     web_url: str | None = WEB_URL,
     webhook_base_url: str | None = None,
     lifecycle: SandboxLifecycleSettings | None = None,
+    max_num_sandboxes: int = 10,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
@@ -290,7 +291,7 @@ def _service(
         db_session=db_session,
         k8s=k8s,  # type: ignore[arg-type]
         router_url=router_url,
-        max_num_sandboxes=10,
+        max_num_sandboxes=max_num_sandboxes,
         claim_timeout_seconds=CLAIM_TIMEOUT,
         init_timeout_seconds=5,
         poll_interval=0,
@@ -819,6 +820,37 @@ class TestPauseResume:
         assert await _service(db_session, k8s).resume_sandbox(CLAIM_NAME) is True
 
         assert k8s.modes == []
+
+    @pytest.mark.asyncio
+    async def test_resume_at_the_limit_does_not_pause_the_target(
+        self, k8s, db_session, store
+    ):
+        """Resuming a running sandbox at the limit never suspends it (#616)."""
+        await store(_stored())
+        k8s.add_claim()
+        service = _service(db_session, k8s, max_num_sandboxes=1)
+
+        assert await service.resume_sandbox(CLAIM_NAME) is True
+
+        assert k8s.modes == []
+        assert (await service.get_sandbox(CLAIM_NAME)).status == SandboxStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_resume_keeps_one_slot_for_the_target(self, k8s, db_session, store):
+        """Resume pauses others down to ``max_num_sandboxes - 1``, oldest first."""
+        oldest = _stored('sandbox-claim-oldest')
+        oldest.created_at = CREATED_AT - timedelta(hours=2)
+        older = _stored('sandbox-claim-older')
+        older.created_at = CREATED_AT - timedelta(hours=1)
+        await store(_stored(), oldest, older)
+        k8s.add_claim()
+        k8s.add_claim('sandbox-claim-oldest', sandbox_name='sandbox-oldest')
+        k8s.add_claim('sandbox-claim-older', sandbox_name='sandbox-older')
+        service = _service(db_session, k8s, max_num_sandboxes=2)
+
+        assert await service.resume_sandbox(CLAIM_NAME) is True
+
+        assert k8s.modes == [('sandbox-oldest', 'Suspended')]
 
     @pytest.mark.asyncio
     async def test_resume_of_a_missing_claim(self, k8s, db_session, store):

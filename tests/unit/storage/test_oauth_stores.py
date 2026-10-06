@@ -126,6 +126,21 @@ class TestOAuthProviderStore:
         ]
 
     @pytest.mark.asyncio
+    async def test_get_idp_providers_keeps_real_idp_even_when_dev_idp_enabled(
+        self, patched_session, make_provider
+    ):
+        """Unlike ``get_first_idp``, ``get_idp_providers`` must keep listing a
+        configured real IDP even when ``ENABLE_INTEGRATED_IDP`` is on —
+        ``_v2_get_idp_access_token`` relies on it to refresh tokens for
+        sessions already authenticated against that real IDP."""
+        real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
+            idps = await OAuthProviderStore().get_idp_providers()
+
+        assert [p.id for p in idps] == [real.id]
+
+    @pytest.mark.asyncio
     async def test_get_by_category(self, patched_session, make_provider):
         await make_provider(category=ProviderType.GITHUB)
         rows = await OAuthProviderStore().get_by_category(ProviderType.GITHUB)
@@ -147,6 +162,36 @@ class TestOAuthProviderStore:
     async def test_get_first_idp_none(self, patched_session, make_provider):
         await make_provider(category=ProviderType.GITHUB, is_idp=False)
         assert await OAuthProviderStore().get_first_idp() is None
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_prefers_dev_idp_when_enabled(
+        self, patched_session, make_provider
+    ):
+        """``ENABLE_INTEGRATED_IDP`` makes ``/oauth/idp-login`` (which calls
+        ``get_first_idp``) use the integrated IDP rather than a configured
+        real one — not merely as a fallback for when none is configured."""
+        from server.routes.dev_idp import DevIdpProvider
+
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
+            got = await OAuthProviderStore().get_first_idp()
+
+        assert isinstance(got, DevIdpProvider)
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_uses_real_idp_when_disabled(
+        self, patched_session, make_provider
+    ):
+        """When ``ENABLE_INTEGRATED_IDP`` is off, a configured real IDP is
+        used exclusively — the dev IDP is never returned."""
+        real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
+            got = await OAuthProviderStore().get_first_idp()
+
+        assert got is not None
+        assert got.id == real.id
 
     @pytest.mark.asyncio
     async def test_get_first_by_category(self, patched_session, make_provider):
