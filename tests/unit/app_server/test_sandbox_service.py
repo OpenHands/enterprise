@@ -428,6 +428,57 @@ class TestCleanupOldSandboxes:
         assert mock_sandbox_service.pause_sandbox_mock.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_cleanup_never_pauses_the_excluded_sandbox(
+        self, mock_sandbox_service
+    ):
+        """exclude_id keeps the resume target out of the limit and the pausing."""
+        now = datetime.now(timezone.utc)
+        sandboxes = [
+            create_sandbox_info(
+                'target', SandboxStatus.RUNNING, now - timedelta(hours=5)
+            ),  # oldest, but excluded
+            create_sandbox_info('sb2', SandboxStatus.RUNNING, now - timedelta(hours=4)),
+            create_sandbox_info('sb3', SandboxStatus.RUNNING, now - timedelta(hours=3)),
+        ]
+
+        mock_sandbox_service.search_sandboxes_mock.return_value = SandboxPage(
+            items=sandboxes, next_page_id=None
+        )
+        mock_sandbox_service.pause_sandbox_mock.return_value = True
+
+        # Resume keeps max_num_sandboxes - 1 others running, excluding the target.
+        result = await mock_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=1, exclude_id='target'
+        )
+
+        # The target is left alone; one of the other two (the oldest) is paused.
+        assert result == ['sb2']
+        mock_sandbox_service.pause_sandbox_mock.assert_called_once_with('sb2')
+
+    @pytest.mark.asyncio
+    async def test_cleanup_with_only_the_excluded_sandbox_running(
+        self, mock_sandbox_service
+    ):
+        """A lone running target at the limit is not counted, so none are paused."""
+        now = datetime.now(timezone.utc)
+        sandboxes = [
+            create_sandbox_info(
+                'target', SandboxStatus.RUNNING, now - timedelta(hours=1)
+            ),
+        ]
+
+        mock_sandbox_service.search_sandboxes_mock.return_value = SandboxPage(
+            items=sandboxes, next_page_id=None
+        )
+
+        result = await mock_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=0, exclude_id='target'
+        )
+
+        assert result == []
+        mock_sandbox_service.pause_sandbox_mock.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_cleanup_filters_non_running_sandboxes(self, mock_sandbox_service):
         """Test that cleanup only considers running sandboxes."""
         # Setup: Mix of running and non-running sandboxes
