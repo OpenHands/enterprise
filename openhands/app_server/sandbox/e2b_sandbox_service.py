@@ -26,6 +26,7 @@ from openhands.app_server.sandbox.e2b_sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -41,7 +42,6 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -139,7 +139,6 @@ class E2BSandboxService(ManagedSandboxService):
     backend: ClassVar[str] = E2B_BACKEND
 
     sandbox_spec_service: SandboxSpecService
-    httpx_client: httpx.AsyncClient
     api_key: str
     domain: str
     timeout_seconds: int
@@ -603,6 +602,7 @@ class E2BSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
+        body['env'].update(self._lifecycle_env())
 
         cors_origins = []
         if self.web_url:
@@ -712,8 +712,10 @@ class E2BSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class E2BSandboxServiceInjector(SandboxServiceInjector):
+class E2BSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for E2B sandbox services."""
+
+    backend: ClassVar[str] = E2B_BACKEND
 
     api_key: str = Field(
         default_factory=lambda: os.getenv('E2B_API_KEY', ''),
@@ -810,4 +812,5 @@ class E2BSandboxServiceInjector(SandboxServiceInjector):
                 resume_retry_interval=self.resume_retry_interval,
                 web_url=config.web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
+                lifecycle=self.lifecycle,
             )
