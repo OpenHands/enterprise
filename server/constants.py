@@ -38,7 +38,7 @@ ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true'
 # available on self-hosted / trial installs. Disabled by default — must be
 # explicitly opted into. Still suppressed when a real IDP is configured.
 # Accepts both 'true' and '1' (older Helm charts default to '1').
-INTEGRATED_IDP_ENABLED = os.getenv('INTEGRATED_IDP_ENABLED', 'false').lower() in (
+ENABLE_INTEGRATED_IDP = os.getenv('ENABLE_INTEGRATED_IDP', 'false').lower() in (
     'true',
     '1',
 )
