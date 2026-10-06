@@ -386,7 +386,12 @@ export function SuperAdminUsers() {
         const memberships: SuperAdminMembership[] = user.memberships.map(
           (membership) => ({
             orgId: membership.org_id,
-            orgName: membership.org_name,
+            // A personal workspace shares its owner's id and is stored as
+            // user_<id>_org; show the name the rest of the app uses.
+            orgName:
+              membership.org_id === user.user_id
+                ? t(I18nKey.ORG$PERSONAL_WORKSPACE)
+                : membership.org_name,
             role: toOrgRole(membership.role),
             status: membership.status,
           }),
@@ -402,7 +407,7 @@ export function SuperAdminUsers() {
               : deriveUserStatus(user.memberships),
         };
       }),
-    [data],
+    [data, t],
   );
 
   const rows = useMemo(() => {

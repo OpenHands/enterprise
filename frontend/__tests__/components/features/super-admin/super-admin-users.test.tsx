@@ -155,11 +155,50 @@ describe("Super Admin Users page", () => {
     await renderUsersPage();
 
     // Assert
-    await screen.findByText("user_7_org");
+    await screen.findByText("ORG$PERSONAL_WORKSPACE");
     expect(
       screen.queryByTestId("super-admin-user-org-7"),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("super-admin-user-org-3")).toBeInTheDocument();
+  });
+
+  it("shows a user's personal workspace as Personal Workspace and keeps team names", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+      {
+        user_id: "7",
+        email: "sam@beta.llc",
+        name: "sam",
+        status: "active",
+        memberships: [
+          {
+            org_id: "3",
+            org_name: "Beta LLC",
+            role: "admin",
+            status: "active",
+          },
+          {
+            org_id: "7",
+            org_name: "user_7_org",
+            role: "owner",
+            status: "active",
+          },
+        ],
+      },
+    ]);
+
+    // Act
+    await renderUsersPage();
+
+    // Assert
+    expect(
+      await screen.findByText("ORG$PERSONAL_WORKSPACE"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Beta LLC")).toBeInTheDocument();
+    expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
   });
 
   it("shows the account status, not the status of the user's memberships", async () => {
