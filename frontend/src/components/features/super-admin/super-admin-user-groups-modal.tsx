@@ -24,7 +24,7 @@ import {
 import { cn } from "#/utils/utils";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import type { DropdownOption } from "#/ui/dropdown/types";
-import type { SuperAdminOrgRole, SuperAdminUserRow } from "./super-admin-mock";
+import type { SuperAdminOrgRole, SuperAdminUserRow } from "./super-admin-types";
 
 type MembershipAction = "suspend" | "resume" | "remove";
 

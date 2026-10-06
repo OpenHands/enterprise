@@ -35,7 +35,6 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
-import { SetupTestHarnessPanel } from "#/components/features/setup/setup-test-harness-panel";
 import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
 import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
@@ -333,10 +332,7 @@ export default function MainApp() {
             <EmailVerificationGuard>
               <Outlet />
               {config.data?.app_mode === "saas" && (
-                <>
-                  <SuperAdminSetupFloatingWidget />
-                  <SetupTestHarnessPanel />
-                </>
+                <SuperAdminSetupFloatingWidget />
               )}
             </EmailVerificationGuard>
           </OnboardingGuard>

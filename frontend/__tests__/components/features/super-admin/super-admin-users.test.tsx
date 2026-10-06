@@ -14,10 +14,50 @@ import {
   SuperAdminTable,
   SuperAdminUserMemberships,
 } from "#/components/features/super-admin/super-admin-chrome";
-import { SUPER_ADMIN_USERS } from "#/components/features/super-admin/super-admin-mock";
 import { SuperAdminUsers } from "#/components/features/super-admin/super-admin-pages";
+import type { SuperAdminUserRow } from "#/components/features/super-admin/super-admin-types";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+
+const SUPER_ADMIN_USERS: SuperAdminUserRow[] = [
+  {
+    id: "u-1",
+    name: "openhands",
+    email: "me@acme.org",
+    memberships: [
+      { orgId: "2", orgName: "Acme Corp", role: "owner" },
+      { orgId: "4", orgName: "All Hands AI", role: "admin" },
+    ],
+    status: "active",
+  },
+  {
+    id: "u-2",
+    name: "Alex Rivera",
+    email: "alex@acme.org",
+    memberships: [
+      { orgId: "2", orgName: "Acme Corp", role: "admin" },
+      { orgId: "3", orgName: "Beta LLC", role: "member" },
+    ],
+    status: "active",
+  },
+  {
+    id: "u-3",
+    name: "Jordan Lee",
+    email: "jordan@all-hands.dev",
+    memberships: [{ orgId: "4", orgName: "All Hands AI", role: "member" }],
+    status: "active",
+  },
+  {
+    id: "u-4",
+    name: "Sam Patel",
+    email: "sam@beta.llc",
+    memberships: [
+      { orgId: "3", orgName: "Beta LLC", role: "admin" },
+      { orgId: "5", orgName: "Northwind Labs", role: "member" },
+    ],
+    status: "invited",
+  },
+];
 
 async function renderUsersPage() {
   const queryClient = new QueryClient({

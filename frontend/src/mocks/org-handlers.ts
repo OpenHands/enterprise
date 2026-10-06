@@ -6,9 +6,9 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
-import { isInstanceSuperAdmin } from "#/utils/org/permissions";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 import {
+  findMockAdminUser,
   onMockAdminMembershipAdded,
   registerMockAdminOrg,
 } from "./super-admin-handlers";
@@ -351,6 +351,29 @@ onMockAdminMembershipAdded(({ userId, orgId, role }) => {
   ];
 });
 
+// pydantic's EmailStr needs a dot in the domain, so "admin@localhost" is rejected.
+const MOCK_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The mock user's roles in the seeded orgs, which predate tracked memberships.
+const SEEDED_MOCK_USER_ROLES: Record<string, OrganizationUserRole> = {
+  "1": "owner", // Personal Workspace
+  "2": "owner", // Acme Corp
+  "3": "member", // Beta LLC
+  "4": "admin", // All Hands AI
+};
+
+/** The mock user's membership in an org, or null when they do not belong to it. */
+const findMockUserMembership = (orgId: string): OrganizationMember | null => {
+  const membership = ORGS_AND_MEMBERS[orgId]?.find(
+    (member) => member.user_id === MOCK_ME.user_id,
+  );
+  if (membership) {
+    return membership;
+  }
+  const seededRole = SEEDED_MOCK_USER_ROLES[orgId];
+  return seededRole ? currentUserMembership(orgId, seededRole) : null;
+};
+
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
 const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
 let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
@@ -565,45 +588,20 @@ export const ORG_HANDLERS = [
       );
     }
 
-    const membership = ORGS_AND_MEMBERS[orgId]?.find(
-      (member) => member.user_id === MOCK_ME.user_id,
-    );
-    if (membership) {
-      return HttpResponse.json({
-        ...MOCK_ME,
-        ...membership,
-        org_id: orgId,
-        permissions: MOCK_ME.permissions,
-      });
+    // Like the server, a Super Admin who is not a member gets a 404.
+    const membership = findMockUserMembership(orgId);
+    if (!membership) {
+      return HttpResponse.json(
+        { detail: `Organization with id "${orgId}" not found` },
+        { status: 404 },
+      );
     }
-    if (!isInstanceSuperAdmin(MOCK_ME.permissions)) {
-      return HttpResponse.json({ error: "Not a member" }, { status: 404 });
-    }
-
-    let role: OrganizationUserRole = "member";
-    switch (orgId) {
-      case "1": // Personal Workspace
-        role = "owner";
-        break;
-      case "2": // Acme Corp
-        role = "owner";
-        break;
-      case "3": // Beta LLC
-        role = "member";
-        break;
-      case "4": // All Hands AI
-        role = "admin";
-        break;
-      default:
-        role = "owner";
-    }
-
-    const me: OrganizationMember = {
+    return HttpResponse.json({
       ...MOCK_ME,
+      ...membership,
       org_id: orgId,
-      role,
-    };
-    return HttpResponse.json(me);
+      permissions: MOCK_ME.permissions,
+    });
   }),
 
   http.get("/api/organizations/:orgId/members", ({ params, request }) => {
@@ -680,7 +678,10 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations", ({ request }) => {
     ensureFreshSaOrgs(request);
-    const organizations = Array.from(orgs.values());
+    // Like the server, only organizations the mock user belongs to.
+    const organizations = Array.from(orgs.values()).filter(
+      (org) => findMockUserMembership(org.id) !== null,
+    );
     return HttpResponse.json({
       items: organizations,
       current_org_id: mockCurrentOrgId || null,
@@ -692,25 +693,48 @@ export const ORG_HANDLERS = [
       name?: string;
       contact_name?: string;
       contact_email?: string;
-      owner_user_id?: string;
+      owner_user_id?: string | null;
     };
     const name = body.name?.trim();
-    const contactName = body.contact_name?.trim();
+    // OrgCreate: contact_name is required but may be empty; EmailStr strips.
+    const contactName = body.contact_name;
     const contactEmail = body.contact_email?.trim();
 
-    if (!name || !contactName || !contactEmail) {
+    if (
+      !name ||
+      name.length > 255 ||
+      typeof contactName !== "string" ||
+      !contactEmail ||
+      !MOCK_EMAIL_PATTERN.test(contactEmail)
+    ) {
       return HttpResponse.json(
-        { error: "Name, contact name, and contact email are required" },
-        { status: 400 },
+        {
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body"],
+              msg: "Invalid organization",
+            },
+          ],
+        },
+        { status: 422 },
       );
     }
 
+    const owner = body.owner_user_id
+      ? findMockAdminUser(body.owner_user_id)
+      : undefined;
+    if (body.owner_user_id && !owner) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+
+    // Exact match, like OrgStore.get_org_by_name.
     const nameTaken = Array.from(orgs.values()).some(
-      (org) => org.name.toLowerCase() === name.toLowerCase(),
+      (org) => org.name === name,
     );
     if (nameTaken) {
       return HttpResponse.json(
-        { error: "Organization name already exists" },
+        { detail: `Organization with name "${name}" already exists` },
         { status: 409 },
       );
     }
@@ -722,17 +746,23 @@ export const ORG_HANDLERS = [
       contact_email: contactEmail,
     };
     orgs.set(orgId, org);
-    // Like the real API, only an explicit owner_user_id makes the current user
-    // a member, and creating an org does not switch into it.
-    ORGS_AND_MEMBERS[orgId] =
-      body.owner_user_id === MOCK_ME.user_id
-        ? [currentUserMembership(orgId, "owner")]
-        : [];
+    // Like the real API, only owner_user_id becomes a member (the owner), and
+    // creating an org does not switch into it.
+    ORGS_AND_MEMBERS[orgId] = owner
+      ? [
+          {
+            ...currentUserMembership(orgId, "owner"),
+            user_id: owner.user_id,
+            email: owner.email,
+          },
+        ]
+      : [];
     registerMockAdminOrg({
       id: orgId,
       name,
       contact_email: contactEmail,
       contact_name: contactName,
+      owner_user_id: owner?.user_id,
     });
     return HttpResponse.json(org, { status: 201 });
   }),
@@ -1104,6 +1134,15 @@ export const ORG_HANDLERS = [
     if (orgId) {
       const org = orgs.get(orgId);
       if (org) {
+        if (!findMockUserMembership(orgId)) {
+          return HttpResponse.json(
+            {
+              detail:
+                "User must be a member of the organization to switch to it",
+            },
+            { status: 403 },
+          );
+        }
         mockCurrentOrgId = orgId;
         return HttpResponse.json(org);
       }
