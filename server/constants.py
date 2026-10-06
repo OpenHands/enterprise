@@ -34,11 +34,14 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
 # Accepts both 'true' and '1' (older Helm charts default to '1').
 ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
 
-# When true, the development IDP (email+password login without Keycloak) is
+# When true, the integrated IDP (email+password login without Keycloak) is
 # available on self-hosted / trial installs. Disabled by default — must be
 # explicitly opted into. Still suppressed when a real IDP is configured.
 # Accepts both 'true' and '1' (older Helm charts default to '1').
-DEV_IDP_ENABLED = os.getenv('DEV_IDP_ENABLED', 'false').lower() in ('true', '1')
+INTEGRATED_IDP_ENABLED = os.getenv('INTEGRATED_IDP_ENABLED', 'false').lower() in (
+    'true',
+    '1',
+)
 
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.

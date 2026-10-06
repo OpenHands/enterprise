@@ -58,7 +58,7 @@
                 "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
                 "USER_PROVISIONING_ENABLED": "1",
                 "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
-                "DEV_IDP_ENABLED": "1"
+                "INTEGRATED_IDP_ENABLED": "1"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,

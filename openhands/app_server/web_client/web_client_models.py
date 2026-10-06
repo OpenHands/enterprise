@@ -107,8 +107,8 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # Atlassian OAuth; drives direct-save + manual-webhook UI in the configure
     # flow instead of the OAuth redirect.
     jira_oauth_enabled: bool = True
-    # Whether the development-only insecure IDP (email-only login) is available.
-    # True only on self-hosted deployments with no real IDP configured in the
-    # oauth_providers table. The frontend uses this to show an email-only login
-    # form instead of OAuth provider buttons.
-    dev_idp_enabled: bool = False
+    # Whether the integrated, locally-hosted IDP (email+password login) is
+    # available. True only on self-hosted deployments with no real IDP
+    # configured in the oauth_providers table. The frontend uses this to show
+    # an email+password login form instead of OAuth provider buttons.
+    integrated_idp_enabled: bool = False
