@@ -907,9 +907,7 @@ class RemoteSandboxService(SandboxService):
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
-        only sandboxes that are actually running are considered. ``exclude_id``
-        keeps one sandbox, such as the one being resumed, out of the limit so it
-        is never paused.
+        only sandboxes that are actually running are considered.
         """
         if max_num_sandboxes < 0:
             raise ValueError('max_num_sandboxes must not be negative')

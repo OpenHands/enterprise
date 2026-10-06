@@ -411,9 +411,8 @@ class SandboxService(ABC):
 
         Args:
             max_num_sandboxes: Maximum number of sandboxes to keep running
-            exclude_id: A sandbox to never pause or count, such as the one being
-                resumed. Passing the resume target keeps it out of the limit so
-                the resume never pauses the sandbox it is bringing up.
+            exclude_id: A sandbox that is never counted or paused, such as one
+                being resumed
 
         Returns:
             List of sandbox IDs that were paused

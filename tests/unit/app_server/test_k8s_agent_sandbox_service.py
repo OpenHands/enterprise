@@ -825,13 +825,7 @@ class TestPauseResume:
     async def test_resume_at_the_limit_does_not_pause_the_target(
         self, k8s, db_session, store
     ):
-        """Resuming an already-running sandbox must never suspend itself.
-
-        With ``max_num_sandboxes=1`` the running target is the only sandbox, so
-        it sits at the limit. ``pause_old_sandboxes`` runs first and used to
-        count and pause the target, deleting its pod while the row still said
-        running. Excluding the resume target keeps it up (see issue #616).
-        """
+        """Resuming a running sandbox at the limit never suspends it (#616)."""
         await store(_stored())
         k8s.add_claim()
         service = _service(db_session, k8s, max_num_sandboxes=1)
