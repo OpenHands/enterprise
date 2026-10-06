@@ -8,6 +8,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { InteractiveOpenHandsIcon } from "#/components/features/setup/interactive-openhands-icon";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { PixelField } from "#/components/features/super-admin/pixel-field";
@@ -15,7 +16,10 @@ import {
   StarterLlmFields,
   type StarterLlmSelection,
 } from "#/components/features/super-admin/starter-llm-fields";
-import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
+import {
+  notifySuperAdminSetupStep,
+  SUPER_ADMIN_SETUP_STEPS,
+} from "#/components/features/super-admin/super-admin-setup";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import {
   useActivateOrgLlmProfile,
@@ -59,12 +63,18 @@ const STARTER_STEPS: {
   },
 ];
 
+/** The guide's step after the LLM: choosing an automation template. */
+const AUTOMATION_STEP_PATH = SUPER_ADMIN_SETUP_STEPS.find(
+  (step) => step.id === "first-automation",
+)?.to;
+
 /**
  * First visit to org LLM settings after install. Explains the basic setup
  * for the organization that was just created.
  */
 export function SuperAdminGroupSetupModal() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>("llm");
   const nux = useSyncExternalStore(
@@ -126,6 +136,10 @@ export function SuperAdminGroupSetupModal() {
     }
     notifySuperAdminSetupStep("add-llm");
     clearSuperAdminNuxStarterModal();
+    // Go straight to the next step. /automations/* hands off to Agent Canvas.
+    if (AUTOMATION_STEP_PATH) {
+      navigate(AUTOMATION_STEP_PATH);
+    }
   };
 
   const title = t(I18nKey.SA_NUX$STARTER_TITLE);

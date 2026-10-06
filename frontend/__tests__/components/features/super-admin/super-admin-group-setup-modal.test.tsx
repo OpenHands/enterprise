@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAxiosError, renderWithProviders } from "test-utils";
 import ConfigService from "#/api/config-service/config-service.api";
@@ -16,6 +17,19 @@ import {
 } from "#/utils/org/super-admin-nux";
 
 const ORG_ID = "org-1";
+
+const RouterStub = createRoutesStub([
+  { path: "/settings/org-defaults", Component: SuperAdminGroupSetupModal },
+  {
+    path: "/automations/templates",
+    Component: () => <div data-testid="automation-templates-page" />,
+  },
+]);
+
+const renderModal = () =>
+  renderWithProviders(
+    <RouterStub initialEntries={["/settings/org-defaults"]} />,
+  );
 
 function mockConfig(allowUserLlmConfiguration?: boolean) {
   vi.spyOn(OptionService, "getConfig").mockResolvedValue(
@@ -90,7 +104,7 @@ describe("SuperAdminGroupSetupModal", () => {
   it("lists the provider's models from the server, verified models first", async () => {
     // Arrange
     const user = userEvent.setup();
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
 
     // Act
     await chooseModel(user);
@@ -107,7 +121,7 @@ describe("SuperAdminGroupSetupModal", () => {
 
   it("keeps Get started disabled until a model is chosen", async () => {
     // Arrange
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
 
     // Act
     const confirm = await screen.findByTestId("sa-nux-starter-confirm");
@@ -119,7 +133,7 @@ describe("SuperAdminGroupSetupModal", () => {
   it("saves the chosen model as the organization's active LLM and closes", async () => {
     // Arrange
     const user = userEvent.setup();
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
     await chooseModel(user, "claude-sonnet-4-5");
     await user.type(screen.getByTestId("sa-nux-llm-api-key"), "sk-test");
 
@@ -156,6 +170,21 @@ describe("SuperAdminGroupSetupModal", () => {
     expect(readSuperAdminNux().starterModalPending).toBe(false);
   });
 
+  it("opens the automation templates after saving the LLM", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    await chooseModel(user, "claude-sonnet-4-5");
+
+    // Act
+    await user.click(screen.getByTestId("sa-nux-starter-confirm"));
+
+    // Assert
+    expect(
+      await screen.findByTestId("automation-templates-page"),
+    ).toBeInTheDocument();
+  });
+
   it("shows the server error and stays open when saving fails", async () => {
     // Arrange
     vi.spyOn(OrgProfilesService, "activateProfile").mockRejectedValue(
@@ -164,7 +193,7 @@ describe("SuperAdminGroupSetupModal", () => {
       }),
     );
     const user = userEvent.setup();
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
     await chooseModel(user, "claude-sonnet-4-5");
 
     // Act
@@ -176,12 +205,15 @@ describe("SuperAdminGroupSetupModal", () => {
     );
     expect(screen.getByTestId("sa-nux-starter-modal")).toBeInTheDocument();
     expect(readSuperAdminNux().starterModalPending).toBe(true);
+    expect(
+      screen.queryByTestId("automation-templates-page"),
+    ).not.toBeInTheDocument();
   });
 
   it("saves nothing when the admin skips", async () => {
     // Arrange
     const user = userEvent.setup();
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
     await chooseModel(user, "claude-sonnet-4-5");
 
     // Act
@@ -192,13 +224,16 @@ describe("SuperAdminGroupSetupModal", () => {
     expect(OrgProfilesService.saveProfile).not.toHaveBeenCalled();
     expect(OrgProfilesService.activateProfile).not.toHaveBeenCalled();
     expect(readSuperAdminNux().starterModalPending).toBe(false);
+    expect(
+      screen.queryByTestId("automation-templates-page"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not ask for an API key when the install turns off user LLM configuration", async () => {
     // Arrange
     mockConfig(false);
     const user = userEvent.setup();
-    renderWithProviders(<SuperAdminGroupSetupModal />);
+    renderModal();
 
     // Act
     await chooseModel(user, "claude-sonnet-4-5");
