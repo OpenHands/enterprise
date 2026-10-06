@@ -99,11 +99,12 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
-# Pin the system pip to a known-good version (reproducible builds) and fix
-# CVE-2025-8869, CVE-2026-13346, CVE-2026-3219, CVE-2026-6357, CVE-2026-8643.
-ARG PIP_VERSION=26.2.0
+# Remove the system pip. Nothing in the image uses it (the app runs from the uv
+# managed /app/.venv), and the latest pip (26.2.1) still vendors msgpack, setuptools and
+# urllib3 versions that Trivy flags (msgpack 1.1.2, setuptools 70.3.0,
+# urllib3 2.7.0 in pip/_vendor/vendor.txt), so upgrading it does not help.
 USER root
-RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages
+RUN /usr/local/bin/python3 -m pip uninstall -y pip --break-system-packages
 USER openhands
 
 COPY --chown=openhands:openhands --chmod=770 ./skills ./skills
