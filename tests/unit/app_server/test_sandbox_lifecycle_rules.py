@@ -109,6 +109,17 @@ class TestBroken:
 
         assert decision == Decision(Action.PAUSE, Reason.MAX_SESSION)
 
+    def test_the_max_session_comes_before_idle(self):
+        decision = _decide(_row(changed=13 * HOUR), ERROR)
+
+        assert decision == Decision(Action.PAUSE, Reason.MAX_SESSION)
+
+    @pytest.mark.parametrize(
+        'live_status', [SandboxStatus.STARTING, SandboxStatus.MISSING]
+    )
+    def test_only_error_counts_as_broken(self, live_status):
+        assert _decide(_row(changed=13 * HOUR), live_status) == NOTHING
+
     def test_recent_activity_keeps_it(self):
         row = _row(changed=5 * HOUR, active=5 * MINUTE)
 

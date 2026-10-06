@@ -266,6 +266,24 @@ class TestCheck:
         assert row.lifecycle_state == LifecycleState.RUNNING
         assert harness.pause_calls() == 0
 
+    async def test_a_pause_the_provider_fails_is_logged_as_failed(
+        self, harness, db_session, add_sandbox
+    ):
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=13 * HOUR)
+        harness.break_transitions()
+
+        with (
+            patch.object(tasks._logger, 'info') as info,
+            patch.object(tasks._logger, 'warning') as warning,
+        ):
+            decision = await _check(harness, db_session, FakeAgentServer())
+
+        assert decision.action == Action.PAUSE
+        assert _messages(warning) == ['sandbox_lifecycle.pause_failed']
+        assert _messages(info) == []
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.RUNNING
+
     async def test_a_pause_the_provider_made_is_recorded(
         self, harness, db_session, add_sandbox
     ):
