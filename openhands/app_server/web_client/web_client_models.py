@@ -46,10 +46,11 @@ class WebClientFeatureFlags(BaseModel):
     # distinguish "export disabled on this deployment" from "buy credits to enable".
     enable_byor_export: bool = False
     # Whether the integrated, locally-hosted IDP (email+password login) is
-    # available. True only on self-hosted deployments with no real IDP
-    # configured in the oauth_providers table (mirrors ENABLE_INTEGRATED_IDP
-    # AND the "no real IDP configured" check). The frontend uses this to show
-    # an email+password login form instead of OAuth provider buttons.
+    # available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
+    # takes priority over any configured real IDP for /oauth/idp-login, not
+    # merely a fallback for when none is configured. The frontend uses this
+    # to show an email+password login form instead of OAuth provider
+    # buttons.
     enable_integrated_idp: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.

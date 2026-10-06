@@ -8,8 +8,8 @@ column used to store the Argon2id hash of a dev IDP account's password.
 ``NULL`` for every user who authenticates via a real IDP.
 
 Whether the dev IDP is *usable* is a runtime decision
-(``is_dev_idp_available()`` — ``ENABLE_INTEGRATED_IDP`` env var is set and no
-real IDP configured), re-checked on every request.
+(``is_dev_idp_available()`` — governed solely by the ``ENABLE_INTEGRATED_IDP``
+env var), re-checked on every request.
 
 Revision ID: 176
 Revises: 175

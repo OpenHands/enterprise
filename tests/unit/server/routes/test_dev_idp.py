@@ -4,7 +4,8 @@ the OAuth v2 flow as an email+password login (OHE-3381).
 These tests exercise:
 
 * ``derive_dev_idp_user_id`` — deterministic, case-insensitive UUID derivation
-* ``is_dev_idp_available`` — gating logic (self-hosted + no real IDP)
+* ``is_dev_idp_available`` — gating logic (``ENABLE_INTEGRATED_IDP`` env var
+  only; independent of whether a real IDP is also configured)
 * ``get_dev_idp_if_available`` — sentinel returned when available
 * ``GET /oauth/idp-login`` — redirects to the dev IDP sentinel provider
 * ``GET /oauth/{DEV_IDP_PROVIDER_ID}/login`` — redirects to the dedicated
@@ -84,7 +85,7 @@ def _mock_user(
 
 @contextmanager
 def _available(has_password_super_admin: bool = True):
-    """Make the dev IDP available (env var enabled, no real IDP configured).
+    """Make the dev IDP available (``ENABLE_INTEGRATED_IDP`` env var on).
 
     ``has_password_super_admin`` simulates whether a super admin who can log
     in with a password already exists (default ``True``, the common case —
@@ -98,13 +99,6 @@ def _available(has_password_super_admin: bool = True):
     """
     with ExitStack() as stack:
         stack.enter_context(patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True))
-        stack.enter_context(
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            )
-        )
         stack.enter_context(
             patch(
                 'server.routes.dev_idp.UserStore.has_super_admin_with_password',
@@ -171,20 +165,17 @@ class TestIsDevIdpAvailable:
         assert result is False
 
     def test_enabled_no_idp(self):
-        with (
-            patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True),
-            patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-        ):
+        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
         assert result is True
 
-    def test_disabled_when_real_idp_configured(self):
+    def test_enabled_even_when_real_idp_configured(self):
+        """The flag alone governs availability: a configured real IDP does
+        not disable the dev IDP — ``get_first_idp`` uses this to prefer the
+        dev IDP over the real one for ``/oauth/idp-login`` (see
+        ``storage.oauth_provider_store``)."""
         with (
             patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True),
             patch(
@@ -196,7 +187,7 @@ class TestIsDevIdpAvailable:
             import asyncio
 
             result = asyncio.run(is_dev_idp_available())
-        assert result is False
+        assert result is True
 
     def test_env_var_accepts_1_as_truthy(self, monkeypatch):
         """Older Helm charts default to '1' rather than 'true'."""
@@ -252,7 +243,7 @@ class TestGetDevIdpIfAvailable:
             result = asyncio.run(get_dev_idp_if_available())
         assert result is None
 
-    def test_returns_none_when_real_idp_configured(self):
+    def test_returns_sentinel_even_when_real_idp_configured(self):
         with (
             patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True),
             patch(
@@ -264,7 +255,8 @@ class TestGetDevIdpIfAvailable:
             import asyncio
 
             result = asyncio.run(get_dev_idp_if_available())
-        assert result is None
+        assert result is not None
+        assert isinstance(result, DevIdpProvider)
 
 
 # ── GET /oauth/idp-login redirect ─────────────────────────────────────────

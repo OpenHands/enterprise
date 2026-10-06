@@ -8,11 +8,11 @@ directly, instead of standing up an external IDP just to get started.
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
 regular IDP provider, but is modeled as an in-memory sentinel
 (``DevIdpProvider``, id = ``DEV_IDP_PROVIDER_ID``) rather than a row in
-``oauth_providers``. When no real IDP is configured and the deployment is
-self-hosted:
+``oauth_providers``. Whenever ``ENABLE_INTEGRATED_IDP`` is on:
 
 * ``OAuthProviderStore.get_first_idp()`` returns the ``DevIdpProvider``
-  sentinel.
+  sentinel — in preference to any configured real IDP, not merely as a
+  fallback for when none is configured.
 * ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
   which ``oauth_v2`` intercepts and redirects to the fixed
   ``/oauth/dev-idp/login`` page served by this module.
@@ -45,14 +45,15 @@ password on a matching existing user (found by derived id, then by email —
 e.g. the passwordless super admin itself) instead of creating a new one;
 only a genuinely new email creates a brand-new account.
 
-When a real IDP is configured, the sentinel is not returned and every route
-in this module returns ``404``.
+When ``ENABLE_INTEGRATED_IDP`` is off, the sentinel is never returned (even
+if a real IDP is configured) and every route in this module returns ``404``.
 
 **This IDP is not a substitute for a real identity provider** (no rate
 limiting, no email verification, no password-reset flow, no MFA). It must
 never be enabled on cloud (``app.all-hands.dev``) or any deployment where
-security matters. Gated by the ``ENABLE_INTEGRATED_IDP`` env var (explicit opt-in)
-plus the "no real IDP configured" check.
+security matters. Gated solely by the ``ENABLE_INTEGRATED_IDP`` env var
+(explicit opt-in) — turning it on takes priority over any configured real
+IDP for ``/oauth/idp-login``, it does not merely fill in for a missing one.
 """
 
 from __future__ import annotations
@@ -78,7 +79,6 @@ from server.auth.password_hashing import (
 from server.constants import ENABLE_INTEGRATED_IDP
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
-from storage.oauth_provider_store import OAuthProviderStore
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -106,10 +106,11 @@ _DEV_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
 class DevIdpProvider:
     """Sentinel that quacks like ``OAuthProvider`` for the OAuth v2 flow.
 
-    Returned by ``OAuthProviderStore.get_first_idp()`` when no real IDP is
-    configured on a self-hosted deployment. The OAuth v2 routes check
-    ``provider.id == DEV_IDP_PROVIDER_ID`` to intercept and redirect to the
-    dev IDP email+password form instead of building an external OAuth URL.
+    Returned by ``OAuthProviderStore.get_first_idp()`` whenever
+    ``ENABLE_INTEGRATED_IDP`` is on — including when a real IDP is also
+    configured. The OAuth v2 routes check ``provider.id ==
+    DEV_IDP_PROVIDER_ID`` to intercept and redirect to the dev IDP
+    email+password form instead of building an external OAuth URL.
     """
 
     id: int = DEV_IDP_PROVIDER_ID
@@ -138,26 +139,23 @@ def derive_dev_idp_user_id(email: str) -> str:
 async def is_dev_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
-    Available when:
-    * ``ENABLE_INTEGRATED_IDP`` is set (explicit opt-in via env var), AND
-    * No real IDP is configured in ``oauth_providers`` (no row with
-      ``is_idp = True``). Once an admin configures a real IDP, the dev
-      IDP is disabled.
-
-    Uses ``_has_real_idp()`` (direct DB query) instead of
-    ``get_idp_providers()`` to avoid infinite recursion: ``get_idp_providers``
-    calls ``get_dev_idp_if_available`` → ``is_dev_idp_available``.
+    Governed solely by ``ENABLE_INTEGRATED_IDP`` (explicit opt-in via env
+    var). Whether a real IDP is *also* configured does not affect
+    availability: ``/oauth/idp-login`` prefers the dev IDP over any
+    configured real IDP whenever this flag is on (see
+    ``OAuthProviderStore.get_first_idp``); only when it is off is a
+    configured real IDP used, exclusively.
     """
-    if not ENABLE_INTEGRATED_IDP:
-        return False
-    return not await OAuthProviderStore()._has_real_idp()
+    return ENABLE_INTEGRATED_IDP
 
 
 async def get_dev_idp_if_available() -> DevIdpProvider | None:
     """Return the dev IDP sentinel if available, else ``None``.
 
-    Used by ``OAuthProviderStore.get_first_idp()`` and ``get_idp_providers()``
-    to make the dev IDP appear as a regular IDP when no real one is configured.
+    Used by ``OAuthProviderStore.get_first_idp()`` to make the dev IDP take
+    priority over any configured real IDP for ``/oauth/idp-login`` whenever
+    ``ENABLE_INTEGRATED_IDP`` is on, and by ``get_idp_providers()`` to make it
+    appear as a regular IDP when no real one is configured.
     """
     if await is_dev_idp_available():
         return DevIdpProvider()
