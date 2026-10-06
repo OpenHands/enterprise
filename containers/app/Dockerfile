@@ -71,7 +71,12 @@ RUN mkdir -p $WORKSPACE_BASE
 # the list going stale each time a new CVE lands -- notably the full perl stack
 # pulled in transitively by `git`, plus libpcre2, libc, gzip, libssh2 and the
 # CPython runtime libraries.
-RUN apt-get update -y \
+# CI reuses this layer from the registry build cache, so a Debian security update
+# published after the layer was cached (e.g. openssl/libpcre2 3.5.7-1~deb13u3)
+# is not picked up. Bump this date to force `apt-get upgrade` to run again.
+ARG APT_SECURITY_REFRESH=2026-10-06
+RUN echo "Applying Debian security updates as of ${APT_SECURITY_REFRESH}" \
+    && apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
     && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y nodejs \
