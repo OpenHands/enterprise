@@ -1,10 +1,12 @@
 """Tests for Resend Keycloak sync functionality."""
 
+import json
 import os
 from unittest.mock import MagicMock, call, patch
 from uuid import UUID
 
 import pytest
+import resend
 from resend.exceptions import ResendError
 from tenacity import RetryError
 
@@ -205,6 +207,11 @@ class TestLocalUserQueries:
 class TestSendWelcomeEmail:
     """Tests for send_welcome_email function."""
 
+    def test_send_welcome_email_requires_user_id(self) -> None:
+        """A welcome email must not be sendable without a user id keying it."""
+        with pytest.raises(TypeError):
+            send_welcome_email(email='test@example.com')
+
     @patch('sync.resend_keycloak.resend.Emails.send')
     def test_send_welcome_email_success(self, mock_send: MagicMock) -> None:
         """Test successful welcome email sending."""
@@ -214,6 +221,7 @@ class TestSendWelcomeEmail:
             email='test@example.com',
             first_name='John',
             last_name='Doe',
+            user_id='user-1',
         )
 
         assert result == {'id': 'email_123'}
@@ -222,6 +230,7 @@ class TestSendWelcomeEmail:
         assert call_args['to'] == ['test@example.com']
         assert call_args['subject'] == 'Welcome to OpenHands Cloud'
         assert 'Hi John Doe,' in call_args['html']
+        assert mock_send.call_args[0][1] == {'idempotency_key': 'welcome-email:user-1'}
 
     @patch('sync.resend_keycloak.resend.Emails.send')
     def test_send_welcome_email_retries_on_rate_limit(
@@ -249,10 +258,15 @@ class TestSendWelcomeEmail:
             email='test@example.com',
             first_name='John',
             last_name='Doe',
+            user_id='user-1',
         )
 
         assert result == {'id': 'email_123'}
         assert mock_send.call_count == 3
+        assert [c.args[1] for c in mock_send.call_args_list] == [
+            {'idempotency_key': 'welcome-email:user-1'}
+        ] * 3
+        assert len({json.dumps(c.args[0]) for c in mock_send.call_args_list}) == 1
 
     @patch('sync.resend_keycloak.resend.Emails.send')
     def test_send_welcome_email_fails_after_max_retries(
@@ -273,6 +287,7 @@ class TestSendWelcomeEmail:
                 email='test@example.com',
                 first_name='John',
                 last_name='Doe',
+                user_id='user-1',
             )
 
         # Default MAX_RETRIES is 3
@@ -283,11 +298,50 @@ class TestSendWelcomeEmail:
         """Test welcome email with no name provided."""
         mock_send.return_value = {'id': 'email_123'}
 
-        result = send_welcome_email(email='test@example.com')
+        result = send_welcome_email(email='test@example.com', user_id='user-1')
 
         assert result == {'id': 'email_123'}
         call_args = mock_send.call_args[0][0]
         assert 'Hi there,' in call_args['html']
+
+
+class _AcceptThenFailClient:
+    """Fake Resend HTTP transport: accepts the first send, then reports a 500.
+
+    It replaces only the network layer, so the SDK's own header and error
+    handling run unchanged.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    def request(self, method, url, headers, json=None):
+        self.requests.append({'headers': dict(headers), 'json': json})
+        if len(self.requests) == 1:
+            body = b'{"statusCode": 500, "name": "internal_server_error", "message": "boom"}'
+            return body, 500, {'content-type': 'application/json'}
+        return b'{"id": "email_1"}', 200, {'content-type': 'application/json'}
+
+
+class TestSendWelcomeEmailIdempotencyOnTheWire:
+    def test_retry_after_an_error_resends_the_same_key_and_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry after Resend reports an error reuses the first attempt's key
+        and body, so Resend replays the original response instead of sending
+        a second email."""
+        client = _AcceptThenFailClient()
+        monkeypatch.setattr(resend, 'default_http_client', client)
+
+        result = send_welcome_email(
+            email='test@example.com', first_name='Ada', user_id='user-7'
+        )
+
+        assert result['id'] == 'email_1'
+        assert len(client.requests) == 2
+        keys = [r['headers'].get('Idempotency-Key') for r in client.requests]
+        assert keys == ['welcome-email:user-7', 'welcome-email:user-7']
+        assert client.requests[0]['json'] == client.requests[1]['json']
 
 
 class TestAddContactToResend:
@@ -379,7 +433,9 @@ class TestSyncUsersToResend:
         mock_add_contact.assert_called_once_with(
             'test_audience_id', 'new@example.com', 'Ada', 'Lovelace'
         )
-        mock_send_welcome.assert_called_once_with('new@example.com', 'Ada', 'Lovelace')
+        mock_send_welcome.assert_called_once_with(
+            'new@example.com', 'Ada', 'Lovelace', user_id='user-3'
+        )
         assert mock_sleep.call_count == 2
 
     @patch('sync.resend_keycloak.time.sleep')
@@ -424,5 +480,44 @@ class TestSyncUsersToResend:
         mock_add_contact.assert_called_once_with(
             'test_audience_id', 'new@example.com', None, None
         )
-        mock_send_welcome.assert_called_once_with('new@example.com', None, None)
+        mock_send_welcome.assert_called_once_with(
+            'new@example.com', None, None, user_id='user-1'
+        )
         assert mock_sleep.call_count == 2
+
+    @patch('sync.resend_keycloak.time.sleep')
+    @patch('sync.resend_keycloak.send_welcome_email')
+    @patch('sync.resend_keycloak.add_contact_to_resend')
+    @patch('sync.resend_keycloak.get_local_users')
+    @patch('sync.resend_keycloak.get_total_local_users')
+    @patch('sync.resend_keycloak._backfill_existing_resend_contacts')
+    @patch('sync.resend_keycloak._get_resend_synced_user_store')
+    def test_sync_continues_when_welcome_email_fails(
+        self,
+        mock_get_store: MagicMock,
+        mock_backfill: MagicMock,
+        mock_get_total: MagicMock,
+        mock_get_local_users: MagicMock,
+        mock_add_contact: MagicMock,
+        mock_send_welcome: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        """A failing welcome email must not abort the rest of the sync."""
+        store = MagicMock()
+        store.get_synced_emails_for_audience.return_value = set()
+        mock_get_store.return_value = store
+        mock_backfill.return_value = 0
+        mock_get_total.return_value = 2
+        mock_get_local_users.return_value = [
+            ResendUser(id='user-1', email='a@example.com'),
+            ResendUser(id='user-2', email='b@example.com'),
+        ]
+        mock_add_contact.return_value = {'id': 'contact_123'}
+        mock_send_welcome.side_effect = RuntimeError('resend down')
+
+        sync_users_to_resend()
+
+        assert mock_send_welcome.call_count == 2
+        mock_send_welcome.assert_any_call('a@example.com', None, None, user_id='user-1')
+        mock_send_welcome.assert_any_call('b@example.com', None, None, user_id='user-2')
+        assert mock_add_contact.call_count == 2
