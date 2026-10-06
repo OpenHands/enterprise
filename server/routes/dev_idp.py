@@ -28,13 +28,22 @@ self-hosted:
 **Account creation is admin-only, not self-service.** The sign-up form exists
 solely to bootstrap the *first* super admin on a fresh installation
 (``UserStore.create_user`` already designates the first user in an empty
-database as super admin). Once a super admin exists
-(``UserStore.has_super_admin()``), ``/oauth/dev-idp/signup`` redirects to the
-login page instead of rendering — every subsequent account must be created by
-a super admin through the existing user-management APIs, not through
-self-service sign-up. Symmetrically, while no super admin exists yet,
-``/oauth/dev-idp/login`` redirects to the sign-up (bootstrap) page, since
-there is no account to log into.
+database as super admin) — or to finish bootstrapping one who already exists
+but has no password yet (e.g. a super admin backfilled by migration 138 on
+an installation that predates ``User.password_hash``, or one who has only
+ever signed in through a real IDP). The gate is
+``UserStore.has_super_admin_with_password()``, not
+``UserStore.has_super_admin()``: a super admin *row* existing is not enough
+to hide this form — only a super admin who can actually log in with a
+password is. Once that's true, ``/oauth/dev-idp/signup`` redirects to the
+login page instead of rendering — every subsequent account must be created
+by a super admin through the existing user-management APIs, not through
+self-service sign-up. Symmetrically, while no super admin has a password
+yet, ``/oauth/dev-idp/login`` redirects to the sign-up (bootstrap) page,
+since there is no account that can log in. Submitting sign-up updates the
+password on a matching existing user (found by derived id, then by email —
+e.g. the passwordless super admin itself) instead of creating a new one;
+only a genuinely new email creates a brand-new account.
 
 When a real IDP is configured, the sentinel is not returned and every route
 in this module returns ``404``.
@@ -311,11 +320,13 @@ async def dev_idp_login_form(
 
     Returns ``404`` if this IDP is not available (real IDP configured or
     cloud deployment). Redirects to the sign-up (bootstrap) page if no super
-    admin exists yet — there is nothing to log into until one is created.
+    admin can log in with a password yet — there is nothing to log into
+    until one is created (or an existing passwordless super admin claims
+    their account).
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin():
+    if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     html = _render_form(
         mode='login', web_url=web_url, redirect_url=redirect_url, error=error
@@ -332,13 +343,17 @@ async def dev_idp_signup_form(
     """Serve the email+password admin-account-creation form.
 
     Returns ``404`` if this IDP is not available (real IDP configured or
-    cloud deployment). Redirects to the login page once a super admin
-    already exists — self-service account creation is bootstrap-only; every
-    subsequent account is created by a super admin, not through this form.
+    cloud deployment). Redirects to the login page once a super admin can
+    already log in with a password — self-service account creation is
+    bootstrap-only; every subsequent account is created by a super admin,
+    not through this form. A super admin *row* existing with no password set
+    yet (e.g. backfilled before ``User.password_hash`` existed) does **not**
+    hide this form — it is still needed to finish that super admin's
+    bootstrap.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
-    if await UserStore.has_super_admin():
+    if await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     html = _render_form(
         mode='signup', web_url=web_url, redirect_url=redirect_url, error=error
@@ -368,14 +383,14 @@ async def dev_idp_login(
     """Verify email + password and complete the login.
 
     Returns ``404`` if this IDP is not available. Redirects to the sign-up
-    (bootstrap) page if no super admin exists yet. On invalid credentials,
-    redirects back to the login form with an error instead of failing the
-    request outright — there is nothing sensitive to protect by
-    distinguishing "no such account" from "wrong password" here.
+    (bootstrap) page if no super admin can log in with a password yet. On
+    invalid credentials, redirects back to the login form with an error
+    instead of failing the request outright — there is nothing sensitive to
+    protect by distinguishing "no such account" from "wrong password" here.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin():
+    if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
@@ -413,23 +428,26 @@ async def dev_idp_signup(
     confirm_password: str = Form(...),
     redirect_url: str = Form(''),
 ):
-    """Create the first super-admin account (email + password) and log in.
+    """Create or finish bootstrapping the super admin (email + password).
 
     Returns ``404`` if this IDP is not available. This endpoint only ever
-    succeeds while **no super admin exists yet** — it is a one-time bootstrap
-    step, not general self-service sign-up. If a super admin already exists
-    (including one created by a request that raced this one — re-checked
-    here, not just by the GET form), redirects to the login form instead;
-    every subsequent account must be created by a super admin through the
-    existing user-management APIs. If the email belongs to an existing user
-    with no ``password_hash`` (e.g. an OAuth-provisioned account), sign-up
-    sets the password and claims the account. Redirects back to the sign-up
-    form with an error on a taken email (password already set), a too-short
-    password, or a confirm-password mismatch.
+    succeeds while **no super admin can yet log in with a password** — it is
+    a one-time bootstrap step, not general self-service sign-up. If a super
+    admin with a password already exists (including one created by a
+    request that raced this one — re-checked here, not just by the GET
+    form), redirects to the login form instead; every subsequent account
+    must be created by a super admin through the existing user-management
+    APIs. If the email belongs to an existing user with no ``password_hash``
+    — an OAuth-provisioned account, or a super admin backfilled before
+    ``User.password_hash`` existed (migration 138) — sign-up sets the
+    password on *that* user and claims the account rather than creating a
+    new one. Redirects back to the sign-up form with an error on a taken
+    email (password already set), a too-short password, or a
+    confirm-password mismatch.
     """
     await _require_dev_idp_available()
     web_url = get_web_url(request)
-    if await UserStore.has_super_admin():
+    if await UserStore.has_super_admin_with_password():
         return _form_redirect(
             web_url,
             mode='login',
