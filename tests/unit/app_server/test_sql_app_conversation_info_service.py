@@ -22,6 +22,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
+from openhands.app_server.user.user_models import LOCAL_USER_ID
 from openhands.sdk import ConversationStats
 from openhands.sdk.llm import Metrics, MetricsSnapshot, TokenUsage
 
@@ -258,6 +259,26 @@ class TestSQLAppConversationInfoService:
 
         # Check that non-existent conversation returns None
         assert results[-1] is None
+
+    @pytest.mark.asyncio
+    async def test_every_read_reports_the_local_user_as_owner(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        """No owner column, so get, batch get and search all report OSS mode's single user."""
+        await service.save_app_conversation_info(sample_conversation_info)
+
+        got = await service.get_app_conversation_info(sample_conversation_info.id)
+        [batched] = await service.batch_get_app_conversation_info(
+            [sample_conversation_info.id]
+        )
+        page = await service.search_app_conversation_info()
+
+        owners = [got.created_by_user_id, batched.created_by_user_id] + [
+            item.created_by_user_id for item in page.items
+        ]
+        assert owners == [LOCAL_USER_ID] * 3
 
     @pytest.mark.asyncio
     async def test_batch_get_empty_list(self, service: SQLAppConversationInfoService):

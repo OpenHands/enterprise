@@ -1606,6 +1606,11 @@ class TestDockerSandboxServiceOwnership:
         assert started.created_by_user_id == LOCAL_USER_ID
         assert [item.id for item in page.items] == [started.id]
         assert page.items[0].created_by_user_id == LOCAL_USER_ID
+        # Secret lookup and webhook callbacks rebuild the owner's auth from this id.
+        assert isinstance(
+            await DefaultUserAuth.get_for_user(started.created_by_user_id),
+            DefaultUserAuth,
+        )
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
