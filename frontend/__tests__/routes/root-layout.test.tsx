@@ -10,6 +10,8 @@ import AuthService from "#/api/auth-service/auth-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { onboardingService } from "#/api/onboarding-service/onboarding-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
+import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import {
   MOCK_PERSONAL_ORG,
@@ -26,6 +28,10 @@ vi.mock("#/hooks/use-github-auth-url", () => ({
 vi.mock("#/hooks/use-is-on-tos-page", () => ({
   useIsOnTosPage: () => false,
 }));
+
+// vitest.setup.ts treats every page as a regular page; the Super Admin setup
+// guide tests need the real /accept-tos check.
+vi.unmock("#/hooks/use-is-on-intermediate-page");
 
 vi.mock("#/hooks/use-auto-login", () => ({
   useAutoLogin: () => {},
@@ -758,6 +764,77 @@ describe("MainApp", () => {
       // Assert
       const modal = await screen.findByTestId("suspended-organization-modal");
       expect(modal).toHaveTextContent("ORG$MEMBERSHIP_SUSPENDED");
+    });
+  });
+
+  describe("Super Admin setup guide", () => {
+    const RouterStubWithAcceptTos = createRoutesStub([
+      {
+        Component: MainApp,
+        path: "/",
+        children: [
+          {
+            Component: () => <div data-testid="outlet-content" />,
+            path: "/",
+          },
+          {
+            Component: () => <div data-testid="accept-tos-page" />,
+            path: "/accept-tos",
+          },
+        ],
+      },
+    ]);
+
+    // useConfig is off on intermediate pages; the app still has the config
+    // because PostHogWrapper loads it into the shared cache on every page.
+    const renderWithCachedConfig = (initialEntries: string[]) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(QUERY_KEYS.WEB_CLIENT_CONFIG, {
+        app_mode: "saas",
+        providers_configured: ["github"],
+        feature_flags: { enable_super_admin: true },
+      });
+      return render(
+        <RouterStubWithAcceptTos initialEntries={initialEntries} />,
+        {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>
+              {children}
+            </QueryClientProvider>
+          ),
+        },
+      );
+    };
+
+    beforeEach(() => {
+      vi.spyOn(superAdminService, "getSetupState").mockResolvedValue({
+        wizard_pending: false,
+        guide_org_id: null,
+        guide_dismissed: false,
+        guide_steps: null,
+      });
+    });
+
+    it("should not read the setup state before the user accepts the TOS", async () => {
+      // Act
+      renderWithCachedConfig(["/accept-tos"]);
+
+      // Assert
+      expect(await screen.findByTestId("accept-tos-page")).toBeInTheDocument();
+      expect(superAdminService.getSetupState).not.toHaveBeenCalled();
+    });
+
+    it("should read the setup state once the user is signed in", async () => {
+      // Act
+      renderWithCachedConfig(["/"]);
+
+      // Assert
+      expect(await screen.findByTestId("outlet-content")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(superAdminService.getSetupState).toHaveBeenCalled(),
+      );
     });
   });
 });
