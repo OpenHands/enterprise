@@ -416,7 +416,7 @@ describe("RepoConnector", () => {
       V1ConversationService,
       "createConversation",
     );
-    createConversationSpy.mockImplementation(() => new Promise(() => { })); // Never resolves to keep loading state
+    createConversationSpy.mockImplementation(() => new Promise(() => {})); // Never resolves to keep loading state
     const retrieveUserGitRepositoriesSpy = vi.spyOn(
       GitService,
       "retrieveUserGitRepositories",

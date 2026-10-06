@@ -1407,8 +1407,7 @@ describe("LlmSettingsScreen", () => {
         } as NonNullable<Settings["agent_settings"]>;
 
         const agentSettingsDiff = settings.agent_settings_diff as
-          | Settings["agent_settings"]
-          | undefined;
+          Settings["agent_settings"] | undefined;
         if (agentSettingsDiff) {
           Object.assign(nextAgentSettings, agentSettingsDiff);
         }

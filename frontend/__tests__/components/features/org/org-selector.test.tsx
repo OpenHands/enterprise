@@ -36,10 +36,10 @@ vi.mock("react-i18next", async () => {
     useTranslation: () => ({
       t: (key: string, params?: Record<string, string>) => {
         const translations: Record<string, string> = {
-          "ORG$SELECT_ORGANIZATION_PLACEHOLDER": "Please select an organization",
-          "ORG$PERSONAL_WORKSPACE": "Personal Workspace",
-          "ORG$SWITCHED_TO_ORGANIZATION": `You have switched to organization: ${params?.name ?? ""}`,
-          "ORG$SWITCHED_TO_PERSONAL_WORKSPACE":
+          ORG$SELECT_ORGANIZATION_PLACEHOLDER: "Please select an organization",
+          ORG$PERSONAL_WORKSPACE: "Personal Workspace",
+          ORG$SWITCHED_TO_ORGANIZATION: `You have switched to organization: ${params?.name ?? ""}`,
+          ORG$SWITCHED_TO_PERSONAL_WORKSPACE:
             "You have switched to your personal workspace.",
         };
         return translations[key] || key;

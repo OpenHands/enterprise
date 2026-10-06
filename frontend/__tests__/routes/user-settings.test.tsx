@@ -92,6 +92,8 @@ describe("UserSettingsScreen email editing", () => {
     const input = await screen.findByTestId("email-input");
     expect(input).toHaveProperty("readOnly", false);
     expect(screen.getByTestId("save-email-button")).toBeInTheDocument();
-    expect(screen.queryByTestId("email-change-disabled")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("email-change-disabled"),
+    ).not.toBeInTheDocument();
   });
 });

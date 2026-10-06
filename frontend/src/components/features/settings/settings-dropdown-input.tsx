@@ -1,10 +1,17 @@
-import { Autocomplete, AutocompleteItem } from "@heroui/react";
-import React, { ReactNode } from "react";
+import {
+  CloseButton,
+  ComboBox,
+  Input,
+  ListBox,
+  ListBoxItem,
+  Spinner,
+} from "@heroui/react";
+import React, { ReactNode, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { I18nKey } from "#/i18n/declaration";
 import { OptionalTag } from "./optional-tag";
 import { cn } from "#/utils/utils";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
-import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 
 interface SettingsDropdownInputProps {
   testId: string;
@@ -52,6 +59,24 @@ export function SettingsDropdownInput({
   inputClassName,
 }: SettingsDropdownInputProps) {
   const { t } = useTranslation();
+  const ariaLabel = typeof label === "string" ? label : name;
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // v3 has no `isClearable`; callers that opt in get an explicit clear control.
+  const showClear = Boolean(isClearable) && selectedKey != null;
+
+  // The v3 ComboBox only opens on first focus or on the trigger button; v2
+  // reopened on every click, so forward clicks to the ArrowDown gesture.
+  const openList = () => {
+    if (isDisabled || isLoading) return;
+    inputRef.current?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  };
 
   return (
     <label
@@ -63,43 +88,61 @@ export function SettingsDropdownInput({
           {showOptionalTag && <OptionalTag />}
         </div>
       )}
-      <Autocomplete
-        aria-label={typeof label === "string" ? label : name}
-        data-testid={testId}
-        name={name}
+      <ComboBox
+        aria-label={ariaLabel}
         items={items}
         defaultSelectedKey={defaultSelectedKey}
         selectedKey={selectedKey}
         onSelectionChange={onSelectionChange}
         onInputChange={onInputChange}
-        isClearable={isClearable}
         isDisabled={isDisabled || isLoading}
-        isLoading={isLoading}
-        placeholder={isLoading ? t("HOME$LOADING") : placeholder}
         allowsCustomValue={allowsCustomValue}
         isRequired={required}
-        className="w-full"
-        classNames={{
-          popoverContent: "bg-content1 rounded-xl",
-          selectorButton: heroUiAutocompleteSelectorButtonClassName,
-        }}
-        selectorButtonProps={{ disableRipple: true }}
-        inputProps={{
-          classNames: {
-            inputWrapper: cn(
-              formControlSettingsFieldClassName,
-              inputWrapperClassName,
-            ),
-            input: inputClassName,
-          },
-        }}
         defaultFilter={defaultFilter}
-        startContent={startContent || null}
+        className="w-full"
       >
-        {(item) => (
-          <AutocompleteItem key={item.key}>{item.label}</AutocompleteItem>
-        )}
-      </Autocomplete>
+        <ComboBox.InputGroup
+          className={cn(
+            formControlSettingsFieldClassName,
+            inputWrapperClassName,
+          )}
+        >
+          {startContent}
+          <Input
+            ref={inputRef}
+            aria-label={ariaLabel}
+            name={name}
+            data-testid={testId}
+            onClick={openList}
+            placeholder={isLoading ? t("HOME$LOADING") : placeholder}
+            className={cn(
+              "min-w-0 flex-1 border-0 bg-transparent px-0 text-sm text-white outline-none",
+              inputClassName,
+            )}
+          />
+          {isLoading && <Spinner size="sm" />}
+          {showClear && (
+            <CloseButton
+              aria-label={t(I18nKey.BUTTON$CLOSE)}
+              onPress={() => onSelectionChange?.(null)}
+            />
+          )}
+          <ComboBox.Trigger />
+        </ComboBox.InputGroup>
+        <ComboBox.Popover className="bg-content1 rounded-xl">
+          <ListBox items={items}>
+            {(item: { key: React.Key; label: string }) => (
+              <ListBoxItem
+                id={item.key as string | number}
+                textValue={item.label}
+              >
+                {item.label}
+                <ListBoxItem.Indicator />
+              </ListBoxItem>
+            )}
+          </ListBox>
+        </ComboBox.Popover>
+      </ComboBox>
     </label>
   );
 }

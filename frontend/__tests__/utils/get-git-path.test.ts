@@ -6,7 +6,9 @@ describe("getGitPath", () => {
 
   describe("without sandbox grouping (NO_GROUPING)", () => {
     it("should return /workspace/project when no repository is selected", () => {
-      expect(getGitPath(conversationId, null, false)).toBe("/workspace/project");
+      expect(getGitPath(conversationId, null, false)).toBe(
+        "/workspace/project",
+      );
       expect(getGitPath(conversationId, undefined, false)).toBe(
         "/workspace/project",
       );

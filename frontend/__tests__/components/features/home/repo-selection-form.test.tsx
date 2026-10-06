@@ -129,7 +129,7 @@ const mockOnRepoSelection = vi.fn();
 const renderForm = (
   storeOverrides: Partial<{
     recentRepositories: GitRepository[];
-    lastSelectedProvider: 'gitlab' | null;
+    lastSelectedProvider: "gitlab" | null;
   }> = {},
 ) => {
   // Set up the store state before rendering
@@ -229,7 +229,10 @@ describe("RepositorySelectionForm", () => {
 
     // Create a spy on the API call
     const searchGitReposSpy = vi.spyOn(GitService, "searchGitRepositories");
-    searchGitReposSpy.mockResolvedValue({ items: MOCK_SEARCH_REPOS, next_page_id: null });
+    searchGitReposSpy.mockResolvedValue({
+      items: MOCK_SEARCH_REPOS,
+      next_page_id: null,
+    });
 
     mockUseGitRepositories.mockReturnValue({
       data: { pages: [] },

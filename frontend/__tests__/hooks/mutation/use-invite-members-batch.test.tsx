@@ -27,7 +27,9 @@ describe("useInviteMembersBatch", () => {
 
     const { result } = renderHook(() => useInviteMembersBatch(), {
       wrapper: ({ children }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       ),
     });
 

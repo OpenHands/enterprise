@@ -44,13 +44,17 @@ describe("InformationRequest", () => {
   it("should render the page title", () => {
     renderWithRouter();
 
-    expect(screen.getByText("ENTERPRISE$GET_OPENHANDS_TITLE")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$GET_OPENHANDS_TITLE"),
+    ).toBeInTheDocument();
   });
 
   it("should render the page subtitle", () => {
     renderWithRouter();
 
-    expect(screen.getByText("ENTERPRISE$GET_OPENHANDS_SUBTITLE")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$GET_OPENHANDS_SUBTITLE"),
+    ).toBeInTheDocument();
   });
 
   it("should render SaaS card", () => {
@@ -63,26 +67,44 @@ describe("InformationRequest", () => {
   it("should render Self-hosted card", () => {
     renderWithRouter();
 
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_TITLE")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_CARD_DESCRIPTION")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_TITLE"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_CARD_DESCRIPTION"),
+    ).toBeInTheDocument();
   });
 
   it("should render SaaS features", () => {
     renderWithRouter();
 
-    expect(screen.getByText("ENTERPRISE$SAAS_FEATURE_NO_INFRASTRUCTURE")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SAAS_FEATURE_NO_INFRASTRUCTURE"),
+    ).toBeInTheDocument();
     expect(screen.getByText("ENTERPRISE$SAAS_FEATURE_SSO")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SAAS_FEATURE_ACCESS_ANYWHERE")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SAAS_FEATURE_AUTO_UPDATES")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SAAS_FEATURE_ACCESS_ANYWHERE"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SAAS_FEATURE_AUTO_UPDATES"),
+    ).toBeInTheDocument();
   });
 
   it("should render Self-hosted features", () => {
     renderWithRouter();
 
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_ON_PREMISES")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_DATA_CONTROL")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_COMPLIANCE")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_SUPPORT")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_ON_PREMISES"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_DATA_CONTROL"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_COMPLIANCE"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_FEATURE_SUPPORT"),
+    ).toBeInTheDocument();
   });
 
   it("should render two Learn More buttons", () => {
@@ -128,7 +150,9 @@ describe("InformationRequest", () => {
 
     // Form should now be visible
     expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$FORM_SELF_HOSTED_TITLE")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$FORM_SELF_HOSTED_TITLE"),
+    ).toBeInTheDocument();
   });
 
   it("should return to card selection when form back button is clicked", async () => {
@@ -147,8 +171,12 @@ describe("InformationRequest", () => {
     await user.click(backButton);
 
     // Should return to card selection view
-    expect(screen.queryByTestId("information-request-form")).not.toBeInTheDocument();
-    expect(screen.getByText("ENTERPRISE$GET_OPENHANDS_TITLE")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("information-request-form"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$GET_OPENHANDS_TITLE"),
+    ).toBeInTheDocument();
   });
 
   it("should have accessible Learn More links with aria-label", () => {

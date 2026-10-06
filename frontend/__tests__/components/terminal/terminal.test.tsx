@@ -4,6 +4,21 @@ import { vi, describe, afterEach, it, expect } from "vitest";
 import { Command, useCommandStore } from "#/stores/command-store";
 import Terminal from "#/components/features/terminal/terminal";
 
+const { mockTerminal } = vi.hoisted(() => ({
+  mockTerminal: {
+    open: vi.fn(),
+    write: vi.fn(),
+    writeln: vi.fn(),
+    dispose: vi.fn(),
+    loadAddon: vi.fn(),
+  },
+}));
+
+vi.mock("@xterm/xterm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@xterm/xterm")>()),
+  Terminal: vi.fn().mockImplementation(() => mockTerminal),
+}));
+
 const renderTerminal = (commands: Command[] = []) => {
   // Set initial commands in Zustand store
   useCommandStore.setState({ commands });
@@ -15,19 +30,6 @@ describe.skip("Terminal", () => {
   global.ResizeObserver = vi.fn().mockImplementation(() => ({
     observe: vi.fn(),
     disconnect: vi.fn(),
-  }));
-
-  const mockTerminal = {
-    open: vi.fn(),
-    write: vi.fn(),
-    writeln: vi.fn(),
-    dispose: vi.fn(),
-    loadAddon: vi.fn(),
-  };
-
-  vi.mock("@xterm/xterm", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@xterm/xterm")>()),
-    Terminal: vi.fn().mockImplementation(() => mockTerminal),
   }));
 
   afterEach(() => {

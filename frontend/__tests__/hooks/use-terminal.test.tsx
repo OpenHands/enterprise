@@ -34,21 +34,50 @@ function TestTerminalComponent() {
   return <div ref={ref} />;
 }
 
-describe("useTerminal", () => {
-  // Terminal is read-only - no longer tests user input functionality
-  const mockTerminal = vi.hoisted(() => ({
+// Terminal is read-only - no longer tests user input functionality
+const { mockTerminal } = vi.hoisted(() => ({
+  mockTerminal: {
     loadAddon: vi.fn(),
     open: vi.fn(),
     write: vi.fn(),
     writeln: vi.fn(),
     dispose: vi.fn(),
     element: document.createElement("div"),
-  }));
+  },
+}));
 
-  const mockFitAddon = vi.hoisted(() => ({
+const { mockFitAddon } = vi.hoisted(() => ({
+  mockFitAddon: {
     fit: vi.fn(),
-  }));
+  },
+}));
 
+// mock Terminal - use class for Vitest 4 constructor support
+vi.mock("@xterm/xterm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@xterm/xterm")>()),
+  Terminal: class {
+    loadAddon = mockTerminal.loadAddon;
+
+    open = mockTerminal.open;
+
+    write = mockTerminal.write;
+
+    writeln = mockTerminal.writeln;
+
+    dispose = mockTerminal.dispose;
+
+    element = mockTerminal.element;
+  },
+}));
+
+// mock FitAddon
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit = mockFitAddon.fit;
+  },
+}));
+
+describe("useTerminal", () => {
   beforeAll(() => {
     // mock ResizeObserver - use class for Vitest 4 constructor support
     window.ResizeObserver = class {
@@ -58,31 +87,6 @@ describe("useTerminal", () => {
 
       disconnect = vi.fn();
     } as unknown as typeof ResizeObserver;
-
-    // mock Terminal - use class for Vitest 4 constructor support
-    vi.mock("@xterm/xterm", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("@xterm/xterm")>()),
-      Terminal: class {
-        loadAddon = mockTerminal.loadAddon;
-
-        open = mockTerminal.open;
-
-        write = mockTerminal.write;
-
-        writeln = mockTerminal.writeln;
-
-        dispose = mockTerminal.dispose;
-
-        element = mockTerminal.element;
-      },
-    }));
-
-    // mock FitAddon
-    vi.mock("@xterm/addon-fit", () => ({
-      FitAddon: class {
-        fit = mockFitAddon.fit;
-      },
-    }));
   });
 
   afterEach(() => {

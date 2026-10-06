@@ -41,8 +41,8 @@ describe("useDeleteGitProviders", () => {
     await result.current.mutateAsync();
 
     expect(invalidateSpy).toHaveBeenCalled();
-    expect(queryClient.getQueryState(personalSettingsQueryKey)?.isInvalidated).toBe(
-      true,
-    );
+    expect(
+      queryClient.getQueryState(personalSettingsQueryKey)?.isInvalidated,
+    ).toBe(true);
   });
 });

@@ -26,7 +26,6 @@ vi.mock("#/utils/local-storage", () => ({
   getLoginMethod: () => mockGetLoginMethod(),
 }));
 
-
 vi.mock("#/hooks/use-is-on-intermediate-page", () => ({
   useIsOnIntermediatePage: () => mockUseIsOnIntermediatePage(),
 }));

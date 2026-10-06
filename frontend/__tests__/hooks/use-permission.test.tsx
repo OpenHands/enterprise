@@ -39,9 +39,8 @@ describe("usePermission", () => {
       targetRole: OrganizationUserRole,
       activeUserId = "123",
     ) => {
-      const { hasPermission } = renderHook(() =>
-        usePermission(activeUserRole),
-      ).result.current;
+      const { hasPermission } = renderHook(() => usePermission(activeUserRole))
+        .result.current;
 
       // users can't change their own roles
       if (activeUserId === targetUserId) return false;
@@ -59,15 +58,15 @@ describe("usePermission", () => {
 
     describe("admin role", () => {
       it("cannot change owner role", () => {
-         expect(run("admin", "u2", "owner")).toBe(false);
+        expect(run("admin", "u2", "owner")).toBe(false);
       });
 
       it("can change member or admin roles", () => {
         expect(run("admin", "u2", "member")).toBe(
-          rolePermissions.admin.includes("change_user_role:member")
+          rolePermissions.admin.includes("change_user_role:member"),
         );
         expect(run("admin", "u2", "admin")).toBe(
-          rolePermissions.admin.includes("change_user_role:admin")
+          rolePermissions.admin.includes("change_user_role:admin"),
         );
       });
     });

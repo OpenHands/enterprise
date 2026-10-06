@@ -41,7 +41,10 @@ describe("parseMcpConfig — SDK 1.31.x flat wire format", () => {
   it("treats mcpServers: null as the flat shape (empty server map)", () => {
     // Defensive: a null ``mcpServers`` key on the new flat input shouldn't be
     // confused with the legacy wrapper — it's just a stray key on the flat map.
-    const input = { mcpServers: null, real: { url: "https://x", transport: "sse" } };
+    const input = {
+      mcpServers: null,
+      real: { url: "https://x", transport: "sse" },
+    };
 
     const result = parseMcpConfig(input);
 
@@ -92,9 +95,7 @@ describe("toSdkMcpConfig — emits flat server map", () => {
     const config: MCPConfig = {
       sse_servers: [{ name: "sse", url: "https://a.example" }],
       stdio_servers: [{ name: "stdio", command: "/bin/x" }],
-      shttp_servers: [
-        { name: "shttp", url: "https://b.example", timeout: 90 },
-      ],
+      shttp_servers: [{ name: "shttp", url: "https://b.example", timeout: 90 }],
     };
 
     const serialized = toSdkMcpConfig(config);

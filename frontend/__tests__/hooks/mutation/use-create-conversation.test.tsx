@@ -6,9 +6,9 @@ import { useCreateConversation } from "#/hooks/mutation/use-create-conversation"
 import { SuggestedTask } from "#/utils/types";
 
 vi.mock("#/hooks/query/use-settings", async () => {
-  const actual = await vi.importActual<typeof import("#/hooks/query/use-settings")>(
-    "#/hooks/query/use-settings",
-  );
+  const actual = await vi.importActual<
+    typeof import("#/hooks/query/use-settings")
+  >("#/hooks/query/use-settings");
   return {
     ...actual,
     useSettings: vi.fn().mockReturnValue({

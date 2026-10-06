@@ -150,7 +150,9 @@ describe("DeviceVerify", () => {
       });
 
       expect(screen.getByText("DEVICE$ENTER_CODE_PROMPT")).toBeInTheDocument();
-      expect(screen.getByLabelText("DEVICE$CODE_INPUT_LABEL")).toBeInTheDocument();
+      expect(
+        screen.getByLabelText("DEVICE$CODE_INPUT_LABEL"),
+      ).toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: "DEVICE$CONTINUE" }),
       ).toBeInTheDocument();
@@ -176,7 +178,9 @@ describe("DeviceVerify", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByLabelText("DEVICE$CODE_INPUT_LABEL")).toBeInTheDocument();
+        expect(
+          screen.getByLabelText("DEVICE$CODE_INPUT_LABEL"),
+        ).toBeInTheDocument();
       });
 
       const input = screen.getByLabelText("DEVICE$CODE_INPUT_LABEL");
@@ -371,7 +375,9 @@ describe("DeviceVerify", () => {
         ).toBeInTheDocument();
       });
 
-      const cancelButton = screen.getByRole("button", { name: "DEVICE$CANCEL" });
+      const cancelButton = screen.getByRole("button", {
+        name: "DEVICE$CANCEL",
+      });
       await user.click(cancelButton);
 
       expect(window.close).toHaveBeenCalled();

@@ -397,7 +397,6 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
     });
-
   });
 
   describe("Re-authentication with stored login method", () => {

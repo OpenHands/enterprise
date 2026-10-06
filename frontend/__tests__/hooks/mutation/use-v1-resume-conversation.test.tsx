@@ -19,14 +19,15 @@ describe("useV1ResumeConversation", () => {
   });
 
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={queryClient}>
-      {children}
-    </QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
 
   it("invalidates sandbox and vscode_url queries on settled", async () => {
     // Mock the API calls in the mutation chain
-    vi.spyOn(V1ConversationService, "batchGetAppConversations").mockResolvedValue([
+    vi.spyOn(
+      V1ConversationService,
+      "batchGetAppConversations",
+    ).mockResolvedValue([
       {
         id: "test-conv-id",
         created_by_user_id: null,
@@ -54,12 +55,17 @@ describe("useV1ResumeConversation", () => {
     });
 
     // Pre-populate query cache with stale sandbox data
-    queryClient.setQueryData(["sandboxes", "batch", ["test-sandbox-id"]], [
-      {
-        sandbox_id: "test-sandbox-id",
-        exposed_urls: [{ name: "VSCODE", url: "https://old-runtime.example.com" }],
-      },
-    ]);
+    queryClient.setQueryData(
+      ["sandboxes", "batch", ["test-sandbox-id"]],
+      [
+        {
+          sandbox_id: "test-sandbox-id",
+          exposed_urls: [
+            { name: "VSCODE", url: "https://old-runtime.example.com" },
+          ],
+        },
+      ],
+    );
     queryClient.setQueryData(["unified", "vscode_url", "test-conv-id"], {
       url: "https://old-runtime.example.com",
       error: null,

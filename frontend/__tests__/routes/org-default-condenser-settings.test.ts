@@ -88,9 +88,7 @@ describe("org-defaults/condenser clientLoader", () => {
     vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
 
     await clientLoader({
-      request: new Request(
-        "http://localhost/settings/org-defaults/condenser",
-      ),
+      request: new Request("http://localhost/settings/org-defaults/condenser"),
     });
 
     expect(replace).toHaveBeenCalledWith("/settings/user");

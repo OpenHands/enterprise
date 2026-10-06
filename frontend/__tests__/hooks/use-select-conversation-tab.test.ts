@@ -42,9 +42,7 @@ describe("useSelectConversationTab", () => {
 
       // Verify localStorage was updated
       const storedState = JSON.parse(
-        localStorage.getItem(
-          `conversation-state-${TEST_CONVERSATION_ID}`,
-        )!,
+        localStorage.getItem(`conversation-state-${TEST_CONVERSATION_ID}`)!,
       );
       expect(storedState.selectedTab).toBe("editor");
       expect(storedState.rightPanelShown).toBe(true);
@@ -70,9 +68,7 @@ describe("useSelectConversationTab", () => {
 
       // Verify localStorage was updated
       const storedState = JSON.parse(
-        localStorage.getItem(
-          `conversation-state-${TEST_CONVERSATION_ID}`,
-        )!,
+        localStorage.getItem(`conversation-state-${TEST_CONVERSATION_ID}`)!,
       );
       expect(storedState.rightPanelShown).toBe(false);
     });
@@ -98,9 +94,7 @@ describe("useSelectConversationTab", () => {
 
       // Verify localStorage was updated
       const storedState = JSON.parse(
-        localStorage.getItem(
-          `conversation-state-${TEST_CONVERSATION_ID}`,
-        )!,
+        localStorage.getItem(`conversation-state-${TEST_CONVERSATION_ID}`)!,
       );
       expect(storedState.selectedTab).toBe("terminal");
     });
@@ -171,9 +165,7 @@ describe("useSelectConversationTab", () => {
 
       // Verify localStorage was updated
       const storedState = JSON.parse(
-        localStorage.getItem(
-          `conversation-state-${TEST_CONVERSATION_ID}`,
-        )!,
+        localStorage.getItem(`conversation-state-${TEST_CONVERSATION_ID}`)!,
       );
       expect(storedState.selectedTab).toBe("browser");
     });
@@ -198,9 +190,7 @@ describe("useSelectConversationTab", () => {
 
       // Verify localStorage was updated
       const storedState = JSON.parse(
-        localStorage.getItem(
-          `conversation-state-${TEST_CONVERSATION_ID}`,
-        )!,
+        localStorage.getItem(`conversation-state-${TEST_CONVERSATION_ID}`)!,
       );
       expect(storedState.selectedTab).toBe(null);
     });

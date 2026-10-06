@@ -63,9 +63,9 @@ describe("useAgentNotification", () => {
     // Transition to FINISHED
     rerender({ state: AgentState.FINISHED });
 
-    expect(
-      browserTabModule.browserTab.startNotification,
-    ).toHaveBeenCalledTimes(1);
+    expect(browserTabModule.browserTab.startNotification).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it("plays notification sound when agent reaches FINISHED state and sound is enabled", () => {
@@ -89,9 +89,9 @@ describe("useAgentNotification", () => {
     // Transition to AWAITING_USER_INPUT
     rerender({ state: AgentState.AWAITING_USER_INPUT });
 
-    expect(
-      browserTabModule.browserTab.startNotification,
-    ).toHaveBeenCalledTimes(1);
+    expect(browserTabModule.browserTab.startNotification).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it("starts notification when agent reaches AWAITING_USER_CONFIRMATION state", () => {
@@ -102,9 +102,9 @@ describe("useAgentNotification", () => {
 
     rerender({ state: AgentState.AWAITING_USER_CONFIRMATION });
 
-    expect(
-      browserTabModule.browserTab.startNotification,
-    ).toHaveBeenCalledTimes(1);
+    expect(browserTabModule.browserTab.startNotification).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it("stops browser tab notification when window gains focus", () => {
@@ -120,9 +120,9 @@ describe("useAgentNotification", () => {
       window.dispatchEvent(new Event("focus"));
     });
 
-    expect(
-      browserTabModule.browserTab.stopNotification,
-    ).toHaveBeenCalledTimes(1);
+    expect(browserTabModule.browserTab.stopNotification).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it("does not start tab flash when focused, but still plays sound", () => {

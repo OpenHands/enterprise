@@ -20,8 +20,20 @@ const mockOnBack = vi.fn();
 
 // Wrapper to manage form state (needed since component is controlled)
 function StatefulForm({ requestType }: { requestType: RequestType }) {
-  const [formData, setFormData] = useState<EnterpriseFormData>({ name: "", company: "", email: "", message: "" });
-  return <InformationRequestForm requestType={requestType} formData={formData} onFormDataChange={setFormData} onBack={mockOnBack} />;
+  const [formData, setFormData] = useState<EnterpriseFormData>({
+    name: "",
+    company: "",
+    email: "",
+    message: "",
+  });
+  return (
+    <InformationRequestForm
+      requestType={requestType}
+      formData={formData}
+      onFormDataChange={setFormData}
+      onBack={mockOnBack}
+    />
+  );
 }
 
 describe("InformationRequestForm", () => {
@@ -62,7 +74,9 @@ describe("InformationRequestForm", () => {
   it("should render the logo", () => {
     renderWithRouter();
 
-    const logo = screen.getByTestId("information-request-form").querySelector("svg");
+    const logo = screen
+      .getByTestId("information-request-form")
+      .querySelector("svg");
     expect(logo).toBeInTheDocument();
   });
 
@@ -84,7 +98,9 @@ describe("InformationRequestForm", () => {
   it("should render Self-hosted-specific title when requestType is self-hosted", () => {
     renderWithRouter({ ...defaultProps, requestType: "self-hosted" });
 
-    expect(screen.getByText("ENTERPRISE$FORM_SELF_HOSTED_TITLE")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$FORM_SELF_HOSTED_TITLE"),
+    ).toBeInTheDocument();
   });
 
   it("should render cloud icon for SaaS request type", () => {
@@ -99,7 +115,9 @@ describe("InformationRequestForm", () => {
     renderWithRouter({ ...defaultProps, requestType: "self-hosted" });
 
     // The card should contain the stacked icon
-    const card = screen.getByText("ENTERPRISE$SELF_HOSTED_TITLE").closest("div");
+    const card = screen
+      .getByText("ENTERPRISE$SELF_HOSTED_TITLE")
+      .closest("div");
     expect(card).toBeInTheDocument();
   });
 
@@ -153,7 +171,9 @@ describe("InformationRequestForm", () => {
   it("should render submit button", () => {
     renderWithRouter();
 
-    const submitButton = screen.getByRole("button", { name: "ENTERPRISE$FORM_SUBMIT" });
+    const submitButton = screen.getByRole("button", {
+      name: "ENTERPRISE$FORM_SUBMIT",
+    });
     expect(submitButton).toBeInTheDocument();
     expect(submitButton).toHaveAttribute("type", "submit");
   });
@@ -182,7 +202,9 @@ describe("InformationRequestForm", () => {
   it("should display Self-hosted card description for self-hosted request type", () => {
     renderWithRouter({ ...defaultProps, requestType: "self-hosted" });
 
-    expect(screen.getByText("ENTERPRISE$SELF_HOSTED_DESCRIPTION")).toBeInTheDocument();
+    expect(
+      screen.getByText("ENTERPRISE$SELF_HOSTED_DESCRIPTION"),
+    ).toBeInTheDocument();
   });
 
   describe("form validation", () => {
@@ -210,7 +232,9 @@ describe("InformationRequestForm", () => {
       await user.click(submitButton);
 
       // Should stay on form page, not navigate to login
-      expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("information-request-form"),
+      ).toBeInTheDocument();
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
@@ -220,7 +244,10 @@ describe("InformationRequestForm", () => {
 
       await user.type(screen.getByTestId("form-input-name"), "John Doe");
       await user.type(screen.getByTestId("form-input-company"), "Acme Inc");
-      await user.type(screen.getByTestId("form-input-email"), "john@example.com");
+      await user.type(
+        screen.getByTestId("form-input-email"),
+        "john@example.com",
+      );
       await user.type(screen.getByTestId("form-input-message"), "Hello world");
 
       const submitButton = screen.getByRole("button", {
@@ -258,7 +285,9 @@ describe("InformationRequestForm", () => {
       await user.click(submitButton);
 
       // Should stay on form page, not navigate to login
-      expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("information-request-form"),
+      ).toBeInTheDocument();
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
   });
@@ -270,7 +299,10 @@ describe("InformationRequestForm", () => {
 
       await user.type(screen.getByTestId("form-input-name"), "John Doe");
       await user.type(screen.getByTestId("form-input-company"), "Acme Inc");
-      await user.type(screen.getByTestId("form-input-email"), "john@example.com");
+      await user.type(
+        screen.getByTestId("form-input-email"),
+        "john@example.com",
+      );
       await user.type(screen.getByTestId("form-input-message"), "Hello world");
 
       const submitButton = screen.getByRole("button", {

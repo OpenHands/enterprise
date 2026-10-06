@@ -11,10 +11,10 @@ vi.mock("react-i18next", async () => {
     useTranslation: () => ({
       t: (key: string) => {
         const translations: Record<string, string> = {
-          "CTA$ENTERPRISE_TITLE": "Get OpenHands for Enterprise",
-          "CTA$ENTERPRISE_DESCRIPTION":
+          CTA$ENTERPRISE_TITLE: "Get OpenHands for Enterprise",
+          CTA$ENTERPRISE_DESCRIPTION:
             "Cloud allows you to access OpenHands anywhere and coordinate with your team like never before",
-          "CTA$LEARN_MORE": "Learn More",
+          CTA$LEARN_MORE: "Learn More",
         };
         return translations[key] || key;
       },

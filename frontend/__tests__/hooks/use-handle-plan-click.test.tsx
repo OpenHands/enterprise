@@ -37,7 +37,9 @@ function asMockReturnValue<T>(value: Partial<T>): T {
   return value as T;
 }
 
-function makeConversation(overrides?: Partial<V1AppConversation>): V1AppConversation {
+function makeConversation(
+  overrides?: Partial<V1AppConversation>,
+): V1AppConversation {
   return {
     id: "conv-123",
     title: "Test Conversation",

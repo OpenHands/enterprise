@@ -5,9 +5,7 @@ import { renderWithProviders } from "test-utils";
 import { SkillReadyContentList } from "#/components/v1/chat/event-message-components/skill-ready-content-list";
 import { SkillReadyItem } from "#/components/v1/chat/event-content-helpers/create-skill-ready-event";
 
-const makeItems = (
-  ...entries: [string, string][]
-): SkillReadyItem[] =>
+const makeItems = (...entries: [string, string][]): SkillReadyItem[] =>
   entries.map(([name, content]) => ({ name, content }));
 
 describe("SkillReadyContentList", () => {
@@ -95,7 +93,7 @@ describe("SkillReadyContentList", () => {
   it("parses and displays file path from metadata", async () => {
     const user = userEvent.setup();
     const content = [
-      "The following information has been included based on a keyword match for \"docker\".",
+      'The following information has been included based on a keyword match for "docker".',
       "It may or may not be relevant to the user's request.",
       "Skill location: /home/openhands/.openhands/skills/docker/SKILL.md",
       "(Use this path to resolve relative file references)",
@@ -110,9 +108,7 @@ describe("SkillReadyContentList", () => {
 
     // File path rendered in code element
     expect(
-      screen.getByText(
-        "/home/openhands/.openhands/skills/docker/SKILL.md",
-      ),
+      screen.getByText("/home/openhands/.openhands/skills/docker/SKILL.md"),
     ).toBeInTheDocument();
     // Actual skill body rendered
     expect(screen.getByText("Docker Usage Guide")).toBeInTheDocument();

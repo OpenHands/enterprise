@@ -70,7 +70,9 @@ describe("DeleteConfirmationModal", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "BUTTON$CANCEL" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "BUTTON$CANCEL" }),
+    );
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onDelete).not.toHaveBeenCalled();
@@ -88,6 +90,8 @@ describe("DeleteConfirmationModal", () => {
     );
 
     expect(screen.getByTestId("confirm-delete-button")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "BUTTON$CANCEL" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "BUTTON$CANCEL" }),
+    ).toBeDisabled();
   });
 });

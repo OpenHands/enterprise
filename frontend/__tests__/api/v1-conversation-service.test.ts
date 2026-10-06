@@ -40,9 +40,12 @@ describe("V1ConversationService", () => {
 
     it("uses query params for file upload path", async () => {
       // Arrange
-      const conversationUrl = "http://localhost:54928/api/conversations/conv-123";
+      const conversationUrl =
+        "http://localhost:54928/api/conversations/conv-123";
       const sessionApiKey = "test-api-key";
-      const file = new File(["test content"], "test.txt", { type: "text/plain" });
+      const file = new File(["test content"], "test.txt", {
+        type: "text/plain",
+      });
       const uploadPath = "/workspace/custom/path.txt";
 
       // Act
@@ -67,9 +70,12 @@ describe("V1ConversationService", () => {
 
     it("uses default workspace path when no path provided", async () => {
       // Arrange
-      const conversationUrl = "http://localhost:54928/api/conversations/conv-123";
+      const conversationUrl =
+        "http://localhost:54928/api/conversations/conv-123";
       const sessionApiKey = "test-api-key";
-      const file = new File(["test content"], "myfile.txt", { type: "text/plain" });
+      const file = new File(["test content"], "myfile.txt", {
+        type: "text/plain",
+      });
 
       // Act
       await V1ConversationService.uploadFile(
@@ -88,9 +94,12 @@ describe("V1ConversationService", () => {
 
     it("sends file as FormData with correct headers", async () => {
       // Arrange
-      const conversationUrl = "http://localhost:54928/api/conversations/conv-123";
+      const conversationUrl =
+        "http://localhost:54928/api/conversations/conv-123";
       const sessionApiKey = "test-api-key";
-      const file = new File(["test content"], "test.txt", { type: "text/plain" });
+      const file = new File(["test content"], "test.txt", {
+        type: "text/plain",
+      });
 
       // Act
       await V1ConversationService.uploadFile(

@@ -27,9 +27,7 @@ const PROVIDERS: ACPProviderConfig[] = [
     key: "gemini-cli",
     display_name: "Gemini CLI",
     default_command: ["npx", "-y", "@google/gemini-cli-acp"],
-    available_models: [
-      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    ],
+    available_models: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }],
   },
 ];
 
@@ -68,12 +66,7 @@ describe("resolveAgentChip", () => {
     ])(
       "provider key %s → kind %s, brand text %s (no model)",
       (providerKey, expectedKind, expectedText) => {
-        const chip = resolveAgentChip(
-          "acp",
-          null,
-          providerKey,
-          PROVIDERS,
-        );
+        const chip = resolveAgentChip("acp", null, providerKey, PROVIDERS);
         expect(chip).toEqual({
           kind: expectedKind,
           text: expectedText,

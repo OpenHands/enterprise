@@ -27,7 +27,7 @@ const VALID_OSS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -53,7 +53,7 @@ const VALID_SAAS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -312,7 +312,9 @@ describe("Content", () => {
     await waitFor(() => {
       button = screen.queryByTestId("configure-github-repositories-button");
       expect(button).not.toBeInTheDocument();
-      expect(screen.queryByTestId("gitlab-status-text")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("gitlab-status-text"),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("install-slack-app-button"),
       ).not.toBeInTheDocument();
@@ -347,7 +349,9 @@ describe("Content", () => {
         /Not Connected|SETTINGS\$GITLAB_NOT_CONNECTED/,
       );
       expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
-      expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("install-slack-app-button"),
+      ).toBeInTheDocument();
       expect(screen.queryByTestId("submit-button")).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("disconnect-tokens-button"),
@@ -538,7 +542,10 @@ describe("Form submission", () => {
 
   it("should delete git providers when pressing the disconnect tokens button", async () => {
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    const deleteGitProvidersSpy = vi.spyOn(SecretsService, "deleteGitProviders");
+    const deleteGitProvidersSpy = vi.spyOn(
+      SecretsService,
+      "deleteGitProviders",
+    );
     const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
 
     deleteGitProvidersSpy.mockResolvedValue(true);
@@ -712,7 +719,9 @@ describe("GitLab Webhook Manager Integration", () => {
         screen.queryByTestId("configure-github-repositories-button"),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId("gitlab-status-text")).toBeInTheDocument();
-      expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("install-slack-app-button"),
+      ).toBeInTheDocument();
       expect(
         screen.queryByText("GITLAB$WEBHOOK_MANAGER_TITLE"),
       ).not.toBeInTheDocument();
@@ -736,7 +745,9 @@ describe("GitLab Webhook Manager Integration", () => {
 
     // Assert
     await waitFor(() => {
-      expect(screen.queryByTestId("gitlab-status-text")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("gitlab-status-text"),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("install-slack-app-button"),
       ).not.toBeInTheDocument();

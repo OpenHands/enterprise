@@ -31,11 +31,7 @@ describe("GitOrgRow", () => {
   it("renders a claim button for the organization", () => {
     // Arrange & Act
     renderWithProviders(
-      <GitOrgRow
-        org={createOrg()}
-        onClaim={vi.fn()}
-        onDisconnect={vi.fn()}
-      />,
+      <GitOrgRow org={createOrg()} onClaim={vi.fn()} onDisconnect={vi.fn()} />,
     );
 
     // Assert

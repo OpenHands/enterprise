@@ -143,7 +143,9 @@ describe("clientLoader permission checks", () => {
     await waitFor(() => {
       expect(screen.getByTestId("secrets-settings-screen")).toBeInTheDocument();
     });
-    expect(screen.queryByTestId("user-settings-screen")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("user-settings-screen"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -573,7 +575,9 @@ describe("Secret actions", () => {
   it("should not allow existing secret names", async () => {
     const createSecretSpy = vi.spyOn(SecretsService, "createSecret");
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
-    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(MOCK_SECRETS.slice(0, 1)));
+    searchSecretsSpy.mockResolvedValue(
+      createMockSecretsPage(MOCK_SECRETS.slice(0, 1)),
+    );
     renderSecretsSettings();
 
     // render form & hide items
@@ -820,7 +824,11 @@ describe("Organization-scoped secrets", () => {
 
   it("should display a Shared badge for org-scoped secrets", async () => {
     const orgSecrets: CustomSecretWithoutValue[] = [
-      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      {
+        name: "Org_Shared_Secret",
+        description: "shared",
+        scope: "organization",
+      },
       { name: "Personal_Secret", description: "mine", scope: "personal" },
     ];
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
@@ -841,7 +849,11 @@ describe("Organization-scoped secrets", () => {
 
   it("should hide edit/delete buttons for org-scoped secrets when user is a member", async () => {
     const orgSecrets: CustomSecretWithoutValue[] = [
-      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      {
+        name: "Org_Shared_Secret",
+        description: "shared",
+        scope: "organization",
+      },
       { name: "Personal_Secret", description: "mine", scope: "personal" },
     ];
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
@@ -867,7 +879,11 @@ describe("Organization-scoped secrets", () => {
 
   it("should show edit/delete buttons for org-scoped secrets when user is an admin", async () => {
     const orgSecrets: CustomSecretWithoutValue[] = [
-      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      {
+        name: "Org_Shared_Secret",
+        description: "shared",
+        scope: "organization",
+      },
     ];
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
@@ -886,7 +902,11 @@ describe("Organization-scoped secrets", () => {
 
   it("should call deleteOrgSecret when deleting an org-scoped secret as admin", async () => {
     const orgSecrets: CustomSecretWithoutValue[] = [
-      { name: "Org_Shared_Secret", description: "shared", scope: "organization" },
+      {
+        name: "Org_Shared_Secret",
+        description: "shared",
+        scope: "organization",
+      },
     ];
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage(orgSecrets));
@@ -896,8 +916,9 @@ describe("Organization-scoped secrets", () => {
     renderSaasSecretsSettings("admin");
 
     const items = await screen.findAllByTestId("secret-item");
-    const deleteButton =
-      await within(items[0]).findByTestId("delete-secret-button");
+    const deleteButton = await within(items[0]).findByTestId(
+      "delete-secret-button",
+    );
     await userEvent.click(deleteButton);
 
     const confirmationModal = screen.getByTestId("confirmation-modal");
@@ -905,6 +926,9 @@ describe("Organization-scoped secrets", () => {
       within(confirmationModal).getByTestId("confirm-button");
     await userEvent.click(confirmButton);
 
-    expect(deleteOrgSecretSpy).toHaveBeenCalledWith("org-1", "Org_Shared_Secret");
+    expect(deleteOrgSecretSpy).toHaveBeenCalledWith(
+      "org-1",
+      "Org_Shared_Secret",
+    );
   });
 });

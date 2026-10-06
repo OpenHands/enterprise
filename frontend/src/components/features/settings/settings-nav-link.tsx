@@ -36,19 +36,22 @@ export function SettingsNavLink({
         })
       : undefined;
     return (
-      <Tooltip content={tooltip} placement="right">
-        <div
-          aria-disabled="true"
-          data-testid={`settings-nav-disabled-${to}`}
-          className={cn(
-            sidebarNavRowClassName(),
-            SIDEBAR_ROW_INTERACTIVE_CLASS.idle,
-            "opacity-50 pointer-events-none cursor-not-allowed",
-          )}
-        >
-          <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
-          <span className={sidebarNavLabelClassName()}>{label}</span>
-        </div>
+      <Tooltip delay={0}>
+        <Tooltip.Trigger>
+          <div
+            aria-disabled="true"
+            data-testid={`settings-nav-disabled-${to}`}
+            className={cn(
+              sidebarNavRowClassName(),
+              SIDEBAR_ROW_INTERACTIVE_CLASS.idle,
+              "opacity-50 pointer-events-none cursor-not-allowed",
+            )}
+          >
+            <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
+            <span className={sidebarNavLabelClassName()}>{label}</span>
+          </div>
+        </Tooltip.Trigger>
+        <Tooltip.Content placement="right">{tooltip}</Tooltip.Content>
       </Tooltip>
     );
   }

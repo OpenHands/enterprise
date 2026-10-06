@@ -2,11 +2,7 @@
 // This file contains types for Sandbox API.
 
 export type V1SandboxStatus =
-  | "MISSING"
-  | "STARTING"
-  | "RUNNING"
-  | "PAUSED"
-  | "ERROR";
+  "MISSING" | "STARTING" | "RUNNING" | "PAUSED" | "ERROR";
 
 export interface V1ExposedUrl {
   name: string;

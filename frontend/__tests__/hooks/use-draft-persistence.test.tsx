@@ -34,7 +34,9 @@ describe("useDraftPersistence", () => {
     mockSetDraftMessage = vi.fn<(message: string | null) => void>();
 
     // Default mock for useConversationLocalStorageState
-    vi.mocked(conversationLocalStorage.useConversationLocalStorageState).mockReturnValue({
+    vi.mocked(
+      conversationLocalStorage.useConversationLocalStorageState,
+    ).mockReturnValue({
       state: {
         selectedTab: "editor",
         rightPanelShown: true,
@@ -204,7 +206,9 @@ describe("useDraftPersistence", () => {
       const existingDraft = "Existing draft";
       const chatInputRef = createMockChatInputRef(existingDraft);
 
-      vi.mocked(conversationLocalStorage.useConversationLocalStorageState).mockReturnValue({
+      vi.mocked(
+        conversationLocalStorage.useConversationLocalStorageState,
+      ).mockReturnValue({
         state: {
           selectedTab: "editor",
           rightPanelShown: true,
@@ -430,10 +434,11 @@ describe("useDraftPersistence", () => {
       rerender({ conversationId: "conv-real-123" });
 
       // Assert - draft should be saved to the new real conversation ID
-      expect(conversationLocalStorage.setConversationState).toHaveBeenCalledWith(
-        "conv-real-123",
-        { draftMessage: "Draft typed during init" },
-      );
+      expect(
+        conversationLocalStorage.setConversationState,
+      ).toHaveBeenCalledWith("conv-real-123", {
+        draftMessage: "Draft typed during init",
+      });
 
       // And the draft should remain visible in the input
       expect(chatInputRef.current?.textContent).toBe("Draft typed during init");
@@ -463,7 +468,9 @@ describe("useDraftPersistence", () => {
 
       // Assert - no draft should be saved (input is cleared, checked by hook)
       // The setConversationState should not be called with draftMessage
-      expect(conversationLocalStorage.setConversationState).not.toHaveBeenCalled();
+      expect(
+        conversationLocalStorage.setConversationState,
+      ).not.toHaveBeenCalled();
     });
 
     it("does not transfer draft for non-task ID transitions", () => {
@@ -490,7 +497,9 @@ describe("useDraftPersistence", () => {
 
       // Assert - should not use setConversationState directly
       // (the normal path uses setDraftMessage from the hook)
-      expect(conversationLocalStorage.setConversationState).not.toHaveBeenCalled();
+      expect(
+        conversationLocalStorage.setConversationState,
+      ).not.toHaveBeenCalled();
     });
   });
 
@@ -500,7 +509,9 @@ describe("useDraftPersistence", () => {
       const conversationId = "conv-has-draft";
       const chatInputRef = createMockChatInputRef();
 
-      vi.mocked(conversationLocalStorage.useConversationLocalStorageState).mockReturnValue({
+      vi.mocked(
+        conversationLocalStorage.useConversationLocalStorageState,
+      ).mockReturnValue({
         state: {
           selectedTab: "editor",
           rightPanelShown: true,

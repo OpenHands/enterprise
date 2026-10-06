@@ -200,10 +200,7 @@ describe("GitRepoDropdown", () => {
     it("should show selected repository name in input when provided", async () => {
       const selectedRepository = MOCK_REPOSITORIES[0];
 
-      renderDropdown(
-        { value: selectedRepository.id },
-        { selectedRepository },
-      );
+      renderDropdown({ value: selectedRepository.id }, { selectedRepository });
 
       const input = screen.getByTestId("git-repo-dropdown") as HTMLInputElement;
 

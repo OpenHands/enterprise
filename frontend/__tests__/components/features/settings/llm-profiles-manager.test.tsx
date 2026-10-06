@@ -109,9 +109,7 @@ describe("LlmProfilesManager", () => {
     profilesState.data = sampleProfiles;
     renderManager();
 
-    expect(
-      screen.getByText("SETTINGS$AVAILABLE_PROFILES"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("SETTINGS$AVAILABLE_PROFILES")).toBeInTheDocument();
   });
 
   it("renders the Add LLM Profile button when an onAddProfile callback is supplied", async () => {

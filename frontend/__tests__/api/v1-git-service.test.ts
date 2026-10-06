@@ -71,7 +71,9 @@ describe("V1GitService", () => {
       );
 
       const [, config] = vi.mocked(axios.get).mock.calls[0];
-      expect(config?.headers).toEqual({ "X-Session-API-Key": "my-session-key" });
+      expect(config?.headers).toEqual({
+        "X-Session-API-Key": "my-session-key",
+      });
     });
 
     test("maps V1 git statuses to V0 format", async () => {
@@ -117,7 +119,9 @@ describe("V1GitService", () => {
       // URL should NOT contain the path - it should end with /api/git/diff
       expect(url).toContain("/api/git/diff");
       expect(url).not.toContain("/workspace/project/file.ts");
-      expect(url).not.toContain(encodeURIComponent("/workspace/project/file.ts"));
+      expect(url).not.toContain(
+        encodeURIComponent("/workspace/project/file.ts"),
+      );
 
       // Path should be passed as a query parameter
       expect(config).toHaveProperty("params");
@@ -154,7 +158,9 @@ describe("V1GitService", () => {
       );
 
       const [, config] = vi.mocked(axios.get).mock.calls[0];
-      expect(config?.headers).toEqual({ "X-Session-API-Key": "my-session-key" });
+      expect(config?.headers).toEqual({
+        "X-Session-API-Key": "my-session-key",
+      });
     });
 
     test("returns the diff data from the response", async () => {

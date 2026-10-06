@@ -279,10 +279,11 @@ describe("useConversationHistory archived pagination", () => {
 
   it("fetches every page for archived conversations", async () => {
     const v1Spy = vi.spyOn(EventService, "searchEventsV1");
-    v1Spy.mockImplementation(async (_conversationId: string, pageId?: string) =>
-      pageId
-        ? { items: [{ id: "evt-2" } as OpenHandsEvent], next_page_id: null }
-        : { items: [{ id: "evt-1" } as OpenHandsEvent], next_page_id: "100" },
+    v1Spy.mockImplementation(
+      async (_conversationId: string, pageId?: string) =>
+        pageId
+          ? { items: [{ id: "evt-2" } as OpenHandsEvent], next_page_id: null }
+          : { items: [{ id: "evt-1" } as OpenHandsEvent], next_page_id: "100" },
     );
     mockConversation("MISSING");
 

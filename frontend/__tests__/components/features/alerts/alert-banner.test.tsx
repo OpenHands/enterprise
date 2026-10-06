@@ -16,7 +16,7 @@ vi.mock("react-i18next", async () => {
           MAINTENANCE$SCHEDULED_MESSAGE: `Scheduled maintenance will begin at ${options?.time || "{{time}}"}`,
           ALERT$FAULTY_MODELS_MESSAGE:
             "The following models are currently reporting errors:",
-          "ERROR$TRANSLATED_KEY": "This is a translated error message",
+          ERROR$TRANSLATED_KEY: "This is a translated error message",
         };
         return translations[key] || key;
       },
@@ -118,7 +118,9 @@ describe("AlertBanner", () => {
       expect(banner).toBeInTheDocument();
 
       expect(
-        screen.getByText(/The following models are currently reporting errors:/),
+        screen.getByText(
+          /The following models are currently reporting errors:/,
+        ),
       ).toBeInTheDocument();
       // Models are displayed in the order they are provided
       expect(screen.getByText(/gpt-4/)).toBeInTheDocument();
@@ -174,7 +176,10 @@ describe("AlertBanner", () => {
 
       render(
         <MemoryRouter>
-          <AlertBanner errorMessage="ERROR$TRANSLATED_KEY" updatedAt={updatedAt} />
+          <AlertBanner
+            errorMessage="ERROR$TRANSLATED_KEY"
+            updatedAt={updatedAt}
+          />
         </MemoryRouter>,
       );
 
@@ -252,7 +257,9 @@ describe("AlertBanner", () => {
         screen.getByText(/Scheduled maintenance will begin at/),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/The following models are currently reporting errors:/),
+        screen.getByText(
+          /The following models are currently reporting errors:/,
+        ),
       ).toBeInTheDocument();
       expect(
         screen.getByText("This is a translated error message"),

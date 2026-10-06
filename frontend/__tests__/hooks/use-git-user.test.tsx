@@ -33,7 +33,9 @@ describe("useGitUser", () => {
       status: "idle",
     } as unknown as ReturnType<typeof useLogout>;
 
-    vi.mocked(useShouldShowGitFeaturesModule.useShouldShowGitFeatures).mockReturnValue(true);
+    vi.mocked(
+      useShouldShowGitFeaturesModule.useShouldShowGitFeatures,
+    ).mockReturnValue(true);
     vi.mocked(useConfigModule.useConfig).mockReturnValue({
       data: { app_mode: "saas" },
       isLoading: false,
@@ -52,18 +54,22 @@ describe("useGitUser", () => {
     });
 
     return ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>
-        {children}
-      </QueryClientProvider>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
   };
 
   it("should call logout when receiving a 401 error", async () => {
     // Mock the user service to throw a 401 error
-    const mockError = new AxiosError("Unauthorized", "401", undefined, undefined, {
-      status: 401,
-      data: { message: "Unauthorized" },
-    } as any);
+    const mockError = new AxiosError(
+      "Unauthorized",
+      "401",
+      undefined,
+      undefined,
+      {
+        status: 401,
+        data: { message: "Unauthorized" },
+      } as any,
+    );
 
     vi.mocked(UserService.getUser).mockRejectedValue(mockError);
 
@@ -84,10 +90,16 @@ describe("useGitUser", () => {
 
   it("should not call logout for non-401 errors", async () => {
     // Mock the user service to throw a 500 error
-    const mockError = new AxiosError("Server Error", "500", undefined, undefined, {
-      status: 500,
-      data: { message: "Internal Server Error" },
-    } as any);
+    const mockError = new AxiosError(
+      "Server Error",
+      "500",
+      undefined,
+      undefined,
+      {
+        status: 500,
+        data: { message: "Internal Server Error" },
+      } as any,
+    );
 
     vi.mocked(UserService.getUser).mockRejectedValue(mockError);
 

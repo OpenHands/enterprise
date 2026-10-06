@@ -139,9 +139,9 @@ describe("SettingsNavigation", () => {
       expect(
         (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
       ).toBeGreaterThan(0);
-      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        screen.getAllByText("SETTINGS$NAV_API_KEYS").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render empty nav when given an empty items list", async () => {

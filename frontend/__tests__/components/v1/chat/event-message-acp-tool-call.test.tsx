@@ -105,7 +105,9 @@ describe("EventMessage - ACPToolCallEvent dispatch", () => {
     // ``gh pr diff 490`` appears twice now — once in the title row (the
     // verbatim ``event.title``) and once in the ``Command:`` block in the
     // expanded details. We just care that the details panel contains it.
-    expect(screen.getAllByText(/gh pr diff 490/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/gh pr diff 490/).length).toBeGreaterThanOrEqual(
+      1,
+    );
     expect(screen.getByText(/diff output here/)).toBeInTheDocument();
   });
 });

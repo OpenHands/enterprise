@@ -48,11 +48,15 @@ describe("TaskSuggestions empty states", () => {
     render(
       <MemoryRouter>
         <TaskSuggestions />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    expect(screen.getByText("TASKS$NO_GIT_PROVIDERS_TITLE")).toBeInTheDocument();
-    expect(screen.getByText("TASKS$NO_GIT_PROVIDERS_DESCRIPTION")).toBeInTheDocument();
+    expect(
+      screen.getByText("TASKS$NO_GIT_PROVIDERS_TITLE"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("TASKS$NO_GIT_PROVIDERS_DESCRIPTION"),
+    ).toBeInTheDocument();
     expect(screen.getByText("TASKS$NO_GIT_PROVIDERS_CTA")).toBeInTheDocument();
   });
 
@@ -68,7 +72,7 @@ describe("TaskSuggestions empty states", () => {
     render(
       <MemoryRouter>
         <TaskSuggestions />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     expect(screen.getByText("TASKS$NO_TASKS_AVAILABLE")).toBeInTheDocument();

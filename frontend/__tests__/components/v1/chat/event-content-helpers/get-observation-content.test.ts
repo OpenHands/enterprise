@@ -138,7 +138,9 @@ describe("getObservationContent - GlobObservation", () => {
       action_id: "action-id",
       observation: {
         kind: "GlobObservation",
-        content: [{ type: "text", text: "No files found", cache_prompt: false }],
+        content: [
+          { type: "text", text: "No files found", cache_prompt: false },
+        ],
         is_error: false,
         files: [],
         pattern: "**/*.xyz",
@@ -166,7 +168,9 @@ describe("getObservationContent - GlobObservation", () => {
       action_id: "action-id",
       observation: {
         kind: "GlobObservation",
-        content: [{ type: "text", text: "Permission denied", cache_prompt: false }],
+        content: [
+          { type: "text", text: "Permission denied", cache_prompt: false },
+        ],
         is_error: true,
         files: [],
         pattern: "**/*",
@@ -223,7 +227,9 @@ describe("getObservationContent - GrepObservation", () => {
       action_id: "action-id",
       observation: {
         kind: "GrepObservation",
-        content: [{ type: "text", text: "Found 2 matches", cache_prompt: false }],
+        content: [
+          { type: "text", text: "Found 2 matches", cache_prompt: false },
+        ],
         is_error: false,
         matches: ["/workspace/src/api.ts", "/workspace/src/routes.ts"],
         pattern: "fetchData",
@@ -285,7 +291,9 @@ describe("getObservationContent - GrepObservation", () => {
       action_id: "action-id",
       observation: {
         kind: "GrepObservation",
-        content: [{ type: "text", text: "Invalid regex pattern", cache_prompt: false }],
+        content: [
+          { type: "text", text: "Invalid regex pattern", cache_prompt: false },
+        ],
         is_error: true,
         matches: [],
         pattern: "[invalid",

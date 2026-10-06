@@ -66,10 +66,7 @@ describe("LoginCTA", () => {
     const learnMoreLink = screen.getByRole("link", {
       name: "CTA$LEARN_MORE",
     });
-    expect(learnMoreLink).toHaveAttribute(
-      "href",
-      "/information-request",
-    );
+    expect(learnMoreLink).toHaveAttribute("href", "/information-request");
   });
 
   it("should render external enterprise URL in device verify mode", () => {
@@ -85,5 +82,4 @@ describe("LoginCTA", () => {
     expect(learnMoreLink).toHaveAttribute("target", "_blank");
     expect(learnMoreLink).toHaveAttribute("rel", "noopener noreferrer");
   });
-
 });

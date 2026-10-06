@@ -150,7 +150,6 @@ describe("Organization-scoped query hooks", () => {
       expect(settings.llm_model).toBe(MOCK_DEFAULT_USER_SETTINGS.llm_model);
       expect(settings.llm_base_url).toBe("");
     });
-
   });
 
   describe("useGetSecrets", () => {

@@ -14,7 +14,9 @@ describe("GitControlBar clone prompt format", () => {
 
   it("should include GitHub in clone prompt for github provider", () => {
     const prompt = generateClonePrompt("user/repo", "github", "main");
-    expect(prompt).toBe("Clone user/repo from Github and checkout branch main.");
+    expect(prompt).toBe(
+      "Clone user/repo from Github and checkout branch main.",
+    );
   });
 
   it("should include GitLab in clone prompt for gitlab provider", () => {

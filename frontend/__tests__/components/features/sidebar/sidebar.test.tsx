@@ -196,9 +196,7 @@ describe("Sidebar", () => {
       renderSidebar();
 
       await waitFor(() => {
-        expect(
-          screen.getByTestId("automations-button"),
-        ).toBeInTheDocument();
+        expect(screen.getByTestId("automations-button")).toBeInTheDocument();
       });
     });
 

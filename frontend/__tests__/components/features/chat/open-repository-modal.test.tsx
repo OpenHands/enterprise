@@ -343,9 +343,7 @@ describe("OpenRepositoryModal", () => {
         />,
       );
 
-      expect(
-        screen.getByTestId("git-provider-dropdown"),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("git-provider-dropdown")).toBeInTheDocument();
       expect(screen.getByTestId("provider-github")).toBeInTheDocument();
       expect(screen.getByTestId("provider-gitlab")).toBeInTheDocument();
     });

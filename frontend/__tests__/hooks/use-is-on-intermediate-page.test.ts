@@ -15,9 +15,8 @@ vi.mock("react-router", async () => {
 });
 
 // Import after mock setup
-const { useIsOnIntermediatePage } = await import(
-  "#/hooks/use-is-on-intermediate-page"
-);
+const { useIsOnIntermediatePage } =
+  await import("#/hooks/use-is-on-intermediate-page");
 
 describe("useIsOnIntermediatePage", () => {
   describe("returns true for intermediate pages", () => {

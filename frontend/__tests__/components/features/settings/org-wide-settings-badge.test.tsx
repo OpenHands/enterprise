@@ -11,7 +11,9 @@ describe("OrgWideSettingsBadge", () => {
     const badge = screen.getByTestId("org-wide-settings-badge");
     expect(badge).toBeInTheDocument();
     expect(badge).toHaveAttribute("role", "status");
-    expect(screen.getByText("SETTINGS$ORG_WIDE_SETTING_BADGE")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$ORG_WIDE_SETTING_BADGE"),
+    ).toBeInTheDocument();
   });
 
   it("should render the info circle icon", () => {

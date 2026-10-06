@@ -34,7 +34,8 @@ describe("VSCodeTab", () => {
 
   it("keeps VSCode accessible when the agent is in an error state", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.ERROR, isArchived: false,
+      curAgentState: AgentState.ERROR,
+      isArchived: false,
     });
     mockVSCodeUrlHook({});
 
@@ -51,7 +52,8 @@ describe("VSCodeTab", () => {
 
   it("still waits while the runtime is starting", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.LOADING, isArchived: false,
+      curAgentState: AgentState.LOADING,
+      isArchived: false,
     });
     mockVSCodeUrlHook({});
 

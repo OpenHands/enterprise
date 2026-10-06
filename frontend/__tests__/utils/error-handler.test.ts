@@ -97,7 +97,9 @@ describe("Error Handler", () => {
       expect(
         classifyBudgetOrCreditError("OpenHands Credits are exhausted"),
       ).toBe("credit");
-      expect(classifyBudgetOrCreditError("Credit limit reached")).toBe("credit");
+      expect(classifyBudgetOrCreditError("Credit limit reached")).toBe(
+        "credit",
+      );
     });
 
     it("ignores provider-side credit messages", () => {

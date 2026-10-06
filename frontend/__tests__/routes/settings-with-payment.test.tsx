@@ -10,9 +10,9 @@ let queryClient: QueryClient;
 
 // Mock the useSettings hook
 vi.mock("#/hooks/query/use-settings", async () => {
-  const actual = await vi.importActual<typeof import("#/hooks/query/use-settings")>(
-    "#/hooks/query/use-settings"
-  );
+  const actual = await vi.importActual<
+    typeof import("#/hooks/query/use-settings")
+  >("#/hooks/query/use-settings");
   return {
     ...actual,
     useSettings: vi.fn().mockReturnValue({
@@ -88,9 +88,9 @@ describe("Settings Billing", () => {
           enable_jira: false,
           enable_jira_dc: false,
           enable_linear: false,
-        hide_users_page: false,
-        hide_billing_page: false,
-        hide_integrations_page: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
         },
       },
       isLoading: false,
@@ -175,9 +175,9 @@ describe("Settings Billing", () => {
           enable_jira: false,
           enable_jira_dc: false,
           enable_linear: false,
-        hide_users_page: false,
-        hide_billing_page: false,
-        hide_integrations_page: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
         },
       },
       isLoading: false,
@@ -206,9 +206,9 @@ describe("Settings Billing", () => {
           enable_jira: false,
           enable_jira_dc: false,
           enable_linear: false,
-        hide_users_page: false,
-        hide_billing_page: false,
-        hide_integrations_page: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
         },
       },
       isLoading: false,
@@ -224,7 +224,9 @@ describe("Settings Billing", () => {
     renderSettingsScreen();
 
     const navbar = await screen.findByTestId("settings-navbar");
-    expect(within(navbar).queryByText("Billing & Credits")).not.toBeInTheDocument();
+    expect(
+      within(navbar).queryByText("Billing & Credits"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render the billing settings if clicking the billing item", async () => {

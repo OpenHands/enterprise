@@ -36,7 +36,8 @@ const renderAgentStatus = ({
 describe("AgentStatus - isLoading logic", () => {
   it("should show loading when curAgentState is INIT", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.INIT, isArchived: false,
+      curAgentState: AgentState.INIT,
+      isArchived: false,
     });
 
     renderAgentStatus();
@@ -46,7 +47,8 @@ describe("AgentStatus - isLoading logic", () => {
 
   it("should show loading when isPausing is true, even if shouldShownAgentLoading is false", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+      curAgentState: AgentState.AWAITING_USER_INPUT,
+      isArchived: false,
     });
 
     renderAgentStatus({ isPausing: true });
@@ -56,7 +58,8 @@ describe("AgentStatus - isLoading logic", () => {
 
   it("should NOT update global shouldShownAgentLoading when only isPausing is true", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+      curAgentState: AgentState.AWAITING_USER_INPUT,
+      isArchived: false,
     });
 
     renderAgentStatus({ isPausing: true });

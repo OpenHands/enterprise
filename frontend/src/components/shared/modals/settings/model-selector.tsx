@@ -1,7 +1,10 @@
 import {
-  Autocomplete,
-  AutocompleteItem,
-  AutocompleteSection,
+  ComboBox,
+  Header,
+  Input,
+  ListBox,
+  ListBoxItem,
+  Spinner,
 } from "@heroui/react";
 import React from "react";
 import { useTranslation } from "react-i18next";
@@ -15,7 +18,6 @@ import { useSearchProviders } from "#/hooks/query/use-search-providers";
 import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
-import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 
 interface ModelSelectorProps {
   isDisabled?: boolean;
@@ -42,6 +44,20 @@ export function ModelSelector({
     null,
   );
   const [selectedModel, setSelectedModel] = React.useState<string | null>(null);
+  const providerInputRef = React.useRef<HTMLInputElement>(null);
+  const modelInputRef = React.useRef<HTMLInputElement>(null);
+
+  // The v3 ComboBox only opens on first focus or on the trigger button; v2
+  // reopened on every click, so forward clicks to the ArrowDown gesture.
+  const openList = (ref: React.RefObject<HTMLInputElement | null>) => {
+    ref.current?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  };
 
   const { data: providers = [] } = useSearchProviders();
   const {
@@ -151,64 +167,70 @@ export function ModelSelector({
           <label className={cn("text-sm", labelClassName)}>
             {t(I18nKey.LLM$PROVIDER)}
           </label>
-          <Autocomplete
-            data-testid="llm-provider-input"
+          <ComboBox
             isRequired
-            isVirtualized={false}
             name="llm-provider-input"
             isDisabled={isDisabled}
             aria-label={t(I18nKey.LLM$PROVIDER)}
-            placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
-            isClearable={false}
             onSelectionChange={(e) => {
               if (e?.toString()) handleChangeProvider(e.toString());
             }}
             onInputChange={(value) => !value && clear()}
             defaultSelectedKey={selectedProvider ?? undefined}
             selectedKey={selectedProvider}
-            classNames={{
-              popoverContent: "bg-content1 rounded-xl",
-              selectorButton: heroUiAutocompleteSelectorButtonClassName,
-            }}
-            selectorButtonProps={{ disableRipple: true }}
-            inputProps={{
-              classNames: {
-                inputWrapper: formControlSettingsFieldClassName,
-              },
-            }}
+            className="w-full"
           >
-            <AutocompleteSection
-              title={
-                unverifiedProviders.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                  : undefined
-              }
-            >
-              {verifiedProviders.map((provider) => (
-                <AutocompleteItem
-                  data-testid={`provider-item-${provider.name}`}
-                  key={provider.name}
-                >
-                  {mapProvider(provider.name)}
-                </AutocompleteItem>
-              ))}
-            </AutocompleteSection>
-            {unverifiedProviders.length > 0 ? (
-              <AutocompleteSection
-                title={
-                  verifiedProviders.length > 0
-                    ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                    : undefined
-                }
-              >
-                {unverifiedProviders.map((provider) => (
-                  <AutocompleteItem key={provider.name}>
-                    {mapProvider(provider.name)}
-                  </AutocompleteItem>
-                ))}
-              </AutocompleteSection>
-            ) : null}
-          </Autocomplete>
+            <ComboBox.InputGroup className={formControlSettingsFieldClassName}>
+              <Input
+                ref={providerInputRef}
+                aria-label={t(I18nKey.LLM$PROVIDER)}
+                data-testid="llm-provider-input"
+                onClick={() => openList(providerInputRef)}
+                placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
+                className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm text-white outline-none"
+              />
+              <ComboBox.Trigger />
+            </ComboBox.InputGroup>
+            <ComboBox.Popover className="bg-content1 rounded-xl">
+              <ListBox>
+                <ListBox.Section>
+                  {unverifiedProviders.length > 0 ? (
+                    <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+                  ) : null}
+                  {verifiedProviders.map((provider) => (
+                    <ListBoxItem
+                      data-testid={`provider-item-${provider.name}`}
+                      key={provider.name}
+                      id={provider.name}
+                      textValue={mapProvider(provider.name)}
+                    >
+                      {mapProvider(provider.name)}
+                      <ListBoxItem.Indicator />
+                    </ListBoxItem>
+                  ))}
+                </ListBox.Section>
+                {unverifiedProviders.length > 0 ? (
+                  <ListBox.Section>
+                    <Header>
+                      {verifiedProviders.length > 0
+                        ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                        : t(I18nKey.MODEL_SELECTOR$VERIFIED)}
+                    </Header>
+                    {unverifiedProviders.map((provider) => (
+                      <ListBoxItem
+                        key={provider.name}
+                        id={provider.name}
+                        textValue={mapProvider(provider.name)}
+                      >
+                        {mapProvider(provider.name)}
+                        <ListBoxItem.Indicator />
+                      </ListBoxItem>
+                    ))}
+                  </ListBox.Section>
+                ) : null}
+              </ListBox>
+            </ComboBox.Popover>
+          </ComboBox>
         </fieldset>
       ) : null}
 
@@ -227,62 +249,70 @@ export function ModelSelector({
         <label className={cn("text-sm", labelClassName)}>
           {t(I18nKey.LLM$MODEL)}
         </label>
-        <Autocomplete
-          data-testid="llm-model-input"
+        <ComboBox
           isRequired
-          isVirtualized={false}
-          isLoading={isLoadingModels}
           name="llm-model-input"
           aria-label={t(I18nKey.LLM$MODEL)}
-          placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-          isClearable={false}
           onSelectionChange={(e) => {
             if (e?.toString()) handleChangeModel(e.toString());
           }}
           isDisabled={isDisabled || !selectedProvider}
           selectedKey={selectedModel}
           defaultSelectedKey={selectedModel ?? undefined}
-          classNames={{
-            popoverContent: "bg-content1 rounded-xl",
-            selectorButton: heroUiAutocompleteSelectorButtonClassName,
-          }}
-          selectorButtonProps={{ disableRipple: true }}
-          inputProps={{
-            classNames: {
-              inputWrapper: formControlSettingsFieldClassName,
-            },
-          }}
+          className="w-full"
         >
-          <AutocompleteSection
-            title={
-              unverifiedModels.length > 0
-                ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                : undefined
-            }
-          >
-            {verifiedModels.map((model) => (
-              <AutocompleteItem key={model.name}>{model.name}</AutocompleteItem>
-            ))}
-          </AutocompleteSection>
-          {unverifiedModels.length > 0 ? (
-            <AutocompleteSection
-              title={
-                verifiedModels.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$OTHERS)
-                  : undefined
-              }
-            >
-              {unverifiedModels.map((model) => (
-                <AutocompleteItem
-                  data-testid={`model-item-${model.name}`}
-                  key={model.name}
-                >
-                  {model.name}
-                </AutocompleteItem>
-              ))}
-            </AutocompleteSection>
-          ) : null}
-        </Autocomplete>
+          <ComboBox.InputGroup className={formControlSettingsFieldClassName}>
+            <Input
+              ref={modelInputRef}
+              aria-label={t(I18nKey.LLM$MODEL)}
+              data-testid="llm-model-input"
+              onClick={() => openList(modelInputRef)}
+              placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
+              className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm text-white outline-none"
+            />
+            {isLoadingModels && <Spinner size="sm" />}
+            <ComboBox.Trigger />
+          </ComboBox.InputGroup>
+          <ComboBox.Popover className="bg-content1 rounded-xl">
+            <ListBox>
+              <ListBox.Section>
+                {unverifiedModels.length > 0 ? (
+                  <Header>{t(I18nKey.MODEL_SELECTOR$VERIFIED)}</Header>
+                ) : null}
+                {verifiedModels.map((model) => (
+                  <ListBoxItem
+                    key={model.name}
+                    id={model.name}
+                    textValue={model.name}
+                  >
+                    {model.name}
+                    <ListBoxItem.Indicator />
+                  </ListBoxItem>
+                ))}
+              </ListBox.Section>
+              {unverifiedModels.length > 0 ? (
+                <ListBox.Section>
+                  <Header>
+                    {verifiedModels.length > 0
+                      ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                      : t(I18nKey.MODEL_SELECTOR$VERIFIED)}
+                  </Header>
+                  {unverifiedModels.map((model) => (
+                    <ListBoxItem
+                      data-testid={`model-item-${model.name}`}
+                      key={model.name}
+                      id={model.name}
+                      textValue={model.name}
+                    >
+                      {model.name}
+                      <ListBoxItem.Indicator />
+                    </ListBoxItem>
+                  ))}
+                </ListBox.Section>
+              ) : null}
+            </ListBox>
+          </ComboBox.Popover>
+        </ComboBox>
         {modelsError && (
           <p data-testid="models-error" className="text-danger text-xs">
             {t(I18nKey.CONFIGURATION$ERROR_FETCH_MODELS)}

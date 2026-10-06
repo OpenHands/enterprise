@@ -30,9 +30,7 @@ describe("i18next interpolation", () => {
         values={{ path: "/tmp/pr14227/part_037.diff" }}
       />,
     );
-    expect(container.textContent).toBe(
-      "Reading /tmp/pr14227/part_037.diff",
-    );
+    expect(container.textContent).toBe("Reading /tmp/pr14227/part_037.diff");
     // Specifically: the forward slashes must not be encoded.
     expect(container.innerHTML).not.toContain("&#x2F;");
     expect(container.innerHTML).not.toContain("&#x2f;");

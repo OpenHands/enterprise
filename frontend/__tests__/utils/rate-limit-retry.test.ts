@@ -42,10 +42,7 @@ describe("rate limit retry helpers", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
 
     expect(
-      getRateLimitRetryDelayMs(
-        0,
-        createAxiosError(429, { "Retry-After": 2 }),
-      ),
+      getRateLimitRetryDelayMs(0, createAxiosError(429, { "Retry-After": 2 })),
     ).toBe(2000);
   });
 
@@ -53,10 +50,7 @@ describe("rate limit retry helpers", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
 
     expect(
-      getRateLimitRetryDelayMs(
-        0,
-        createAxiosError(429, { get: () => 2 }),
-      ),
+      getRateLimitRetryDelayMs(0, createAxiosError(429, { get: () => 2 })),
     ).toBe(1000);
   });
 

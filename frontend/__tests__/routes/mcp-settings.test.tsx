@@ -63,7 +63,9 @@ function renderMcpSettingsScreen() {
   return render(<MCPSettingsScreen />, {
     wrapper: ({ children }) => (
       <MemoryRouter>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       </MemoryRouter>
     ),
   });
@@ -157,7 +159,9 @@ describe("MCPSettingsScreen", () => {
           );
         }
 
-        for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+        for (const [key, value] of Object.entries(
+          payload as Record<string, unknown>,
+        )) {
           if (key === "agent_settings_diff") {
             continue;
           }

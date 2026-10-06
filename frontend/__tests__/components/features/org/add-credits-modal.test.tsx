@@ -38,7 +38,9 @@ describe("AddCreditsModal", () => {
 
       expect(screen.getByTestId("add-credits-form")).toBeInTheDocument();
       expect(screen.getByTestId("amount-input")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /ORG\$NEXT/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /ORG\$NEXT/i }),
+      ).toBeInTheDocument();
     });
 
     it("should display the title", () => {
@@ -147,7 +149,9 @@ describe("AddCreditsModal", () => {
 
       await waitFor(() => {
         const errorMessage = screen.getByTestId("amount-error");
-        expect(errorMessage).toHaveTextContent("PAYMENT$ERROR_MUST_BE_WHOLE_NUMBER");
+        expect(errorMessage).toHaveTextContent(
+          "PAYMENT$ERROR_MUST_BE_WHOLE_NUMBER",
+        );
       });
     });
 

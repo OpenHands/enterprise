@@ -45,7 +45,8 @@ vi.mock("#/hooks/use-conversation-name-context-menu", () => ({
 
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(() => ({
-    curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+    curAgentState: AgentState.AWAITING_USER_INPUT,
+    isArchived: false,
   })),
 }));
 

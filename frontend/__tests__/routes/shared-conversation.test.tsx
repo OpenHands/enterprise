@@ -93,9 +93,9 @@ describe("SharedConversation", () => {
 
   it("loads and renders every page when the first page does not fill the viewport", async () => {
     mockContainerSize(300, 500);
-    vi.mocked(sharedConversationService.getSharedConversation).mockResolvedValue(
-      conversation,
-    );
+    vi.mocked(
+      sharedConversationService.getSharedConversation,
+    ).mockResolvedValue(conversation);
     vi.mocked(
       sharedConversationService.getSharedConversationEvents,
     ).mockImplementation(async (_conversationId, _limit, pageId) =>
@@ -116,15 +116,18 @@ describe("SharedConversation", () => {
 
   it("keeps loaded events and resumes via retry when a later page fails", async () => {
     mockContainerSize(300, 500);
-    vi.mocked(sharedConversationService.getSharedConversation).mockResolvedValue(
-      conversation,
-    );
+    vi.mocked(
+      sharedConversationService.getSharedConversation,
+    ).mockResolvedValue(conversation);
     let failNextPage = true;
     vi.mocked(
       sharedConversationService.getSharedConversationEvents,
     ).mockImplementation(async (_conversationId, _limit, pageId) => {
       if (!pageId) {
-        return { items: [createUserMessageEvent("evt-1")], next_page_id: "100" };
+        return {
+          items: [createUserMessageEvent("evt-1")],
+          next_page_id: "100",
+        };
       }
       if (failNextPage) {
         failNextPage = false;
@@ -149,9 +152,9 @@ describe("SharedConversation", () => {
   });
 
   it("shows the not-found state when the initial events load fails", async () => {
-    vi.mocked(sharedConversationService.getSharedConversation).mockResolvedValue(
-      conversation,
-    );
+    vi.mocked(
+      sharedConversationService.getSharedConversation,
+    ).mockResolvedValue(conversation);
     vi.mocked(
       sharedConversationService.getSharedConversationEvents,
     ).mockRejectedValue(new Error("gateway timeout"));

@@ -165,9 +165,8 @@ describe("ConversationTabTitle", () => {
       const mockRefetch = vi.fn();
 
       // Import the hook mock to get a reference to it
-      const { useUnifiedGetGitChanges } = await import(
-        "#/hooks/query/use-unified-get-git-changes"
-      );
+      const { useUnifiedGetGitChanges } =
+        await import("#/hooks/query/use-unified-get-git-changes");
       vi.mocked(useUnifiedGetGitChanges).mockReturnValue({
         refetch: mockRefetch,
         isFetching: false,

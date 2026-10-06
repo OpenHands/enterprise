@@ -61,7 +61,8 @@ describe("SkillsModal", () => {
 
     // Mock the agent state to return a ready state
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+      curAgentState: AgentState.AWAITING_USER_INPUT,
+      isArchived: false,
     });
   });
 

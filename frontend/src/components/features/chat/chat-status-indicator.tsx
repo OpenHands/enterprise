@@ -1,5 +1,5 @@
-import { cn } from "@heroui/react";
 import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "#/utils/utils";
 import DebugStackframeDot from "#/icons/debug-stackframe-dot.svg?react";
 
 interface ChatStatusIndicatorProps {

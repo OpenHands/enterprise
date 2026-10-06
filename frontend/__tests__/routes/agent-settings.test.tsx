@@ -1,9 +1,4 @@
-import {
-  render,
-  screen,
-  waitFor,
-  fireEvent,
-} from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -360,13 +355,9 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
 
     await screen.findByTestId("agent-settings-screen");
     await waitFor(() => {
-      const toggle = screen.getByTestId(
-        "agent-settings-enable-memory-context",
-      );
+      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
       // Toggle is off → thumb is at the left position.
-      const visualTrack = toggle
-        .closest("label")
-        ?.querySelector("span > span");
+      const visualTrack = toggle.closest("label")?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[2px]");
     });
   });
@@ -385,12 +376,8 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     // enabled and "translate-x-[2px]" when disabled. Check the visual state
     // rather than the hidden checkbox's checked property.
     await waitFor(() => {
-      const toggle = screen.getByTestId(
-        "agent-settings-enable-memory-context",
-      );
-      const visualTrack = toggle
-        .closest("label")
-        ?.querySelector("span > span");
+      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
+      const visualTrack = toggle.closest("label")?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[21px]");
     });
   });
@@ -407,9 +394,7 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     renderAgentSettings();
 
     await screen.findByTestId("agent-settings-screen");
-    const toggle = screen.getByTestId(
-      "agent-settings-enable-memory-context",
-    );
+    const toggle = screen.getByTestId("agent-settings-enable-memory-context");
     // Use fireEvent on the hidden checkbox — userEvent's pointer-based click
     // doesn't activate hidden checkboxes reliably in jsdom.
     fireEvent.click(toggle);

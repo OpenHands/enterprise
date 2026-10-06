@@ -9,15 +9,21 @@ describe("SettingsNavHeader", () => {
     render(<SettingsNavHeader text={I18nKey.SETTINGS$ORG_SETTINGS_HEADER} />);
 
     // Assert
-    expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$ORG_SETTINGS_HEADER"),
+    ).toBeInTheDocument();
   });
 
   it("should render different header text based on prop", () => {
     // Arrange & Act
-    render(<SettingsNavHeader text={I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER} />);
+    render(
+      <SettingsNavHeader text={I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER} />,
+    );
 
     // Assert
-    expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER"),
+    ).toBeInTheDocument();
   });
 
   it("should render an optional scope chip beside the header", () => {

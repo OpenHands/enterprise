@@ -25,9 +25,7 @@ interface MultiSelectQuestion extends BaseOnboardingQuestion {
 }
 
 export type OnboardingQuestion =
-  | InputQuestion
-  | SingleSelectQuestion
-  | MultiSelectQuestion;
+  InputQuestion | SingleSelectQuestion | MultiSelectQuestion;
 
 export const ONBOARDING_FORM: OnboardingQuestion[] = [
   {

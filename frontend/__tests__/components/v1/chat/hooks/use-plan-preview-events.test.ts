@@ -178,7 +178,11 @@ describe("usePlanPreviewEvents", () => {
     const events: OpenHandsEvent[] = [
       createUserMessageEvent("user-1"),
       createPlanningObservationEvent("plan-obs-1", "action-1", "settings.py"),
-      createPlanningObservationEvent("plan-obs-2", "action-2", "use-add-mcp.ts"),
+      createPlanningObservationEvent(
+        "plan-obs-2",
+        "action-2",
+        "use-add-mcp.ts",
+      ),
     ];
 
     const { result } = renderHook(() => usePlanPreviewEvents(events));
@@ -190,7 +194,11 @@ describe("usePlanPreviewEvents", () => {
     const events: OpenHandsEvent[] = [
       createUserMessageEvent("user-1"),
       createPlanningObservationEvent("plan-obs-1", "action-1", "settings.py"),
-      createPlanningObservationEvent("plan-obs-2", "action-2", "/workspace/PLAN.md"),
+      createPlanningObservationEvent(
+        "plan-obs-2",
+        "action-2",
+        "/workspace/PLAN.md",
+      ),
     ];
 
     const { result } = renderHook(() => usePlanPreviewEvents(events));

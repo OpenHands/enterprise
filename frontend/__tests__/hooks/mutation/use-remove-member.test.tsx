@@ -27,7 +27,9 @@ describe("useRemoveMember", () => {
 
     const { result } = renderHook(() => useRemoveMember(), {
       wrapper: ({ children }) => (
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       ),
     });
 

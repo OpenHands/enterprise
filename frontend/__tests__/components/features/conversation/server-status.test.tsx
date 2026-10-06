@@ -58,7 +58,8 @@ describe("ServerStatus", () => {
   // Helper function to mock agent state with specific state
   const mockAgentStore = (agentState: AgentState) => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: agentState, isArchived: false,
+      curAgentState: agentState,
+      isArchived: false,
     });
   };
 
@@ -147,7 +148,8 @@ describe("ServerStatusContextMenu", () => {
   // Helper function to mock agent state with specific state
   const mockAgentStore = (agentState: AgentState) => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: agentState, isArchived: false,
+      curAgentState: agentState,
+      isArchived: false,
     });
   };
 
@@ -196,10 +198,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="RUNNING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="RUNNING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();
@@ -210,10 +209,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="MISSING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="MISSING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();
@@ -312,10 +308,7 @@ describe("ServerStatusContextMenu", () => {
     mockAgentStore(AgentState.RUNNING);
 
     renderWithProviders(
-      <ServerStatusContextMenu
-        {...defaultProps}
-        sandboxStatus="STARTING"
-      />,
+      <ServerStatusContextMenu {...defaultProps} sandboxStatus="STARTING" />,
     );
 
     expect(screen.getByTestId("server-status")).toBeInTheDocument();

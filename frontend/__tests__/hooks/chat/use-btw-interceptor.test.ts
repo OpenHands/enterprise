@@ -12,8 +12,7 @@ vi.mock("#/hooks/mutation/conversation-mutation-utils", () => ({
 }));
 
 const CONV = "conv-1";
-const entries = () =>
-  useBtwStore.getState().entriesByConversation[CONV] ?? [];
+const entries = () => useBtwStore.getState().entriesByConversation[CONV] ?? [];
 
 describe("useBtwInterceptor", () => {
   beforeEach(() => {

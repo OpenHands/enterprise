@@ -87,9 +87,7 @@ describe("TaskListTab", () => {
   });
 
   it("does not display task IDs", () => {
-    setTasks([
-      { id: "task-1", title: "First task", status: "todo" },
-    ]);
+    setTasks([{ id: "task-1", title: "First task", status: "todo" }]);
 
     render(<TaskListTab />);
 

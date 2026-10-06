@@ -109,9 +109,7 @@ describe("CriticResultDisplay", () => {
       <CriticResultDisplay criticResult={makeCriticResult()} />,
     );
 
-    expect(
-      screen.queryByLabelText("Expand details"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Expand details")).not.toBeInTheDocument();
   });
 
   it("prompts users to enable iterative refinement when it is disabled", () => {
@@ -182,9 +180,7 @@ describe("CriticResultDisplay", () => {
 
     renderWithProviders(<CriticResultDisplay criticResult={result} />);
 
-    expect(
-      screen.queryByText("Insufficient Testing"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Insufficient Testing")).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Expand details"));
 

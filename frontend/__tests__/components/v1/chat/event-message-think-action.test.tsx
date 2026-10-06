@@ -89,7 +89,8 @@ describe("EventMessage - ThinkAction rendering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.INIT, isArchived: false,
+      curAgentState: AgentState.INIT,
+      isArchived: false,
     });
   });
 
@@ -113,9 +114,7 @@ describe("EventMessage - ThinkAction rendering", () => {
     );
 
     // The raw tool call text should NOT be displayed
-    expect(
-      screen.queryByText(/think: \{"thought":/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/think: \{"thought":/)).not.toBeInTheDocument();
   });
 
   it("should render ThinkAction thought as a normal chat message", () => {
@@ -134,9 +133,7 @@ describe("EventMessage - ThinkAction rendering", () => {
     );
 
     // The thought content should be displayed as regular text
-    expect(
-      screen.getByText("Let me analyze the problem"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Let me analyze the problem")).toBeInTheDocument();
 
     // It should NOT be inside a collapsible block (no expand button)
     expect(screen.queryByLabelText("Expand")).not.toBeInTheDocument();
@@ -159,8 +156,6 @@ describe("EventMessage - ThinkAction rendering", () => {
     );
 
     // The thought should be displayed for non-think actions
-    expect(
-      screen.getByText("I need to run a command"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("I need to run a command")).toBeInTheDocument();
   });
 });

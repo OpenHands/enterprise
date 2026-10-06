@@ -176,9 +176,7 @@ describe("getSkillDescription", () => {
   it("strips markdown from frontmatter description", () => {
     const content =
       '---\ndescription: "A **bold** and *italic* description"\n---\nBody.';
-    expect(getSkillDescription(content)).toBe(
-      "A bold and italic description",
-    );
+    expect(getSkillDescription(content)).toBe("A bold and italic description");
   });
 
   it("strips markdown from body fallback", () => {

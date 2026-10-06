@@ -1,4 +1,10 @@
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  act,
+} from "@testing-library/react";
 import { describe, expect, it, vi, afterEach, beforeEach, test } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
@@ -73,7 +79,9 @@ const RouterStubForMenuCloseDelay = createRoutesStub([
 ]);
 
 const renderUserActionsForMenuCloseDelay = () => {
-  return renderWithProviders(<RouterStubForMenuCloseDelay initialEntries={["/"]} />);
+  return renderWithProviders(
+    <RouterStubForMenuCloseDelay initialEntries={["/"]} />,
+  );
 };
 
 // Create mocks for all the hooks we need
