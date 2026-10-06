@@ -1,9 +1,10 @@
-import { within, screen, render } from "@testing-library/react";
+import { within, screen, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
@@ -88,6 +89,24 @@ describe("InviteOrganizationMemberModal", () => {
     });
 
     expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("should tell the setup guide when the invitation succeeds", async () => {
+    const steps: string[] = [];
+    const onStep = (event: Event) =>
+      steps.push((event as CustomEvent<{ id: string }>).detail.id);
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+    renderInviteOrganizationMemberModal();
+    const modal = screen.getByTestId("invite-modal");
+
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "someone@acme.org ",
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    await waitFor(() => expect(steps).toEqual(["invite-users"]));
+    window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
   });
 
   it("should invite with the admin role when selected in the role dropdown", async () => {

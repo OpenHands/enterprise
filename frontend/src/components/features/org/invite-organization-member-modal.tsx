@@ -9,6 +9,7 @@ import { areAllEmailsValid, hasDuplicates } from "#/utils/input-validation";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import { BatchInvitationResult, OrganizationUserRole } from "#/types/org";
 import { CopyInviteLinkButton } from "#/components/features/org/copy-invite-link-button";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { usePendingInvitations } from "#/hooks/query/use-pending-invitations";
 
 interface InviteOrganizationMemberModalProps {
@@ -74,6 +75,7 @@ export function InviteOrganizationMemberModal({
       { emails, role },
       {
         onSuccess: (data) => {
+          notifySuperAdminSetupStep("invite-users");
           // When email delivery works, the invitees are notified and the
           // modal can simply close. Without it, the links are the only way
           // invitees can ever join — keep the modal open so the inviter can

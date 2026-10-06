@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Outlet, createRoutesStub, useNavigate } from "react-router";
@@ -9,6 +9,7 @@ import {
   type SetupState,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
@@ -170,6 +171,22 @@ describe("SuperAdminSetupFloatingWidget", () => {
 
     // Act
     await user.click(screen.getByTestId("go-instance"));
+
+    // Assert
+    expect(await screen.findByText("1/4")).toBeInTheDocument();
+  });
+
+  it("re-reads progress when a step's action reports success on the same page", async () => {
+    // Arrange
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+    expect(screen.getByText("0/4")).toBeInTheDocument();
+    vi.mocked(superAdminService.getSetupState).mockResolvedValue({
+      ...GUIDE_STATE,
+      guide_steps: { ...NO_STEPS_DONE, mcp_server: true },
+    });
+
+    // Act
+    act(() => notifySuperAdminSetupStep("add-integration"));
 
     // Assert
     expect(await screen.findByText("1/4")).toBeInTheDocument();
