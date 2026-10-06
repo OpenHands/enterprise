@@ -119,13 +119,15 @@ export function SuperAdminOrganizations() {
     () =>
       (data ?? []).map((org) => ({
         id: org.id,
-        name: org.name,
+        // A personal workspace is stored as user_<id>_org; show the name the
+        // rest of the app uses.
+        name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
         members: org.member_count,
         status: org.status === "suspended" ? "suspended" : "active",
         contactEmail: org.contact_email ?? "",
         isPersonal: org.is_personal,
       })),
-    [data],
+    [data, t],
   );
 
   const rows = useMemo(

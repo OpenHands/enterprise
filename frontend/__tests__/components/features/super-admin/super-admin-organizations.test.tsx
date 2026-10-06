@@ -276,6 +276,25 @@ describe("Super Admin Organizations page", () => {
     });
   });
 
+  it("shows a personal workspace as Personal Workspace and keeps team names", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      ACME,
+      SAM_PERSONAL_WORKSPACE,
+    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    expect(
+      await screen.findByText("ORG$PERSONAL_WORKSPACE"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
+  });
+
   it("does not offer to open or act on another user's personal workspace", async () => {
     // Arrange
     vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
@@ -287,7 +306,7 @@ describe("Super Admin Organizations page", () => {
     renderOrganizationsPage();
 
     // Assert
-    await screen.findByText("user_7_org");
+    await screen.findByText("ORG$PERSONAL_WORKSPACE");
     await waitFor(() =>
       expect(
         screen.queryByTestId("super-admin-org-open-7"),
