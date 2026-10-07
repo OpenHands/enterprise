@@ -99,7 +99,7 @@ from server.auth.password_hashing import (
     hash_password,
     verify_password,
 )
-from server.constants import ENABLE_INTEGRATED_IDP
+from server.constants import ENABLE_INTEGRATED_IDP, ROLE_MEMBER
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
     RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
@@ -107,6 +107,10 @@ from server.utils.rate_limit_utils import (
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
+from storage.org_member_store import OrgMemberStore
+from storage.org_service import OrgService
+from storage.org_store import OrgStore
+from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -184,31 +188,43 @@ def derive_idp_user_id(email: str) -> str:
     return str(uuid.uuid5(_IDP_NAMESPACE, normalized))
 
 
-def _create_signup_link_token(email: str) -> str:
+@dataclass(frozen=True)
+class SignupLinkPayload:
+    """Decoded contents of a verified admin-issued sign-up link token."""
+
+    email: str
+    org_id: uuid.UUID | None
+
+
+def _create_signup_link_token(email: str, org_id: uuid.UUID | None = None) -> str:
     """Sign a JWT for an admin-issued sign-up link.
 
-    Carries only the invited ``email`` and a ``purpose`` claim, plus the
-    standard ``iat``/``exp`` claims added by ``JwtService.create_jws_token``.
-    Expires after ``SIGNUP_LINK_EXPIRY_HOURS`` — enforced by
+    Carries the invited ``email``, an optional ``org_id`` the recipient
+    should be added to (see ``_ensure_org_membership``), and a ``purpose``
+    claim, plus the standard ``iat``/``exp`` claims added by
+    ``JwtService.create_jws_token``. Expires after
+    ``SIGNUP_LINK_EXPIRY_HOURS`` — enforced by
     ``JwtService.verify_jws_token`` (via the underlying ``jwt.decode``),
     not by any separate check here.
     """
     from storage.encrypt_utils import get_jwt_service
 
-    payload = {'purpose': _SIGNUP_LINK_PURPOSE, 'email': email}
+    payload: dict[str, str] = {'purpose': _SIGNUP_LINK_PURPOSE, 'email': email}
+    if org_id is not None:
+        payload['org_id'] = str(org_id)
     return get_jwt_service().create_jws_token(
         payload, expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS)
     )
 
 
-def _verify_signup_link_token(token: str) -> str:
-    """Verify a sign-up link JWT and return the embedded, lower-cased email.
+def _verify_signup_link_token(token: str) -> SignupLinkPayload:
+    """Verify a sign-up link JWT and return its decoded payload.
 
     Raises ``ValueError`` uniformly for every failure mode a caller needs
     to treat the same way: bad signature, malformed token, expired ``exp``
     (``JwtService.verify_jws_token`` surfaces this as
     ``jwt.ExpiredSignatureError``, a subclass of ``jwt.InvalidTokenError``),
-    or a token minted for a different purpose.
+    a token minted for a different purpose, or a malformed ``org_id``.
     """
     from storage.encrypt_utils import get_jwt_service
 
@@ -221,7 +237,16 @@ def _verify_signup_link_token(token: str) -> str:
     email = payload.get('email')
     if not email or not isinstance(email, str):
         raise ValueError('Invalid sign-up link')
-    return email.strip().lower()
+
+    org_id: uuid.UUID | None = None
+    org_id_raw = payload.get('org_id')
+    if org_id_raw is not None:
+        try:
+            org_id = uuid.UUID(str(org_id_raw))
+        except ValueError as exc:
+            raise ValueError('Invalid sign-up link') from exc
+
+    return SignupLinkPayload(email=email.strip().lower(), org_id=org_id)
 
 
 async def is_idp_available() -> bool:
@@ -713,6 +738,11 @@ async def idp_signup(
 # the reset, and it's also this IDP's only password-reset path. A link is
 # therefore valid, and reusable, for its whole 72-hour window; nothing
 # tracks whether it's been used before.
+#
+# The token may also name an ``org_id``; if it does, ``_ensure_org_membership``
+# adds the recipient to that org as an ordinary ``member`` once they've set
+# their password — a no-op if they're already a member, and never fatal to
+# the password-set/login itself (see that function's docstring).
 
 
 def _invite_form_redirect(web_url: str, *, token: str, error: str) -> RedirectResponse:
@@ -738,13 +768,15 @@ async def idp_invite_form(
     await _require_idp_available()
     web_url = get_web_url(request)
     try:
-        email = _verify_signup_link_token(token)
+        link = _verify_signup_link_token(token)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_ERROR_MESSAGES['link_invalid'],
         )
-    html = _render_invite_form(web_url=web_url, token=token, email=email, error=error)
+    html = _render_invite_form(
+        web_url=web_url, token=token, email=link.email, error=error
+    )
     return HTMLResponse(content=html)
 
 
@@ -769,17 +801,20 @@ async def idp_invite_accept(
     the bootstrap sign-up form, including default-org bootstrap and TOS
     auto-acceptance in ``_complete_idp_login`` — but, unlike that form,
     does **not** grant the super-admin role to anyone: this path is for
-    ordinary invited/reset users.
+    ordinary invited/reset users. If the token names an ``org_id``, the
+    user is also added to that org (see ``_ensure_org_membership``) — a
+    no-op if they're already a member.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
     try:
-        email_str = _verify_signup_link_token(token)
+        link = _verify_signup_link_token(token)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_ERROR_MESSAGES['link_invalid'],
         )
+    email_str = link.email
 
     if password != confirm_password:
         return _invite_form_redirect(web_url, token=token, error='password_mismatch')
@@ -828,6 +863,10 @@ async def idp_invite_accept(
             'was_password_reset': was_password_reset,
         },
     )
+
+    if link.org_id is not None:
+        await _ensure_org_membership(link.org_id, user)
+
     return await _complete_idp_login(
         request=request,
         user=user,
@@ -837,10 +876,68 @@ async def idp_invite_accept(
     )
 
 
+async def _ensure_org_membership(org_id: uuid.UUID, user: User) -> None:
+    """Add ``user`` to ``org_id`` as an ordinary member, if not already one.
+
+    A no-op if the user is already a member — "no change" is the whole
+    point of checking first, both to honor that contract and because
+    ``OrgMemberStore.add_user_to_org`` would otherwise raise on the
+    duplicate (org_id, user_id) primary key. Never raises: a failure here
+    (missing org, missing ``member`` role, LiteLLM integration error) is
+    logged and swallowed rather than blocking the password-set/login that
+    already succeeded — the org add is a bonus on top of that, not a
+    precondition for it.
+    """
+    existing_member = await OrgMemberStore.get_org_member(org_id, user.id)
+    if existing_member is not None:
+        return
+
+    org = await OrgStore.get_org_by_id(org_id)
+    if org is None:
+        logger.warning(
+            'idp:signup_link_org_not_found',
+            extra={'org_id': str(org_id), 'user_id': str(user.id)},
+        )
+        return
+
+    role = await RoleStore.get_role_by_name(ROLE_MEMBER)
+    if role is None:
+        logger.error('idp:signup_link_role_missing', extra={'role_name': ROLE_MEMBER})
+        return
+
+    try:
+        settings = await OrgService.create_litellm_integration(org_id, str(user.id))
+        llm_api_key_secret = settings.agent_settings.llm.api_key
+        llm_api_key = (
+            llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
+        )
+        await OrgMemberStore.add_user_to_org(
+            org_id=org_id,
+            user_id=user.id,
+            role_id=role.id,
+            llm_api_key=llm_api_key,
+            status='active',
+            agent_settings_diff={},
+            conversation_settings_diff={},
+        )
+    except Exception:
+        logger.exception(
+            'idp:signup_link_add_to_org_failed',
+            extra={'org_id': str(org_id), 'user_id': str(user.id)},
+        )
+        return
+
+    logger.info(
+        'idp:signup_link_added_to_org',
+        extra={'org_id': str(org_id), 'user_id': str(user.id)},
+    )
+
+
 class CreateSignupLinkRequest(BaseModel):
     """Body for ``POST /api/idp/signup-links``."""
 
     email: EmailStr
+    org_id: uuid.UUID | None = None
 
 
 class SignupLinkResponse(BaseModel):
@@ -875,8 +972,16 @@ def _idp_invite_router() -> APIRouter:
             )
         await authorize_permission(request, user_id, Permission.CREATE_SIGNUP_LINK)
 
+        if body.org_id is not None:
+            org = await OrgStore.get_org_by_id(body.org_id)
+            if org is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail='Organization not found',
+                )
+
         email_str = body.email.strip().lower()
-        token = _create_signup_link_token(email_str)
+        token = _create_signup_link_token(email_str, org_id=body.org_id)
         expires_at = datetime.now(timezone.utc) + timedelta(
             hours=SIGNUP_LINK_EXPIRY_HOURS
         )
@@ -885,7 +990,11 @@ def _idp_invite_router() -> APIRouter:
 
         logger.info(
             'idp:signup_link_created',
-            extra={'caller_user_id': user_id, 'email': email_str},
+            extra={
+                'caller_user_id': user_id,
+                'email': email_str,
+                'org_id': str(body.org_id) if body.org_id else None,
+            },
         )
         return SignupLinkResponse(url=url, expires_at=expires_at)
 
