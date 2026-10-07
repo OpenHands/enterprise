@@ -10,8 +10,15 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
  * Mint a super-admin-only sign-up link. No query invalidation on success:
  * the link itself isn't persisted anywhere the UI lists (unlike pending
  * invitations), it's only displayed once for the caller to copy and share.
+ *
+ * ``errorMessageKey`` lets callers that mint the same link for a different
+ * purpose -- e.g. ``CreatePasswordResetLinkModal``, which mints one for an
+ * *existing* user rather than inviting someone new -- show a fallback error
+ * that matches what the caller actually asked for.
  */
-export const useCreateSignupLink = () => {
+export const useCreateSignupLink = (
+  errorMessageKey: I18nKey = I18nKey.ORG$CREATE_SIGNUP_LINK_ERROR,
+) => {
   const { t } = useTranslation();
 
   return useMutation({
@@ -19,9 +26,7 @@ export const useCreateSignupLink = () => {
       idpService.createSignupLink(params),
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
-      displayErrorToast(
-        errorMessage || t(I18nKey.ORG$CREATE_SIGNUP_LINK_ERROR),
-      );
+      displayErrorToast(errorMessage || t(errorMessageKey));
     },
   });
 };

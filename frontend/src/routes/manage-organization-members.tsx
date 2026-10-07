@@ -6,10 +6,14 @@ import { InviteOrganizationMemberModal } from "#/components/features/org/invite-
 import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
 import { ConfirmRemoveMemberModal } from "#/components/features/org/confirm-remove-member-modal";
 import { ConfirmUpdateRoleModal } from "#/components/features/org/confirm-update-role-modal";
+import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
+import { ConfirmDeleteUserModal } from "#/components/features/org/confirm-delete-user-modal";
+import { AllUsersListItem } from "#/components/features/org/all-users-list-item";
 import { useOrganizationMembers } from "#/hooks/query/use-organization-members";
 import { useOrganizationMembersCount } from "#/hooks/query/use-organization-members-count";
 import { useAllUsers } from "#/hooks/query/use-all-users";
 import { useAllUsersCount } from "#/hooks/query/use-all-users-count";
+import { AdminUser } from "#/api/admin-service/admin.types";
 import { OrganizationMember, OrganizationUserRole } from "#/types/org";
 import { OrganizationMemberListItem } from "#/components/features/org/organization-member-list-item";
 import { PendingInvitationListItem } from "#/components/features/org/pending-invitation-list-item";
@@ -17,8 +21,10 @@ import { usePendingInvitations } from "#/hooks/query/use-pending-invitations";
 import { useRevokeInvitation } from "#/hooks/mutation/use-revoke-invitation";
 import { useUpdateMemberRole } from "#/hooks/mutation/use-update-member-role";
 import { useRemoveMember } from "#/hooks/mutation/use-remove-member";
+import { useDeleteUser } from "#/hooks/mutation/use-delete-user";
 import { useMe } from "#/hooks/query/use-me";
 import { useIsSuperAdmin } from "#/hooks/query/use-is-super-admin";
+import { useConfig } from "#/hooks/query/use-config";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { rolePermissions } from "#/utils/org/permissions";
@@ -39,7 +45,6 @@ import {
 } from "#/utils/form-control-classes";
 import {
   settingsListContainerClassName,
-  settingsListRowClassName,
   settingsListSectionHeaderClassName,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
@@ -103,6 +108,8 @@ function OrganizationMembersSection({
   const hasError = membersError || countError;
 
   const { data: user } = useMe();
+  const { data: config } = useConfig();
+  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const { mutate: updateMemberRole, isPending: isUpdatingRole } =
     useUpdateMemberRole();
   const { mutate: removeMember, isPending: isRemovingMember } =
@@ -115,6 +122,8 @@ function OrganizationMembersSection({
     member: OrganizationMember;
     newRole: OrganizationUserRole;
   } | null>(null);
+  const [memberForPasswordReset, setMemberForPasswordReset] =
+    React.useState<OrganizationMember | null>(null);
 
   const currentUserRole = user?.role ?? "member";
 
@@ -307,6 +316,12 @@ function OrganizationMembersSection({
                     status={member.status}
                     hasPermissionToChangeRole={canAssignUserRole(member)}
                     availableRolesToChangeTo={availableRolesToChangeTo}
+                    canCreatePasswordResetLink={
+                      isSuperAdmin && enableIntegratedIdp
+                    }
+                    onCreatePasswordResetLink={() =>
+                      setMemberForPasswordReset(member)
+                    }
                     onRoleChange={(role) =>
                       handleRoleSelectionClick(member, role)
                     }
@@ -371,6 +386,13 @@ function OrganizationMembersSection({
           isLoading={isUpdatingRole}
         />
       )}
+
+      {memberForPasswordReset && (
+        <CreatePasswordResetLinkModal
+          email={memberForPasswordReset.email}
+          onClose={() => setMemberForPasswordReset(null)}
+        />
+      )}
     </div>
   );
 }
@@ -387,6 +409,11 @@ function AllUsersSection() {
   const { page, setPage, emailFilter, setEmailFilter, debouncedEmailFilter } =
     usePaginatedEmailFilter();
   const [mintLinkModalOpen, setMintLinkModalOpen] = React.useState(false);
+  const [userForPasswordReset, setUserForPasswordReset] =
+    React.useState<AdminUser | null>(null);
+  const [userToDelete, setUserToDelete] = React.useState<AdminUser | null>(
+    null,
+  );
 
   const {
     data: usersData,
@@ -399,9 +426,22 @@ function AllUsersSection() {
     email: debouncedEmailFilter,
   });
 
+  const { data: config } = useConfig();
+  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
+  const { data: me } = useMe();
+  const { mutate: deleteUser, isPending: isDeletingUser } = useDeleteUser();
+
   const hasError = usersError || countError;
   const totalPages =
     totalCount !== undefined ? Math.ceil(totalCount / limit) : 0;
+
+  const handleConfirmDeleteUser = () => {
+    if (userToDelete) {
+      deleteUser(userToDelete.user_id, {
+        onSettled: () => setUserToDelete(null),
+      });
+    }
+  };
 
   return (
     <div
@@ -496,18 +536,15 @@ function AllUsersSection() {
                 data-testid="all-users-item"
                 className={settingsListTableRowClassName}
               >
-                <div
-                  className={cn(settingsListRowClassName, "justify-between")}
-                >
-                  <span className="truncate text-sm font-normal leading-5 text-white">
-                    {listUser.email}
-                  </span>
-                  {listUser.is_super_admin && (
-                    <span className="shrink-0 rounded-lg border border-[var(--oh-border)] px-2 py-0.5 text-xs capitalize text-muted">
-                      {t(I18nKey.ORG$ROLE_SUPERADMIN)}
-                    </span>
-                  )}
-                </div>
+                <AllUsersListItem
+                  user={listUser}
+                  isSelf={me?.user_id === listUser.user_id}
+                  canCreatePasswordResetLink={enableIntegratedIdp}
+                  onCreatePasswordResetLink={() =>
+                    setUserForPasswordReset(listUser)
+                  }
+                  onRemove={() => setUserToDelete(listUser)}
+                />
               </li>
             ))}
           </ul>
@@ -528,6 +565,22 @@ function AllUsersSection() {
           totalPages={totalPages}
           onPageChange={setPage}
           className="py-4"
+        />
+      )}
+
+      {userForPasswordReset && (
+        <CreatePasswordResetLinkModal
+          email={userForPasswordReset.email ?? ""}
+          onClose={() => setUserForPasswordReset(null)}
+        />
+      )}
+
+      {userToDelete && (
+        <ConfirmDeleteUserModal
+          userEmail={userToDelete.email ?? ""}
+          onConfirm={handleConfirmDeleteUser}
+          onCancel={() => setUserToDelete(null)}
+          isLoading={isDeletingUser}
         />
       )}
     </div>

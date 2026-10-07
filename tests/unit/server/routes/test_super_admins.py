@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
 from server.routes.super_admins import admin_users_router, super_admin_router
-from storage.user_store import SuperAdminRevokeResult
+from storage.user_store import SuperAdminRevokeResult, UserDeleteResult
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -409,3 +409,56 @@ async def test_count_all_users(mock_app, grant_manage_super_admins):
     assert resp.status_code == 200
     assert resp.json() == 42
     count_mock.assert_awaited_once_with(email_filter='foo')
+
+
+@pytest.mark.asyncio
+async def test_delete_user_success(mock_app, grant_manage_super_admins):
+    target = str(uuid.uuid4())
+    with patch(
+        'server.routes.super_admins.UserStore.delete_user',
+        AsyncMock(return_value=UserDeleteResult.DELETED),
+    ) as delete_mock:
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{target}')
+
+    assert resp.status_code == 204
+    assert resp.content == b''
+    delete_mock.assert_awaited_once_with(target)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_not_found(mock_app, grant_manage_super_admins):
+    with patch(
+        'server.routes.super_admins.UserStore.delete_user',
+        AsyncMock(return_value=UserDeleteResult.NOT_FOUND),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_user_last_super_admin_conflict(
+    mock_app, grant_manage_super_admins
+):
+    with patch(
+        'server.routes.super_admins.UserStore.delete_user',
+        AsyncMock(return_value=UserDeleteResult.LAST_SUPER_ADMIN),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
+
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_user_forbidden_without_permission(mock_app):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
+
+    assert resp.status_code == 403

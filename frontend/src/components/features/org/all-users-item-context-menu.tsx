@@ -6,43 +6,36 @@ import { I18nKey } from "#/i18n/declaration";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
 import { ContextMenuIconText } from "#/ui/context-menu-icon-text";
-import { OrganizationUserRole } from "#/types/org";
-import UserIcon from "#/icons/user.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
-import AdminIcon from "#/icons/admin.svg?react";
 
-interface OrganizationMemberRoleContextMenuProps {
+interface AllUsersItemContextMenuProps {
   onClose: () => void;
-  onRoleChange: (role: OrganizationUserRole) => void;
-  onRemove?: () => void;
-  availableRolesToChangeTo: OrganizationUserRole[];
-  /** Whether the caller has permission to change this member's role or
-   * remove them -- controls whether the role/remove items render at all.
-   * Kept independent of `showCreatePasswordResetLink` so a super admin can
-   * see that option alone without also being granted org-role authority
-   * they don't otherwise have. */
-  showRoleOptions: boolean;
-  /** Only meaningful when `ENABLE_INTEGRATED_IDP` is on -- see
-   * `CreatePasswordResetLinkModal`. */
-  showCreatePasswordResetLink?: boolean;
+  /** Omitted when ``enable_integrated_idp`` is off -- there is no local
+   * password login to reset into. */
   onCreatePasswordResetLink?: () => void;
+  /** Omitted for the caller's own row -- a super admin cannot remove
+   * themselves from here. */
+  onRemove?: () => void;
   /**
    * Trigger element to anchor against. The menu portals to document body with
-   * fixed positioning so overflow on the members list cannot clip it.
+   * fixed positioning so overflow on the users list cannot clip it.
    */
   anchorRef: React.RefObject<HTMLElement | null>;
 }
 
-export function OrganizationMemberRoleContextMenu({
+/**
+ * Per-row menu for the instance-wide "All Users" view (shown to a super
+ * admin when their Personal Workspace is selected -- see
+ * ``AllUsersSection``). Counterpart to
+ * ``OrganizationMemberRoleContextMenu``, minus the role-change options:
+ * there is no org context here to hold an org-scoped role in.
+ */
+export function AllUsersItemContextMenu({
   onClose,
-  onRoleChange,
-  onRemove,
-  availableRolesToChangeTo,
-  showRoleOptions,
-  showCreatePasswordResetLink,
   onCreatePasswordResetLink,
+  onRemove,
   anchorRef,
-}: OrganizationMemberRoleContextMenuProps) {
+}: AllUsersItemContextMenuProps) {
   const { t } = useTranslation();
   const menuRef = React.useRef<HTMLUListElement>(null);
   const [portalStyle, setPortalStyle] = React.useState<React.CSSProperties>();
@@ -98,13 +91,12 @@ export function OrganizationMemberRoleContextMenu({
     };
   }, [anchorRef, onClose]);
 
-  const handleRoleChangeClick = (
+  const handleCreatePasswordResetLinkClick = (
     event: React.MouseEvent<HTMLButtonElement>,
-    role: OrganizationUserRole,
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    onRoleChange(role);
+    onCreatePasswordResetLink?.();
     onClose();
   };
 
@@ -112,15 +104,6 @@ export function OrganizationMemberRoleContextMenu({
     event.preventDefault();
     event.stopPropagation();
     onRemove?.();
-    onClose();
-  };
-
-  const handleCreatePasswordResetLinkClick = (
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    event.preventDefault();
-    event.stopPropagation();
-    onCreatePasswordResetLink?.();
     onClose();
   };
 
@@ -132,59 +115,11 @@ export function OrganizationMemberRoleContextMenu({
     <div style={portalStyle}>
       <ContextMenu
         ref={menuRef}
-        testId="organization-member-role-context-menu"
+        testId="all-users-item-context-menu"
         theme="default"
-        className="!static !top-auto !right-auto !mt-0 min-h-fit min-w-[195px] max-w-[195px]"
+        className="!static !top-auto !right-auto !mt-0 min-h-fit min-w-[195px] max-w-[260px]"
       >
-        {showRoleOptions && availableRolesToChangeTo.includes("owner") && (
-          <ContextMenuListItem
-            testId="owner-option"
-            onClick={(event) => handleRoleChangeClick(event, "owner")}
-          >
-            <ContextMenuIconText
-              icon={
-                <AdminIcon
-                  width={16}
-                  height={16}
-                  className="text-white pl-[2px]"
-                />
-              }
-              text={t(I18nKey.ORG$ROLE_OWNER)}
-              className="capitalize"
-            />
-          </ContextMenuListItem>
-        )}
-        {showRoleOptions && availableRolesToChangeTo.includes("admin") && (
-          <ContextMenuListItem
-            testId="admin-option"
-            onClick={(event) => handleRoleChangeClick(event, "admin")}
-          >
-            <ContextMenuIconText
-              icon={
-                <AdminIcon
-                  width={16}
-                  height={16}
-                  className="text-white pl-[2px]"
-                />
-              }
-              text={t(I18nKey.ORG$ROLE_ADMIN)}
-              className="capitalize"
-            />
-          </ContextMenuListItem>
-        )}
-        {showRoleOptions && availableRolesToChangeTo.includes("member") && (
-          <ContextMenuListItem
-            testId="member-option"
-            onClick={(event) => handleRoleChangeClick(event, "member")}
-          >
-            <ContextMenuIconText
-              icon={<UserIcon width={16} height={16} className="text-white" />}
-              text={t(I18nKey.ORG$ROLE_MEMBER)}
-              className="capitalize"
-            />
-          </ContextMenuListItem>
-        )}
-        {showCreatePasswordResetLink && (
+        {onCreatePasswordResetLink && (
           <ContextMenuListItem
             testId="create-password-reset-link-option"
             onClick={handleCreatePasswordResetLinkClick}
@@ -195,7 +130,7 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        {showRoleOptions && (
+        {onRemove && (
           <ContextMenuListItem
             testId="remove-option"
             onClick={handleRemoveClick}

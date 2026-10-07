@@ -54,4 +54,13 @@ export const adminService = {
     );
     return data;
   },
+
+  /**
+   * Permanently delete a user account -- in every organization it belongs
+   * to, not just one -- via the instance-wide "Remove" action in the "All
+   * Users" view.
+   */
+  deleteUser: async (userId: string): Promise<void> => {
+    await openHands.delete(`/api/admin/users/${userId}`);
+  },
 };

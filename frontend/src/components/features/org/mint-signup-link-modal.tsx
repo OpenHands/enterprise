@@ -40,15 +40,22 @@ export function MintSignupLinkModal({
     url: string;
   } | null>(null);
 
-  const roleOptions = [
-    { value: "member", label: t(I18nKey.ORG$ROLE_MEMBER) },
-    { value: "admin", label: t(I18nKey.ORG$ROLE_ADMIN) },
-    // Instance-level role: only meaningful (and only accepted by the
-    // backend) when minting an org-independent link.
-    ...(orgId
-      ? []
-      : [{ value: "superadmin", label: t(I18nKey.ORG$ROLE_SUPERADMIN) }]),
-  ].map((option) => ({
+  // Org-scoped roles (member/admin) only make sense alongside an org to
+  // hold that membership in. Minting an org-independent link instead
+  // offers a plain "user" account (still the `member` role under the
+  // hood -- see `CreateSignupLinkParams` -- just with no `orgId`) or the
+  // instance-level `superadmin` role.
+  const roleOptions = (
+    orgId
+      ? [
+          { value: "member", label: t(I18nKey.ORG$ROLE_MEMBER) },
+          { value: "admin", label: t(I18nKey.ORG$ROLE_ADMIN) },
+        ]
+      : [
+          { value: "member", label: t(I18nKey.ORG$ROLE_USER) },
+          { value: "superadmin", label: t(I18nKey.ORG$ROLE_SUPERADMIN) },
+        ]
+  ).map((option) => ({
     ...option,
     label: option.label.charAt(0).toLocaleUpperCase() + option.label.slice(1),
   }));

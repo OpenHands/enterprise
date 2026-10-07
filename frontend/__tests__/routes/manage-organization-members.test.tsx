@@ -64,6 +64,7 @@ vi.mock("#/api/admin-service/admin-service.api", () => ({
       per_page: 10,
     }),
     getAllUsersCount: vi.fn().mockResolvedValue(0),
+    deleteUser: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -695,6 +696,174 @@ describe("Manage Organization Members Route", () => {
       expect(within(items[1]).getByText("bob@example.com")).toBeInTheDocument();
 
       await screen.findByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i });
+    });
+
+    const bobAdminUserData = {
+      org_id: "2",
+      user_id: "2",
+      email: "bob@acme.org",
+      role: "admin" as const,
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      status: "active" as const,
+    };
+
+    const setupBobAdminViewingAcme = async () => {
+      resetOrgsAndMembersMockData();
+      getMeSpy.mockResolvedValue(bobAdminUserData);
+      // Pre-seed the /me query data directly (as in the "owner role"
+      // permission test above) so the row's permissions are deterministic
+      // regardless of fetch timing left over from a previous test.
+      queryClient.setQueryData(["organizations", "2", "me"], bobAdminUserData);
+
+      renderManageOrganizationMembers();
+      await screen.findByTestId("manage-organization-members-settings");
+      await selectOrganization({ orgIndex: 1 }); // Acme Corp
+      await screen.findAllByTestId("member-item");
+    };
+
+    it("should let a super admin create a password-reset link for an org member when enable_integrated_idp is on, even without role-change permission over them", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
+      getConfigSpy.mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+
+      // Super admin "bob" (admin) viewing Acme Corp -- doesn't have
+      // permission to change the owner's role, but can still mint a
+      // password-reset link for them.
+      await setupBobAdminViewingAcme();
+
+      const ownerMember = await findMemberByEmail("alice@acme.org");
+      const menu = await openRoleDropdown(ownerMember, "owner");
+
+      expect(
+        within(menu).getByTestId("create-password-reset-link-option"),
+      ).toBeInTheDocument();
+      expect(
+        within(menu).queryByTestId("admin-option"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(menu).queryByTestId("remove-option"),
+      ).not.toBeInTheDocument();
+
+      await userEvent.click(
+        within(menu).getByTestId("create-password-reset-link-option"),
+      );
+
+      expect(
+        await screen.findByTestId("create-password-reset-link-modal"),
+      ).toBeInTheDocument();
+    });
+
+    it("should not show the password-reset option when enable_integrated_idp is off", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      await setupBobAdminViewingAcme();
+
+      const ownerMember = await findMemberByEmail("alice@acme.org");
+      // With the feature flag off, the super admin has no action available
+      // on a member they can't otherwise change the role of, so the
+      // trigger isn't clickable at all.
+      const roleText = within(ownerMember).getByText(/^owner$/i);
+      await userEvent.click(roleText);
+      expectDropdownNotVisible(ownerMember);
+    });
+
+    it("should not show the password-reset option to a regular org admin, even with enable_integrated_idp on", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
+      getConfigSpy.mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+
+      await setupBobAdminViewingAcme();
+
+      const memberMember = await findMemberByEmail("charlie@acme.org");
+      const menu = await openRoleDropdown(memberMember, "member");
+
+      expect(
+        within(menu).queryByTestId("create-password-reset-link-option"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should delete a user from the All Users view via the context menu", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.mocked(adminService.getAllUsers).mockResolvedValue({
+        items: [
+          { user_id: "u-1", email: "alice@example.com", is_super_admin: true },
+          { user_id: "u-2", email: "bob@example.com", is_super_admin: false },
+        ],
+        current_page: 1,
+        per_page: 10,
+      });
+      vi.mocked(adminService.getAllUsersCount).mockResolvedValue(2);
+
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_PERSONAL_ORG.id,
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      queryClient.setQueryData(["organizations"], {
+        items: INITIAL_MOCK_ORGS,
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+
+      renderManageOrganizationMembers();
+      await screen.findByTestId("all-users-settings");
+
+      const items = await screen.findAllByTestId("all-users-item");
+      const bobItem = items.find((item) =>
+        within(item).queryByText("bob@example.com"),
+      );
+      if (!bobItem) {
+        throw new Error("Could not find bob's row");
+      }
+
+      await userEvent.click(
+        within(bobItem).getByTestId("all-users-item-menu-trigger"),
+      );
+      const menu = await screen.findByTestId("all-users-item-context-menu");
+      await userEvent.click(within(menu).getByTestId("remove-option"));
+
+      const confirmButton = await screen.findByTestId("confirm-button");
+      await userEvent.click(confirmButton);
+
+      await waitFor(() => {
+        expect(adminService.deleteUser).toHaveBeenCalledWith("u-2");
+      });
     });
   });
 
