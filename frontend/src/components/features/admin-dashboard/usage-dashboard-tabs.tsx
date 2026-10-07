@@ -9,8 +9,7 @@ import {
 } from "#/components/shared/icons/inline-icons";
 import { useConfig } from "#/hooks/query/use-config";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
-import { useProviderHost } from "#/hooks/use-provider-host";
-import { Provider } from "#/types/settings";
+import { OrgConversationPullRequest } from "#/api/organization-service/organization-service.api";
 import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
@@ -241,9 +240,7 @@ export type ConversationRow = {
   accumulated_cost: number;
   created_at?: string | null;
   updated_at?: string | null;
-  pr_number?: number[];
-  selected_repository?: string | null;
-  git_provider?: Provider | null;
+  pull_requests?: ConversationPullRequest[];
   pr_merged?: boolean | null;
   agent_kind?: string | null;
   llm_model?: string | null;
@@ -252,49 +249,54 @@ export type ConversationRow = {
   title?: string | null;
 };
 
+type ConversationPullRequest = Pick<OrgConversationPullRequest, "number"> &
+  Partial<Omit<OrgConversationPullRequest, "number">>;
+
+const isHttpUrl = (url?: string | null): url is string =>
+  !!url && /^https?:\/\//i.test(url);
+
+// One PR in the Associated PR cell. Links to the stored PR URL. Old PRs have
+// no URL, so the link is built from the deployment's provider host when the
+// repository is known. The viewer's own token host is not used: the viewer is
+// often an admin who looks at other members' PRs.
+function PullRequestLink({ pr }: { pr: ConversationPullRequest }) {
+  const provider = pr.git_provider ?? null;
+  const { data: config } = useConfig();
+  const host = provider ? config?.provider_default_hosts?.[provider] : null;
+  const label = formatPrLabel(pr.number, pr.repository);
+  let href = "";
+  if (isHttpUrl(pr.url)) href = pr.url;
+  else if (pr.repository && provider)
+    href = constructPullRequestUrl(provider, pr.repository, pr.number, host);
+
+  if (!href) return <span>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-400 hover:underline"
+    >
+      {label}
+    </a>
+  );
+}
+
 export function AssociatedPrCell({
   conversation,
 }: {
-  conversation: Pick<
-    ConversationRow,
-    "pr_number" | "selected_repository" | "git_provider"
-  >;
+  conversation: Pick<ConversationRow, "pull_requests">;
 }) {
-  const repository = conversation.selected_repository;
-  const provider = conversation.git_provider;
-  const providerHost = useProviderHost(provider);
-  const { data: config } = useConfig();
-  // The Azure DevOps token field stores the organization, not a host.
-  const host =
-    provider === "azure_devops"
-      ? config?.provider_default_hosts?.azure_devops
-      : providerHost;
-  const prNumbers = conversation.pr_number ?? [];
+  const pullRequests = conversation.pull_requests ?? [];
 
-  if (prNumbers.length === 0) return "-";
+  if (pullRequests.length === 0) return "-";
 
   return (
     <div className="flex flex-col gap-0.5">
-      {prNumbers.map((prNumber) => {
-        const label = formatPrLabel(prNumber, repository);
-        const href =
-          repository && provider
-            ? constructPullRequestUrl(provider, repository, prNumber, host)
-            : "";
-        return href ? (
-          <a
-            key={prNumber}
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:underline"
-          >
-            {label}
-          </a>
-        ) : (
-          <span key={prNumber}>{label}</span>
-        );
-      })}
+      {pullRequests.map((pr, index) => (
+        // A conversation can open PRs with the same number in different repositories.
+        <PullRequestLink key={index} pr={pr} />
+      ))}
     </div>
   );
 }

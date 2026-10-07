@@ -16,6 +16,7 @@ from openhands.agent_server.models import ConversationInfo, Success
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     ConversationTrigger,
+    PullRequestRef,
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
@@ -280,6 +281,14 @@ class TestOnConversationUpdateParentConversationId:
             git_provider=ProviderType.GITHUB,
             trigger=ConversationTrigger.RESOLVER,
             pr_number=[123, 456],
+            pull_requests=[
+                PullRequestRef(
+                    number=456,
+                    repository='test/repo',
+                    git_provider=ProviderType.GITHUB,
+                    url='https://github.com/test/repo/pull/456',
+                )
+            ],
             parent_conversation_id=parent_id,
         )
 
@@ -311,6 +320,7 @@ class TestOnConversationUpdateParentConversationId:
         assert saved_conv.git_provider == ProviderType.GITHUB
         assert saved_conv.trigger == ConversationTrigger.RESOLVER
         assert saved_conv.pr_number == [123, 456]
+        assert saved_conv.pull_requests == existing_conv.pull_requests
 
     @pytest.mark.asyncio
     async def test_parent_conversation_id_preserved_after_multiple_updates(

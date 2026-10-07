@@ -777,6 +777,18 @@ interface OrgBudgetUserOverrideUpdate {
   is_disabled: boolean;
 }
 
+/**
+ * A PR opened from an org conversation. `repository` and `git_provider` are
+ * null for an old PR on a conversation with no selected repository. `url` is
+ * null for old PRs.
+ */
+export interface OrgConversationPullRequest {
+  number: number;
+  repository: string | null;
+  git_provider: Provider | null;
+  url: string | null;
+}
+
 interface OrgConversationResponse {
   id: string;
   title: string;
@@ -792,9 +804,11 @@ interface OrgConversationResponse {
   execution_status: string | null;
   selected_repository: string | null;
   selected_branch: string | null;
-  git_provider: Provider | null;
+  git_provider: string | null;
   trigger: string | null;
+  /** @deprecated Use pull_requests. */
   pr_number: number[];
+  pull_requests: OrgConversationPullRequest[];
   pr_merged: boolean | null;
   tags: Record<string, string>;
   accumulated_cost: number;

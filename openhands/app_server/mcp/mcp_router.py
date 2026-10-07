@@ -1,6 +1,7 @@
 import os
 import re
 from typing import Annotated
+from urllib.parse import unquote, urlparse
 from uuid import UUID
 
 from fastmcp import Client, FastMCP
@@ -10,6 +11,9 @@ from fastmcp.server import create_proxy
 from fastmcp.server.dependencies import get_http_request
 from pydantic import Field
 
+from openhands.app_server.app_conversation.app_conversation_models import (
+    PullRequestRef,
+)
 from openhands.app_server.config import (
     get_app_conversation_info_service,
     get_global_config,
@@ -95,14 +99,54 @@ async def get_conversation_link(
     return body
 
 
-async def save_pr_metadata(
-    user_id: str | None, conversation_id: str, tool_result: str
-) -> None:
-    """Extract the PR number from the tool result and store it on the conversation.
+def _pr_repository(
+    git_provider: ProviderType,
+    repository: str,
+    pr_url: str,
+    web_base_url: str | None = None,
+) -> str:
+    """Return the repository path to store for a PR.
 
-    Also emits a ``pull request created`` analytics event when a PR number is
-    found. Supports GitHub (``pull/``), GitLab (``merge_requests/``), Bitbucket
-    (``pull-requests/``), and Azure DevOps (``pullrequest/``) URL formats.
+    GitHub and GitLab put the canonical path in the PR URL. The tool input can
+    differ in case (GitHub) or be a numeric project ID or URL-encoded path
+    (GitLab). ``web_base_url`` is the GitLab instance root; its path (e.g.
+    ``/gitlab``) is not part of the repository. For other providers, or when
+    the URL does not match, the tool input is kept.
+    """
+    path = urlparse(pr_url).path
+    if git_provider == ProviderType.GITHUB:
+        match = re.search(r'([^/]+/[^/]+)/pull/\d+', path)
+        if match:
+            return match.group(1)
+    elif git_provider == ProviderType.GITLAB:
+        prefix = urlparse(web_base_url).path.rstrip('/') if web_base_url else ''
+        if prefix and path.startswith(prefix + '/'):
+            path = path[len(prefix) :]
+        match = re.match(r'/(.+)/-/merge_requests/\d+', path)
+        if match:
+            return match.group(1)
+        return unquote(repository)
+    return repository
+
+
+async def save_pr_metadata(
+    user_id: str | None,
+    conversation_id: str,
+    tool_result: str,
+    *,
+    git_provider: ProviderType,
+    repository: str,
+    web_base_url: str | None = None,
+) -> None:
+    """Store the PR from the tool result (number, repository, URL) on the conversation.
+
+    ``tool_result`` is the PR URL returned by the provider. Stores the number in
+    ``pr_number`` and a ``PullRequestRef`` (number, repository, provider, URL)
+    in ``pull_requests``. Also emits a ``pull request created`` analytics event
+    when a PR number is found. Supports GitHub (``pull/``), GitLab
+    (``merge_requests/``), Bitbucket (``pull-requests/``), and Azure DevOps
+    (``pullrequest/``) URL formats. ``web_base_url`` is the GitLab instance root
+    (see ``_pr_repository``).
     """
     # Manually construct state for background operation (no request context available)
     state = InjectorState()
@@ -144,6 +188,19 @@ async def save_pr_metadata(
                 f'Saving PR number: {pr_number} for conversation {conversation_id}'
             )
             app_conversation_info.pr_number.append(pr_number)
+            pr_url = tool_result.strip()
+            if not pr_url.startswith(('https://', 'http://')):
+                pr_url = ''
+            app_conversation_info.pull_requests.append(
+                PullRequestRef(
+                    number=pr_number,
+                    repository=_pr_repository(
+                        git_provider, repository, pr_url, web_base_url
+                    ),
+                    git_provider=git_provider,
+                    url=pr_url or None,
+                )
+            )
 
             # Analytics: pull request created (best-effort, never blocks the flow)
             if user_id:
@@ -237,7 +294,13 @@ async def create_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                git_provider=ProviderType.GITHUB,
+                repository=repo_name,
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -311,7 +374,14 @@ async def create_mr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                git_provider=ProviderType.GITLAB,
+                repository=str(id),
+                web_base_url=gitlab_service.BASE_URL.removesuffix('/api/v4'),
+            )
 
     except Exception as e:
         error = f'Error creating merge request: {e}'
@@ -377,7 +447,13 @@ async def create_bitbucket_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                git_provider=ProviderType.BITBUCKET,
+                repository=repo_name,
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -444,7 +520,13 @@ async def create_bitbucket_data_center_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+                repository=repo_name,
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -511,7 +593,13 @@ async def create_azure_devops_pr(
         )
 
         if conversation_id and user_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                git_provider=ProviderType.AZURE_DEVOPS,
+                repository=repo_name,
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'

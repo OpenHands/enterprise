@@ -75,7 +75,9 @@ describe("getStatusText", () => {
       t,
     });
 
-    expect(result).toBe(t(I18nKey.CONVERSATION$ERROR_STARTING_CONVERSATION));
+    expect(result).toBe(
+     t(I18nKey.CONVERSATION$ERROR_STARTING_CONVERSATION),
+    );
   });
 
   it("returns READY translation when task is ready", () => {
@@ -186,12 +188,6 @@ describe("constructPullRequestUrl", () => {
       "org/project/repo",
       "dev.azure.com",
       "https://dev.azure.com/org/project/_git/repo/pullrequest/42",
-    ],
-    [
-      "forgejo",
-      "owner/repo",
-      "codeberg.org",
-      "https://codeberg.org/owner/repo/pulls/42",
     ],
   ] as const)(
     "builds the %s pull request URL",

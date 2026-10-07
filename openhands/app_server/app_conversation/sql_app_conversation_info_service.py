@@ -52,6 +52,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfoPage,
     AppConversationSortOrder,
     ConversationTrigger,
+    PullRequestRef,
 )
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.services.injector import InjectorState
@@ -159,8 +160,12 @@ class StoredConversationMetadata(Base):
     )
 
     trigger: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Deprecated: superseded by ``pull_requests``. Still written for existing readers.
     pr_number: Mapped[list[int] | None] = mapped_column(
         create_json_type_decorator(list[int])
+    )
+    pull_requests: Mapped[list[PullRequestRef] | None] = mapped_column(
+        create_json_type_decorator(list[PullRequestRef]), nullable=True
     )
 
     # Cost and token metrics
@@ -504,6 +509,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             created_at=created_at,
             trigger=info.trigger.value if info.trigger else None,
             pr_number=info.pr_number or [],
+            pull_requests=info.pull_requests or None,
             # Cost and token metrics
             accumulated_cost=metrics.accumulated_cost,
             prompt_tokens=usage.prompt_tokens,
@@ -882,6 +888,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             title=stored.title,
             trigger=ConversationTrigger(stored.trigger) if stored.trigger else None,
             pr_number=stored.pr_number or [],
+            pull_requests=stored.pull_requests or [],
             llm_model=stored.llm_model,
             agent_kind=stored.agent_kind or 'openhands',
             metrics=metrics,

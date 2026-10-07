@@ -324,7 +324,7 @@ export const constructBranchUrl = (
  * @param provider The git provider
  * @param repositoryName The repository name in format "owner/repo" ("org/project/repo" for Azure DevOps)
  * @param prNumber The pull/merge request number
- * @param host The provider host (see useProviderHost)
+ * @param host The provider host, e.g. "github.com" or "https://gitlab.acme.dev"
  * @returns The pull request URL, or "" when it cannot be built
  *
  * @example
@@ -344,8 +344,6 @@ export const constructPullRequestUrl = (
   switch (provider) {
     case "github":
       return `${baseUrl}/${repositoryName}/pull/${prNumber}`;
-    case "forgejo":
-      return `${baseUrl}/${repositoryName}/pulls/${prNumber}`;
     case "gitlab":
       return `${baseUrl}/${repositoryName}/-/merge_requests/${prNumber}`;
     case "bitbucket":

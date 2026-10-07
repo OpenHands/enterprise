@@ -173,6 +173,21 @@ class PluginSpec(PluginSource):
         )
 
 
+class PullRequestRef(BaseModel):
+    """A pull request that OpenHands opened from a conversation.
+
+    Saved by the MCP create-PR tools (see ``save_pr_metadata``). ``repository``
+    can differ from the conversation's ``selected_repository``, which is unset
+    when the conversation starts without a repository.
+    """
+
+    number: int
+    repository: str
+    git_provider: ProviderType
+    # The PR page, as returned by the provider API. None if it is not http(s).
+    url: str | None = None
+
+
 class AppConversationInfo(BaseModel):
     """Conversation info which does not contain status."""
 
@@ -186,7 +201,10 @@ class AppConversationInfo(BaseModel):
     git_provider: ProviderType | None = None
     title: str | None = None
     trigger: ConversationTrigger | None = None
+    # Deprecated: superseded by ``pull_requests``, which also stores the
+    # repository and URL. Still written for existing readers and API clients.
     pr_number: list[int] = Field(default_factory=list)
+    pull_requests: list[PullRequestRef] = Field(default_factory=list)
     llm_model: str | None = None
     agent_kind: str = 'openhands'
 

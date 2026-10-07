@@ -13,9 +13,13 @@ from typing import Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import case, func, or_, select, tuple_
+from pydantic import TypeAdapter
+from sqlalchemy import Row, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.app_conversation.app_conversation_models import (
+    PullRequestRef,
+)
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
 from openhands.app_server.services.injector import Injector, InjectorState
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -27,6 +31,7 @@ from server.routes.org_models import (
     ModelUsageData,
     MyRecentUsageItem,
     OrgConversationPage,
+    OrgConversationPullRequest,
     OrgConversationResponse,
     OrgConversationStats,
     OrgMyUsageStats,
@@ -90,6 +95,55 @@ def _agent_label_expression(llm_model: Any) -> Any:
 
 
 MAX_SANDBOX_STATUS_FILTER_ROWS = 5000
+
+
+# The JSON column returns plain dicts: its result hook is never called by SQLAlchemy.
+_PULL_REQUEST_REFS = TypeAdapter(list[PullRequestRef])
+
+
+def conversation_pull_requests(
+    row: StoredConversationMetadata | Row[Any],
+) -> list[OrgConversationPullRequest]:
+    """Return every PR of a conversation, in ``pr_number`` order.
+
+    A PR with a stored ``PullRequestRef`` uses its own repository, provider and
+    URL. An older PR has only its number, so it takes the conversation's
+    selected repository and provider, and has no URL.
+    """
+    unmatched = _PULL_REQUEST_REFS.validate_python(row.pull_requests or [])
+    result: list[OrgConversationPullRequest] = []
+    for number in row.pr_number or []:
+        ref = next((ref for ref in unmatched if ref.number == number), None)
+        if ref:
+            unmatched.remove(ref)
+            result.append(
+                OrgConversationPullRequest(
+                    number=ref.number,
+                    repository=ref.repository,
+                    git_provider=ref.git_provider.value,
+                    url=ref.url,
+                )
+            )
+        else:
+            result.append(
+                OrgConversationPullRequest(
+                    number=number,
+                    repository=row.selected_repository,
+                    git_provider=row.git_provider,
+                )
+            )
+    return result
+
+
+def _pr_merge_keys(
+    pull_requests: list[OrgConversationPullRequest],
+) -> list[tuple[str, str, int]]:
+    """Return the openhands_prs lookup keys for the PRs that know their repository."""
+    return [
+        (pr.git_provider, pr.repository, pr.number)
+        for pr in pull_requests
+        if pr.git_provider and pr.repository
+    ]
 
 
 class OrgConversationFilterError(ValueError):
@@ -169,6 +223,7 @@ class OrgConversationService:
             git_provider=metadata.git_provider,
             trigger=metadata.trigger,
             pr_number=metadata.pr_number or [],
+            pull_requests=conversation_pull_requests(metadata),
             pr_merged=pr_merged,
             tags=metadata.tags or {},
             accumulated_cost=metrics.accumulated_cost,
@@ -221,14 +276,8 @@ class OrgConversationService:
         metadata: StoredConversationMetadata,
         pr_map: dict[tuple[str, str, int], bool | None],
     ) -> bool | None:
-        if not metadata.pr_number:
-            return None
-        if not metadata.selected_repository or not metadata.git_provider:
-            return None
-
         statuses: list[bool | None] = []
-        for pr_number in metadata.pr_number or []:
-            key = (metadata.git_provider, metadata.selected_repository, pr_number)
+        for key in _pr_merge_keys(conversation_pull_requests(metadata)):
             if key in pr_map:
                 statuses.append(pr_map[key])
 
@@ -402,15 +451,7 @@ class OrgConversationService:
 
         pr_keys: set[tuple[str, str, int]] = set()
         for metadata, _, _ in rows:
-            if (
-                metadata.pr_number
-                and metadata.selected_repository
-                and metadata.git_provider
-            ):
-                for pr_number in metadata.pr_number:
-                    pr_keys.add(
-                        (metadata.git_provider, metadata.selected_repository, pr_number)
-                    )
+            pr_keys.update(_pr_merge_keys(conversation_pull_requests(metadata)))
 
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
@@ -1424,6 +1465,7 @@ class OrgConversationService:
                 StoredConversationMetadata.selected_repository,
                 StoredConversationMetadata.git_provider,
                 StoredConversationMetadata.pr_number,
+                StoredConversationMetadata.pull_requests,
             )
             .select_from(StoredConversationMetadata)
             .join(
@@ -1439,10 +1481,7 @@ class OrgConversationService:
         user_pr_keys: dict[UUID, set[tuple[str, str, int]]] = {}
         pr_keys: set[tuple[str, str, int]] = set()
         for row in pr_rows:
-            if not row.selected_repository or not row.git_provider or not row.pr_number:
-                continue
-            for pr_number in row.pr_number:
-                key = (row.git_provider, row.selected_repository, pr_number)
+            for key in _pr_merge_keys(conversation_pull_requests(row)):
                 pr_keys.add(key)
                 user_pr_keys.setdefault(row.user_id, set()).add(key)
 
@@ -1530,16 +1569,7 @@ class OrgConversationService:
 
         metadata, saas_metadata, user = row
 
-        pr_keys: set[tuple[str, str, int]] = set()
-        if (
-            metadata.pr_number
-            and metadata.selected_repository
-            and metadata.git_provider
-        ):
-            for pr_number in metadata.pr_number:
-                pr_keys.add(
-                    (metadata.git_provider, metadata.selected_repository, pr_number)
-                )
+        pr_keys = set(_pr_merge_keys(conversation_pull_requests(metadata)))
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
         sandbox_info = None

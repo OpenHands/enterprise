@@ -955,6 +955,19 @@ class OrgBudgetUserOverrideUpdate(BaseModel):
         return self
 
 
+class OrgConversationPullRequest(BaseModel):
+    """A pull request opened from an org conversation.
+
+    ``repository`` and ``git_provider`` are None for an old PR number on a
+    conversation with no selected repository. ``url`` is None for old PRs.
+    """
+
+    number: int
+    repository: str | None = None
+    git_provider: str | None = None
+    url: str | None = None
+
+
 class OrgConversationResponse(BaseModel):
     """Response model for a single conversation in an organization."""
 
@@ -976,7 +989,8 @@ class OrgConversationResponse(BaseModel):
     selected_branch: str | None = None
     git_provider: str | None = None
     trigger: str | None = None
-    pr_number: list[int] = Field(default_factory=list)
+    pr_number: list[int] = Field(default_factory=list)  # Deprecated: use pull_requests
+    pull_requests: list[OrgConversationPullRequest] = Field(default_factory=list)
     pr_merged: bool | None = None
     tags: dict[str, str] = Field(default_factory=dict)
     # Cost and token metrics

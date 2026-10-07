@@ -1244,6 +1244,17 @@ export const ORG_HANDLERS = [
         git_provider: "github",
         trigger: triggers[index % triggers.length],
         pr_number: index % 2 === 0 ? [16000 + index] : [],
+        pull_requests:
+          index % 2 === 0
+            ? [
+                {
+                  number: 16000 + index,
+                  repository: "OpenHands/OpenHands",
+                  git_provider: "github",
+                  url: `https://github.com/OpenHands/OpenHands/pull/${16000 + index}`,
+                },
+              ]
+            : [],
         pr_merged: index % 3 === 0,
         tags: {},
         accumulated_cost: 4.25 + index * 3.1,

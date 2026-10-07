@@ -2,8 +2,30 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
-from server.services.org_conversation_service import OrgConversationService
+from openhands.app_server.app_conversation.app_conversation_models import (
+    AppConversationInfo,
+    PullRequestRef,
+)
+from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
+    SQLAppConversationInfoService,
+    StoredConversationMetadata,
+)
+from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
+from server.routes.org_models import OrgConversationPullRequest
+from server.services.org_conversation_service import (
+    OrgConversationService,
+    conversation_pull_requests,
+)
+
+OTHER_REPO_PR = PullRequestRef(
+    number=7,
+    repository='other/repo',
+    git_provider=ProviderType.GITHUB,
+    url='https://github.com/other/repo/pull/7',
+)
 
 
 def _make_metadata(**overrides):
@@ -21,6 +43,7 @@ def _make_metadata(**overrides):
         'git_provider': 'github',
         'trigger': 'manual',
         'pr_number': [101],
+        'pull_requests': None,
         'tags': {'team': 'alpha'},
         'accumulated_cost': 1.25,
         'prompt_tokens': 100,
@@ -75,3 +98,95 @@ def test_build_conversation_response_includes_pr_merged():
     )
     assert response.pr_merged is True
     assert response.pr_number == [101]
+
+
+def test_conversation_pull_requests_merges_refs_and_legacy_numbers():
+    metadata = _make_metadata(pr_number=[101, 7, 102], pull_requests=[OTHER_REPO_PR])
+
+    assert conversation_pull_requests(metadata) == [
+        OrgConversationPullRequest(
+            number=101, repository='repo', git_provider='github', url=None
+        ),
+        OrgConversationPullRequest(
+            number=7,
+            repository='other/repo',
+            git_provider='github',
+            url='https://github.com/other/repo/pull/7',
+        ),
+        OrgConversationPullRequest(
+            number=102, repository='repo', git_provider='github', url=None
+        ),
+    ]
+
+
+def test_conversation_pull_requests_legacy_number_without_repository():
+    metadata = _make_metadata(
+        selected_repository=None, git_provider=None, pr_number=[1]
+    )
+
+    assert conversation_pull_requests(metadata) == [
+        OrgConversationPullRequest(number=1)
+    ]
+
+
+def test_resolve_pr_merged_uses_pr_repository_without_selected_repository():
+    service = OrgConversationService(db_session=None)
+    metadata = _make_metadata(
+        selected_repository=None,
+        git_provider=None,
+        pr_number=[7],
+        pull_requests=[OTHER_REPO_PR],
+    )
+
+    assert (
+        service._resolve_pr_merged(metadata, {('github', 'other/repo', 7): True})
+        is True
+    )
+
+
+def test_build_conversation_response_includes_pull_requests():
+    service = OrgConversationService(db_session=None)
+    metadata = _make_metadata(pr_number=[7], pull_requests=[OTHER_REPO_PR])
+    response = service._build_conversation_response(
+        metadata,
+        _make_saas_metadata(),
+        user=None,
+        sandbox_info=None,
+    )
+
+    assert response.pull_requests == conversation_pull_requests(metadata)
+
+
+@pytest.mark.asyncio
+async def test_conversation_pull_requests_reads_refs_stored_in_the_database(
+    async_session_maker,
+):
+    info = AppConversationInfo(
+        created_by_user_id=None,
+        sandbox_id='sandbox-1',
+        pr_number=[7],
+        pull_requests=[OTHER_REPO_PR],
+    )
+    async with async_session_maker() as session:
+        await SQLAppConversationInfoService(
+            db_session=session, user_context=SpecifyUserContext(user_id=None)
+        ).save_app_conversation_info(info)
+
+    # A new session, so the row is read from the database, not the identity map.
+    async with async_session_maker() as session:
+        stored = (
+            await session.execute(
+                select(StoredConversationMetadata).where(
+                    StoredConversationMetadata.conversation_id == str(info.id)
+                )
+            )
+        ).scalar_one()
+
+    assert conversation_pull_requests(stored) == [
+        OrgConversationPullRequest(
+            number=7,
+            repository='other/repo',
+            git_provider='github',
+            url='https://github.com/other/repo/pull/7',
+        )
+    ]

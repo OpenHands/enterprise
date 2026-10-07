@@ -16,6 +16,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationSortOrder,
     ConversationTrigger,
+    PullRequestRef,
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
@@ -73,6 +74,14 @@ def sample_conversation_info() -> AppConversationInfo:
         title='Test Conversation',
         trigger=ConversationTrigger.GUI,
         pr_number=[123, 456],
+        pull_requests=[
+            PullRequestRef(
+                number=456,
+                repository='other/repo',
+                git_provider=ProviderType.GITHUB,
+                url='https://github.com/other/repo/pull/456',
+            )
+        ],
         llm_model='gpt-4',
         metrics=None,
         created_at=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
@@ -145,6 +154,7 @@ class TestSQLAppConversationInfoService:
         assert retrieved_info.title == sample_conversation_info.title
         assert retrieved_info.trigger == sample_conversation_info.trigger
         assert retrieved_info.pr_number == sample_conversation_info.pr_number
+        assert retrieved_info.pull_requests == sample_conversation_info.pull_requests
         assert retrieved_info.llm_model == sample_conversation_info.llm_model
 
     @pytest.mark.asyncio
@@ -221,6 +231,7 @@ class TestSQLAppConversationInfoService:
         assert retrieved_info.title is None
         assert retrieved_info.trigger is None
         assert retrieved_info.pr_number == []
+        assert retrieved_info.pull_requests == []
         assert retrieved_info.llm_model is None
         assert retrieved_info.metrics == MetricsSnapshot(
             accumulated_token_usage=TokenUsage()

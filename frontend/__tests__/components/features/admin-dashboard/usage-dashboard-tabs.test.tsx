@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +10,7 @@ import {
   ModelsTab,
   OverviewTab,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
+import { useSettings } from "#/hooks/query/use-settings";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import * as utilsModule from "#/utils/utils";
@@ -139,9 +140,10 @@ describe("AssociatedPrCell", () => {
     renderWithProviders(
       <AssociatedPrCell
         conversation={{
-          pr_number: [295, 301],
-          selected_repository: "acme/widgets",
-          git_provider: "github",
+          pull_requests: [
+            { number: 295, repository: "acme/widgets", git_provider: "github" },
+            { number: 301, repository: "acme/widgets", git_provider: "github" },
+          ],
         }}
       />,
     );
@@ -160,75 +162,108 @@ describe("AssociatedPrCell", () => {
     ).toHaveAttribute("href", "https://github.com/acme/widgets/pull/301");
   });
 
-  it("uses the deployment's self-hosted provider host", async () => {
+  // The admin views other members' PRs, so the viewer's own token host is not
+  // the host of the PR.
+  it("ignores the viewer's own provider host", async () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
-        provider_default_hosts: { gitlab: "gitlab.acme.dev" },
+        provider_default_hosts: { gitlab: "gitlab.com" },
+      }),
+    );
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: { gitlab: "gitlab.viewer.dev" },
+    });
+    // Shares the settings query, so the assertion runs after the viewer's
+    // settings load.
+    function SettingsLoaded() {
+      const { data } = useSettings();
+      return data ? <span data-testid="settings-loaded" /> : null;
+    }
+
+    renderWithProviders(
+      <>
+        <SettingsLoaded />
+        <AssociatedPrCell
+          conversation={{
+            pull_requests: [
+              { number: 7, repository: "platform/api", git_provider: "gitlab" },
+            ],
+          }}
+        />
+      </>,
+    );
+    await screen.findByTestId("settings-loaded");
+
+    expect(
+      screen.getByRole("link", { name: "platform/api #7" }),
+    ).toHaveAttribute(
+      "href",
+      "https://gitlab.com/platform/api/-/merge_requests/7",
+    );
+  });
+
+  it("links to the stored PR URL and labels it with the PR's own repository", () => {
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pull_requests: [
+            {
+              number: 7,
+              repository: "other/repo",
+              git_provider: "github",
+              url: "https://ghe.acme.dev/other/repo/pull/7",
+            },
+          ],
+        }}
+      />,
+    );
+
+    const link = screen.getByRole("link", { name: "other/repo #7" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://ghe.acme.dev/other/repo/pull/7",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("does not link a stored URL that is not http(s)", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        provider_default_hosts: { github: "github.com" },
       }),
     );
 
     renderWithProviders(
       <AssociatedPrCell
         conversation={{
-          pr_number: [7],
-          selected_repository: "platform/api",
-          git_provider: "gitlab",
+          pull_requests: [
+            {
+              number: 7,
+              repository: "acme/widgets",
+              git_provider: "github",
+              // The unsafe URL is the input under test.
+              // eslint-disable-next-line no-script-url
+              url: "javascript:alert(1)",
+            },
+          ],
         }}
       />,
     );
 
     expect(
-      await screen.findByRole("link", { name: "platform/api #7" }),
-    ).toHaveAttribute(
-      "href",
-      "https://gitlab.acme.dev/platform/api/-/merge_requests/7",
-    );
+      await screen.findByRole("link", { name: "acme/widgets #7" }),
+    ).toHaveAttribute("href", "https://github.com/acme/widgets/pull/7");
   });
-
-  it.each(["contoso", "https://dev.azure.com/contoso"])(
-    "links Azure DevOps PRs to dev.azure.com when the viewer's Azure DevOps organization is %s",
-    async (azureDevOpsOrganization) => {
-      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-        createMockWebClientConfig({
-          provider_default_hosts: { azure_devops: "dev.azure.com" },
-        }),
-      );
-      const getSettingsSpy = vi
-        .spyOn(SettingsService, "getSettings")
-        .mockResolvedValue({
-          ...MOCK_DEFAULT_USER_SETTINGS,
-          provider_tokens_set: { azure_devops: azureDevOpsOrganization },
-        });
-
-      renderWithProviders(
-        <AssociatedPrCell
-          conversation={{
-            pr_number: [42],
-            selected_repository: "contoso/proj/repo",
-            git_provider: "azure_devops",
-          }}
-        />,
-      );
-
-      await waitFor(() => expect(getSettingsSpy).toHaveBeenCalled());
-      await waitFor(() =>
-        expect(
-          screen.getByRole("link", { name: "contoso/proj/repo #42" }),
-        ).toHaveAttribute(
-          "href",
-          "https://dev.azure.com/contoso/proj/_git/repo/pullrequest/42",
-        ),
-      );
-    },
-  );
 
   it("shows the PR number as plain text when the repository is unknown", () => {
     renderWithProviders(
       <AssociatedPrCell
         conversation={{
-          pr_number: [295],
-          selected_repository: null,
-          git_provider: null,
+          pull_requests: [
+            { number: 295, repository: null, git_provider: null },
+          ],
         }}
       />,
     );
@@ -239,13 +274,7 @@ describe("AssociatedPrCell", () => {
 
   it("shows a dash when there are no PRs", () => {
     renderWithProviders(
-      <AssociatedPrCell
-        conversation={{
-          pr_number: [],
-          selected_repository: "acme/widgets",
-          git_provider: "github",
-        }}
-      />,
+      <AssociatedPrCell conversation={{ pull_requests: [] }} />,
     );
 
     expect(screen.getByText("-")).toBeInTheDocument();
