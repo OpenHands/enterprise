@@ -23272,23 +23272,6 @@
     "uk": "Будь ласка, виберіть організацію",
     "ca": "Seleccioneu una organització"
   },
-  "ORG$ALL_ORGANIZATIONS": {
-    "en": "All Organizations",
-    "ja": "すべての組織",
-    "zh-CN": "所有组织",
-    "zh-TW": "所有組織",
-    "ko-KR": "모든 조직",
-    "no": "Alle organisasjoner",
-    "it": "Tutte le organizzazioni",
-    "pt": "Todas as organizações",
-    "es": "Todas las organizaciones",
-    "ar": "جميع المؤسسات",
-    "fr": "Toutes les organisations",
-    "tr": "Tüm organizasyonlar",
-    "de": "Alle Organisationen",
-    "uk": "Усі організації",
-    "ca": "Totes les organitzacions"
-  },
   "ORG$PERSONAL_WORKSPACE": {
     "en": "Personal Workspace",
     "ja": "個人ワークスペース",

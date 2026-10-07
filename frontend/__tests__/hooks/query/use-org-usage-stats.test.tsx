@@ -49,9 +49,7 @@ describe("useOrgUsageStats", () => {
   it("passes timeWindow through without setting days", async () => {
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: "org-123",
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
     vi.mocked(organizationService.getUsageStats).mockResolvedValue(
       mockUsageStats,

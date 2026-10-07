@@ -1,6 +1,6 @@
 import { screen, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { OrgSelector } from "#/components/features/org/org-selector";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -11,7 +11,6 @@ import {
   MOCK_TEAM_ORG_ACME,
   createMockOrganization,
 } from "#/mocks/org-handlers";
-import { adminService } from "#/api/admin-service/admin-service.api";
 
 vi.mock("react-router", () => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
@@ -29,12 +28,6 @@ vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => ({ data: { app_mode: "saas" } }),
 }));
 
-vi.mock("#/api/admin-service/admin-service.api", () => ({
-  adminService: {
-    getMySuperAdminStatus: vi.fn().mockResolvedValue(false),
-  },
-}));
-
 vi.mock("react-i18next", async () => {
   const actual =
     await vi.importActual<typeof import("react-i18next")>("react-i18next");
@@ -43,12 +36,11 @@ vi.mock("react-i18next", async () => {
     useTranslation: () => ({
       t: (key: string, params?: Record<string, string>) => {
         const translations: Record<string, string> = {
-          ORG$SELECT_ORGANIZATION_PLACEHOLDER: "Please select an organization",
-          ORG$PERSONAL_WORKSPACE: "Personal Workspace",
-          ORG$SWITCHED_TO_ORGANIZATION: `You have switched to organization: ${params?.name ?? ""}`,
-          ORG$SWITCHED_TO_PERSONAL_WORKSPACE:
+          "ORG$SELECT_ORGANIZATION_PLACEHOLDER": "Please select an organization",
+          "ORG$PERSONAL_WORKSPACE": "Personal Workspace",
+          "ORG$SWITCHED_TO_ORGANIZATION": `You have switched to organization: ${params?.name ?? ""}`,
+          "ORG$SWITCHED_TO_PERSONAL_WORKSPACE":
             "You have switched to your personal workspace.",
-          ORG$ALL_ORGANIZATIONS: "All Organizations",
         };
         return translations[key] || key;
       },
@@ -70,14 +62,7 @@ const renderOrgSelector = () =>
 
 describe("OrgSelector", () => {
   beforeEach(() => {
-    useSelectedOrganizationStore.setState({
-      organizationId: null,
-      explicitlyNoOrg: false,
-    });
-  });
-
-  afterEach(() => {
-    vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+    useSelectedOrganizationStore.setState({ organizationId: null });
   });
   it("should not render when user only has a personal workspace", async () => {
     vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
@@ -331,61 +316,6 @@ describe("OrgSelector", () => {
       expect(displaySuccessToastSpy).toHaveBeenCalledWith(
         "You have switched to your personal workspace.",
       );
-    });
-  });
-
-  describe("super admin: All Organizations option", () => {
-    it("should not show an All Organizations option for non-super-admins", async () => {
-      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
-      const user = userEvent.setup();
-      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
-        items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
-        currentOrgId: MOCK_PERSONAL_ORG.id,
-      });
-
-      renderOrgSelector();
-
-      await waitFor(() => {
-        expect(screen.getByRole("combobox")).toHaveValue("Personal Workspace");
-      });
-
-      const trigger = screen.getByTestId("dropdown-trigger");
-      await user.click(trigger);
-
-      const listbox = await screen.findByRole("listbox");
-      expect(
-        within(listbox).queryByText("All Organizations"),
-      ).not.toBeInTheDocument();
-    });
-
-    it("should show an All Organizations option for super admins and clear the selected org when chosen", async () => {
-      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
-      const user = userEvent.setup();
-      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
-        items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
-        currentOrgId: MOCK_PERSONAL_ORG.id,
-      });
-
-      renderOrgSelector();
-
-      await waitFor(() => {
-        expect(screen.getByRole("combobox")).toHaveValue("Personal Workspace");
-      });
-
-      const trigger = screen.getByTestId("dropdown-trigger");
-      await user.click(trigger);
-
-      const listbox = await screen.findByRole("listbox");
-      const allOrgsOption = within(listbox).getByText("All Organizations");
-      await user.click(allOrgsOption);
-
-      await waitFor(() => {
-        expect(useSelectedOrganizationStore.getState()).toMatchObject({
-          organizationId: null,
-          explicitlyNoOrg: true,
-        });
-      });
-      expect(screen.getByRole("combobox")).toHaveValue("All Organizations");
     });
   });
 });

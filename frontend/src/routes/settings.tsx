@@ -17,6 +17,7 @@ import { SAAS_NAV_ITEMS, OSS_NAV_ITEMS } from "#/constants/settings-nav";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import { getSettingsQueryFn } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+import { getIsSuperAdmin } from "#/utils/org/permission-guard";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
@@ -228,10 +229,15 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
     if (pathname === "/settings/org-members") {
       const role = user?.role ?? "member";
+      // Instance-level super admins keep access here even with the Personal
+      // Workspace selected -- it becomes the instance-wide "All Users" view
+      // rather than this org's member list (see ManageOrganizationMembers).
+      const isSuperAdmin = await getIsSuperAdmin();
       if (
-        !user ||
-        !rolePermissions[role].includes("invite_user_to_organization") ||
-        isPersonalOrg
+        !isSuperAdmin &&
+        (!user ||
+          !rolePermissions[role].includes("invite_user_to_organization") ||
+          isPersonalOrg)
       ) {
         return replace("/settings");
       }

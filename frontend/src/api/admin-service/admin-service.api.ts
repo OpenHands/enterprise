@@ -17,8 +17,8 @@ export const adminService = {
 
   /**
    * List every user on the instance, regardless of organization. Powers
-   * the org-members page's "all users" view when a super admin has no
-   * organization selected.
+   * the org-members page's "All Users" view, shown to a super admin when
+   * their Personal Workspace is selected.
    */
   getAllUsers: async ({
     page = 1,

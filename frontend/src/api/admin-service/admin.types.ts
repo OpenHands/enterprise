@@ -1,4 +1,4 @@
-/** A single instance user, for the "no organization selected" admin view. */
+/** A single instance user, for the "All Users" admin view. */
 export interface AdminUser {
   user_id: string;
   email: string | null;

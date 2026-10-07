@@ -53,9 +53,7 @@ describe("useOrganizationAppSettings", () => {
   it("does not fetch when orgId is null", async () => {
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: null,
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
 
     const { result } = renderHook(() => useOrganizationAppSettings(), {
@@ -72,9 +70,7 @@ describe("useOrganizationAppSettings", () => {
   it("does not fetch when orgId is undefined", async () => {
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: null,
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
 
     const { result } = renderHook(() => useOrganizationAppSettings(), {
@@ -90,9 +86,7 @@ describe("useOrganizationAppSettings", () => {
   it("fetches org app settings when orgId is provided", async () => {
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: "org-123",
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
     vi.mocked(organizationService.getOrganizationAppSettings).mockResolvedValue(
       mockResponse,
@@ -119,9 +113,7 @@ describe("useOrganizationAppSettings", () => {
 
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: "org-123",
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
     vi.mocked(organizationService.getOrganizationAppSettings).mockResolvedValue(
       {
@@ -154,9 +146,7 @@ describe("useOrganizationAppSettings", () => {
     // Change org - should create new query with different key
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: "org-456",
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
     vi.mocked(organizationService.getOrganizationAppSettings).mockResolvedValue(
       {
@@ -182,9 +172,7 @@ describe("useOrganizationAppSettings", () => {
   it("handles fetch error", async () => {
     vi.mocked(useSelectedOrganizationId).mockReturnValue({
       organizationId: "org-123",
-      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
-      clearOrganizationId: vi.fn(),
     });
     const error = new Error("Failed to fetch");
     vi.mocked(organizationService.getOrganizationAppSettings).mockRejectedValue(

@@ -11,8 +11,9 @@ interface UseAllUsersParams {
 
 /**
  * Instance-wide user directory, paginated. Counterpart to
- * ``useOrganizationMembers`` for the org-members page's "no organization
- * selected" admin view (super-admin only, see ``GET /api/admin/users``).
+ * ``useOrganizationMembers`` for the org-members page's "All Users" admin
+ * view, shown to super admins when their Personal Workspace is selected
+ * (super-admin only, see ``GET /api/admin/users``).
  */
 export const useAllUsers = ({
   page = 1,

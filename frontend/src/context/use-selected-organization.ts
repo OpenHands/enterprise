@@ -8,12 +8,8 @@ interface SetOrganizationIdOptions {
 
 export const useSelectedOrganizationId = () => {
   const revalidator = useRevalidator();
-  const {
-    organizationId,
-    explicitlyNoOrg,
-    setOrganizationId: setOrganizationIdStore,
-    clearOrganizationId: clearOrganizationIdStore,
-  } = useSelectedOrganizationStore();
+  const { organizationId, setOrganizationId: setOrganizationIdStore } =
+    useSelectedOrganizationStore();
 
   const setOrganizationId = (
     newOrganizationId: string | null,
@@ -28,18 +24,5 @@ export const useSelectedOrganizationId = () => {
     }
   };
 
-  /** Deliberately deselect the organization (super-admin "All Organizations" view). */
-  const clearOrganizationId = (options?: SetOrganizationIdOptions) => {
-    clearOrganizationIdStore();
-    if (!options?.skipRevalidation) {
-      revalidator.revalidate();
-    }
-  };
-
-  return {
-    organizationId,
-    explicitlyNoOrg,
-    setOrganizationId,
-    clearOrganizationId,
-  };
+  return { organizationId, setOrganizationId };
 };

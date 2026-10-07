@@ -14,6 +14,7 @@ import {
   resetOrgMockData,
   resetOrgsAndMembersMockData,
   MOCK_TEAM_ORG_ACME,
+  MOCK_PERSONAL_ORG,
   INITIAL_MOCK_ORGS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
@@ -652,7 +653,7 @@ describe("Manage Organization Members Route", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("should render the instance-wide all-users view when a super admin has no organization selected", async () => {
+    it("should render the instance-wide all-users view when a super admin has their Personal Workspace selected", async () => {
       vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
       vi.mocked(adminService.getAllUsers).mockResolvedValue({
         items: [
@@ -665,8 +666,15 @@ describe("Manage Organization Members Route", () => {
       vi.mocked(adminService.getAllUsersCount).mockResolvedValue(2);
 
       useSelectedOrganizationStore.setState({
-        organizationId: null,
-        explicitlyNoOrg: true,
+        organizationId: MOCK_PERSONAL_ORG.id,
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      queryClient.setQueryData(["organizations"], {
+        items: INITIAL_MOCK_ORGS,
+        currentOrgId: MOCK_PERSONAL_ORG.id,
       });
 
       renderManageOrganizationMembers();

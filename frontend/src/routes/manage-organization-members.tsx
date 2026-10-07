@@ -19,7 +19,7 @@ import { useUpdateMemberRole } from "#/hooks/mutation/use-update-member-role";
 import { useRemoveMember } from "#/hooks/mutation/use-remove-member";
 import { useMe } from "#/hooks/query/use-me";
 import { useIsSuperAdmin } from "#/hooks/query/use-is-super-admin";
-import { useSelectedOrganizationId } from "#/context/use-selected-organization";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { rolePermissions } from "#/utils/org/permissions";
 import { I18nKey } from "#/i18n/declaration";
@@ -376,8 +376,9 @@ function OrganizationMembersSection({
 }
 
 /**
- * Instance-wide "no organization selected" view. Only reachable by super
- * admins (see the ``OrgSelector``'s "All Organizations" option and this
+ * Instance-wide view, shown to super admins when their selected organization
+ * is their Personal Workspace (which otherwise has no real "members" to
+ * manage) rather than a team org. Only reachable by super admins (see this
  * route's ``clientLoader``); read-only aside from minting sign-up links,
  * which here may also grant the instance-level ``superadmin`` role.
  */
@@ -534,14 +535,19 @@ function AllUsersSection() {
 }
 
 function ManageOrganizationMembers() {
-  const { organizationId } = useSelectedOrganizationId();
+  const { organizationId, isPersonalOrg } = useOrgTypeAndAccess();
   const { data: isSuperAdmin = false } = useIsSuperAdmin();
 
-  // Only a super admin can ever reach this without an organization selected
-  // (see the clientLoader guard above and the OrgSelector's "All
-  // Organizations" option); every other user always has one auto-selected.
-  if (!organizationId) {
+  // A super admin viewing their Personal Workspace has no real org members
+  // to manage there, so this becomes the instance-wide "All Users" view
+  // instead (see the clientLoader guard above, which lets super admins
+  // reach this page from a personal workspace in the first place).
+  if (isSuperAdmin && isPersonalOrg) {
     return <AllUsersSection />;
+  }
+
+  if (!organizationId) {
+    return null;
   }
 
   return (
