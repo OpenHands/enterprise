@@ -1343,3 +1343,32 @@ class TestSurfacedACPProviders:
         from openhands.sdk.settings import ACP_PROVIDERS
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+
+
+class TestGetProviderDefaultHosts:
+    """Test cases for _get_provider_default_hosts helper function."""
+
+    def test_includes_bitbucket_data_center_host_when_env_var_set(self):
+        """The Bitbucket Data Center host comes from BITBUCKET_DATA_CENTER_HOST."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(
+            os.environ, {'BITBUCKET_DATA_CENTER_HOST': ' bitbucket.acme.dev '}
+        ):
+            result = _get_provider_default_hosts()
+
+        assert result['bitbucket_data_center'] == 'bitbucket.acme.dev'
+        assert result['github'] == 'github.com'
+
+    def test_omits_bitbucket_data_center_when_env_var_unset(self):
+        """Without BITBUCKET_DATA_CENTER_HOST there is no Bitbucket Data Center host."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_provider_default_hosts()
+
+        assert 'bitbucket_data_center' not in result
