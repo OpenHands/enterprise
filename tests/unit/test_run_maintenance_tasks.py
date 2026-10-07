@@ -1,5 +1,6 @@
 """The maintenance task runner: per-run claims (#552) and task processing."""
 
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -229,6 +230,23 @@ def test_a_run_that_lost_its_claim_cannot_write(session_maker):
     stored = _get(session_maker, task_id)
     assert stored.status == MaintenanceTaskStatus.COMPLETED
     assert stored.info == {'done': True}
+
+
+def test_finish_stores_updated_at_in_utc_on_a_non_utc_host(session_maker, monkeypatch):
+    # The model's onupdate hook is datetime.now (local time); finish_task must
+    # not fall back to it.
+    task_id = _add_task(session_maker)
+    run_id = uuid.uuid4()
+    assert claim_next_task(run_id, LEASE) is not None
+    monkeypatch.setenv('TZ', 'Asia/Tokyo')
+    time.tzset()
+    try:
+        assert finish_task(task_id, run_id, {}, MaintenanceTaskStatus.COMPLETED)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    stored = _get(session_maker, task_id)
+    assert abs(stored.updated_at - _naive_utc()) < timedelta(minutes=1)
 
 
 def test_the_lease_comes_from_the_environment(monkeypatch):
