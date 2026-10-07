@@ -1,478 +1,263 @@
-"""
-Unit tests for the run_maintenance_tasks.py module.
+"""The maintenance task runner: per-run claims (#552) and task processing."""
 
-These tests verify the functionality of the maintenance task runner script
-that processes pending maintenance tasks.
-"""
-
-import asyncio
-import sys
+import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import update
 
-# Mock the database module while importing the module under test, so importing
-# it never touches Google Cloud SQL. The real module is put back afterwards:
-# `storage.database` is shared with the rest of the suite, and leaving a stub in
-# sys.modules would break every later test in this worker that imports it.
-mock_db = MagicMock()
-mock_db.session_maker = MagicMock()
-with patch.dict(sys.modules, {'storage.database': mock_db}):
-    from run_maintenance_tasks import (
-        main,
-        next_task,
-        run_tasks,
-        set_stale_task_error,
-    )
-from storage.maintenance_task import (  # noqa: E402
-    MaintenanceTask,
-    MaintenanceTaskProcessor,
-    MaintenanceTaskStatus,
+from run_maintenance_tasks import (
+    DEFAULT_CLAIM_LEASE_SECONDS,
+    claim_lease,
+    claim_next_task,
+    finish_task,
+    main,
+    run_tasks,
 )
+from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+
+LEASE = timedelta(seconds=DEFAULT_CLAIM_LEASE_SECONDS)
 
 
-class MockMaintenanceTaskProcessor(MaintenanceTaskProcessor):
-    """Mock processor for testing."""
-
-    async def __call__(self, task: MaintenanceTask) -> dict:
-        """Process a maintenance task."""
-        return {'processed': True, 'task_id': task.id}
+def _naive_utc(delta: timedelta = timedelta()) -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None) + delta
 
 
-class TestRunMaintenanceTasks:
-    """Tests for the run_maintenance_tasks.py module."""
+def _add_task(session_maker, **fields) -> int:
+    fields.setdefault('status', MaintenanceTaskStatus.PENDING)
+    with session_maker() as session:
+        task = MaintenanceTask(
+            processor_type='test.processor', processor_json='{}', **fields
+        )
+        session.add(task)
+        session.commit()
+        return task.id
 
-    def test_set_stale_task_error(self, session_maker):
-        """Test that stale tasks are marked as error."""
-        # Create a stale task (working for more than 1 hour)
-        with session_maker() as session:
-            stale_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-                started_at=datetime.now(timezone.utc) - timedelta(hours=2),
-            )
-            session.add(stale_task)
 
-            # Create a non-stale task (working for less than 1 hour)
-            recent_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-                started_at=datetime.now(timezone.utc) - timedelta(minutes=30),
-            )
-            session.add(recent_task)
-            session.commit()
+def _get(session_maker, task_id: int) -> MaintenanceTask:
+    with session_maker() as session:
+        task = session.get(MaintenanceTask, task_id)
+        assert task is not None
+        return task
 
-            stale_task_id = stale_task.id
-            recent_task_id = recent_task.id
 
-        # Run the function
-        with patch('run_maintenance_tasks.session_maker', return_value=session_maker()):
-            set_stale_task_error()
+def _set(session_maker, task_id: int, **values) -> None:
+    with session_maker() as session:
+        session.execute(
+            update(MaintenanceTask)
+            .where(MaintenanceTask.id == task_id)
+            .values(**values)
+        )
+        session.commit()
 
-        # Check that the stale task is marked as error
-        with session_maker() as session:
-            updated_stale_task = session.get(MaintenanceTask, stale_task_id)
-            updated_recent_task = session.get(MaintenanceTask, recent_task_id)
 
-            assert updated_stale_task.status == MaintenanceTaskStatus.ERROR
-            assert updated_recent_task.status == MaintenanceTaskStatus.WORKING
+@pytest.fixture(autouse=True)
+def runner_sessions(session_maker):
+    with patch('run_maintenance_tasks.session_maker', session_maker):
+        yield
 
-    @pytest.mark.asyncio
-    async def test_next_task(self, session_maker):
-        """Test that next_task returns the oldest pending task."""
-        # Create tasks with different statuses and creation times
-        with session_maker() as session:
-            # Create a pending task (older)
-            older_pending_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-                created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-            )
-            session.add(older_pending_task)
 
-            # Create another pending task (newer)
-            newer_pending_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-                created_at=datetime.now(timezone.utc) - timedelta(hours=1),
-            )
-            session.add(newer_pending_task)
+def test_claim_takes_the_oldest_pending_task(session_maker):
+    older = _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=2)))
+    _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=1)))
+    run_id = uuid.uuid4()
 
-            # Create tasks with other statuses
-            working_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(working_task)
+    task = claim_next_task(run_id, LEASE)
 
-            completed_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.COMPLETED,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(completed_task)
+    assert task is not None and task.id == older
+    stored = _get(session_maker, older)
+    assert stored.status == MaintenanceTaskStatus.WORKING
+    assert stored.claim_run_id == run_id
+    assert stored.claimed_at is not None and stored.claimed_at.tzinfo is not None
+    assert stored.started_at is not None and stored.started_at.tzinfo is None
 
-            error_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.ERROR,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(error_task)
 
-            inactive_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.INACTIVE,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(inactive_task)
+def test_concurrent_claims_take_different_tasks(session_maker):
+    older = _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=2)))
+    newer = _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=1)))
 
-            session.commit()
+    with session_maker() as other_run:
+        other_run.query(MaintenanceTask).filter(
+            MaintenanceTask.id == older
+        ).with_for_update().one()
+        task = claim_next_task(uuid.uuid4(), LEASE)
+        other_run.rollback()
 
-            older_pending_id = older_pending_task.id
+    assert task is not None and task.id == newer
+    assert _get(session_maker, older).status == MaintenanceTaskStatus.PENDING
 
-        # Test next_task function
-        with session_maker() as session:
-            # Patch asyncio.sleep to avoid delays in tests
-            with patch('asyncio.sleep', new_callable=AsyncMock):
-                task = await next_task(session)
 
-                # Should return the oldest pending task
-                assert task is not None
-                assert task.id == older_pending_id
-                assert task.status == MaintenanceTaskStatus.PENDING
+def test_a_claim_inside_its_lease_is_not_taken(session_maker):
+    _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        claim_run_id=uuid.uuid4(),
+        claimed_at=datetime.now(timezone.utc) - LEASE + timedelta(minutes=5),
+        started_at=_naive_utc(-LEASE + timedelta(minutes=5)),
+    )
 
-    @pytest.mark.asyncio
-    async def test_next_task_with_no_pending_tasks(self, session_maker):
-        """Test that next_task returns None when there are no pending tasks."""
-        # Create session with no pending tasks
-        with session_maker() as session:
-            # Patch asyncio.sleep to avoid delays in tests
-            with patch('asyncio.sleep', new_callable=AsyncMock):
-                # Patch NUM_RETRIES to make the test faster
-                with patch('run_maintenance_tasks.NUM_RETRIES', 1):
-                    task = await next_task(session)
+    assert claim_next_task(uuid.uuid4(), LEASE) is None
 
-                    # Should return None after retries
-                    assert task is None
 
-    @pytest.mark.asyncio
-    async def test_next_task_bug_fix(self, session_maker):
-        """Test that next_task doesn't have an infinite loop bug."""
-        # This test verifies the fix for the bug where `task = next_task` creates an infinite loop
+def test_a_claim_past_its_lease_is_taken_over(session_maker):
+    previous_run = uuid.uuid4()
+    task_id = _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        claim_run_id=previous_run,
+        claimed_at=datetime.now(timezone.utc) - LEASE - timedelta(minutes=1),
+        started_at=_naive_utc(-LEASE - timedelta(minutes=1)),
+    )
+    run_id = uuid.uuid4()
 
-        # Create a pending task
-        with session_maker() as session:
-            task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(task)
-            session.commit()
-            task_id = task.id
+    task = claim_next_task(run_id, LEASE)
 
-        # Create a patched version of next_task with the bug fixed
-        async def fixed_next_task(session):
-            num_retries = 1  # Use a small value for testing
-            while True:
-                task = (
-                    session.query(MaintenanceTask)
-                    .filter(MaintenanceTask.status == MaintenanceTaskStatus.PENDING)
-                    .order_by(MaintenanceTask.created_at)
-                    .first()
-                )
-                if task:
-                    return task
-                # Fix: Don't assign next_task to task
-                num_retries -= 1
-                if num_retries < 0:
-                    return None
-                await asyncio.sleep(0.01)  # Small delay for testing
+    assert task is not None and task.id == task_id
+    assert _get(session_maker, task_id).claim_run_id == run_id
 
-        with session_maker() as session:
-            # Patch asyncio.sleep to avoid delays
-            with patch('asyncio.sleep', new_callable=AsyncMock):
-                # Test the fixed version
-                with patch('run_maintenance_tasks.next_task', fixed_next_task):
-                    # This should complete without hanging
-                    result = await next_task(session)
-                    assert result is not None
-                    assert result.id == task_id
 
-    @pytest.mark.asyncio
-    async def test_run_tasks_processes_pending_tasks(self, session_maker):
-        """Test that run_tasks processes pending tasks in order."""
-        # Create a mock processor
-        processor = AsyncMock()
-        processor.return_value = {'processed': True}
+def test_a_working_task_without_a_claim_uses_started_at(session_maker):
+    """Rows from code without claims are reclaimable once started_at passes the lease."""
+    abandoned = _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        started_at=_naive_utc(-LEASE - timedelta(minutes=1)),
+    )
+    _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        started_at=_naive_utc(-LEASE + timedelta(minutes=5)),
+    )
 
-        # Create tasks
-        with session_maker() as session:
-            # Create two pending tasks
-            task1 = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-                created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-            )
-            session.add(task1)
+    task = claim_next_task(uuid.uuid4(), LEASE)
 
-            task2 = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-                created_at=datetime.now(timezone.utc) - timedelta(hours=1),
-            )
-            session.add(task2)
-            session.commit()
+    assert task is not None and task.id == abandoned
+    assert claim_next_task(uuid.uuid4(), LEASE) is None
 
-            task1_id = task1.id
-            task2_id = task2.id
 
-        # Mock the get_processor method to return our mock
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
-        ):
-            with patch(
-                'run_maintenance_tasks.session_maker', return_value=session_maker()
-            ):
-                # Patch asyncio.sleep to avoid delays
-                with patch('asyncio.sleep', new_callable=AsyncMock):
-                    # Run the function with a timeout to prevent infinite loop
-                    try:
-                        await asyncio.wait_for(run_tasks(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass  # Expected since run_tasks runs until no tasks are left
+def test_a_run_that_lost_its_claim_cannot_write(session_maker):
+    task_id = _add_task(session_maker)
+    first_run, second_run = uuid.uuid4(), uuid.uuid4()
+    assert claim_next_task(first_run, LEASE) is not None
+    _set(
+        session_maker,
+        task_id,
+        claimed_at=datetime.now(timezone.utc) - LEASE - timedelta(minutes=1),
+    )
+    assert claim_next_task(second_run, LEASE) is not None
 
-        # Check that both tasks were processed
-        with session_maker() as session:
-            updated_task1 = session.get(MaintenanceTask, task1_id)
-            updated_task2 = session.get(MaintenanceTask, task2_id)
+    assert not finish_task(
+        task_id, first_run, {'stale': True}, MaintenanceTaskStatus.COMPLETED
+    )
+    stored = _get(session_maker, task_id)
+    assert stored.status == MaintenanceTaskStatus.WORKING
+    assert stored.claim_run_id == second_run
 
-            assert updated_task1.status == MaintenanceTaskStatus.COMPLETED
-            assert updated_task2.status == MaintenanceTaskStatus.COMPLETED
-            assert updated_task1.info == {'processed': True}
-            assert updated_task2.info == {'processed': True}
-            assert processor.call_count == 2
+    assert finish_task(
+        task_id, second_run, {'done': True}, MaintenanceTaskStatus.COMPLETED
+    )
+    stored = _get(session_maker, task_id)
+    assert stored.status == MaintenanceTaskStatus.COMPLETED
+    assert stored.info == {'done': True}
 
-    @pytest.mark.asyncio
-    async def test_run_tasks_handles_errors(self, session_maker):
-        """Test that run_tasks handles processor errors correctly."""
-        # Create a mock processor that raises an exception
-        processor = AsyncMock()
-        processor.side_effect = ValueError('Test error')
 
-        # Create a task
-        with session_maker() as session:
-            task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(task)
-            session.commit()
+def test_the_lease_comes_from_the_environment(monkeypatch):
+    monkeypatch.delenv('MAINTENANCE_TASK_CLAIM_LEASE_SECONDS', raising=False)
+    assert claim_lease() == timedelta(seconds=2100)
 
-            task_id = task.id
+    monkeypatch.setenv('MAINTENANCE_TASK_CLAIM_LEASE_SECONDS', '2700')
+    assert claim_lease() == timedelta(seconds=2700)
 
-        # Mock the get_processor method to return our mock
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
-        ):
-            with patch(
-                'run_maintenance_tasks.session_maker', return_value=session_maker()
-            ):
-                # Patch asyncio.sleep to avoid delays
-                with patch('asyncio.sleep', new_callable=AsyncMock):
-                    # Run the function with a timeout
-                    try:
-                        await asyncio.wait_for(run_tasks(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass  # Expected
 
-        # Check that the task was marked as error
-        with session_maker() as session:
-            updated_task = session.get(MaintenanceTask, task_id)
+async def test_run_tasks_processes_pending_tasks_in_order(session_maker):
+    first = _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=2)))
+    second = _add_task(session_maker, created_at=_naive_utc(-timedelta(hours=1)))
+    seen: list[int] = []
 
-            assert updated_task.status == MaintenanceTaskStatus.ERROR
-            assert 'error' in updated_task.info
-            assert updated_task.info['error'] == 'Test error'
+    async def processor(task):
+        seen.append(task.id)
+        return {'processed': True}
 
-    def test_set_stale_task_error_uses_naive_utc_cutoff(self, session_maker):
-        """set_stale_task_error must compare against a naive UTC cutoff."""
-        # Create tasks using naive UTC started_at values (matching what run_tasks writes).
-        with session_maker() as session:
-            stale = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-                started_at=datetime.now(timezone.utc).replace(tzinfo=None)
-                - timedelta(hours=2),
-            )
-            recent = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-                started_at=datetime.now(timezone.utc).replace(tzinfo=None)
-                - timedelta(minutes=30),
-            )
-            session.add_all([stale, recent])
-            session.commit()
-            stale_id, recent_id = stale.id, recent.id
+    with patch.object(MaintenanceTask, 'get_processor', return_value=processor):
+        assert await run_tasks() == 0
 
-        with patch('run_maintenance_tasks.session_maker', return_value=session_maker()):
-            set_stale_task_error()
+    assert seen == [first, second]
+    for task_id in (first, second):
+        stored = _get(session_maker, task_id)
+        assert stored.status == MaintenanceTaskStatus.COMPLETED
+        assert stored.info == {'processed': True}
+        assert stored.updated_at.tzinfo is None
 
-        with session_maker() as session:
-            assert (
-                session.get(MaintenanceTask, stale_id).status
-                == MaintenanceTaskStatus.ERROR
-            )
-            assert (
-                session.get(MaintenanceTask, recent_id).status
-                == MaintenanceTaskStatus.WORKING
-            )
 
-    @pytest.mark.asyncio
-    async def test_run_tasks_stores_naive_utc_started_at(self, session_maker):
-        """run_tasks must write naive UTC datetimes to started_at and updated_at."""
-        processor = AsyncMock(return_value={})
+async def test_run_tasks_records_a_processor_error(session_maker):
+    task_id = _add_task(session_maker)
+    processor = AsyncMock(side_effect=ValueError('Test error'))
 
-        with session_maker() as session:
-            task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(task)
-            session.commit()
-            task_id = task.id
+    with patch.object(MaintenanceTask, 'get_processor', return_value=processor):
+        assert await run_tasks() == 1
 
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
-        ):
-            with patch(
-                'run_maintenance_tasks.session_maker', return_value=session_maker()
-            ):
-                with patch('asyncio.sleep', new_callable=AsyncMock):
-                    try:
-                        await asyncio.wait_for(run_tasks(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass
+    stored = _get(session_maker, task_id)
+    assert stored.status == MaintenanceTaskStatus.ERROR
+    assert stored.info == {'error': 'Test error'}
 
-        with session_maker() as session:
-            updated = session.get(MaintenanceTask, task_id)
-            assert updated.started_at is not None
-            assert updated.started_at.tzinfo is None
-            assert updated.updated_at is not None
-            assert updated.updated_at.tzinfo is None
 
-    @pytest.mark.asyncio
-    async def test_run_tasks_respects_delay(self, session_maker):
-        """Test that run_tasks respects the delay parameter."""
-        # Create a mock processor
-        processor = AsyncMock()
-        processor.return_value = {'processed': True}
+async def test_run_tasks_does_not_overwrite_a_task_taken_over_mid_run(session_maker):
+    task_id = _add_task(session_maker)
+    new_owner = uuid.uuid4()
 
-        # Create a task with delay
-        with session_maker() as session:
-            task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-                delay=1,  # 1 second delay
-            )
-            session.add(task)
-            session.commit()
+    async def processor(task):
+        _set(session_maker, task.id, claim_run_id=new_owner)
+        return {'error_count': 1}
 
-            task_id = task.id
+    with patch.object(MaintenanceTask, 'get_processor', return_value=processor):
+        assert await run_tasks() == 0
 
-        # Mock asyncio.sleep to track calls
-        sleep_mock = AsyncMock()
+    stored = _get(session_maker, task_id)
+    assert stored.status == MaintenanceTaskStatus.WORKING
+    assert stored.claim_run_id == new_owner
+    assert stored.info is None
 
-        # Mock the get_processor method
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
-        ):
-            with patch(
-                'run_maintenance_tasks.session_maker', return_value=session_maker()
-            ):
-                with patch('asyncio.sleep', sleep_mock):
-                    # Run the function with a timeout
-                    try:
-                        await asyncio.wait_for(run_tasks(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass  # Expected
 
-        # Check that sleep was called with the correct delay
-        sleep_mock.assert_called_once_with(1)
+async def test_run_tasks_waits_for_a_task_delay(session_maker):
+    task_id = _add_task(session_maker, delay=1)
+    sleep = AsyncMock()
 
-        # Check that the task was processed
-        with session_maker() as session:
-            updated_task = session.get(MaintenanceTask, task_id)
-            assert updated_task.status == MaintenanceTaskStatus.COMPLETED
+    with (
+        patch.object(
+            MaintenanceTask, 'get_processor', return_value=AsyncMock(return_value={})
+        ),
+        patch('asyncio.sleep', sleep),
+    ):
+        await run_tasks()
 
-    @pytest.mark.asyncio
-    async def test_main_function(self, session_maker):
-        """Test the main function that runs both set_stale_task_error and run_tasks."""
-        # Create a stale task and a pending task
-        with session_maker() as session:
-            stale_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.WORKING,
-                processor_type='test.processor',
-                processor_json='{}',
-                started_at=datetime.now(timezone.utc) - timedelta(hours=2),
-            )
-            session.add(stale_task)
+    sleep.assert_called_once_with(1)
+    assert _get(session_maker, task_id).status == MaintenanceTaskStatus.COMPLETED
 
-            pending_task = MaintenanceTask(
-                status=MaintenanceTaskStatus.PENDING,
-                processor_type='test.processor',
-                processor_json='{}',
-            )
-            session.add(pending_task)
-            session.commit()
 
-            stale_task_id = stale_task.id
-            pending_task_id = pending_task.id
+async def test_main_reruns_an_abandoned_task_instead_of_failing_it(session_maker):
+    abandoned = _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        started_at=_naive_utc(-timedelta(hours=2)),
+    )
+    pending = _add_task(session_maker)
 
-        # Mock the processor
-        processor = AsyncMock()
-        processor.return_value = {'processed': True}
+    with (
+        patch.object(
+            MaintenanceTask,
+            'get_processor',
+            return_value=AsyncMock(return_value={'processed': True}),
+        ),
+        patch(
+            'server.maintenance_task_processor.managed_llm_key_ownership_processor.'
+            'enqueue_managed_llm_key_ownership_tasks',
+            return_value=0,
+        ),
+    ):
+        await main()
 
-        # Mock the functions
-        with patch(
-            'storage.maintenance_task.MaintenanceTask.get_processor',
-            return_value=processor,
-        ):
-            with patch(
-                'run_maintenance_tasks.session_maker', return_value=session_maker()
-            ):
-                # Patch asyncio.sleep to avoid delays
-                with patch('asyncio.sleep', new_callable=AsyncMock):
-                    # Run the main function with a timeout
-                    try:
-                        await asyncio.wait_for(main(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass  # Expected
-
-        # Check that both tasks were processed correctly
-        with session_maker() as session:
-            updated_stale_task = session.get(MaintenanceTask, stale_task_id)
-            updated_pending_task = session.get(MaintenanceTask, pending_task_id)
-
-            # Stale task should be marked as error
-            assert updated_stale_task.status == MaintenanceTaskStatus.ERROR
-
-            # Pending task should be processed and completed
-            assert updated_pending_task.status == MaintenanceTaskStatus.COMPLETED
-            assert updated_pending_task.info == {'processed': True}
+    for task_id in (abandoned, pending):
+        stored = _get(session_maker, task_id)
+        assert stored.status == MaintenanceTaskStatus.COMPLETED
+        assert stored.info == {'processed': True}
