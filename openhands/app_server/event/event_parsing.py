@@ -14,6 +14,60 @@ _VALID_EVENT_SOURCES = frozenset({'agent', 'user', 'environment', 'hook'})
 _UNKNOWN_EVENT_KIND = 'UnknownEvent'
 
 
+def _unparsed_json_schema(
+    title: str, description: str, required: list[str]
+) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        'original_kind': {'title': 'Original Kind', 'type': 'string'},
+        'raw_payload': {
+            'additionalProperties': True,
+            'title': 'Raw Payload',
+            'type': 'object',
+        },
+        'kind': {'const': title, 'title': 'Kind', 'type': 'string'},
+    }
+    if title == 'UnparsedEvent':
+        properties = {
+            'id': {
+                'description': 'Unique event id (ULID/UUID)',
+                'title': 'Id',
+                'type': 'string',
+            },
+            'timestamp': {
+                'description': 'Event timestamp',
+                'title': 'Timestamp',
+                'type': 'string',
+            },
+            'source': {
+                'description': 'The source of this event',
+                'enum': ['agent', 'user', 'environment', 'hook'],
+                'title': 'Source',
+                'type': 'string',
+            },
+            'parent_id': {
+                'anyOf': [{'type': 'string'}, {'type': 'null'}],
+                'default': None,
+                'description': 'Parent event id in the conversation tree.',
+                'title': 'Parent Id',
+            },
+            **properties,
+        }
+    elif title == 'UnparsedObservation':
+        properties = {
+            'content': {'items': {}, 'title': 'Content', 'type': 'array'},
+            'is_error': {'default': False, 'title': 'Is Error', 'type': 'boolean'},
+            **properties,
+        }
+    return {
+        'additionalProperties': False,
+        'description': description,
+        'properties': properties,
+        'required': required,
+        'title': title,
+        'type': 'object',
+    }
+
+
 class UnparsedAction(Action):
     """Fallback for action payloads from SDK/client tools unknown to this server."""
 
@@ -21,6 +75,16 @@ class UnparsedAction(Action):
 
     original_kind: str
     raw_payload: dict[str, Any]
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: Any
+    ) -> dict[str, Any]:
+        return _unparsed_json_schema(
+            'UnparsedAction',
+            'Fallback for action payloads from SDK/client tools unknown to this server.',
+            ['original_kind', 'raw_payload'],
+        )
 
     @model_serializer(mode='plain')
     def _serialize_raw_payload(self) -> dict[str, Any]:
@@ -35,6 +99,16 @@ class UnparsedObservation(Observation):
     original_kind: str
     raw_payload: dict[str, Any]
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: Any
+    ) -> dict[str, Any]:
+        return _unparsed_json_schema(
+            'UnparsedObservation',
+            'Fallback for observation payloads unknown to this server.',
+            ['original_kind', 'raw_payload'],
+        )
+
     @model_serializer(mode='plain')
     def _serialize_raw_payload(self) -> dict[str, Any]:
         return copy.deepcopy(self.raw_payload)
@@ -47,6 +121,16 @@ class UnparsedEvent(Event):
 
     original_kind: str
     raw_payload: dict[str, Any]
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: Any
+    ) -> dict[str, Any]:
+        return _unparsed_json_schema(
+            'UnparsedEvent',
+            'Fallback for event payloads unknown to this server.',
+            ['source', 'original_kind', 'raw_payload'],
+        )
 
     @model_serializer(mode='plain')
     def _serialize_raw_payload(self) -> dict[str, Any]:
