@@ -687,6 +687,8 @@ export interface OrgMyBudget {
   cycle_end_at?: string | null;
   spend_status?: "live" | "stale" | "unavailable" | null;
   spend_observed_at?: string | null;
+  org_monthly_limit?: number | null;
+  org_current_spend?: number | null;
 }
 
 interface OrgBudgetThreshold {
