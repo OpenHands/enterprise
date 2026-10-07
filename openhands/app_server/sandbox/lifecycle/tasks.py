@@ -28,6 +28,7 @@ from openhands.app_server.sandbox.managed_sandbox_service import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.sandbox.sandbox_store import (
+    LifecycleState,
     lock_stored_sandbox_if_free,
     mark_paused,
 )
@@ -169,10 +170,14 @@ async def check_sandbox(
         'state_changed_at': row.state_changed_at.isoformat(),
     }
     if decision.action == Action.PAUSE:
-        if await sandbox_service.pause_sandbox(sandbox_id):
+        # pause_sandbox updates this same row, through the session's identity
+        # map, and leaves it running when the provider skips the pause.
+        if not await sandbox_service.pause_sandbox(sandbox_id):
+            _logger.warning('sandbox_lifecycle.pause_failed', extra=log_extra)
+        elif row.lifecycle_state == LifecycleState.PAUSED:
             _logger.info('sandbox_lifecycle.paused', extra=log_extra)
         else:
-            _logger.warning('sandbox_lifecycle.pause_failed', extra=log_extra)
+            _logger.info('sandbox_lifecycle.pause_skipped', extra=log_extra)
     elif decision.action == Action.DELETE:
         await sandbox_service.delete_sandbox(sandbox_id)
         _logger.info('sandbox_lifecycle.deleted', extra=log_extra)

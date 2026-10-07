@@ -1,14 +1,14 @@
 """Add ``user.password_hash`` for the dev IDP password login (OHE-3381).
 
-The dev IDP (``server.routes.dev_idp``) is a self-hosted-only email +
+The dev IDP (``server.routes.idp``) is a self-hosted-only email +
 password login that works without any external OAuth/OIDC provider. It is
-modeled as an in-memory sentinel (``DevIdpProvider``) rather than a row in
+modeled as an in-memory sentinel (``IdpProvider``) rather than a row in
 ``oauth_providers``, so this migration only adds the ``password_hash``
 column used to store the Argon2id hash of a dev IDP account's password.
 ``NULL`` for every user who authenticates via a real IDP.
 
 Whether the dev IDP is *usable* is a runtime decision
-(``is_dev_idp_available()`` — governed solely by the ``ENABLE_INTEGRATED_IDP``
+(``is_idp_available()`` — governed solely by the ``ENABLE_INTEGRATED_IDP``
 env var), re-checked on every request.
 
 Revision ID: 176

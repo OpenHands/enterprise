@@ -50,6 +50,7 @@
                 "OH_APP_MODE": "saas",
                 "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING": "true",
                 "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_JIRA": "true",
+                "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN": "1",
                 "OH_WEB_CLIENT_PROVIDERS_CONFIGURED": "[\"github\",\"gitlab\",\"bitbucket\"]",
                 "OH_WEB_CLIENT_GITHUB_APP_SLUG": "openhands-staging",
                 "OH_APP_CONVERSATION_INFO_KIND": "server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector",

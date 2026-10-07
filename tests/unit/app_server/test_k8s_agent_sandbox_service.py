@@ -63,6 +63,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     K8S_AGENT_SANDBOX_BACKEND,
+    LifecycleState,
     StoredSandbox,
     hash_session_api_key,
 )
@@ -759,6 +760,22 @@ class TestPauseResume:
 
         with pytest.raises(SandboxError, match='no pod yet'):
             await _service(db_session, k8s).pause_sandbox(CLAIM_NAME)
+
+    @pytest.mark.asyncio
+    async def test_pause_of_a_claim_that_failed_before_a_pod(
+        self, k8s, db_session, store
+    ):
+        stored = _stored()
+        await store(stored)
+        k8s.add_claim(
+            ready={'type': 'Ready', 'status': 'False', 'reason': 'TemplateNotFound'},
+            sandbox_name=None,
+        )
+
+        assert await _service(db_session, k8s).pause_sandbox(CLAIM_NAME) is True
+
+        assert k8s.modes == []
+        assert stored.lifecycle_state == LifecycleState.RUNNING
 
     @pytest.mark.asyncio
     async def test_resume_reinitializes_with_the_same_key(self, k8s, db_session, store):
