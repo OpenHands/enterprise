@@ -1668,9 +1668,7 @@ def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
     # ancestor of the project dir, so agents that write outside the project dir
     # (e.g. clone straight into ``/workspace``) still show up. Only the root
     # itself is accepted, never an arbitrary sibling.
-    if path.rstrip('/') == _WORKSPACE_ROOT and _is_within(
-        project_dir, _WORKSPACE_ROOT
-    ):
+    if path.rstrip('/') == _WORKSPACE_ROOT and _is_within(project_dir, _WORKSPACE_ROOT):
         return _WORKSPACE_ROOT
     return project_dir
 
