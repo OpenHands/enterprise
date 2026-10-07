@@ -9,6 +9,7 @@ from sqlalchemy import select
 from openhands.app_server.integrations.service_types import ProviderType
 from storage.auth_token_store import (
     ACCESS_TOKEN_EXPIRY_BUFFER,
+    AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER,
     LOCK_TIMEOUT_SECONDS,
     AuthTokenStore,
 )
@@ -86,6 +87,40 @@ class TestIsTokenExpired:
 
         assert access_expired is True
         assert refresh_expired is True
+
+    def test_azure_devops_uses_shorter_access_token_buffer(self):
+        """Azure DevOps access tokens use a smaller refresh buffer."""
+        store = AuthTokenStore(
+            keycloak_user_id='test-user',
+            idp=ProviderType.AZURE_DEVOPS,
+        )
+        current_time = int(time.time())
+        access_expires = current_time + AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER + 100
+        refresh_expires = current_time + 10000
+
+        access_expired, refresh_expired = store._is_token_expired(
+            access_expires, refresh_expires
+        )
+
+        assert access_expired is False
+        assert refresh_expired is False
+
+    def test_github_refreshes_within_git_provider_buffer(self):
+        """GitHub refreshes before the shorter Azure-specific window."""
+        store = AuthTokenStore(
+            keycloak_user_id='test-user',
+            idp=ProviderType.GITHUB,
+        )
+        current_time = int(time.time())
+        access_expires = current_time + AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER + 100
+        refresh_expires = current_time + 10000
+
+        access_expired, refresh_expired = store._is_token_expired(
+            access_expires, refresh_expires
+        )
+
+        assert access_expired is True
+        assert refresh_expired is False
 
     def test_zero_expiration_treated_as_never_expires(self):
         """Test that 0 expiration time is treated as never expires."""
@@ -231,6 +266,100 @@ class TestLoadTokensSlowPath:
             token_record = result_set.scalars().one()
             assert token_record.access_token == 'refreshed-access-token'
             assert token_record.refresh_token == 'refreshed-refresh-token'
+
+    @pytest.mark.asyncio
+    async def test_github_token_inside_provider_buffer_refreshes_before_expiry(
+        self, async_session_maker
+    ):
+        """GitHub tokens refresh while still valid but inside the provider buffer."""
+        current_time = int(time.time())
+        refresh_calls = []
+
+        async def refresh(idp, refresh_token, access_expires_at, refresh_expires_at):
+            refresh_calls.append(
+                (idp, refresh_token, access_expires_at, refresh_expires_at)
+            )
+            return {
+                'access_token': 'refreshed-access-token',
+                'refresh_token': 'refreshed-refresh-token',
+                'access_token_expires_at': current_time + ACCESS_TOKEN_EXPIRY_BUFFER,
+                'refresh_token_expires_at': current_time + 20000,
+            }
+
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore(
+                keycloak_user_id='test-user-123',
+                idp=ProviderType.GITHUB,
+            )
+
+            await store.store_tokens(
+                access_token='nearly-stale-access-token',
+                refresh_token='valid-refresh-token',
+                access_token_expires_at=current_time + 3600,
+                refresh_token_expires_at=current_time + 10000,
+            )
+
+            result = await store.load_tokens(check_expiration_and_refresh=refresh)
+
+        assert result is not None
+        assert result['access_token'] == 'refreshed-access-token'
+        assert refresh_calls == [
+            (
+                ProviderType.GITHUB,
+                'valid-refresh-token',
+                current_time + 3600,
+                current_time + 10000,
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_runs_callback_when_stored_expiry_is_valid(
+        self, async_session_maker
+    ):
+        """Forced refresh bypasses the valid-expiry fast path after provider 401."""
+        current_time = int(time.time())
+        refresh_calls = []
+
+        async def refresh(idp, refresh_token, access_expires_at, refresh_expires_at):
+            refresh_calls.append(
+                (idp, refresh_token, access_expires_at, refresh_expires_at)
+            )
+            return {
+                'access_token': 'forced-refreshed-access-token',
+                'refresh_token': 'forced-refreshed-refresh-token',
+                'access_token_expires_at': current_time + ACCESS_TOKEN_EXPIRY_BUFFER,
+                'refresh_token_expires_at': current_time + 20000,
+            }
+
+        with patch('storage.auth_token_store.a_session_maker', async_session_maker):
+            store = AuthTokenStore(
+                keycloak_user_id='test-user-123',
+                idp=ProviderType.GITHUB,
+            )
+
+            await store.store_tokens(
+                access_token='valid-but-rejected-access-token',
+                refresh_token='valid-refresh-token',
+                access_token_expires_at=current_time
+                + ACCESS_TOKEN_EXPIRY_BUFFER
+                + 3600,
+                refresh_token_expires_at=current_time + 10000,
+            )
+
+            result = await store.load_tokens(
+                check_expiration_and_refresh=refresh, force_refresh=True
+            )
+
+        assert result is not None
+        assert result['access_token'] == 'forced-refreshed-access-token'
+        assert refresh_calls == [
+            (
+                ProviderType.GITHUB,
+                'valid-refresh-token',
+                current_time + ACCESS_TOKEN_EXPIRY_BUFFER + 3600,
+                current_time + 10000,
+            )
+        ]
 
     @pytest.mark.asyncio
     async def test_refresh_callback_returns_none(self, async_session_maker):
@@ -485,8 +614,12 @@ class TestConstants:
     """Tests for module constants."""
 
     def test_access_token_expiry_buffer_value(self):
-        """Test ACCESS_TOKEN_EXPIRY_BUFFER is set to 15 minutes."""
-        assert ACCESS_TOKEN_EXPIRY_BUFFER == 900
+        """Test ACCESS_TOKEN_EXPIRY_BUFFER is set to 4 hours."""
+        assert ACCESS_TOKEN_EXPIRY_BUFFER == 14400
+
+    def test_azure_devops_access_token_expiry_buffer_value(self):
+        """Test Azure DevOps uses a shorter 5 minute buffer."""
+        assert AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER == 300
 
     def test_lock_timeout_seconds_value(self):
         """Test LOCK_TIMEOUT_SECONDS is set to 5 seconds."""
