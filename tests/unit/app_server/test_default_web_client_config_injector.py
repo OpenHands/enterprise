@@ -340,6 +340,51 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_acp is True
 
+    def test_enable_oauth_v2_login_false_by_default(self):
+        """When ENABLE_OAUTH_V2_LOGIN is unset, enable_oauth_v2_login is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('ENABLE_OAUTH_V2_LOGIN', None)
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is False
+
+    def test_enable_oauth_v2_login_true_when_env_var_true(self):
+        """When ENABLE_OAUTH_V2_LOGIN is 'true', enable_oauth_v2_login is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is True
+
+    def test_enable_oauth_v2_login_true_when_env_var_is_one(self):
+        """When ENABLE_OAUTH_V2_LOGIN is '1', enable_oauth_v2_login is True.
+
+        Older Helm chart versions default boolean toggles to '1' rather than
+        'true', so both forms must be accepted.
+        """
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is True
+
+    def test_enable_oauth_v2_login_false_when_env_var_false(self):
+        """When ENABLE_OAUTH_V2_LOGIN is 'false', enable_oauth_v2_login is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': 'false'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is False
+
     def test_enable_agent_canvas_banner_false_by_default(self):
         """When ENABLE_AGENT_CANVAS_BANNER is unset, the banner flag is False."""
         from openhands.app_server.web_client.default_web_client_config_injector import (

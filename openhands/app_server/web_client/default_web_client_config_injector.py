@@ -188,7 +188,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    and ENABLE_BYOR_EXPORT from environment.
+    ENABLE_BYOR_EXPORT, and ENABLE_OAUTH_V2_LOGIN from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -223,6 +223,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
+        enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
     )
 
 
