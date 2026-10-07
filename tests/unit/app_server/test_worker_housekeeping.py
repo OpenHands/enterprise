@@ -160,8 +160,8 @@ async def test_finished_jobs_are_removed_after_three_days(worker_app, conninfo):
 
 @pytest.fixture
 def worker_logs(monkeypatch, caplog):
-    # The app's loggers stop propagation on their way to the root logger, where
-    # caplog listens.
+    # The `openhands` logger stops propagation, so records never reach the root
+    # logger, where caplog listens.
     logger: logging.Logger | None = housekeeping_module._logger
     while logger is not None:
         monkeypatch.setattr(logger, 'propagate', True)
@@ -181,7 +181,7 @@ def worker_logs(monkeypatch, caplog):
 async def test_a_stalled_scheduled_job_ends_failed_and_its_next_tick_runs(
     worker_app, conninfo, worker_logs
 ):
-    """Retrying it would collide with the waiting tick's queueing lock."""
+    """Retrying the stalled job would collide with the next run's queueing lock."""
     stalled_id = await _stall(
         conninfo,
         'stalled',

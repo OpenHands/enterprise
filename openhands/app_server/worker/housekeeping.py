@@ -20,7 +20,7 @@ KEEP_FINISHED_JOBS_HOURS = 72
 
 SCHEDULED_JOBS_QUEUE = 'scheduled_jobs'
 
-# What procrastinate_finish_job_v1 raises for a job no longer todo or doing.
+# Part of the error procrastinate_finish_job_v1 raises for an already finished job.
 _JOB_ALREADY_FINISHED = 'not in "doing" or "todo" status'
 
 housekeeping = Blueprint()
@@ -35,7 +35,7 @@ housekeeping = Blueprint()
 async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
     """Queue again the jobs of workers that stopped sending heartbeats.
 
-    Scheduled jobs are ended as failed instead; their next tick retries them.
+    Scheduled jobs are ended as failed instead; their next run is the retry.
 
     The worker and ``get_stalled_jobs`` use procrastinate's defaults, which fit
     together: a heartbeat every 10 seconds, and 30 seconds without one counts
@@ -61,18 +61,17 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
 async def _end_stalled_scheduled_job(
     job_manager: JobManager, job: Job, log_extra: dict
 ) -> None:
-    """End a stalled scheduled job as failed rather than queue it again.
+    """Fail a stalled scheduled job so it stops blocking its next run.
 
-    Retrying sets the row back to todo, which violates the queueing lock's
-    unique index while the job's next tick is waiting; the job would then stay
-    doing and its lock would block that tick. Failed is in neither index, so
-    ending it releases the lock and the next tick is the retry.
+    A retry can't queue the job while its next run waits under the same
+    queueing lock, so the job would stay doing and hold its lock, and that run
+    would never start. A failed job holds neither lock.
     """
     try:
         await job_manager.finish_job(job, status=Status.FAILED, delete_job=False)
     except ConnectorException as exc:
         if _JOB_ALREADY_FINISHED in str(exc.__cause__ or exc):
-            # It finished between the scan and now; its outcome stands.
+            # The worker finished the job after the scan; that result stands.
             _logger.info('scheduled_jobs.stalled_already_finished', extra=log_extra)
         else:
             _logger.exception('scheduled_jobs.stalled_end_failed', extra=log_extra)
