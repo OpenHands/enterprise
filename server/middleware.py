@@ -230,9 +230,9 @@ class SetAuthCookieMiddleware:
             '/oauth/device/token',
             '/api/v1/web-client/config',
             # Dev IDP status is unauthenticated (the frontend reads it to
-            # decide whether to show the dev login path). Only available on
-            # self-hosted with no real IDP configured.
-            '/api/dev-idp/status',
+            # decide whether to show the integrated login path). Only
+            # available on self-hosted with no real IDP configured.
+            '/api/idp/status',
             # OAuth providers redirect the user's browser here after an MCP
             # server install consent; the cross-site navigation carries no
             # session cookie and the route validates its single-use state.

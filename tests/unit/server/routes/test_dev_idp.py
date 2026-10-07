@@ -10,11 +10,11 @@ These tests exercise:
 * ``GET /oauth/idp-login`` — redirects to the dev IDP sentinel provider
 * ``GET /oauth/{DEV_IDP_PROVIDER_ID}/login`` — redirects to the dedicated
   email+password pages instead of starting an OAuth flow
-* ``GET /oauth/dev-idp/login`` / ``GET /oauth/dev-idp/signup`` — serve the
+* ``GET /oauth/idp/login`` / ``GET /oauth/idp/signup`` — serve the
   HTML forms
-* ``POST /oauth/dev-idp/signup`` — creates an account, hashes the password,
+* ``POST /oauth/idp/signup`` — creates an account, hashes the password,
   completes the login
-* ``POST /oauth/dev-idp/login`` — verifies the password, completes the login
+* ``POST /oauth/idp/login`` — verifies the password, completes the login
 * Error cases — 404 when unavailable, invalid credentials, taken email,
   password validation
 """
@@ -328,7 +328,7 @@ class TestOAuthV2CallbackRejectsDevIdp:
         assert response.status_code == 404
 
 
-# ── GET /oauth/dev-idp/login (HTML form) ──────────────────────────────────
+# ── GET /oauth/idp/login (HTML form) ────────────────────────────────────
 
 
 class TestDevIdpLoginForm:
@@ -386,7 +386,7 @@ class TestDevIdpLoginForm:
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
 
-# ── GET /oauth/dev-idp/signup (HTML form) ─────────────────────────────────
+# ── GET /oauth/idp/signup (HTML form) ───────────────────────────────────
 
 
 class TestDevIdpSignupForm:
@@ -430,7 +430,7 @@ class TestDevIdpSignupForm:
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
 
-# ── POST /oauth/dev-idp/signup ────────────────────────────────────────────
+# ── POST /oauth/idp/signup ──────────────────────────────────────────────
 
 
 class TestDevIdpSignup:
@@ -731,7 +731,7 @@ class TestDevIdpSignup:
         assert query['error'] == ['superadmin_exists']
 
 
-# ── POST /oauth/dev-idp/login ─────────────────────────────────────────────
+# ── POST /oauth/idp/login ───────────────────────────────────────────────
 
 
 class TestDevIdpLogin:
@@ -964,12 +964,12 @@ class TestCompleteDevIdpLogin:
 class TestDevIdpStatus:
     def test_returns_enabled_true(self, client):
         with _available():
-            response = client.get('/api/dev-idp/status')
+            response = client.get('/api/idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is True
 
     def test_returns_enabled_false_on_cloud(self, client):
         with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
-            response = client.get('/api/dev-idp/status')
+            response = client.get('/api/idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is False

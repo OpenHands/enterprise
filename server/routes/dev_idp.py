@@ -15,9 +15,9 @@ regular IDP provider, but is modeled as an in-memory sentinel
   fallback for when none is configured.
 * ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
   which ``oauth_v2`` intercepts and redirects to the fixed
-  ``/oauth/dev-idp/login`` page served by this module.
+  ``/oauth/idp/login`` page served by this module.
 * Unlike a real IDP, this one requires a **password**: ``GET
-  /oauth/dev-idp/login`` and ``GET /oauth/dev-idp/signup`` serve HTML
+  /oauth/idp/login`` and ``GET /oauth/idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
   (sign-in) or create an account (sign-up) and set the same ``openhands_auth``
   JWT cookie the real OAuth v2 callback uses. Passwords are hashed with
@@ -35,11 +35,11 @@ ever signed in through a real IDP). The gate is
 ``UserStore.has_super_admin_with_password()``, not
 ``UserStore.has_super_admin()``: a super admin *row* existing is not enough
 to hide this form — only a super admin who can actually log in with a
-password is. Once that's true, ``/oauth/dev-idp/signup`` redirects to the
+password is. Once that's true, ``/oauth/idp/signup`` redirects to the
 login page instead of rendering — every subsequent account must be created
 by a super admin through the existing user-management APIs, not through
 self-service sign-up. Symmetrically, while no super admin has a password
-yet, ``/oauth/dev-idp/login`` redirects to the sign-up (bootstrap) page,
+yet, ``/oauth/idp/login`` redirects to the sign-up (bootstrap) page,
 since there is no account that can log in. Submitting sign-up updates the
 password on a matching existing user (found by derived id, then by email —
 e.g. the passwordless super admin itself) instead of creating a new one;
@@ -91,9 +91,12 @@ DEV_IDP_CATEGORY = 'dev_idp'
 
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
 # the sentinel provider id. ``server.routes.oauth_v2`` redirects here once it
-# intercepts ``provider_id == DEV_IDP_PROVIDER_ID``.
-DEV_IDP_LOGIN_PATH = 'dev-idp/login'
-DEV_IDP_SIGNUP_PATH = 'dev-idp/signup'
+# intercepts ``provider_id == DEV_IDP_PROVIDER_ID``. Named "idp" rather than
+# "dev-idp" because this is an integrated IDP offered to customers who are
+# evaluating the product or have no real IDP of their own, not merely a
+# developer-only tool.
+DEV_IDP_LOGIN_PATH = 'idp/login'
+DEV_IDP_SIGNUP_PATH = 'idp/signup'
 
 # Fixed namespace for deterministic user-id derivation from email. Required
 # by ``UserStore.create_user``'s identity-preservation contract: ``User.id``
@@ -617,8 +620,8 @@ async def _complete_dev_idp_login(
 
 
 def _dev_idp_status_router() -> APIRouter:
-    """Create a separate router for the status endpoint at /api/dev-idp/status."""
-    router = APIRouter(prefix='/api/dev-idp', tags=['Dev IDP'])
+    """Create a separate router for the status endpoint at /api/idp/status."""
+    router = APIRouter(prefix='/api/idp', tags=['Dev IDP'])
 
     @router.get('/status')
     async def dev_idp_status() -> JSONResponse:
