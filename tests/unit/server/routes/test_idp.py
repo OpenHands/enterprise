@@ -22,6 +22,7 @@ These tests exercise:
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -29,13 +30,18 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
+from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.password_hashing import hash_password
 from server.routes import idp
 from server.routes.idp import (
+    IDP_INVITE_PATH,
     IDP_LOGIN_PATH,
     IDP_PROVIDER_ID,
     IDP_SIGNUP_PATH,
+    SIGNUP_LINK_EXPIRY_HOURS,
     IdpProvider,
     derive_idp_user_id,
     get_idp_if_available,
@@ -56,6 +62,7 @@ def app():
     application.include_router(idp.idp_router)
     application.include_router(idp.idp_status_router)
     application.include_router(idp.idp_password_router)
+    application.include_router(idp.idp_invite_router)
     application.include_router(oauth_v2.oauth_v2_router)
     return application
 
@@ -128,6 +135,44 @@ def _patch_complete_login():
         'server.routes.idp._complete_idp_login',
         new_callable=AsyncMock,
     )
+
+
+def _make_jwt_service() -> JwtService:
+    key = EncryptionKey(kid='test', key=SecretStr('test-secret-key'), active=True)
+    return JwtService(keys=[key])
+
+
+def _patch_jwt_service(jwt_svc: JwtService):
+    """Patch the shared JWT service used by ``_create_signup_link_token`` /
+    ``_verify_signup_link_token`` (both locally import
+    ``storage.encrypt_utils.get_jwt_service``, same as ``oauth_v2_refresh``)."""
+    return patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc)
+
+
+@pytest.fixture
+def jwt_svc():
+    return _make_jwt_service()
+
+
+@contextmanager
+def _superadmin():
+    """Make the caller pass ``require_permission`` / ``authorize_permission``
+    checks for any superadmin-only permission -- same technique as
+    ``test_super_admins.py``: short-circuit the org-role lookup to ``None``
+    and stack a ``superadmin`` super role on top."""
+    superadmin = MagicMock()
+    superadmin.name = 'admin'
+    with (
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            AsyncMock(return_value=superadmin),
+        ),
+    ):
+        yield
 
 
 # ── derive_idp_user_id ────────────────────────────────────────────────
@@ -1194,4 +1239,416 @@ class TestIdpSetPassword:
             ),
         ):
             response = self._post(client)
+        assert response.status_code == 429
+
+
+# ── sign-up link token helpers ──────────────────────────────────────────
+
+
+class TestSignupLinkToken:
+    def test_roundtrip(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            email = idp._verify_signup_link_token(token)
+        assert email == 'invitee@example.com'
+
+    def test_lowercases_email_on_create(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('Invitee@Example.COM')
+            email = idp._verify_signup_link_token(token)
+        assert email == 'invitee@example.com'
+
+    def test_expires_after_configured_hours(self, jwt_svc):
+        from datetime import datetime, timezone
+
+        from freezegun import freeze_time
+
+        start = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        with freeze_time(start) as frozen:
+            with _patch_jwt_service(jwt_svc):
+                token = idp._create_signup_link_token('invitee@example.com')
+
+                frozen.move_to(
+                    start + timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS, seconds=1)
+                )
+                with pytest.raises(ValueError):
+                    idp._verify_signup_link_token(token)
+
+    def test_still_valid_just_before_expiry(self, jwt_svc):
+        from datetime import datetime, timezone
+
+        from freezegun import freeze_time
+
+        start = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        with freeze_time(start) as frozen:
+            with _patch_jwt_service(jwt_svc):
+                token = idp._create_signup_link_token('invitee@example.com')
+
+                frozen.move_to(
+                    start + timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS, seconds=-1)
+                )
+                email = idp._verify_signup_link_token(token)
+        assert email == 'invitee@example.com'
+
+    def test_rejects_token_with_wrong_purpose(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            other_token = jwt_svc.create_jws_token(
+                {'purpose': 'something_else', 'email': 'invitee@example.com'}
+            )
+            with pytest.raises(ValueError):
+                idp._verify_signup_link_token(other_token)
+
+    def test_rejects_malformed_token(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            with pytest.raises(ValueError):
+                idp._verify_signup_link_token('not-a-jwt')
+
+    def test_rejects_tampered_token(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+        tampered = token[:-1] + ('a' if token[-1] != 'a' else 'b')
+        with _patch_jwt_service(jwt_svc), pytest.raises(ValueError):
+            idp._verify_signup_link_token(tampered)
+
+
+# ── GET /oauth/idp/invite ────────────────────────────────────────────────
+
+
+class TestIdpInviteForm:
+    def test_404_when_unavailable(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+            response = client.get(f'/oauth/{IDP_INVITE_PATH}', params={'token': token})
+        assert response.status_code == 404
+
+    def test_renders_form_with_valid_token(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                response = client.get(
+                    f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
+                )
+        assert response.status_code == 200
+        assert 'invitee@example.com' in response.text
+        assert 'name="token"' in response.text
+
+    def test_400_on_invalid_token(self, client):
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            response = client.get(
+                f'/oauth/{IDP_INVITE_PATH}', params={'token': 'garbage'}
+            )
+        assert response.status_code == 400
+
+    def test_400_on_expired_token(self, client, jwt_svc):
+        from datetime import datetime, timezone
+
+        from freezegun import freeze_time
+
+        start = datetime(2030, 1, 1, tzinfo=timezone.utc)
+        with freeze_time(start) as frozen:
+            with _patch_jwt_service(jwt_svc):
+                token = idp._create_signup_link_token('invitee@example.com')
+
+            frozen.move_to(start + timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS, seconds=1))
+            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                response = client.get(
+                    f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
+                )
+        assert response.status_code == 400
+
+
+# ── POST /oauth/idp/invite ───────────────────────────────────────────────
+
+
+class TestIdpInviteAccept:
+    def test_404_when_unavailable(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+            response = client.post(
+                f'/oauth/{IDP_INVITE_PATH}',
+                data={
+                    'token': token,
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+            )
+        assert response.status_code == 404
+
+    def test_400_on_invalid_token(self, client):
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            response = client.post(
+                f'/oauth/{IDP_INVITE_PATH}',
+                data={
+                    'token': 'garbage',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+            )
+        assert response.status_code == 400
+
+    def test_password_mismatch_redirects_with_error(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'different123',
+                    },
+                    follow_redirects=False,
+                )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['password_mismatch']
+        assert query['token'] == [token]
+
+    def test_password_too_short_redirects_with_error(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'short',
+                        'confirm_password': 'short',
+                    },
+                    follow_redirects=False,
+                )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['password_too_short']
+
+    def test_link_already_used_redirects_with_error(self, client, jwt_svc):
+        """Replaying a link whose account already has a password is
+        rejected instead of silently overwriting the password."""
+        existing = _mock_user(
+            email='invitee@example.com', password_hash='existing_hash'
+        )
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['link_used']
+
+    def test_claims_existing_passwordless_account(self, client, jwt_svc):
+        user_id = derive_idp_user_id('invitee@example.com')
+        existing = _mock_user(
+            user_id=user_id, email='invitee@example.com', password_hash=None
+        )
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_hash,
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                ) as mock_create,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+
+        mock_set_hash.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == str(existing.id)
+        mock_create.assert_not_awaited()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is False
+        assert mock_complete.call_args.kwargs['user'] is existing
+
+    def test_creates_user_and_hashes_password(self, client, jwt_svc):
+        user_id = derive_idp_user_id('invitee@example.com')
+        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=mock_user,
+                ) as mock_create,
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_hash,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.args[0] == user_id
+        mock_set_hash.assert_awaited_once()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is True
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+        # Does not grant the super-admin role -- ordinary invited user.
+        assert mock_complete.call_args.kwargs['email'] == 'invitee@example.com'
+
+    def test_create_user_failure_returns_500(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                )
+        assert response.status_code == 500
+
+
+# ── POST /api/idp/signup-links (admin minting endpoint) ─────────────────
+
+
+class TestCreateSignupLink:
+    def test_404_when_idp_disabled(self, app, client):
+        with (
+            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'invitee@example.com'}
+            )
+        assert response.status_code == 404
+
+    def test_401_when_not_authenticated(self, app, client):
+        with _available(), _authenticated_as(app, None):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'invitee@example.com'}
+            )
+        assert response.status_code == 401
+
+    def test_403_when_not_super_admin(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.auth.authorization.get_user_org_role',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                AsyncMock(return_value=None),
+            ),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'invitee@example.com'}
+            )
+        assert response.status_code == 403
+
+    def test_mints_link_for_super_admin(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'Invitee@Example.COM'}
+            )
+        assert response.status_code == 201
+        body = response.json()
+        assert IDP_INVITE_PATH in body['url']
+        assert 'token=' in body['url']
+        assert 'expires_at' in body
+
+        # The minted token embeds the lower-cased email and is itself
+        # verifiable by the accept endpoint's helper.
+        query = parse_qs(urlparse(body['url']).query)
+        token = query['token'][0]
+        with _patch_jwt_service(jwt_svc):
+            assert idp._verify_signup_link_token(token) == 'invitee@example.com'
+
+    def test_rate_limited(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.check_rate_limit_by_user_id',
+                new_callable=AsyncMock,
+                side_effect=HTTPException(status_code=429, detail='Too many requests'),
+            ),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'invitee@example.com'}
+            )
         assert response.status_code == 429

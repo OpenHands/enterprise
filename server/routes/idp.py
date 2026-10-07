@@ -45,6 +45,18 @@ password on a matching existing user (found by derived id, then by email —
 e.g. the passwordless super admin itself) instead of creating a new one;
 only a genuinely new email creates a brand-new account.
 
+**Admin-issued sign-up links (OHE-3510).** Once the bootstrap super admin
+exists, every *subsequent* account is created out-of-band: a super admin
+calls ``POST /api/idp/signup-links`` (gated by the instance-level
+``CREATE_SIGNUP_LINK`` permission) to mint a link naming an invited email,
+carried as a signed, 72-hour-expiring JWT — no server-side state, so there
+is nothing to revoke or clean up, and no password ever passes through the
+admin. The invited user follows the link to ``GET``/``POST
+/oauth/idp/invite``, which verifies the token and lets them choose their
+own password before logging in, exactly as ``/oauth/idp/signup`` does for
+the bootstrap super admin — except it never grants the super-admin role.
+See the "admin-issued sign-up links" section below for the full design.
+
 When ``ENABLE_INTEGRATED_IDP`` is off, the sentinel is never returned (even
 if a real IDP is configured) and every route in this module returns ``404``.
 
@@ -60,15 +72,17 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+import jwt as pyjwt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.authorization import Permission, authorize_permission
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -82,6 +96,7 @@ from server.constants import ENABLE_INTEGRATED_IDP
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
     RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
+    RATE_LIMIT_SIGNUP_LINK_USER_SECONDS,
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
@@ -104,6 +119,23 @@ IDP_CATEGORY = 'idp'
 # developer-only tool.
 IDP_LOGIN_PATH = 'idp/login'
 IDP_SIGNUP_PATH = 'idp/signup'
+# Super-admin-issued, one-time sign-up link: GET renders a set-password form
+# (email pre-filled from the signed token, not user-editable), POST verifies
+# the token and claims/creates the account. See "admin-issued sign-up links"
+# section below for the full design.
+IDP_INVITE_PATH = 'idp/invite'
+
+# How long an admin-issued sign-up link (``IDP_INVITE_PATH``) remains valid.
+# Encoded as the JWT's ``exp`` claim by ``_create_signup_link_token`` —
+# verification (``JwtService.verify_jws_token``) rejects the token outright
+# once this elapses, so there is no separate expiry check to get wrong.
+SIGNUP_LINK_EXPIRY_HOURS = 72
+
+# ``purpose`` claim embedded in sign-up link tokens, checked by
+# ``_verify_signup_link_token`` so a token minted for some other purpose
+# (e.g. a future use of the shared ``JwtService``) can never be replayed
+# here as a sign-up link.
+_SIGNUP_LINK_PURPOSE = 'idp_signup_link'
 
 # Fixed namespace for deterministic user-id derivation from email. Required
 # by ``UserStore.create_user``'s identity-preservation contract: ``User.id``
@@ -144,6 +176,46 @@ def derive_idp_user_id(email: str) -> str:
     """
     normalized = email.strip().lower()
     return str(uuid.uuid5(_IDP_NAMESPACE, normalized))
+
+
+def _create_signup_link_token(email: str) -> str:
+    """Sign a JWT for an admin-issued sign-up link.
+
+    Carries only the invited ``email`` and a ``purpose`` claim, plus the
+    standard ``iat``/``exp`` claims added by ``JwtService.create_jws_token``.
+    Expires after ``SIGNUP_LINK_EXPIRY_HOURS`` — enforced by
+    ``JwtService.verify_jws_token`` (via the underlying ``jwt.decode``),
+    not by any separate check here.
+    """
+    from storage.encrypt_utils import get_jwt_service
+
+    payload = {'purpose': _SIGNUP_LINK_PURPOSE, 'email': email}
+    return get_jwt_service().create_jws_token(
+        payload, expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS)
+    )
+
+
+def _verify_signup_link_token(token: str) -> str:
+    """Verify a sign-up link JWT and return the embedded, lower-cased email.
+
+    Raises ``ValueError`` uniformly for every failure mode a caller needs
+    to treat the same way: bad signature, malformed token, expired ``exp``
+    (``JwtService.verify_jws_token`` surfaces this as
+    ``jwt.ExpiredSignatureError``, a subclass of ``jwt.InvalidTokenError``),
+    or a token minted for a different purpose.
+    """
+    from storage.encrypt_utils import get_jwt_service
+
+    try:
+        payload = get_jwt_service().verify_jws_token(token)
+    except (ValueError, pyjwt.InvalidTokenError) as exc:
+        raise ValueError('Invalid or expired sign-up link') from exc
+    if payload.get('purpose') != _SIGNUP_LINK_PURPOSE:
+        raise ValueError('Invalid sign-up link')
+    email = payload.get('email')
+    if not email or not isinstance(email, str):
+        raise ValueError('Invalid sign-up link')
+    return email.strip().lower()
 
 
 async def is_idp_available() -> bool:
@@ -192,16 +264,17 @@ _ERROR_MESSAGES = {
     'superadmin_exists': (
         'An administrator account already exists. Please sign in instead.'
     ),
+    'link_invalid': (
+        'This sign-up link is invalid or has expired. '
+        'Please ask an administrator for a new one.'
+    ),
+    'link_used': (
+        'This sign-up link has already been used. Please sign in instead, '
+        'or ask an administrator for a new link.'
+    ),
 }
 
-_FORM_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenHands — {mode_title}</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+_FORM_CSS = """    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: #1a1a1a; color: #fff; display: flex; align-items: center;
             justify-content: center; min-height: 100vh; margin: 0; }}
     .card {{ background: #262626; border-radius: 12px; padding: 40px;
@@ -215,6 +288,7 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
              border: 1px solid #404040; background: transparent; color: #fff;
              font-size: 14px; outline: none; }}
     input:focus {{ border-color: #6366f1; }}
+    input[readonly] {{ color: #a3a3a3; }}
     button {{ width: 100%; margin-top: 20px; padding: 10px; border-radius: 6px;
               border: none; background: #fff; color: #1a1a1a; font-size: 14px;
               font-weight: 500; cursor: pointer; }}
@@ -222,7 +296,19 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
     .error {{ margin-top: 0; margin-bottom: 16px; padding: 10px; border-radius: 6px;
               background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3);
               color: #ef4444; font-size: 13px; }}
-  </style>
+"""
+
+_FORM_HTML_TEMPLATE = (
+    """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHands — {mode_title}</title>
+  <style>
+"""
+    + _FORM_CSS
+    + """  </style>
 </head>
 <body>
   <div class="card">
@@ -243,11 +329,46 @@ _FORM_HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
 </body>
 </html>"""
+)
 
 _CONFIRM_PASSWORD_HTML = """      <label for="confirm_password">Confirm password</label>
       <input type="password" id="confirm_password" name="confirm_password" required
              minlength="{min_password_length}">
 """
+
+_INVITE_FORM_HTML_TEMPLATE = (
+    """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHands — Set Your Password</title>
+  <style>
+"""
+    + _FORM_CSS
+    + """  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Set Your Password</h1>
+    <p class="desc">You've been invited to OpenHands. Choose a password to finish setting up your account.</p>
+    {error_html}
+    <form method="POST" action="{form_action}">
+      <input type="hidden" name="token" value="{token}">
+      <label for="email">Email</label>
+      <input type="email" id="email" value="{email}" readonly tabindex="-1">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required
+             minlength="{min_password_length}" autofocus>
+      <label for="confirm_password">Confirm password</label>
+      <input type="password" id="confirm_password" name="confirm_password" required
+             minlength="{min_password_length}">
+      <button type="submit">Set password and sign in</button>
+    </form>
+  </div>
+</body>
+</html>"""
+)
 
 
 def _render_form(
@@ -291,6 +412,30 @@ def _render_form(
             else ''
         ),
         submit_label='Create admin account' if is_signup else 'Sign in',
+    )
+
+
+def _render_invite_form(
+    *, web_url: str, token: str, email: str, error: str = ''
+) -> str:
+    """Render the set-password form for an admin-issued sign-up link.
+
+    Unlike ``_render_form``, the email is read-only (sourced from the
+    verified token, never user-editable) and the form carries the token
+    itself rather than a ``redirect_url`` — there is no "sign in" sibling
+    page to link to, since a given link is either usable or it isn't.
+    """
+    error_html = ''
+    if error:
+        message = _ERROR_MESSAGES.get(error, 'Something went wrong. Please try again.')
+        error_html = f'<div class="error">{message}</div>'
+
+    return _INVITE_FORM_HTML_TEMPLATE.format(
+        error_html=error_html,
+        form_action=f'{web_url}/oauth/{IDP_INVITE_PATH}',
+        token=token,
+        email=email,
+        min_password_length=MIN_PASSWORD_LENGTH,
     )
 
 
@@ -540,6 +685,202 @@ async def idp_signup(
         email=email_str,
         redirect_url=redirect_url,
     )
+
+
+# ── admin-issued sign-up links (OHE-3510) ───────────────────────────────────
+#
+# A super admin can mint a one-time, expiring link (``POST
+# /api/idp/signup-links``, see ``idp_invite_router`` below) that lets an
+# invited user set their own password and sign in — without the admin ever
+# choosing or seeing that password, and without that user going through the
+# bootstrap-only ``/oauth/idp/signup`` form (which is sealed once a super
+# admin with a password exists, see the module docstring). Unlike that form,
+# this path carries no server-side state of its own: the link *is* the
+# credential, a signed JWT (``_create_signup_link_token`` /
+# ``_verify_signup_link_token``) naming the invited email and expiring after
+# ``SIGNUP_LINK_EXPIRY_HOURS`` (72h). "Used" is inferred, not tracked: once
+# the invited account has a ``password_hash``, replaying the same link hits
+# the same "already set" guard ``idp_signup`` uses and fails with
+# ``link_used`` instead of silently overwriting the password.
+
+
+def _invite_form_redirect(web_url: str, *, token: str, error: str) -> RedirectResponse:
+    """Redirect back to the invite form with an error, preserving the token."""
+    params = {'token': token, 'error': error}
+    target = f'{web_url}/oauth/{IDP_INVITE_PATH}?{urlencode(params)}'
+    return RedirectResponse(target, status_code=302)
+
+
+@idp_router.get(f'/{IDP_INVITE_PATH}')
+async def idp_invite_form(
+    request: Request,
+    token: str,
+    error: str = '',
+):
+    """Serve the set-password form for an admin-issued sign-up link.
+
+    Returns ``404`` if this IDP is not available. Returns ``400`` if the
+    token is missing/invalid/expired — there is no form to render without a
+    valid token to carry forward, unlike the login/sign-up forms' error
+    redirects.
+    """
+    await _require_idp_available()
+    web_url = get_web_url(request)
+    try:
+        email = _verify_signup_link_token(token)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_ERROR_MESSAGES['link_invalid'],
+        )
+    html = _render_invite_form(web_url=web_url, token=token, email=email, error=error)
+    return HTMLResponse(content=html)
+
+
+@idp_router.post(f'/{IDP_INVITE_PATH}')
+async def idp_invite_accept(
+    request: Request,
+    token: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+):
+    """Verify an admin-issued sign-up link, set the password, and log in.
+
+    Returns ``404`` if this IDP is not available, ``400`` if the token is
+    missing/invalid/expired. Claims an existing passwordless account (e.g.
+    one pre-created by provisioning, or a previous invite that was never
+    completed) by setting its password, matching by derived id then by
+    email — same resolution order as ``idp_signup``. If that account
+    already has a password (including from a previous use of *this* link),
+    redirects back to the form with ``link_used`` rather than overwriting
+    it. A genuinely new email creates a brand-new account via
+    ``UserStore.create_user``, exactly like the bootstrap sign-up form,
+    including default-org bootstrap and TOS auto-acceptance in
+    ``_complete_idp_login`` — but, unlike that form, does **not** grant the
+    super-admin role to anyone: this path is for ordinary invited users.
+    """
+    await _require_idp_available()
+    web_url = get_web_url(request)
+    try:
+        email_str = _verify_signup_link_token(token)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_ERROR_MESSAGES['link_invalid'],
+        )
+
+    if password != confirm_password:
+        return _invite_form_redirect(web_url, token=token, error='password_mismatch')
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return _invite_form_redirect(web_url, token=token, error='password_too_short')
+
+    user_id = derive_idp_user_id(email_str)
+    existing = await UserStore.get_user_by_id(user_id)
+    if existing is None:
+        existing = await UserStore.get_user_by_email(email_str)
+
+    if existing is not None and existing.password_hash is not None:
+        return _invite_form_redirect(web_url, token=token, error='link_used')
+
+    hashed = hash_password(password)
+
+    user: User | None
+    if existing is not None:
+        await _set_password_hash(str(existing.id), hashed)
+        user = existing
+        is_new_user = False
+    else:
+        user_info = {
+            'email': email_str,
+            'email_verified': True,
+            'preferred_username': email_str,
+        }
+        user = await UserStore.create_user(user_id, user_info)
+        if user is None:
+            logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Failed to create user',
+            )
+        await _set_password_hash(str(user.id), hashed)
+        is_new_user = True
+
+    logger.info(
+        'idp:signup_link_accepted',
+        extra={'user_id': str(user.id), 'is_new_user': is_new_user},
+    )
+    return await _complete_idp_login(
+        request=request,
+        user=user,
+        is_new_user=is_new_user,
+        email=email_str,
+        redirect_url='',
+    )
+
+
+class CreateSignupLinkRequest(BaseModel):
+    """Body for ``POST /api/idp/signup-links``."""
+
+    email: EmailStr
+
+
+class SignupLinkResponse(BaseModel):
+    """Result of minting an admin-issued sign-up link."""
+
+    url: str
+    expires_at: datetime
+
+
+def _idp_invite_router() -> APIRouter:
+    """Router for the super-admin sign-up-link minting endpoint."""
+    router = APIRouter(prefix='/api/idp', tags=['IDP'])
+
+    @router.post(
+        '/signup-links',
+        response_model=SignupLinkResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_signup_link(
+        request: Request,
+        body: CreateSignupLinkRequest,
+        user_id: str | None = Depends(get_user_id),
+    ) -> SignupLinkResponse:
+        # Availability (404) is checked before authentication/permission so
+        # the feature's existence leaks no information when disabled --
+        # same ordering as the self-service password endpoints above.
+        await _require_idp_available()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Not authenticated',
+            )
+        await authorize_permission(request, user_id, Permission.CREATE_SIGNUP_LINK)
+
+        await check_rate_limit_by_user_id(
+            request=request,
+            key_prefix='idp_create_signup_link',
+            user_id=user_id,
+            user_rate_limit_seconds=RATE_LIMIT_SIGNUP_LINK_USER_SECONDS,
+        )
+
+        email_str = body.email.strip().lower()
+        token = _create_signup_link_token(email_str)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            hours=SIGNUP_LINK_EXPIRY_HOURS
+        )
+        web_url = get_web_url(request)
+        url = f'{web_url}/oauth/{IDP_INVITE_PATH}?{urlencode({"token": token})}'
+
+        logger.info(
+            'idp:signup_link_created',
+            extra={'caller_user_id': user_id, 'email': email_str},
+        )
+        return SignupLinkResponse(url=url, expires_at=expires_at)
+
+    return router
+
+
+idp_invite_router = _idp_invite_router()
 
 
 # ── shared post-authentication steps (mirrors the real OAuth v2 callback) ──

@@ -55,6 +55,12 @@ RATE_LIMIT_SET_PASSWORD_IP_SECONDS = int(
     os.environ.get('RATE_LIMIT_SET_PASSWORD_IP_SECONDS', '10')
 )
 
+# Dev IDP sign-up link minting (server.routes.idp). Super-admin-only action,
+# but still throttled per caller to slow down accidental bulk minting.
+RATE_LIMIT_SIGNUP_LINK_USER_SECONDS = int(
+    os.environ.get('RATE_LIMIT_SIGNUP_LINK_USER_SECONDS', '6')
+)
+
 
 async def check_rate_limit_by_user_id(
     request: Request,
