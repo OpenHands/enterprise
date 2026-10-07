@@ -1,0 +1,113 @@
+name: Landing Checklist
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  landing-checklist:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Evaluate feature landing evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title || '';
+            const body = context.payload.pull_request.body || '';
+            const marker = '<!-- landing-checklist:v1 -->';
+            const isFeature = /^feat(?:\([^)]+\))?!?:\s/i.test(title);
+
+            if (!isFeature) {
+              core.notice(`Landing checklist skipped for non-feature PR: "${title}"`);
+              return;
+            }
+
+            const reviewItems = [
+              'Documentation added for the feature on the website',
+              'E2E test added covering regression / up-to-spec behavior',
+              'Feature is gated by an `ENABLE_<FEATURE>` flag and exposed through the appropriate Helm / embedded-cluster configuration',
+            ];
+
+            function isChecked(label) {
+              const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const match = body.match(new RegExp(`-\\s*\\[([ xX])\\]\\s*${escaped}`, 'i'));
+              return Boolean(match && /x/i.test(match[1]));
+            }
+
+            function fieldValue(label) {
+              const prefix = `- ${label}:`.toLowerCase();
+              const line = body.split('\n').find(candidate =>
+                candidate.trimStart().toLowerCase().startsWith(prefix)
+              );
+              if (!line) {
+                return '';
+              }
+              return line.slice(line.indexOf(':') + 1).replaceAll('`', '').trim();
+            }
+
+            function hasEvidence(value) {
+              return Boolean(value && !/^_+$/.test(value) && !/^(tbd|n\/a)$/i.test(value));
+            }
+
+            const checks = reviewItems.map(label => ({label, checked: isChecked(label)}));
+            const fields = [
+              ['Linear tracking ticket', fieldValue('Linear tracking ticket')],
+              ['Feature flag name', fieldValue('Feature flag name')],
+              ['Primary E2E test', fieldValue('Primary E2E test')],
+              ['Delivery targets', fieldValue('Delivery targets')],
+            ];
+            const missingFields = fields.filter(([, value]) => !hasEvidence(value));
+            const pass = body.includes(marker) && checks.every(item => item.checked) && missingFields.length === 0;
+
+            const lines = [
+              marker,
+              '### Feature landing checklist',
+              '',
+              '**Before merge**',
+              ...checks.map(item => `- [${item.checked ? 'x' : ' '}] ${item.label}`),
+              '',
+              '**Evidence**',
+              ...fields.map(([label, value]) => `- ${hasEvidence(value) ? '✅' : '❌'} ${label}: ${value || 'missing'}`),
+              '',
+              pass
+                ? '✅ Feature landing evidence is complete.'
+                : '❌ Complete the checklist and evidence fields before merging.',
+            ];
+            const commentBody = lines.join('\n');
+            const isFork = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
+
+            if (isFork) {
+              await core.summary.addRaw(commentBody).write();
+            } else {
+              const {data: comments} = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                per_page: 100,
+              });
+              const existing = comments.find(comment => comment.body?.includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: commentBody,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  body: commentBody,
+                });
+              }
+            }
+
+            if (!pass) {
+              core.setFailed('Feature landing checklist or evidence is incomplete.');
+            }
