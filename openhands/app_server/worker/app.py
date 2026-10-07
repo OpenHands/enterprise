@@ -25,3 +25,7 @@ class WorkerConfig(BaseModel):
 app = App(connector=PsycopgConnector())
 app.add_tasks_from(housekeeping, namespace='worker')
 app.add_tasks_from(lifecycle, namespace='sandbox_lifecycle')
+
+# Only the queues this app's tasks use, so the worker never takes a job it has
+# no task for and fails it with TaskNotFound.
+QUEUES = ['default']
