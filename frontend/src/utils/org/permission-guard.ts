@@ -2,11 +2,30 @@ import { replace } from "react-router";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { WebClientConfig } from "#/api/option-service/option.types";
+import { adminService } from "#/api/admin-service/admin-service.api";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
 import { hasPendingOrgSwitch } from "./org-url-param";
 import { getActiveOrganizationUser } from "./permission-checks";
 import { PermissionKey, rolePermissions } from "./permissions";
+
+/**
+ * Whether the current user holds the instance-level super-admin role.
+ * Shares the ``useIsSuperAdmin`` query cache (same query key), so this
+ * loader-time check and the page's own render-time check only ever make
+ * one request.
+ */
+export async function getIsSuperAdmin(): Promise<boolean> {
+  try {
+    return await queryClient.fetchQuery({
+      queryKey: ["admin", "super-admin-status"],
+      queryFn: adminService.getMySuperAdminStatus,
+      staleTime: 1000 * 60 * 5,
+    });
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Helper to get config, using fetchQuery for automatic caching and deduplication.
@@ -54,10 +73,18 @@ const PERMISSION_GRANTED = {} as const;
  *
  * @param requiredPermission - The permission key to check
  * @param customRedirectPath - Optional custom path to redirect to (will still respect feature flags if not provided)
+ * @param extraBypassCheck - Optional async check run after the OSS short-circuit;
+ *   resolving `true` grants access without consulting the org-scoped permission
+ *   below. Used by the org-members page so instance-level super admins (see
+ *   ``server.routes.super_admins``) can reach it regardless of org membership.
  * @returns A clientLoader function that can be exported from route files
  */
 export const createPermissionGuard =
-  (requiredPermission: PermissionKey, customRedirectPath?: string) =>
+  (
+    requiredPermission: PermissionKey,
+    customRedirectPath?: string,
+    extraBypassCheck?: () => Promise<boolean>,
+  ) =>
   async ({ request }: { request: Request }) => {
     // The settings loader is consuming a pending `?org=` switch on this pass
     // and will redirect without the param; redirecting here would drop it.
@@ -74,6 +101,10 @@ export const createPermissionGuard =
 
     // In OSS mode, skip permission checks - all settings are accessible
     if (config?.app_mode === "oss") {
+      return PERMISSION_GRANTED;
+    }
+
+    if (extraBypassCheck && (await extraBypassCheck())) {
       return PERMISSION_GRANTED;
     }
 

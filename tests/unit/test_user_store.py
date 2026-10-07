@@ -482,6 +482,74 @@ async def test_create_user_reuses_existing_org(async_session_maker):
 # --- Tests for get_user_by_id ---
 
 
+async def _add_user(session, user_id, email, org_id=None, role_id=None):
+    """Create a ``User`` row with the ``current_org_id`` FK it requires."""
+    if org_id is None:
+        org_id = uuid.uuid4()
+        session.add(Org(id=org_id, name=f'org-{org_id}'))
+    session.add(User(id=user_id, current_org_id=org_id, email=email, role_id=role_id))
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_orders_and_eager_loads_role(async_session_maker):
+    """Filters by email, paginates, and flags the role-carrying super admin."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        await _add_user(session, ids[0], 'alpha@example.com', role_id=admin_role_id)
+        await _add_user(session, ids[1], 'beta@example.com')
+        await _add_user(session, ids[2], 'other@nomatch.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        users, has_more = await UserStore.list_users_paginated(
+            offset=0, limit=10, email_filter='example.com'
+        )
+
+    assert [u.id for u in users] == [ids[0], ids[1]]
+    assert has_more is False
+    assert users[0].role is not None and users[0].role.name == 'admin'
+    assert users[1].role is None
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_has_more_and_offset(async_session_maker):
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        for i in ids:
+            await _add_user(session, i, f'{i}@example.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        first_page, has_more = await UserStore.list_users_paginated(offset=0, limit=2)
+        second_page, has_more_2 = await UserStore.list_users_paginated(
+            offset=2, limit=2
+        )
+
+    assert [u.id for u in first_page] == ids[:2]
+    assert has_more is True
+    assert [u.id for u in second_page] == ids[2:]
+    assert has_more_2 is False
+
+
+@pytest.mark.asyncio
+async def test_count_users_with_and_without_filter(async_session_maker):
+    async with async_session_maker() as session:
+        await _add_user(session, uuid.uuid4(), 'match@example.com')
+        await _add_user(session, uuid.uuid4(), 'another-match@example.com')
+        await _add_user(session, uuid.uuid4(), 'nope@other.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        total = await UserStore.count_users()
+        filtered = await UserStore.count_users(email_filter='example.com')
+
+    assert total == 3
+    assert filtered == 2
+
+
 @pytest.mark.asyncio
 async def test_get_user_by_id_existing_user(async_session_maker):
     """Test retrieving an existing user by ID."""

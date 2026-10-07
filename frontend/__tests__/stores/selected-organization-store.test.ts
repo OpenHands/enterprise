@@ -34,6 +34,38 @@ describe("useSelectedOrganizationStore", () => {
     expect(result.current.organizationId).toBeNull();
   });
 
+  it("should set explicitlyNoOrg and clear organizationId when clearOrganizationId is called", () => {
+    const { result } = renderHook(() => useSelectedOrganizationStore());
+
+    act(() => {
+      result.current.setOrganizationId("org-123");
+    });
+    expect(result.current.explicitlyNoOrg).toBe(false);
+
+    act(() => {
+      result.current.clearOrganizationId();
+    });
+
+    expect(result.current.organizationId).toBeNull();
+    expect(result.current.explicitlyNoOrg).toBe(true);
+  });
+
+  it("should reset explicitlyNoOrg when setOrganizationId is called again", () => {
+    const { result } = renderHook(() => useSelectedOrganizationStore());
+
+    act(() => {
+      result.current.clearOrganizationId();
+    });
+    expect(result.current.explicitlyNoOrg).toBe(true);
+
+    act(() => {
+      result.current.setOrganizationId("org-456");
+    });
+
+    expect(result.current.organizationId).toBe("org-456");
+    expect(result.current.explicitlyNoOrg).toBe(false);
+  });
+
   it("should share state across multiple hook instances", () => {
     const { result: result1 } = renderHook(() =>
       useSelectedOrganizationStore(),

@@ -10,7 +10,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
@@ -38,6 +38,7 @@ from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
+from utils.sql import escape_ilike
 
 # The max possible time to wait for another process to finish creating a user before retrying
 _REDIS_CREATE_TIMEOUT_SECONDS = 30
@@ -953,6 +954,48 @@ class UserStore:
         async with a_session_maker() as session:
             result = await session.execute(select(User))
             return list(result.scalars().all())
+
+    @staticmethod
+    async def list_users_paginated(
+        offset: int = 0,
+        limit: int = 100,
+        email_filter: str | None = None,
+    ) -> tuple[list[User], bool]:
+        """Bounded, filterable page of every user on the instance.
+
+        Unlike ``list_users()`` this is offset/limit-paginated and supports
+        an email filter, mirroring ``OrgMemberStore.get_org_members_paginated``
+        -- used by ``server.routes.super_admins``'s ``GET /api/admin/users``
+        for the org-members page's "no organization selected" admin view.
+        Eager-loads ``User.role`` so callers can tell super admins apart
+        without a second query per row.
+
+        Returns ``(users, has_more)`` where ``has_more`` indicates whether a
+        subsequent page (``offset + limit``) has further results.
+        """
+        async with a_session_maker() as session:
+            query = select(User).options(joinedload(User.role))
+            if email_filter:
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
+                )
+            query = query.order_by(User.id).offset(offset).limit(limit + 1)
+            result = await session.execute(query)
+            users = list(result.unique().scalars().all())
+            has_more = len(users) > limit
+            return users[:limit], has_more
+
+    @staticmethod
+    async def count_users(email_filter: str | None = None) -> int:
+        """Total count of users on the instance, optionally filtered by email."""
+        async with a_session_maker() as session:
+            query = select(func.count(User.id))
+            if email_filter:
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
+                )
+            result = await session.execute(query)
+            return result.scalar() or 0
 
     @staticmethod
     async def update_current_org(user_id: str, org_id: UUID) -> Optional[User]:

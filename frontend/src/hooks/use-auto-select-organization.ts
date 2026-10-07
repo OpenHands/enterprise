@@ -16,12 +16,16 @@ import { setSelectedOrg } from "#/utils/local-storage";
  * to ensure organization selection happens even when the OrgSelector component is hidden.
  */
 export function useAutoSelectOrganization() {
-  const { organizationId, setOrganizationId } = useSelectedOrganizationId();
+  const { organizationId, explicitlyNoOrg, setOrganizationId } =
+    useSelectedOrganizationId();
   const { data } = useOrganizations();
   const organizations = data?.organizations;
   const currentOrgId = data?.currentOrgId;
 
   React.useEffect(() => {
+    // A super admin who deliberately cleared the selection (the "All
+    // Organizations" admin view) must not be bounced back to an org.
+    if (explicitlyNoOrg) return;
     if (!organizationId && organizations && organizations.length > 0) {
       // Prefer backend's current_org_id (last selected org), fall back to
       // first org. Ignore a current_org_id that isn't in the visible list —
@@ -39,5 +43,11 @@ export function useAutoSelectOrganization() {
       // Broadcast org selection to other apps (e.g. Automations) via localStorage
       setSelectedOrg(initialOrgId);
     }
-  }, [organizationId, organizations, currentOrgId, setOrganizationId]);
+  }, [
+    organizationId,
+    explicitlyNoOrg,
+    organizations,
+    currentOrgId,
+    setOrganizationId,
+  ]);
 }

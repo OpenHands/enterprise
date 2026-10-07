@@ -19,6 +19,7 @@ import {
 import OptionService from "#/api/option-service/option-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { adminService } from "#/api/admin-service/admin-service.api";
 
 const mockQueryClient = vi.hoisted(() => {
   const { QueryClient } = require("@tanstack/react-query");
@@ -51,6 +52,18 @@ vi.mock("react-i18next", async () => {
 
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
+}));
+
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn().mockResolvedValue(false),
+    getAllUsers: vi.fn().mockResolvedValue({
+      items: [],
+      current_page: 1,
+      per_page: 10,
+    }),
+    getAllUsersCount: vi.fn().mockResolvedValue(0),
+  },
 }));
 
 function ManageOrganizationMembersWithPortalRoot() {
@@ -600,6 +613,81 @@ describe("Manage Organization Members Route", () => {
 
     // Verify the specific user email is no longer present
     expect(screen.queryByText("charlie@acme.org")).not.toBeInTheDocument();
+  });
+
+  describe("Super admin behavior", () => {
+    afterEach(() => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+    });
+
+    it("should show a Create Sign-up Link button (not Invite Members) for super admins, and mint a link on submit", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      await setupInviteTest();
+
+      expect(
+        screen.queryByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i }),
+      ).not.toBeInTheDocument();
+      const createLinkButton = await screen.findByRole("button", {
+        name: /ORG\$CREATE_SIGNUP_LINK/i,
+      });
+
+      await userEvent.click(createLinkButton);
+
+      const portalRoot = screen.getByTestId("portal-root");
+      expect(
+        within(portalRoot).getByTestId("mint-signup-link-modal"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("invite-modal")).not.toBeInTheDocument();
+    });
+
+    it("should still show the regular Invite Members button for non-super-admins", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+
+      await setupInviteTest();
+
+      await screen.findByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i });
+      expect(
+        screen.queryByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should render the instance-wide all-users view when a super admin has no organization selected", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.mocked(adminService.getAllUsers).mockResolvedValue({
+        items: [
+          { user_id: "u-1", email: "alice@example.com", is_super_admin: true },
+          { user_id: "u-2", email: "bob@example.com", is_super_admin: false },
+        ],
+        current_page: 1,
+        per_page: 10,
+      });
+      vi.mocked(adminService.getAllUsersCount).mockResolvedValue(2);
+
+      useSelectedOrganizationStore.setState({
+        organizationId: null,
+        explicitlyNoOrg: true,
+      });
+
+      renderManageOrganizationMembers();
+
+      await screen.findByTestId("all-users-settings");
+      expect(
+        screen.queryByTestId("manage-organization-members-settings"),
+      ).not.toBeInTheDocument();
+
+      const items = await screen.findAllByTestId("all-users-item");
+      expect(items).toHaveLength(2);
+      expect(
+        within(items[0]).getByText("alice@example.com"),
+      ).toBeInTheDocument();
+      expect(
+        within(items[0]).getByText(/ORG\$ROLE_SUPERADMIN/i),
+      ).toBeInTheDocument();
+      expect(within(items[1]).getByText("bob@example.com")).toBeInTheDocument();
+
+      await screen.findByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i });
+    });
   });
 
   describe("Inviting Organization Members", () => {

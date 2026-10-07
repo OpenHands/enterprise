@@ -1268,6 +1268,55 @@ class TestSignupLinkToken:
         assert link.email == 'invitee@example.com'
         assert link.org_id == org_id
 
+    def test_role_defaults_to_member(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'member'
+
+    def test_roundtrip_with_explicit_role(self, jwt_svc):
+        org_id = uuid.uuid4()
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='admin'
+            )
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'admin'
+        assert link.org_id == org_id
+
+    def test_roundtrip_with_superadmin_role(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', role='superadmin'
+            )
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'superadmin'
+        assert link.org_id is None
+
+    def test_missing_role_claim_defaults_to_member(self, jwt_svc):
+        """Links minted before the ``role`` claim existed keep working."""
+        with _patch_jwt_service(jwt_svc):
+            token = jwt_svc.create_jws_token(
+                {
+                    'purpose': idp._SIGNUP_LINK_PURPOSE,
+                    'email': 'invitee@example.com',
+                }
+            )
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'member'
+
+    def test_rejects_unrecognized_role(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = jwt_svc.create_jws_token(
+                {
+                    'purpose': idp._SIGNUP_LINK_PURPOSE,
+                    'email': 'invitee@example.com',
+                    'role': 'not-a-real-role',
+                }
+            )
+            with pytest.raises(ValueError):
+                idp._verify_signup_link_token(token)
+
     def test_rejects_token_with_malformed_org_id(self, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = jwt_svc.create_jws_token(
@@ -1386,7 +1435,9 @@ class TestIdpInviteForm:
             with patch(
                 'server.routes.idp._verify_signup_link_token',
                 return_value=idp.SignupLinkPayload(
-                    email='<script>alert(1)</script>@example.com', org_id=None
+                    email='<script>alert(1)</script>@example.com',
+                    org_id=None,
+                    role='member',
                 ),
             ):
                 with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
@@ -2169,3 +2220,228 @@ class TestCreateSignupLink:
                 },
             )
         assert response.status_code == 404
+
+    def test_mints_superadmin_link_with_no_org_id(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+        ):
+            response = client.post(
+                '/api/idp/signup-links',
+                json={'email': 'invitee@example.com', 'role': 'superadmin'},
+            )
+        assert response.status_code == 201
+        body = response.json()
+        assert body['role'] == 'superadmin'
+        query = parse_qs(urlparse(body['url']).query)
+        token = query['token'][0]
+        with _patch_jwt_service(jwt_svc):
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'superadmin'
+        assert link.org_id is None
+
+    def test_400_when_superadmin_role_combined_with_org_id(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+        ):
+            response = client.post(
+                '/api/idp/signup-links',
+                json={
+                    'email': 'invitee@example.com',
+                    'role': 'superadmin',
+                    'org_id': str(uuid.uuid4()),
+                },
+            )
+        assert response.status_code == 400
+
+    def test_400_when_admin_role_missing_org_id(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+        ):
+            response = client.post(
+                '/api/idp/signup-links',
+                json={'email': 'invitee@example.com', 'role': 'admin'},
+            )
+        assert response.status_code == 400
+
+    def test_422_when_role_unrecognized(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+        ):
+            response = client.post(
+                '/api/idp/signup-links',
+                json={'email': 'invitee@example.com', 'role': 'not-a-role'},
+            )
+        assert response.status_code == 422
+
+    def test_mints_org_scoped_link_with_admin_role(self, app, client, jwt_svc):
+        org_id = uuid.uuid4()
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+            patch(
+                'server.routes.idp.OrgStore.get_org_by_id',
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+        ):
+            response = client.post(
+                '/api/idp/signup-links',
+                json={
+                    'email': 'invitee@example.com',
+                    'org_id': str(org_id),
+                    'role': 'admin',
+                },
+            )
+        assert response.status_code == 201
+        body = response.json()
+        assert body['role'] == 'admin'
+        query = parse_qs(urlparse(body['url']).query)
+        token = query['token'][0]
+        with _patch_jwt_service(jwt_svc):
+            link = idp._verify_signup_link_token(token)
+        assert link.role == 'admin'
+        assert link.org_id == org_id
+
+
+# ── POST /oauth/idp/invite — role-driven acceptance (OHE-3510 follow-up) ──
+
+
+class TestInviteAcceptRole:
+    def test_superadmin_role_grants_super_admin_instead_of_org_add(
+        self, client, jwt_svc
+    ):
+        user_id = derive_idp_user_id('invitee@example.com')
+        existing = _mock_user(
+            user_id=user_id, email='invitee@example.com', password_hash=None
+        )
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', role='superadmin'
+            )
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.grant_super_admin',
+                    new_callable=AsyncMock,
+                ) as mock_grant,
+                patch(
+                    'server.routes.idp.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                ) as mock_get_member,
+                patch(
+                    'server.routes.idp.OrgMemberStore.add_user_to_org',
+                    new_callable=AsyncMock,
+                ) as mock_add,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+
+        mock_grant.assert_awaited_once_with(str(existing.id))
+        mock_get_member.assert_not_awaited()
+        mock_add.assert_not_awaited()
+
+    def test_org_role_is_passed_through_to_ensure_org_membership(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        user_id = derive_idp_user_id('invitee@example.com')
+        existing = _mock_user(
+            user_id=user_id, email='invitee@example.com', password_hash=None
+        )
+        mock_role = MagicMock(id=42)
+        mock_settings = MagicMock()
+        mock_settings.agent_settings.llm.api_key.get_secret_value.return_value = (
+            'sk-test'
+        )
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='owner'
+            )
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.grant_super_admin',
+                    new_callable=AsyncMock,
+                ) as mock_grant,
+                patch(
+                    'server.routes.idp.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.OrgStore.get_org_by_id',
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    'server.routes.idp.RoleStore.get_role_by_name',
+                    new_callable=AsyncMock,
+                    return_value=mock_role,
+                ) as mock_get_role,
+                patch(
+                    'server.routes.idp.OrgService.create_litellm_integration',
+                    new_callable=AsyncMock,
+                    return_value=mock_settings,
+                ),
+                patch(
+                    'server.routes.idp.OrgMemberStore.add_user_to_org',
+                    new_callable=AsyncMock,
+                ) as mock_add,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+
+        mock_grant.assert_not_awaited()
+        mock_get_role.assert_awaited_once_with('owner')
+        mock_add.assert_awaited_once()
+        assert mock_add.call_args.kwargs['role_id'] == mock_role.id

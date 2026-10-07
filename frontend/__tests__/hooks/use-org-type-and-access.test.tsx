@@ -33,7 +33,9 @@ describe("useOrgTypeAndAccess", () => {
   it("should return false for all booleans when no organization is selected", async () => {
     mockUseSelectedOrganizationId.mockReturnValue({
       organizationId: null,
+      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
+      clearOrganizationId: vi.fn(),
     });
     mockUseOrganizations.mockReturnValue({
       data: { organizations: [], currentOrgId: null },
@@ -54,7 +56,9 @@ describe("useOrgTypeAndAccess", () => {
     const personalOrg = { id: "org-1", is_personal: true, name: "Personal" };
     mockUseSelectedOrganizationId.mockReturnValue({
       organizationId: "org-1",
+      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
+      clearOrganizationId: vi.fn(),
     });
     mockUseOrganizations.mockReturnValue({
       data: { organizations: [personalOrg], currentOrgId: "org-1" },
@@ -75,7 +79,9 @@ describe("useOrgTypeAndAccess", () => {
     const teamOrg = { id: "org-2", is_personal: false, name: "Team" };
     mockUseSelectedOrganizationId.mockReturnValue({
       organizationId: "org-2",
+      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
+      clearOrganizationId: vi.fn(),
     });
     mockUseOrganizations.mockReturnValue({
       data: { organizations: [teamOrg], currentOrgId: "org-2" },
@@ -96,7 +102,9 @@ describe("useOrgTypeAndAccess", () => {
     const teamOrg = { id: "org-3", is_personal: false, name: "Team" };
     mockUseSelectedOrganizationId.mockReturnValue({
       organizationId: "org-3",
+      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
+      clearOrganizationId: vi.fn(),
     });
     mockUseOrganizations.mockReturnValue({
       data: { organizations: [teamOrg], currentOrgId: "org-3" },
@@ -116,7 +124,9 @@ describe("useOrgTypeAndAccess", () => {
     const orgWithoutPersonalField = { id: "org-4", name: "Unknown Type" };
     mockUseSelectedOrganizationId.mockReturnValue({
       organizationId: "org-4",
+      explicitlyNoOrg: false,
       setOrganizationId: vi.fn(),
+      clearOrganizationId: vi.fn(),
     });
     mockUseOrganizations.mockReturnValue({
       data: { organizations: [orgWithoutPersonalField], currentOrgId: "org-4" },

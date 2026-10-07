@@ -3,10 +3,13 @@ import ReactDOM from "react-dom";
 import { useTranslation } from "react-i18next";
 import { LoaderCircle, Plus, Search } from "lucide-react";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
+import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
 import { ConfirmRemoveMemberModal } from "#/components/features/org/confirm-remove-member-modal";
 import { ConfirmUpdateRoleModal } from "#/components/features/org/confirm-update-role-modal";
 import { useOrganizationMembers } from "#/hooks/query/use-organization-members";
 import { useOrganizationMembersCount } from "#/hooks/query/use-organization-members-count";
+import { useAllUsers } from "#/hooks/query/use-all-users";
+import { useAllUsersCount } from "#/hooks/query/use-all-users-count";
 import { OrganizationMember, OrganizationUserRole } from "#/types/org";
 import { OrganizationMemberListItem } from "#/components/features/org/organization-member-list-item";
 import { PendingInvitationListItem } from "#/components/features/org/pending-invitation-list-item";
@@ -15,12 +18,17 @@ import { useRevokeInvitation } from "#/hooks/mutation/use-revoke-invitation";
 import { useUpdateMemberRole } from "#/hooks/mutation/use-update-member-role";
 import { useRemoveMember } from "#/hooks/mutation/use-remove-member";
 import { useMe } from "#/hooks/query/use-me";
+import { useIsSuperAdmin } from "#/hooks/query/use-is-super-admin";
+import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { rolePermissions } from "#/utils/org/permissions";
 import { I18nKey } from "#/i18n/declaration";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getAvailableRolesAUserCanAssign } from "#/utils/org/permission-checks";
-import { createPermissionGuard } from "#/utils/org/permission-guard";
+import {
+  createPermissionGuard,
+  getIsSuperAdmin,
+} from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
 import { useDebounce } from "#/hooks/use-debounce";
@@ -31,20 +39,21 @@ import {
 } from "#/utils/form-control-classes";
 import {
   settingsListContainerClassName,
+  settingsListRowClassName,
   settingsListSectionHeaderClassName,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
 
 export const clientLoader = createPermissionGuard(
   "invite_user_to_organization",
+  undefined,
+  getIsSuperAdmin,
 );
 
 export const handle = { hideTitle: true };
 
-function ManageOrganizationMembers() {
-  const { t } = useTranslation();
-
-  // Pagination and filtering state
+/** Shared pagination + debounced email-filter state for both page variants. */
+function usePaginatedEmailFilter() {
   const [page, setPage] = React.useState(1);
   const [emailFilter, setEmailFilter] = React.useState("");
   const debouncedEmailFilter = useDebounce(emailFilter, 300);
@@ -54,7 +63,27 @@ function ManageOrganizationMembers() {
     setPage(1);
   }, [debouncedEmailFilter]);
 
-  const limit = 10;
+  return { page, setPage, emailFilter, setEmailFilter, debouncedEmailFilter };
+}
+
+const limit = 10;
+
+/**
+ * Org-scoped member list: the page's original behavior, unchanged for org
+ * admins. Super admins (who can also reach this view with an org selected)
+ * get a "Create Sign-up Link" button instead of "Add Members" -- see
+ * ``MintSignupLinkModal``.
+ */
+function OrganizationMembersSection({
+  organizationId,
+  isSuperAdmin,
+}: {
+  organizationId: string;
+  isSuperAdmin: boolean;
+}) {
+  const { t } = useTranslation();
+  const { page, setPage, emailFilter, setEmailFilter, debouncedEmailFilter } =
+    usePaginatedEmailFilter();
 
   const {
     data: membersData,
@@ -79,6 +108,7 @@ function ManageOrganizationMembers() {
   const { mutate: removeMember, isPending: isRemovingMember } =
     useRemoveMember();
   const [inviteModalOpen, setInviteModalOpen] = React.useState(false);
+  const [mintLinkModalOpen, setMintLinkModalOpen] = React.useState(false);
   const [memberToRemove, setMemberToRemove] =
     React.useState<OrganizationMember | null>(null);
   const [memberToUpdateRole, setMemberToUpdateRole] = React.useState<{
@@ -90,6 +120,9 @@ function ManageOrganizationMembers() {
 
   const { hasPermission } = usePermission(currentUserRole);
   const hasPermissionToInvite = hasPermission("invite_user_to_organization");
+  // Super admins always get the add-members affordance (as a sign-up link),
+  // regardless of their own role in this particular organization.
+  const showAddButton = hasPermissionToInvite || isSuperAdmin;
 
   // Pending invitations render as rows in the members list (with an
   // "Invited" chip); the backing endpoint is invite-permission gated.
@@ -168,15 +201,23 @@ function ManageOrganizationMembers() {
             {t(I18nKey.SETTINGS$PAGE_ORG_MEMBERS_SUBLINE)}
           </p>
         </header>
-        {hasPermissionToInvite && (
+        {showAddButton && (
           <BrandButton
             type="button"
             variant="primary"
             className="shrink-0 whitespace-nowrap"
-            onClick={() => setInviteModalOpen(true)}
+            onClick={() =>
+              isSuperAdmin
+                ? setMintLinkModalOpen(true)
+                : setInviteModalOpen(true)
+            }
             startContent={<Plus size={14} />}
           >
-            {t(I18nKey.ORG$INVITE_ORG_MEMBERS)}
+            {t(
+              isSuperAdmin
+                ? I18nKey.ORG$CREATE_SIGNUP_LINK
+                : I18nKey.ORG$INVITE_ORG_MEMBERS,
+            )}
           </BrandButton>
         )}
       </div>
@@ -209,6 +250,15 @@ function ManageOrganizationMembers() {
         ReactDOM.createPortal(
           <InviteOrganizationMemberModal
             onClose={() => setInviteModalOpen(false)}
+          />,
+          document.getElementById("portal-root") || document.body,
+        )}
+
+      {mintLinkModalOpen &&
+        ReactDOM.createPortal(
+          <MintSignupLinkModal
+            orgId={organizationId}
+            onClose={() => setMintLinkModalOpen(false)}
           />,
           document.getElementById("portal-root") || document.body,
         )}
@@ -322,6 +372,183 @@ function ManageOrganizationMembers() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Instance-wide "no organization selected" view. Only reachable by super
+ * admins (see the ``OrgSelector``'s "All Organizations" option and this
+ * route's ``clientLoader``); read-only aside from minting sign-up links,
+ * which here may also grant the instance-level ``superadmin`` role.
+ */
+function AllUsersSection() {
+  const { t } = useTranslation();
+  const { page, setPage, emailFilter, setEmailFilter, debouncedEmailFilter } =
+    usePaginatedEmailFilter();
+  const [mintLinkModalOpen, setMintLinkModalOpen] = React.useState(false);
+
+  const {
+    data: usersData,
+    isLoading,
+    isFetching,
+    error: usersError,
+  } = useAllUsers({ page, limit, email: debouncedEmailFilter });
+
+  const { data: totalCount, error: countError } = useAllUsersCount({
+    email: debouncedEmailFilter,
+  });
+
+  const hasError = usersError || countError;
+  const totalPages =
+    totalCount !== undefined ? Math.ceil(totalCount / limit) : 0;
+
+  return (
+    <div
+      data-testid="all-users-settings"
+      className="flex h-full flex-col gap-6"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <header className="min-w-0 space-y-1">
+          <Typography.H2>{t(I18nKey.ORG$ALL_USERS)}</Typography.H2>
+          <p
+            data-testid="settings-page-subtitle"
+            className="text-sm leading-5 text-muted"
+          >
+            {t(I18nKey.SETTINGS$PAGE_ORG_MEMBERS_SUBLINE)}
+          </p>
+        </header>
+        <BrandButton
+          type="button"
+          variant="primary"
+          className="shrink-0 whitespace-nowrap"
+          onClick={() => setMintLinkModalOpen(true)}
+          startContent={<Plus size={14} />}
+        >
+          {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
+        </BrandButton>
+      </div>
+
+      <div className={cn(formControlShellClassName, "w-full")}>
+        <Search
+          size={16}
+          className="ml-3 shrink-0 text-tertiary-alt"
+          aria-hidden
+        />
+        <input
+          data-testid="email-filter-input"
+          type="text"
+          value={emailFilter}
+          placeholder={t(I18nKey.ORG$SEARCH_BY_EMAIL)}
+          onChange={(e) => setEmailFilter(e.target.value)}
+          className={cn(formControlInlineInputClassName, "text-white")}
+        />
+        {isFetching && debouncedEmailFilter && (
+          <LoaderCircle
+            size={16}
+            className="mr-3 shrink-0 animate-spin text-tertiary-alt"
+            data-testid="search-loading-indicator"
+          />
+        )}
+      </div>
+
+      {mintLinkModalOpen &&
+        ReactDOM.createPortal(
+          <MintSignupLinkModal
+            orgId={null}
+            onClose={() => setMintLinkModalOpen(false)}
+          />,
+          document.getElementById("portal-root") || document.body,
+        )}
+
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          "custom-scrollbar flex-1 overflow-y-auto",
+        )}
+      >
+        <div className={settingsListSectionHeaderClassName}>
+          <span>{t(I18nKey.ORG$ALL_USERS)}</span>
+          {totalCount !== undefined && (
+            <span className="text-muted">
+              {totalCount} {totalCount === 1 ? "user" : "users"}
+            </span>
+          )}
+        </div>
+
+        {isLoading && (
+          <div className="flex items-center justify-center p-8 text-muted">
+            Loading...
+          </div>
+        )}
+
+        {!isLoading && hasError && (
+          <div className="flex items-center justify-center p-8 text-muted">
+            {t(I18nKey.ORG$FAILED_TO_LOAD_MEMBERS)}
+          </div>
+        )}
+
+        {!isLoading && !hasError && usersData?.items.length ? (
+          <ul data-testid="all-users-list">
+            {usersData.items.map((listUser) => (
+              <li
+                key={listUser.user_id}
+                data-testid="all-users-item"
+                className={settingsListTableRowClassName}
+              >
+                <div
+                  className={cn(settingsListRowClassName, "justify-between")}
+                >
+                  <span className="truncate text-sm font-normal leading-5 text-white">
+                    {listUser.email}
+                  </span>
+                  {listUser.is_super_admin && (
+                    <span className="shrink-0 rounded-lg border border-[var(--oh-border)] px-2 py-0.5 text-xs capitalize text-muted">
+                      {t(I18nKey.ORG$ROLE_SUPERADMIN)}
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {!isLoading && !hasError && !usersData?.items.length && (
+          <div className="flex items-center justify-center p-8 text-muted">
+            {debouncedEmailFilter
+              ? t(I18nKey.ORG$NO_MEMBERS_MATCHING_FILTER)
+              : t(I18nKey.ORG$NO_MEMBERS_FOUND)}
+          </div>
+        )}
+      </div>
+
+      {totalPages > 1 && (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+          className="py-4"
+        />
+      )}
+    </div>
+  );
+}
+
+function ManageOrganizationMembers() {
+  const { organizationId } = useSelectedOrganizationId();
+  const { data: isSuperAdmin = false } = useIsSuperAdmin();
+
+  // Only a super admin can ever reach this without an organization selected
+  // (see the clientLoader guard above and the OrgSelector's "All
+  // Organizations" option); every other user always has one auto-selected.
+  if (!organizationId) {
+    return <AllUsersSection />;
+  }
+
+  return (
+    <OrganizationMembersSection
+      organizationId={organizationId}
+      isSuperAdmin={isSuperAdmin}
+    />
   );
 }
 

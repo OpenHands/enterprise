@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
-from server.routes.super_admins import super_admin_router
+from server.routes.super_admins import admin_users_router, super_admin_router
 from storage.user_store import SuperAdminRevokeResult
 
 CALLER_USER_ID = str(uuid.uuid4())
@@ -25,6 +25,7 @@ CALLER_USER_ID = str(uuid.uuid4())
 def mock_app():
     app = FastAPI()
     app.include_router(super_admin_router)
+    app.include_router(admin_users_router)
     app.dependency_overrides[get_user_id] = lambda: CALLER_USER_ID
     return app
 
@@ -288,3 +289,123 @@ async def test_list_super_admins_requires_auth_when_provisioning_enabled(
             resp = await client.get('/api/admin/super-admins')
 
     assert resp.status_code == 401
+
+
+# ── GET /api/admin/super-admins/me ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_my_super_admin_status_true(mock_app):
+    superadmin = MagicMock()
+    superadmin.name = 'admin'
+    with patch(
+        'server.routes.super_admins.get_user_super_role',
+        AsyncMock(return_value=superadmin),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins/me')
+
+    assert resp.status_code == 200
+    assert resp.json() == {'is_super_admin': True}
+
+
+@pytest.mark.asyncio
+async def test_my_super_admin_status_false(mock_app):
+    with patch(
+        'server.routes.super_admins.get_user_super_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins/me')
+
+    assert resp.status_code == 200
+    assert resp.json() == {'is_super_admin': False}
+
+
+@pytest.mark.asyncio
+async def test_my_super_admin_status_requires_auth(mock_app):
+    mock_app.dependency_overrides[get_user_id] = lambda: None
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/super-admins/me')
+
+    assert resp.status_code == 401
+
+
+# ── GET /api/admin/users, GET /api/admin/users/count ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_all_users_success(mock_app, grant_manage_super_admins):
+    a, b = (
+        _fake_user(str(uuid.uuid4()), 'a@x.com'),
+        _fake_user(str(uuid.uuid4()), 'b@x.com'),
+    )
+    a.role = None
+    b.role = MagicMock(name='admin')
+    b.role.name = 'admin'
+    with patch(
+        'server.routes.super_admins.UserStore.list_users_paginated',
+        AsyncMock(return_value=([a, b], False)),
+    ) as list_mock:
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/users')
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [item['user_id'] for item in body['items']] == [str(a.id), str(b.id)]
+    assert body['items'][0]['is_super_admin'] is False
+    assert body['items'][1]['is_super_admin'] is True
+    list_mock.assert_awaited_once_with(offset=0, limit=10, email_filter=None)
+
+
+@pytest.mark.asyncio
+async def test_list_all_users_pagination_and_filter(
+    mock_app, grant_manage_super_admins
+):
+    with patch(
+        'server.routes.super_admins.UserStore.list_users_paginated',
+        AsyncMock(return_value=([], False)),
+    ) as list_mock:
+        async with _client(mock_app) as client:
+            resp = await client.get(
+                '/api/admin/users',
+                params={'page_id': '20', 'limit': 10, 'email': 'foo'},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()['current_page'] == 3
+    list_mock.assert_awaited_once_with(offset=20, limit=10, email_filter='foo')
+
+
+@pytest.mark.asyncio
+async def test_list_all_users_invalid_page_id(mock_app, grant_manage_super_admins):
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/users', params={'page_id': 'not-a-number'})
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_all_users_forbidden_without_permission(mock_app):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/users')
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_count_all_users(mock_app, grant_manage_super_admins):
+    with patch(
+        'server.routes.super_admins.UserStore.count_users',
+        AsyncMock(return_value=42),
+    ) as count_mock:
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/users/count', params={'email': 'foo'})
+
+    assert resp.status_code == 200
+    assert resp.json() == 42
+    count_mock.assert_awaited_once_with(email_filter='foo')
