@@ -25,3 +25,8 @@ class WorkerConfig(BaseModel):
 app = App(connector=PsycopgConnector())
 app.add_tasks_from(housekeeping, namespace='worker')
 app.add_tasks_from(lifecycle, namespace='sandbox_lifecycle')
+
+# The queues the worker takes jobs from. Given none, procrastinate takes jobs
+# from every queue, including ones whose tasks this image does not register,
+# and fails them with TaskNotFound.
+QUEUES = ['default']
