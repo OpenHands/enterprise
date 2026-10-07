@@ -1306,7 +1306,17 @@ class TestSignupLinkToken:
     def test_rejects_tampered_token(self, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-        tampered = token[:-1] + ('a' if token[-1] != 'a' else 'b')
+        # Flip a character in the middle of the signature rather than the
+        # very last one: a trailing base64 group can be partially padded, so
+        # flipping its last character sometimes leaves the decoded bytes (and
+        # therefore the signature) unchanged -- a flaky false negative. A
+        # middle character always sits in a complete 4-char/3-byte group, so
+        # changing it is guaranteed to change the decoded signature bytes.
+        header, body, signature = token.split('.')
+        mid = len(signature) // 2
+        flipped_char = 'a' if signature[mid] != 'a' else 'b'
+        tampered_signature = signature[:mid] + flipped_char + signature[mid + 1 :]
+        tampered = f'{header}.{body}.{tampered_signature}'
         with _patch_jwt_service(jwt_svc), pytest.raises(ValueError):
             idp._verify_signup_link_token(tampered)
 
