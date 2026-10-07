@@ -11,6 +11,7 @@ import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Request,
@@ -45,6 +46,7 @@ from openhands.app_server.config import (
 )
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
+from openhands.app_server.event.event_parsing import parse_event_payload
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_result_models import (
@@ -529,21 +531,26 @@ async def _sync_live_conversation_stats(
 @router.post('/events/{conversation_id}')
 async def on_event(
     background_tasks: BackgroundTasks,
-    events: list[Event],
     conversation_id: UUID,
+    events: list[Any] = Body(...),
     app_conversation_info: AppConversationInfo = Depends(valid_conversation),
     app_conversation_info_service: AppConversationInfoService = app_conversation_info_service_dependency,
     event_service: EventService = event_service_dependency,
 ) -> Success:
     """Webhook callback for when event stream events occur."""
+    parsed_events = [parse_event_payload(event) for event in events]
+
     try:
         # Save events...
         await asyncio.gather(
-            *[event_service.save_event(conversation_id, event) for event in events]
+            *[
+                event_service.save_event(conversation_id, event)
+                for event in parsed_events
+            ]
         )
 
         # Process stats events for V1 conversations
-        for event in events:
+        for event in parsed_events:
             if isinstance(event, ConversationStateUpdateEvent) and event.key == 'stats':
                 await app_conversation_info_service.process_stats_event(
                     event, conversation_id
@@ -557,7 +564,7 @@ async def on_event(
         # conversation-info webhook (which only fires on start/pause/interrupt/
         # delete, never mid-run). ``active_model`` is only set on success.
         switched_model: str | None = None
-        for event in events:
+        for event in parsed_events:
             if (
                 isinstance(event, ObservationEvent)
                 and isinstance(event.observation, SwitchLLMObservation)
@@ -575,7 +582,7 @@ async def on_event(
         # Analytics: conversation terminal state detection
         # Also persist execution status to database for dashboard queries
         run_ended = False
-        for event in events:
+        for event in parsed_events:
             if not isinstance(event, ConversationStateUpdateEvent):
                 continue
             if event.key != 'execution_status':
@@ -590,7 +597,10 @@ async def on_event(
                     run_ended = True
                 if exec_status.is_terminal():
                     await _track_conversation_terminal(
-                        conversation_id, app_conversation_info, events, exec_status
+                        conversation_id,
+                        app_conversation_info,
+                        parsed_events,
+                        exec_status,
                     )
             except Exception:
                 _logger.exception(
@@ -611,7 +621,7 @@ async def on_event(
             _run_callbacks_in_bg_and_close,
             conversation_id,
             app_conversation_info.created_by_user_id,
-            events,
+            parsed_events,
         )
 
     except Exception:

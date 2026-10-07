@@ -128,6 +128,14 @@ class Permission(str, Enum):
     # so an org owner cannot lift their own org's quota.
     MANAGE_ORG_QUOTA = 'manage_org_quota'
 
+    # Instance-level ability to mint expiring sign-up links for the
+    # integrated password IDP (``server.routes.idp``), letting a super admin
+    # invite a user who sets their own password rather than the admin
+    # choosing one for them. Like MANAGE_SUPER_ADMINS this is an explicit
+    # instance-admin capability granted only to the ``superadmin`` super
+    # role -- no org-scoped role implies it.
+    CREATE_SIGNUP_LINK = 'create_signup_link'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -274,6 +282,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SUPER_ADMINS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
+            Permission.CREATE_SIGNUP_LINK,
         ]
     ),
     RoleName.MEMBER: frozenset(),

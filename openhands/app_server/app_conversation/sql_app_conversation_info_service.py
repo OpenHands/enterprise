@@ -56,6 +56,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_models import LOCAL_USER_ID
 from openhands.app_server.utils.sql_utils import (
     Base,
     create_json_type_decorator,
@@ -868,7 +869,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
         return AppConversationInfo(
             id=UUID(stored.conversation_id),
-            created_by_user_id=None,  # User ID is now stored in ConversationMetadataSaas
+            # No owner column and no user scoping here, so every conversation is
+            # OSS mode's single user's. The SaaS subclass overrides this with the
+            # owner from ConversationMetadataSaas.
+            created_by_user_id=LOCAL_USER_ID,
             sandbox_id=sandbox_id,  # Use the asserted non-None value
             selected_repository=stored.selected_repository,
             selected_branch=stored.selected_branch,

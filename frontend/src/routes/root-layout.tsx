@@ -229,18 +229,39 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     !loginMethodExists;
 
+  const enableOauthV2Login = config.data?.feature_flags?.enable_oauth_v2_login;
+
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
       // Include search params in returnTo to preserve query string (e.g., user_code for device OAuth)
       const searchString = searchParams.toString();
       const fullPath = searchString ? `${pathname}?${searchString}` : pathname;
+
+      if (enableOauthV2Login) {
+        // /oauth/idp-login is a backend-only redirect endpoint (not a
+        // frontend route), so it needs a full page navigation rather than
+        // client-side routing.
+        const redirectUrl =
+          fullPath === "/"
+            ? "/oauth/idp-login"
+            : `/oauth/idp-login?redirect_url=${encodeURIComponent(fullPath)}`;
+        window.location.href = redirectUrl;
+        return;
+      }
+
       const loginUrl =
         fullPath === "/"
           ? "/login"
           : `/login?returnTo=${encodeURIComponent(fullPath)}`;
       navigate(loginUrl, { replace: true });
     }
-  }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
+  }, [
+    shouldRedirectToLogin,
+    pathname,
+    searchParams,
+    navigate,
+    enableOauthV2Login,
+  ]);
 
   // Show loading spinner while loading OR when about to redirect
   if (isLoading || shouldRedirectToLogin) {
