@@ -2,6 +2,9 @@ import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ProfileActionsMenu } from "#/components/features/settings/profile-actions-menu";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
+import { useFreeModels } from "#/hooks/query/use-free-models";
+import { formatModelNameForDisplay } from "#/utils/format-model-name";
+import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import ThreeDotsVerticalIcon from "#/icons/three-dots-vertical.svg?react";
@@ -36,6 +39,15 @@ export function ProfileRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // DB-driven free flags (mirrors `verified`). Only surfaced on
+  // OpenHands-hosted domains — self-hosted installs never show free-model UI.
+  const freeModels = useFreeModels();
+  const showFreeModelUI = isOpenHandsHostedDomain();
+  const displayModel =
+    showFreeModelUI && profile.model
+      ? formatModelNameForDisplay(profile.model, freeModels)
+      : profile.model;
+
   return (
     <div
       data-testid="profile-row"
@@ -62,12 +74,12 @@ export function ProfileRow({
             </Typography.Text>
           )}
         </div>
-        {profile.model ? (
+        {displayModel ? (
           <Typography.Text
             className="min-w-0 max-w-full truncate text-sm text-[var(--oh-muted)]"
-            title={profile.model}
+            title={profile.model ?? undefined}
           >
-            {profile.model}
+            {displayModel}
           </Typography.Text>
         ) : null}
       </div>
