@@ -247,13 +247,20 @@ def send_welcome_email(
     email: str,
     first_name: Optional[str] = None,
     last_name: Optional[str] = None,
+    *,
+    user_id: str,
 ) -> dict[str, Any]:
     """Send a welcome email to a new contact.
+
+    Every attempt sends the same idempotency key, so a retry after Resend
+    accepted an earlier attempt returns that attempt's response instead of
+    sending again. Resend keeps a key for 24 hours.
 
     Args:
         email: The email address of the contact.
         first_name: The first name of the contact.
         last_name: The last name of the contact.
+        user_id: The user's ID, which keys the send.
 
     Returns:
         The API response.
@@ -305,7 +312,9 @@ def send_welcome_email(
         }
 
         # Send the email
-        response = resend.Emails.send(params)
+        response = resend.Emails.send(
+            params, {'idempotency_key': f'welcome-email:{user_id}'}
+        )
         logger.info(f'Welcome email sent to {email}')
         return response
     except Exception:
@@ -483,7 +492,9 @@ def sync_users_to_resend():
                 time.sleep(1 / RATE_LIMIT)
 
                 try:
-                    send_welcome_email(email, user.first_name, user.last_name)
+                    send_welcome_email(
+                        email, user.first_name, user.last_name, user_id=user.id
+                    )
                     logger.info(f'Sent welcome email to {email}')
                 except Exception:
                     logger.exception(
