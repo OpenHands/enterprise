@@ -113,3 +113,8 @@ export interface AzureDevOpsWebhookInstallationResult {
   work_item_subscription_id: string | null;
   webhook_url: string;
 }
+
+export interface AzureDevOpsOrganizations {
+  organizations: string[];
+  default_organization: string | null;
+}
