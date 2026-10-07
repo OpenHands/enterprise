@@ -229,7 +229,7 @@ class SetAuthCookieMiddleware:
             '/oauth/device/authorize',
             '/oauth/device/token',
             '/api/v1/web-client/config',
-            # Dev IDP status is unauthenticated (the frontend reads it to
+            # Integrated IDP status is unauthenticated (the frontend reads it to
             # decide whether to show the integrated login path). Only
             # available on self-hosted with no real IDP configured.
             '/api/idp/status',

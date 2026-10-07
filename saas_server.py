@@ -45,15 +45,15 @@ from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
 from server.routes.auth import api_router, oauth_router  # noqa: E402
 from server.routes.billing import billing_router  # noqa: E402
-from server.routes.dev_idp import (  # noqa: E402
-    dev_idp_router,
-    dev_idp_status_router,
-)
 from server.routes.email import api_router as email_router  # noqa: E402
 from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
+from server.routes.idp import (  # noqa: E402
+    idp_router,
+    idp_status_router,
+)
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
@@ -119,8 +119,8 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
-base_app.include_router(dev_idp_router)  # Dev-only insecure IDP (self-hosted)
-base_app.include_router(dev_idp_status_router)  # Dev IDP status endpoint
+base_app.include_router(idp_router)  # Integrated password IDP (self-hosted)
+base_app.include_router(idp_status_router)  # Integrated IDP status endpoint
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(

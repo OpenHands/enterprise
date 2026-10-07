@@ -1133,19 +1133,19 @@ class TestResolveEnableIntegratedIdp:
     frontend reads from ``config.feature_flags``.
 
     Like ``TestResolveFlag`` above, a lightweight fake module is injected into
-    ``sys.modules`` instead of importing the real ``server.routes.dev_idp``:
+    ``sys.modules`` instead of importing the real ``server.routes.idp``:
     that module pulls in the full SaaS DB-model graph, which is unnecessary
     here and can collide with other tests' SQLAlchemy metadata when this file
     is run in isolation.
     """
 
-    def _fake_dev_idp_module(self, is_dev_idp_available):
+    def _fake_idp_module(self, is_idp_available):
         import sys
         import types
 
-        fake_module = types.ModuleType('server.routes.dev_idp')
-        fake_module.is_dev_idp_available = is_dev_idp_available
-        return patch.dict(sys.modules, {'server.routes.dev_idp': fake_module})
+        fake_module = types.ModuleType('server.routes.idp')
+        fake_module.is_idp_available = is_idp_available
+        return patch.dict(sys.modules, {'server.routes.idp': fake_module})
 
     def _fake_feature_flag_service_module(self):
         """Stub out server.services.feature_flag_service too.
@@ -1176,7 +1176,7 @@ class TestResolveEnableIntegratedIdp:
         )
 
     @pytest.mark.asyncio
-    async def test_delegates_to_is_dev_idp_available(self):
+    async def test_delegates_to_is_idp_available(self):
         from openhands.app_server.web_client import (
             default_web_client_config_injector as mod,
         )
@@ -1184,7 +1184,7 @@ class TestResolveEnableIntegratedIdp:
         async def _available():
             return True
 
-        with self._fake_dev_idp_module(_available):
+        with self._fake_idp_module(_available):
             assert await mod._resolve_enable_integrated_idp() is True
 
     @pytest.mark.asyncio
@@ -1216,7 +1216,7 @@ class TestResolveEnableIntegratedIdp:
             return True
 
         with (
-            self._fake_dev_idp_module(_available),
+            self._fake_idp_module(_available),
             self._fake_feature_flag_service_module(),
             patch(
                 'openhands.app_server.config.get_global_config',

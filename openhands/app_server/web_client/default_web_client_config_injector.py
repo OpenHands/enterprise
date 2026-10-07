@@ -273,15 +273,15 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
 async def _resolve_enable_integrated_idp() -> bool:
     """Whether the integrated, locally-hosted IDP (email+password) is available.
 
-    Delegates to ``server.routes.dev_idp.is_dev_idp_available`` so the config
+    Delegates to ``server.routes.idp.is_idp_available`` so the config
     endpoint and the route itself share the exact same availability logic.
     Best-effort: any error (e.g. the SaaS modules are not installed in an OSS
     context) defaults to ``False`` so the config endpoint never breaks.
     """
     try:
-        from server.routes.dev_idp import is_dev_idp_available
+        from server.routes.idp import is_idp_available
 
-        return await is_dev_idp_available()
+        return await is_idp_available()
     except Exception:
         return False
 
