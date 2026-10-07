@@ -47,7 +47,9 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     id: "add-integration",
     title: "SUPER_ADMIN$SETUP_STEP_INTEGRATION",
     description: "SUPER_ADMIN$SETUP_STEP_INTEGRATION_HINT",
-    to: "/settings/mcp",
+    // Agent Canvas's MCP page, as in the Canvas guide. It saves to the same
+    // member settings as /settings/mcp, which the step checks.
+    to: "/canvas/mcp",
     completion: "mcp_server",
   },
   {

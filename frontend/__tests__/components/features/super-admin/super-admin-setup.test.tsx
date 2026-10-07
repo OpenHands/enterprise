@@ -4,6 +4,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -216,6 +217,50 @@ describe("SuperAdminSetupGuide", () => {
     expect(
       await screen.findByTestId("automation-templates-stub"),
     ).toBeInTheDocument();
+  });
+
+  describe("Add an integration", () => {
+    // The step lives in Agent Canvas, so it must open with a page load.
+    const replace = vi.fn();
+
+    beforeEach(() => {
+      replace.mockReset();
+      vi.stubGlobal("location", { ...window.location, replace });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("opens Agent Canvas's MCP page instead of a tour when it is the next step", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderSetupPage(
+        guideState({ ...NO_STEPS_DONE, org_llm: true, automation: true }),
+      );
+
+      // Act
+      await user.click(screen.getByTestId("super-admin-setup-start-guide"));
+
+      // Assert
+      await waitFor(() => expect(replace).toHaveBeenCalledWith("/canvas/mcp"));
+    });
+
+    it("opens Agent Canvas's MCP page from its step", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderSetupPage(guideState(NO_STEPS_DONE));
+
+      // Act
+      await user.click(
+        within(
+          screen.getByTestId("super-admin-setup-step-add-integration"),
+        ).getByRole("button", { name: /SUPER_ADMIN\$SETUP_STEP_INTEGRATION/ }),
+      );
+
+      // Assert
+      expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+    });
   });
 
   it("does not ask again when an already finished guide is opened", () => {

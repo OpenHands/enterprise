@@ -3,7 +3,6 @@ import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 
 const NAV = {
   orgDefaults: '[data-testid="sidebar-settings-/settings/org-defaults"]',
-  mcp: '[data-testid="sidebar-settings-/settings/mcp"]',
   members: '[data-testid="sidebar-settings-/settings/org-members"]',
   instance: '[data-testid="sidebar-settings-/super-admin/instance"]',
 } as const;
@@ -78,17 +77,8 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
       side: "top",
       waitForComplete: "add-llm",
     },
-    {
-      id: "add-integration",
-      checklistId: "add-integration",
-      route: "/settings/mcp",
-      anchor:
-        '[data-testid="mcp-settings-screen"], [data-testid="settings-page-subtitle"], main',
-      alsoHighlight: NAV.mcp,
-      title: "Add an integration",
-      body: "Connect an MCP server so agents can use your organization's tools.",
-      side: "bottom",
-    },
+    // "Add an integration" opens Agent Canvas's MCP page, which the tour
+    // cannot follow, so it has no stop (like the automation template step).
     {
       id: "invite-users",
       checklistId: "invite-users",
