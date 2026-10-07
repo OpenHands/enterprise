@@ -5,6 +5,12 @@ from unittest.mock import patch
 import pytest
 
 from integrations.gitlab.gitlab_service import SaaSGitLabService
+from integrations.types import GitLabResourceType
+from openhands.app_server.integrations.service_types import (
+    RateLimitError,
+    RequestMethod,
+)
+from storage.gitlab_webhook import WebhookStatus
 
 
 @pytest.fixture
@@ -213,3 +219,48 @@ class TestGetUserResourcesWithAdminAccess:
             # Assert
             assert len(projects) == 0
             assert mock_request.call_count == 2  # Should not continue pagination
+
+
+class TestDeleteWebhooksWithUrl:
+    """delete_webhooks_with_url removes only hooks pointing at our URL."""
+
+    async def test_deletes_every_hook_with_the_url_and_no_other(self, gitlab_service):
+        hooks = [
+            {'id': 1, 'url': 'https://ours/hook'},
+            {'id': 2, 'url': 'https://someone-else/hook'},
+            {'id': 3, 'url': 'https://ours/hook'},
+        ]
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = [(hooks, {}), (None, {}), (None, {})]
+
+            deleted, status = await gitlab_service.delete_webhooks_with_url(
+                GitLabResourceType.GROUP, '42', 'https://ours/hook'
+            )
+
+        assert (deleted, status) == (2, None)
+        delete_calls = mock_request.call_args_list[1:]
+        assert [call.args[0] for call in delete_calls] == [
+            f'{gitlab_service.BASE_URL}/groups/42/hooks/1',
+            f'{gitlab_service.BASE_URL}/groups/42/hooks/3',
+        ]
+        assert all(
+            call.kwargs['method'] == RequestMethod.DELETE for call in delete_calls
+        )
+
+    async def test_rate_limit_part_way_reports_what_was_deleted(self, gitlab_service):
+        hooks = [
+            {'id': 1, 'url': 'https://ours/hook'},
+            {'id': 2, 'url': 'https://ours/hook'},
+        ]
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = [
+                (hooks, {}),
+                (None, {}),
+                RateLimitError('slow down'),
+            ]
+
+            deleted, status = await gitlab_service.delete_webhooks_with_url(
+                GitLabResourceType.PROJECT, '7', 'https://ours/hook'
+            )
+
+        assert (deleted, status) == (1, WebhookStatus.RATE_LIMITED)
