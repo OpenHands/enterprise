@@ -1,7 +1,7 @@
 import csv
 import io
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -79,6 +79,10 @@ from server.services.org_conversation_service import (
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
+from server.utils.litellm_interactive_login_guard import (
+    INTERACTIVE_LOGIN_SAVE_ERROR,
+    is_interactive_login_model,
+)
 from storage.default_org_service import get_default_org_config
 from storage.org_git_claim_store import OrgGitClaimStore
 from storage.org_service import OrgService
@@ -96,6 +100,22 @@ org_router = APIRouter(
 def _hide_personal_workspaces() -> bool:
     """Whether this deployment hides personal workspaces from org listings."""
     return get_default_org_config().hide_personal_workspaces
+
+
+def _reject_org_interactive_login_model(
+    agent_settings_diff: dict[str, Any] | None,
+) -> None:
+    """Reject an org-default save whose LLM diff selects an interactive-login model.
+
+    Inspects only the incoming diff, so an org edit that does not set the model is
+    unaffected.
+    """
+    model = ((agent_settings_diff or {}).get('llm') or {}).get('model')
+    if is_interactive_login_model(model):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INTERACTIVE_LOGIN_SAVE_ERROR.format(model=model),
+        )
 
 
 _org_budget_service_injector = OrgBudgetServiceInjector()
@@ -395,6 +415,8 @@ async def update_org_defaults_settings(
                 ),
             )
 
+        _reject_org_interactive_login_model(settings.agent_settings_diff)
+
         updated_org = await OrgService.update_org_with_permissions(
             org_id=org_id,
             update_data=settings,
@@ -601,6 +623,7 @@ async def update_org_app_settings(
             or update_data.agent_settings_diff is not None
         ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
+        _reject_org_interactive_login_model(update_data.agent_settings_diff)
         return await service.update_org_app_settings(update_data)
     except OrgConcurrentModificationError as e:
         raise HTTPException(
