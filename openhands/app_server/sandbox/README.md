@@ -47,6 +47,12 @@ process backend has no lifecycle.) The background worker applies three rules:
 
 A sandbox counts as active for a full idle period after it starts or resumes.
 
+A running sandbox that the provider reports as broken, such as a Docker
+container whose agent server no longer answers its health check, is paused by
+the idle and max session rules too. Its `idle_time` can't be read, so the
+worker uses the activity recorded on its row instead. It waits two idle periods
+rather than one, so a single failed health check doesn't stop a busy sandbox.
+
 | Variable | Default |
 | --- | --- |
 | `OH_SANDBOX_LIFECYCLE_IDLE_SECONDS` | 1200 (20 minutes) |

@@ -1068,7 +1068,7 @@ class UserStore:
         authenticate via a password yet.
 
         Used by the local password-login bootstrap flow
-        (``server.routes.dev_idp``) to decide whether to keep offering the
+        (``server.routes.idp``) to decide whether to keep offering the
         admin-account-creation form: it should, until *some* super admin has
         a password set, even if a super admin row already exists — the form
         then completes that existing super admin's bootstrap (sets their
