@@ -238,6 +238,7 @@ class TestDeleteWebhooksWithUrl:
             )
 
         assert (deleted, status) == (2, None)
+        assert mock_request.call_args_list[0].kwargs['params'] == {'per_page': 100}
         delete_calls = mock_request.call_args_list[1:]
         assert [call.args[0] for call in delete_calls] == [
             f'{gitlab_service.BASE_URL}/groups/42/hooks/1',

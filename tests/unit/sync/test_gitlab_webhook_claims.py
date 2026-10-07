@@ -6,11 +6,11 @@ with a hook's credentials authenticates.
 """
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 
 import storage.gitlab_webhook_store as store_module
 import sync.install_gitlab_webhooks as job_module
@@ -33,6 +33,8 @@ class FakeGitLab:
     def __init__(self):
         self.hooks: dict[str, list[dict]] = {}
         self.resource_exists = True
+        self.is_admin = True
+        self.delete_status = None
         self.lose_create_response = False
         self.fail_create = False
         self.on_resource_check = None
@@ -59,7 +61,7 @@ class FakeGitLab:
     async def check_user_has_admin_access_to_resource(self, resource_type, resource_id):
         if self.on_admin_check:
             await self.on_admin_check()
-        return True, None
+        return self.is_admin, None
 
     async def check_webhook_exists_on_resource(
         self, resource_type, resource_id, webhook_url
@@ -88,6 +90,8 @@ class FakeGitLab:
         return str(hook['id']), None
 
     async def delete_webhooks_with_url(self, resource_type, resource_id, webhook_url):
+        if self.delete_status:
+            return 0, self.delete_status
         hooks = self.hooks.get(resource_id, [])
         keep = [h for h in hooks if h['url'] != webhook_url]
         self.hooks[resource_id] = keep
@@ -272,13 +276,17 @@ async def test_run_that_lost_its_claim_writes_no_credentials(
     assert gitlab.hooks == {}
 
 
+@pytest.mark.parametrize('failed_check', ['resource', 'admin'])
 async def test_run_that_lost_its_claim_does_not_delete_the_row(
-    store, gitlab, add_row, get_row, take_over
+    store, gitlab, add_row, get_row, take_over, failed_check
 ):
     row_id = await add_row()
     run_a = uuid4()
     [row] = await store.claim_rows(run_a, CLAIM_LEASE)
-    gitlab.resource_exists = False
+    if failed_check == 'resource':
+        gitlab.resource_exists = False
+    else:
+        gitlab.is_admin = False
     gitlab.on_resource_check = lambda: take_over(row_id)
 
     with pytest.raises(BreakLoopException):
@@ -383,3 +391,59 @@ async def test_claimed_rows_are_released_after_the_run(store, add_row, get_row):
     row = await get_row(row_id)
     assert row.claim_run_id is None and row.claimed_at is None
     assert row.last_synced is not None
+
+
+async def test_a_row_locked_by_another_run_is_skipped_not_waited_on(
+    store, add_row, async_session_maker
+):
+    locked = await add_row('locked')
+    free = await add_row('free')
+
+    async with async_session_maker() as session, session.begin():
+        await session.execute(
+            select(GitlabWebhook).where(GitlabWebhook.id == locked).with_for_update()
+        )
+        claimed = await asyncio.wait_for(store.claim_rows(uuid4(), CLAIM_LEASE), 5)
+
+    assert [row.id for row in claimed] == [free]
+
+
+async def test_rows_are_claimed_least_recently_synced_first(store, add_row):
+    newest = await add_row('newest', last_synced=datetime(2026, 3, 1))
+    oldest = await add_row('oldest', last_synced=datetime(2026, 1, 1))
+    middle = await add_row('middle', last_synced=datetime(2026, 2, 1))
+
+    claimed = await store.claim_rows(uuid4(), CLAIM_LEASE, limit=2)
+
+    assert [row.id for row in claimed] == [oldest, middle]
+    assert newest not in {row.id for row in claimed}
+
+
+async def test_reinstall_stops_when_the_old_hooks_cannot_be_deleted(
+    store, gitlab, add_row, get_row
+):
+    row_id = await add_row(webhook_exists=True, reinstall_requested_gen=1)
+    old = gitlab.add_hook('project-1')
+    gitlab.delete_status = WebhookStatus.RATE_LIMITED
+
+    await run_job()
+
+    assert gitlab.hooks['project-1'] == [old]
+    assert (await get_row(row_id)).reinstall_done_gen == 0
+
+
+async def test_repair_request_changes_only_the_request_counter(store, add_row, get_row):
+    row_id = await add_row(
+        webhook_exists=True, webhook_uuid='uuid-1', webhook_secret='secret-1'
+    )
+    before = await get_row(row_id)
+
+    assert await request_repair(GitLabResourceType.PROJECT, 'project-1')
+
+    after = await get_row(row_id)
+    assert after.reinstall_requested_gen == before.reinstall_requested_gen + 1
+    unchanged = ('webhook_exists', 'webhook_uuid', 'webhook_secret', 'claim_run_id')
+    assert {f: getattr(after, f) for f in unchanged} == {
+        f: getattr(before, f) for f in unchanged
+    }
+    assert after.reinstall_done_gen == before.reinstall_done_gen
