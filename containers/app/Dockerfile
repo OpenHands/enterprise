@@ -73,9 +73,11 @@ RUN mkdir -p $WORKSPACE_BASE
 # CPython runtime libraries.
 # CI reuses this layer from the registry build cache, so a Debian security update
 # published after the layer was cached (e.g. openssl/libpcre2 3.5.7-1~deb13u3)
-# is not picked up. Bump this date to force `apt-get upgrade` to run again.
-ARG APT_SECURITY_REFRESH=2026-10-06
-RUN echo "Applying Debian security updates as of ${APT_SECURITY_REFRESH}" \
+# is not picked up. BuildKit keys an ADD of a URL on the downloaded content, so
+# this layer is rebuilt (and `apt-get upgrade` re-run) whenever Debian publishes
+# a security update.
+ADD http://deb.debian.org/debian-security/dists/trixie-security/InRelease /tmp/trixie-security-InRelease
+RUN rm -f /tmp/trixie-security-InRelease \
     && apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
     && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
