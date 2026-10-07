@@ -63,9 +63,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
+from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
@@ -77,6 +79,11 @@ from server.auth.password_hashing import (
     verify_password,
 )
 from server.constants import ENABLE_INTEGRATED_IDP
+from server.utils.rate_limit_utils import (
+    RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
+    RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
+    check_rate_limit_by_user_id,
+)
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.user import User
@@ -631,6 +638,116 @@ def _idp_status_router() -> APIRouter:
 
 
 idp_status_router = _idp_status_router()
+
+
+# ── self-service password set/change (for already-authenticated users) ─────
+#
+# Distinct from the sign-up/login forms above: those are unauthenticated and
+# only ever create/claim *the* super admin as a one-time bootstrap step. These
+# two endpoints let any already-logged-in user set a password where they have
+# none yet, or change the one they have — independent of how they originally
+# authenticated (dev IDP sign-up, a real OAuth/OIDC IDP, or an admin-issued
+# invite link). They live under the same ``/api/idp`` prefix as the status
+# endpoint (JSON APIs, not the HTML form flow under ``/oauth``), and are
+# equally gated by ``ENABLE_INTEGRATED_IDP`` — see ``_require_idp_available``.
+
+
+class SetPasswordRequest(BaseModel):
+    """Body for ``POST /api/idp/password``.
+
+    ``current_password`` is required only when the user already has one set
+    (checked server-side against ``User.password_hash``) — callers can't
+    determine this themselves without ``GET /api/idp/password`` first, but
+    the server re-validates regardless of what the client believes.
+    """
+
+    current_password: str | None = None
+    new_password: str
+    confirm_password: str
+
+
+def _idp_password_router() -> APIRouter:
+    """Router for the authenticated has-password/set-password endpoints."""
+    router = APIRouter(prefix='/api/idp', tags=['IDP'])
+
+    @router.get('/password')
+    async def idp_has_password(
+        user_id: str | None = Depends(get_user_id),
+    ) -> JSONResponse:
+        await _require_idp_available()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Not authenticated',
+            )
+        user = await UserStore.get_user_by_id(user_id)
+        has_password = bool(user and user.password_hash)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={'has_password': has_password},
+        )
+
+    @router.post('/password')
+    async def idp_set_password(
+        request: Request,
+        body: SetPasswordRequest,
+        user_id: str | None = Depends(get_user_id),
+    ) -> JSONResponse:
+        await _require_idp_available()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Not authenticated',
+            )
+
+        # Throttles guessing of the current password; keyed by user_id since
+        # the caller is already authenticated.
+        await check_rate_limit_by_user_id(
+            request=request,
+            key_prefix='idp_set_password',
+            user_id=user_id,
+            user_rate_limit_seconds=RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
+            ip_rate_limit_seconds=RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
+        )
+
+        if body.new_password != body.confirm_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='New password and confirmation do not match',
+            )
+        if len(body.new_password) < MIN_PASSWORD_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Password must be at least {MIN_PASSWORD_LENGTH} characters long',
+            )
+
+        user = await UserStore.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+            )
+
+        if user.password_hash:
+            if not body.current_password or not verify_password(
+                body.current_password, user.password_hash
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='Current password is incorrect',
+                )
+
+        await _set_password_hash(user_id, hash_password(body.new_password))
+
+        logger.info('idp:password_set', extra={'user_id': user_id})
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={'message': 'Password updated'},
+        )
+
+    return router
+
+
+idp_password_router = _idp_password_router()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

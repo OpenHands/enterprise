@@ -1,10 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import { useSettings } from "#/hooks/query/use-settings";
 import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
+import { useHasPassword } from "#/hooks/query/use-has-password";
+import { useSetPassword } from "#/hooks/mutation/use-set-password";
 import { openHands } from "#/api/open-hands-axios";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displaySuccessToast,
+  displayErrorToast,
+} from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
@@ -14,6 +21,10 @@ import { I18nKey } from "#/i18n/declaration";
 
 // Email validation regex pattern
 const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+// Mirrors server.auth.password_hashing.MIN_PASSWORD_LENGTH. Client-side
+// check is just UX — the server re-validates and is authoritative.
+const MIN_PASSWORD_LENGTH = 8;
 
 function EmailInputSection({
   email,
@@ -117,6 +128,152 @@ function VerificationAlert() {
       <p className="text-sm text-red-300/90">
         {t(I18nKey.SETTINGS$EMAIL_VERIFICATION_RESTRICTION_MESSAGE)}
       </p>
+    </div>
+  );
+}
+
+function SetPasswordSection() {
+  const { t } = useTranslation();
+  const { data: hasPasswordData, isLoading: isHasPasswordLoading } =
+    useHasPassword();
+  const { mutate: setPassword, isPending } = useSetPassword();
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [currentPasswordError, setCurrentPasswordError] = useState<
+    string | undefined
+  >(undefined);
+  const [newPasswordError, setNewPasswordError] = useState<string | undefined>(
+    undefined,
+  );
+  const [confirmPasswordError, setConfirmPasswordError] = useState<
+    string | undefined
+  >(undefined);
+
+  const hasPassword = hasPasswordData?.has_password ?? false;
+
+  const resetForm = () => {
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setCurrentPasswordError(undefined);
+    setNewPasswordError(undefined);
+    setConfirmPasswordError(undefined);
+  };
+
+  const handleSubmit = () => {
+    let hasError = false;
+
+    if (hasPassword && !currentPassword) {
+      setCurrentPasswordError(t(I18nKey.SETTINGS$CURRENT_PASSWORD_REQUIRED));
+      hasError = true;
+    } else {
+      setCurrentPasswordError(undefined);
+    }
+
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setNewPasswordError(
+        t(I18nKey.SETTINGS$NEW_PASSWORD_TOO_SHORT, {
+          minLength: MIN_PASSWORD_LENGTH,
+        }),
+      );
+      hasError = true;
+    } else {
+      setNewPasswordError(undefined);
+    }
+
+    if (newPassword !== confirmPassword) {
+      setConfirmPasswordError(t(I18nKey.SETTINGS$NEW_PASSWORD_MISMATCH));
+      hasError = true;
+    } else {
+      setConfirmPasswordError(undefined);
+    }
+
+    if (hasError) return;
+
+    setPassword(
+      {
+        currentPassword: hasPassword ? currentPassword : undefined,
+        newPassword,
+        confirmPassword,
+      },
+      {
+        onSuccess: () => {
+          displaySuccessToast(
+            t(I18nKey.SETTINGS$PASSWORD_UPDATED_SUCCESSFULLY),
+          );
+          resetForm();
+        },
+        onError: (error: AxiosError) => {
+          displayErrorToast(
+            retrieveAxiosErrorMessage(error) ??
+              t(I18nKey.SETTINGS$FAILED_TO_SET_PASSWORD),
+          );
+        },
+      },
+    );
+  };
+
+  if (isHasPasswordLoading) {
+    return (
+      <div className="h-9 w-64 max-w-full animate-pulse rounded-lg bg-tertiary" />
+    );
+  }
+
+  return (
+    <div
+      data-testid="set-password-section"
+      className="flex max-w-lg flex-col gap-3"
+    >
+      <h2 className="text-lg font-medium">
+        {t(I18nKey.SETTINGS$SET_PASSWORD)}
+      </h2>
+
+      {hasPassword && (
+        <SettingsInput
+          testId="current-password-input"
+          type="password"
+          label={t(I18nKey.SETTINGS$CURRENT_PASSWORD)}
+          value={currentPassword}
+          onChange={setCurrentPassword}
+          autoComplete="current-password"
+          error={currentPasswordError}
+        />
+      )}
+
+      <SettingsInput
+        testId="new-password-input"
+        type="password"
+        label={t(I18nKey.SETTINGS$NEW_PASSWORD)}
+        value={newPassword}
+        onChange={setNewPassword}
+        autoComplete="new-password"
+        error={newPasswordError}
+      />
+
+      <SettingsInput
+        testId="confirm-new-password-input"
+        type="password"
+        label={t(I18nKey.SETTINGS$CONFIRM_NEW_PASSWORD)}
+        value={confirmPassword}
+        onChange={setConfirmPassword}
+        autoComplete="new-password"
+        error={confirmPasswordError}
+      />
+
+      <div>
+        <BrandButton
+          type="button"
+          variant="primary"
+          testId="set-password-button"
+          onClick={handleSubmit}
+          isDisabled={isPending}
+          aria-busy={isPending}
+        >
+          {t(I18nKey.SETTINGS$SET_PASSWORD)}
+        </BrandButton>
+      </div>
     </div>
   );
 }
@@ -229,6 +386,8 @@ function UserSettingsScreen() {
             {settings?.email_verified === false && <VerificationAlert />}
           </EmailInputSection>
         )}
+
+        {config?.feature_flags?.enable_integrated_idp && <SetPasswordSection />}
       </div>
     </div>
   );

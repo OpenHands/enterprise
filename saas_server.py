@@ -51,6 +51,7 @@ from server.routes.feature_flags import (  # noqa: E402
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
 from server.routes.idp import (  # noqa: E402
+    idp_password_router,
     idp_router,
     idp_status_router,
 )
@@ -121,6 +122,9 @@ base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
 base_app.include_router(idp_router)  # Integrated password IDP (self-hosted)
 base_app.include_router(idp_status_router)  # Integrated IDP status endpoint
+base_app.include_router(
+    idp_password_router
+)  # Authenticated self-service set/change password
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(

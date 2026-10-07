@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
@@ -55,8 +55,22 @@ def app():
     # match before the parameterized oauth_v2 routes.
     application.include_router(idp.idp_router)
     application.include_router(idp.idp_status_router)
+    application.include_router(idp.idp_password_router)
     application.include_router(oauth_v2.oauth_v2_router)
     return application
+
+
+@contextmanager
+def _authenticated_as(app, user_id: str | None):
+    """Override ``get_user_id`` so the authenticated password endpoints see
+    ``user_id`` as the current user (``None`` simulates no active session)."""
+    from openhands.app_server.user_auth import get_user_id
+
+    app.dependency_overrides[get_user_id] = lambda: user_id
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_user_id, None)
 
 
 @pytest.fixture
@@ -969,3 +983,215 @@ class TestIdpStatus:
             response = client.get('/api/idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is False
+
+
+# ── has-password endpoint ───────────────────────────────────────────────
+
+
+class TestIdpHasPassword:
+    def test_404_when_idp_disabled(self, app, client):
+        with (
+            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            _authenticated_as(app, 'user-1'),
+        ):
+            response = client.get('/api/idp/password')
+        assert response.status_code == 404
+
+    def test_401_when_not_authenticated(self, app, client):
+        with _available(), _authenticated_as(app, None):
+            response = client.get('/api/idp/password')
+        assert response.status_code == 401
+
+    def test_true_when_password_hash_set(self, app, client):
+        mock_user = _mock_user(password_hash=hash_password('secret123'))
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = client.get('/api/idp/password')
+        assert response.status_code == 200
+        assert response.json() == {'has_password': True}
+
+    def test_false_when_no_password_hash(self, app, client):
+        mock_user = _mock_user(password_hash=None)
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = client.get('/api/idp/password')
+        assert response.status_code == 200
+        assert response.json() == {'has_password': False}
+
+    def test_false_when_user_not_found(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            response = client.get('/api/idp/password')
+        assert response.status_code == 200
+        assert response.json() == {'has_password': False}
+
+
+# ── set-password endpoint ───────────────────────────────────────────────
+
+
+class TestIdpSetPassword:
+    @staticmethod
+    def _post(client, **body):
+        payload = {
+            'new_password': 'new-password123',
+            'confirm_password': 'new-password123',
+            **body,
+        }
+        return client.post('/api/idp/password', json=payload)
+
+    def test_404_when_idp_disabled(self, app, client):
+        with (
+            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            _authenticated_as(app, 'user-1'),
+        ):
+            response = self._post(client)
+        assert response.status_code == 404
+
+    def test_401_when_not_authenticated(self, app, client):
+        with _available(), _authenticated_as(app, None):
+            response = self._post(client)
+        assert response.status_code == 401
+
+    def test_400_when_passwords_do_not_match(self, app, client):
+        with _available(), _authenticated_as(app, 'user-1'):
+            response = self._post(
+                client,
+                new_password='new-password123',
+                confirm_password='different123',
+            )
+        assert response.status_code == 400
+        assert 'match' in response.json()['detail']
+
+    def test_400_when_new_password_too_short(self, app, client):
+        with _available(), _authenticated_as(app, 'user-1'):
+            response = self._post(
+                client, new_password='short', confirm_password='short'
+            )
+        assert response.status_code == 400
+        assert 'at least' in response.json()['detail']
+
+    def test_404_when_user_not_found(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            response = self._post(client)
+        assert response.status_code == 404
+
+    def test_400_when_current_password_missing_but_required(self, app, client):
+        """A user with an existing password must supply the correct current
+        one — omitting it is rejected, not treated as "no password yet"."""
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = self._post(client)
+        assert response.status_code == 400
+        assert 'incorrect' in response.json()['detail'].lower()
+
+    def test_400_when_current_password_wrong(self, app, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+        ):
+            response = self._post(client, current_password='wrong-password')
+        assert response.status_code == 400
+        assert 'incorrect' in response.json()['detail'].lower()
+
+    def test_sets_password_when_none_exists(self, app, client):
+        """First-time password setup — current_password is not required when
+        the user has no ``password_hash`` yet (e.g. an OAuth-only account)."""
+        mock_user = _mock_user(password_hash=None)
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            patch(
+                'server.routes.idp._set_password_hash',
+                new_callable=AsyncMock,
+            ) as mock_set_hash,
+        ):
+            response = self._post(client)
+        assert response.status_code == 200
+        mock_set_hash.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == 'user-1'
+
+    def test_changes_password_with_correct_current_password(self, app, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            patch(
+                'server.routes.idp._set_password_hash',
+                new_callable=AsyncMock,
+            ) as mock_set_hash,
+        ):
+            response = self._post(client, current_password='correct-password')
+        assert response.status_code == 200
+        mock_set_hash.assert_awaited_once()
+
+    def test_rate_limited(self, app, client):
+        mock_user = _mock_user(password_hash=None)
+        with (
+            _available(),
+            _authenticated_as(app, 'user-1'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            patch(
+                'server.routes.idp.check_rate_limit_by_user_id',
+                new_callable=AsyncMock,
+                side_effect=HTTPException(status_code=429, detail='Too many requests'),
+            ),
+        ):
+            response = self._post(client)
+        assert response.status_code == 429
