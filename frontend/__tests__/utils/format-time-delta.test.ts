@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { formatTimeDelta } from "#/utils/format-time-delta";
+import { formatTimeDelta, parseDateAsUTC } from "#/utils/format-time-delta";
 
 describe("formatTimeDelta", () => {
   beforeEach(() => {
@@ -71,5 +71,25 @@ describe("formatTimeDelta", () => {
 
     const threeSecondsAgo = new Date("2023-12-31T23:59:57Z");
     expect(formatTimeDelta(threeSecondsAgo)).toBe("3s");
+  });
+
+  it("parses timezone-naive strings as UTC and offset strings as given", () => {
+    // Naive strings come from the backend's UTC-labelled storage.
+    expect(formatTimeDelta("2023-12-31T23:59:00")).toBe("1m");
+    expect(formatTimeDelta("2023-12-31T23:58:59.500000")).toBe("1m");
+    // Explicit offsets are honoured regardless of the browser zone.
+    expect(formatTimeDelta("2024-01-01T00:59:00+01:00")).toBe("1m");
+    expect(formatTimeDelta("2023-12-31T18:59:00-05:00")).toBe("1m");
+    expect(parseDateAsUTC("2023-12-31T23:59:00").toISOString()).toBe(
+      "2023-12-31T23:59:00.000Z",
+    );
+  });
+
+  it("never renders a negative delta for timestamps ahead of the client clock", () => {
+    // Client clock slightly behind the server, or a timestamp mislabelled as UTC.
+    expect(formatTimeDelta(new Date("2024-01-01T00:00:03Z"))).toBe("0s");
+    expect(formatTimeDelta("2024-01-01T00:15:49Z")).toBe("0s");
+    expect(formatTimeDelta("2024-01-01T02:00:00")).toBe("0s");
+    expect(formatTimeDelta("2024-01-01T01:00:00+00:00")).toBe("0s");
   });
 });
