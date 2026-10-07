@@ -34,7 +34,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
-from server.auth.password_hashing import hash_password
+from server.auth.password_hashing import hash_password, verify_password
 from server.routes import idp
 from server.routes.idp import (
     IDP_INVITE_PATH,
@@ -1574,6 +1574,80 @@ class TestIdpInviteAccept:
         assert mock_complete.call_args.kwargs['user'] is mock_user
         # Does not grant the super-admin role -- ordinary invited user.
         assert mock_complete.call_args.kwargs['email'] == 'invitee@example.com'
+
+    def test_replay_after_first_use_is_rejected(self, client, jwt_svc):
+        """A genuine end-to-end replay: use the same token twice. The first
+        POST creates the account and sets its password; the second POST
+        with the identical token must fail with ``link_used`` instead of
+        resetting the password -- "used" is inferred from the account's
+        ``password_hash`` rather than tracked separately, so this also
+        proves the link can't be replayed to silently change the password
+        of an account that already claimed it."""
+        user_id = derive_idp_user_id('invitee@example.com')
+        created_user = _mock_user(
+            user_id=user_id, email='invitee@example.com', password_hash=None
+        )
+
+        async def fake_get_user_by_id(_user_id):
+            return created_user if created_user.password_hash is not None else None
+
+        async def fake_set_password_hash(_user_id, hashed):
+            created_user.password_hash = hashed
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    side_effect=fake_get_user_by_id,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=created_user,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    side_effect=fake_set_password_hash,
+                ),
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                first = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+                second = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'different456',
+                        'confirm_password': 'different456',
+                    },
+                    follow_redirects=False,
+                )
+
+        assert first.status_code == 302
+        assert mock_complete.await_count == 1
+
+        assert second.status_code == 302
+        query = parse_qs(urlparse(second.headers['location']).query)
+        assert query['error'] == ['link_used']
+        # The replay's password was never applied -- the hash still matches
+        # the first POST's password, not the second's.
+        assert verify_password('password123', created_user.password_hash)
+        assert not verify_password('different456', created_user.password_hash)
 
     def test_ignores_client_supplied_email_field(self, client, jwt_svc):
         """The route doesn't even declare an ``email`` Form field, so a
