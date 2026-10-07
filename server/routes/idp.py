@@ -45,27 +45,33 @@ password on a matching existing user (found by derived id, then by email —
 e.g. the passwordless super admin itself) instead of creating a new one;
 only a genuinely new email creates a brand-new account.
 
-**Admin-issued sign-up links (OHE-3510).** Once the bootstrap super admin
-exists, every *subsequent* account is created out-of-band: a super admin
-calls ``POST /api/idp/signup-links`` (gated by the instance-level
-``CREATE_SIGNUP_LINK`` permission) to mint a link naming an invited email,
+**Admin-issued sign-up / password-reset links (OHE-3510).** Once the
+bootstrap super admin exists, every *subsequent* account is created
+out-of-band, and any account's password can be reset the same way: a super
+admin calls ``POST /api/idp/signup-links`` (gated by the instance-level
+``CREATE_SIGNUP_LINK`` permission) to mint a link naming a target email,
 carried as a signed, 72-hour-expiring JWT — no server-side state, so there
 is nothing to revoke or clean up, and no password ever passes through the
-admin. The invited user follows the link to ``GET``/``POST
+admin. The recipient follows the link to ``GET``/``POST
 /oauth/idp/invite``, which verifies the token and lets them choose their
-own password before logging in, exactly as ``/oauth/idp/signup`` does for
-the bootstrap super admin — except it never grants the super-admin role.
-See the "admin-issued sign-up links" section below for the full design.
+own password before logging in. If the email belongs to an existing
+account, this **resets that account's password** (even if it already had
+one) rather than refusing — this is the only password-reset path this IDP
+has, self-service or otherwise. A genuinely new email instead creates a
+brand-new account, exactly as ``/oauth/idp/signup`` does for the bootstrap
+super admin — except it never grants the super-admin role. See the
+"admin-issued sign-up links" section below for the full design.
 
 When ``ENABLE_INTEGRATED_IDP`` is off, the sentinel is never returned (even
 if a real IDP is configured) and every route in this module returns ``404``.
 
 **This IDP is not a substitute for a real identity provider** (no rate
-limiting, no email verification, no password-reset flow, no MFA). It must
-never be enabled on cloud (``app.all-hands.dev``) or any deployment where
-security matters. Gated solely by the ``ENABLE_INTEGRATED_IDP`` env var
-(explicit opt-in) — turning it on takes priority over any configured real
-IDP for ``/oauth/idp-login``, it does not merely fill in for a missing one.
+limiting, no email verification, no self-service "forgot password" flow —
+only the admin-issued link above, no MFA). It must never be enabled on
+cloud (``app.all-hands.dev``) or any deployment where security matters.
+Gated solely by the ``ENABLE_INTEGRATED_IDP`` env var (explicit opt-in) —
+turning it on takes priority over any configured real IDP for
+``/oauth/idp-login``, it does not merely fill in for a missing one.
 """
 
 from __future__ import annotations
@@ -268,10 +274,6 @@ _ERROR_MESSAGES = {
         'This sign-up link is invalid or has expired. '
         'Please ask an administrator for a new one.'
     ),
-    'link_used': (
-        'This sign-up link has already been used. Please sign in instead, '
-        'or ask an administrator for a new link.'
-    ),
 }
 
 _FORM_CSS = """    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -354,7 +356,7 @@ _INVITE_FORM_HTML_TEMPLATE = (
 <body>
   <div class="card">
     <h1>Set Your Password</h1>
-    <p class="desc">You've been invited to OpenHands. Choose a password to finish setting up your account.</p>
+    <p class="desc">Choose a password to access your OpenHands account.</p>
     {error_html}
     <form method="POST" action="{form_action}">
       <input type="hidden" name="token" value="{token}">
@@ -694,19 +696,23 @@ async def idp_signup(
 
 # ── admin-issued sign-up links (OHE-3510) ───────────────────────────────────
 #
-# A super admin can mint a one-time, expiring link (``POST
-# /api/idp/signup-links``, see ``idp_invite_router`` below) that lets an
-# invited user set their own password and sign in — without the admin ever
-# choosing or seeing that password, and without that user going through the
-# bootstrap-only ``/oauth/idp/signup`` form (which is sealed once a super
-# admin with a password exists, see the module docstring). Unlike that form,
-# this path carries no server-side state of its own: the link *is* the
-# credential, a signed JWT (``_create_signup_link_token`` /
-# ``_verify_signup_link_token``) naming the invited email and expiring after
-# ``SIGNUP_LINK_EXPIRY_HOURS`` (72h). "Used" is inferred, not tracked: once
-# the invited account has a ``password_hash``, replaying the same link hits
-# the same "already set" guard ``idp_signup`` uses and fails with
-# ``link_used`` instead of silently overwriting the password.
+# A super admin can mint an expiring link (``POST /api/idp/signup-links``,
+# see ``idp_invite_router`` below) that lets its recipient set their own
+# password and sign in — without the admin ever choosing or seeing that
+# password, and without going through the bootstrap-only
+# ``/oauth/idp/signup`` form (which is sealed once a super admin with a
+# password exists, see the module docstring). This path carries no
+# server-side state of its own: the link *is* the credential, a signed JWT
+# (``_create_signup_link_token`` / ``_verify_signup_link_token``) naming the
+# target email and expiring after ``SIGNUP_LINK_EXPIRY_HOURS`` (72h).
+#
+# Unlike ``idp_signup``'s one-shot bootstrap guard, there is no "already
+# used" check here: if the named email belongs to an existing account, this
+# resets its password (whether or not it already had one) rather than
+# refusing — minting the link is itself the admin action that authorizes
+# the reset, and it's also this IDP's only password-reset path. A link is
+# therefore valid, and reusable, for its whole 72-hour window; nothing
+# tracks whether it's been used before.
 
 
 def _invite_form_redirect(web_url: str, *, token: str, error: str) -> RedirectResponse:
@@ -749,20 +755,21 @@ async def idp_invite_accept(
     password: str = Form(...),
     confirm_password: str = Form(...),
 ):
-    """Verify an admin-issued sign-up link, set the password, and log in.
+    """Verify an admin-issued link, set the password, and log in.
 
     Returns ``404`` if this IDP is not available, ``400`` if the token is
-    missing/invalid/expired. Claims an existing passwordless account (e.g.
-    one pre-created by provisioning, or a previous invite that was never
-    completed) by setting its password, matching by derived id then by
-    email — same resolution order as ``idp_signup``. If that account
-    already has a password (including from a previous use of *this* link),
-    redirects back to the form with ``link_used`` rather than overwriting
-    it. A genuinely new email creates a brand-new account via
-    ``UserStore.create_user``, exactly like the bootstrap sign-up form,
-    including default-org bootstrap and TOS auto-acceptance in
-    ``_complete_idp_login`` — but, unlike that form, does **not** grant the
-    super-admin role to anyone: this path is for ordinary invited users.
+    missing/invalid/expired. Resolves an existing account by derived id,
+    then by email — same resolution order as ``idp_signup`` — and, if one
+    is found, **resets its password**, regardless of whether it already had
+    one: this is how the link doubles as a password-reset mechanism (e.g.
+    for a passwordless account pre-created by provisioning, a previous
+    invite that was never completed, or an ordinary existing user who needs
+    their password reset by an admin). A genuinely new email instead
+    creates a brand-new account via ``UserStore.create_user``, exactly like
+    the bootstrap sign-up form, including default-org bootstrap and TOS
+    auto-acceptance in ``_complete_idp_login`` — but, unlike that form,
+    does **not** grant the super-admin role to anyone: this path is for
+    ordinary invited/reset users.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
@@ -784,13 +791,12 @@ async def idp_invite_accept(
     if existing is None:
         existing = await UserStore.get_user_by_email(email_str)
 
-    if existing is not None and existing.password_hash is not None:
-        return _invite_form_redirect(web_url, token=token, error='link_used')
-
     hashed = hash_password(password)
 
     user: User | None
+    was_password_reset = False
     if existing is not None:
+        was_password_reset = existing.password_hash is not None
         await _set_password_hash(str(existing.id), hashed)
         user = existing
         is_new_user = False
@@ -810,9 +816,17 @@ async def idp_invite_accept(
         await _set_password_hash(str(user.id), hashed)
         is_new_user = True
 
+    # was_password_reset distinguishes "reset an existing password" from
+    # "claimed a passwordless account" -- both leave is_new_user False, but
+    # only the former is a security-relevant event worth being able to spot
+    # in logs (someone else's password just changed).
     logger.info(
         'idp:signup_link_accepted',
-        extra={'user_id': str(user.id), 'is_new_user': is_new_user},
+        extra={
+            'user_id': str(user.id),
+            'is_new_user': is_new_user,
+            'was_password_reset': was_password_reset,
+        },
     )
     return await _complete_idp_login(
         request=request,

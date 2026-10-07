@@ -1456,9 +1456,11 @@ class TestIdpInviteAccept:
         query = parse_qs(urlparse(response.headers['location']).query)
         assert query['error'] == ['password_too_short']
 
-    def test_link_already_used_redirects_with_error(self, client, jwt_svc):
-        """Replaying a link whose account already has a password is
-        rejected instead of silently overwriting the password."""
+    def test_resets_existing_password(self, client, jwt_svc):
+        """A link for an email whose account already has a password resets
+        it (and logs in as that user) rather than refusing -- this is the
+        only password-reset mechanism this IDP has, and minting the link is
+        itself the admin action that authorizes the reset."""
         existing = _mock_user(
             email='invitee@example.com', password_hash='existing_hash'
         )
@@ -1471,19 +1473,33 @@ class TestIdpInviteAccept:
                     new_callable=AsyncMock,
                     return_value=existing,
                 ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_hash,
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                ) as mock_create,
+                _patch_complete_login() as mock_complete,
             ):
-                response = client.post(
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
                     f'/oauth/{IDP_INVITE_PATH}',
                     data={
                         'token': token,
-                        'password': 'password123',
-                        'confirm_password': 'password123',
+                        'password': 'new-password123',
+                        'confirm_password': 'new-password123',
                     },
                     follow_redirects=False,
                 )
-        assert response.status_code == 302
-        query = parse_qs(urlparse(response.headers['location']).query)
-        assert query['error'] == ['link_used']
+
+        mock_set_hash.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == str(existing.id)
+        mock_create.assert_not_awaited()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['is_new_user'] is False
+        assert mock_complete.call_args.kwargs['user'] is existing
 
     def test_claims_existing_passwordless_account(self, client, jwt_svc):
         user_id = derive_idp_user_id('invitee@example.com')
@@ -1575,14 +1591,14 @@ class TestIdpInviteAccept:
         # Does not grant the super-admin role -- ordinary invited user.
         assert mock_complete.call_args.kwargs['email'] == 'invitee@example.com'
 
-    def test_replay_after_first_use_is_rejected(self, client, jwt_svc):
+    def test_replay_resets_password_again(self, client, jwt_svc):
         """A genuine end-to-end replay: use the same token twice. The first
-        POST creates the account and sets its password; the second POST
-        with the identical token must fail with ``link_used`` instead of
-        resetting the password -- "used" is inferred from the account's
-        ``password_hash`` rather than tracked separately, so this also
-        proves the link can't be replayed to silently change the password
-        of an account that already claimed it."""
+        POST creates the account and sets its password; a second POST with
+        the identical token -- still within its 72-hour validity window --
+        succeeds too, resetting the password a second time rather than
+        being refused. There's no separate "used" tracking: the link is
+        valid, and reusable, for its whole expiry window (see the
+        module-level "admin-issued sign-up links" design notes)."""
         user_id = derive_idp_user_id('invitee@example.com')
         created_user = _mock_user(
             user_id=user_id, email='invitee@example.com', password_hash=None
@@ -1611,7 +1627,7 @@ class TestIdpInviteAccept:
                     'server.routes.idp.UserStore.create_user',
                     new_callable=AsyncMock,
                     return_value=created_user,
-                ),
+                ) as mock_create,
                 patch(
                     'server.routes.idp._set_password_hash',
                     side_effect=fake_set_password_hash,
@@ -1639,15 +1655,16 @@ class TestIdpInviteAccept:
                 )
 
         assert first.status_code == 302
-        assert mock_complete.await_count == 1
-
         assert second.status_code == 302
-        query = parse_qs(urlparse(second.headers['location']).query)
-        assert query['error'] == ['link_used']
-        # The replay's password was never applied -- the hash still matches
-        # the first POST's password, not the second's.
-        assert verify_password('password123', created_user.password_hash)
-        assert not verify_password('different456', created_user.password_hash)
+        # Only the first call creates the account; the second finds and
+        # resets the one the first call just created.
+        mock_create.assert_awaited_once()
+        assert mock_complete.await_count == 2
+        assert mock_complete.call_args_list[0].kwargs['is_new_user'] is True
+        assert mock_complete.call_args_list[1].kwargs['is_new_user'] is False
+        # The second POST's password is the one that actually took effect.
+        assert not verify_password('password123', created_user.password_hash)
+        assert verify_password('different456', created_user.password_hash)
 
     def test_ignores_client_supplied_email_field(self, client, jwt_svc):
         """The route doesn't even declare an ``email`` Form field, so a
