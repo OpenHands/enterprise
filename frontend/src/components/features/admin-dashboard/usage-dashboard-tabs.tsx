@@ -352,7 +352,8 @@ export function AssociatedPrCell({
     "pr_number" | "selected_repository" | "git_provider"
   >;
 }) {
-  const prNumbers = conversation.pr_number ?? [];
+  // The same number can be stored twice; it is the same PR.
+  const prNumbers = [...new Set(conversation.pr_number ?? [])];
 
   if (prNumbers.length === 0) return "-";
 

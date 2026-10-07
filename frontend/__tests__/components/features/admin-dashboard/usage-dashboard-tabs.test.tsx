@@ -255,6 +255,27 @@ describe("AssociatedPrCell", () => {
     );
   });
 
+  it("shows a PR number that is stored twice only once", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        provider_default_hosts: { github: "github.com" },
+      }),
+    );
+
+    renderWithProviders(
+      <AssociatedPrCell
+        conversation={{
+          pr_number: [295, 295],
+          selected_repository: "acme/widgets",
+          git_provider: "github",
+        }}
+      />,
+    );
+
+    await screen.findByRole("link", { name: "acme/widgets #295" });
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
   it("shows the PR number as plain text when the repository is unknown", () => {
     renderWithProviders(
       <AssociatedPrCell

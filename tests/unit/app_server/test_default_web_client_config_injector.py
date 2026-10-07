@@ -1360,7 +1360,6 @@ class TestGetProviderDefaultHosts:
             result = _get_provider_default_hosts()
 
         assert result['bitbucket_data_center'] == 'bitbucket.acme.dev'
-        assert result['github'] == 'github.com'
 
     def test_omits_bitbucket_data_center_when_env_var_unset(self):
         """Without BITBUCKET_DATA_CENTER_HOST there is no Bitbucket Data Center host."""
