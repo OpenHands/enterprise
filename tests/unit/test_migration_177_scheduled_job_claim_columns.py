@@ -2,9 +2,13 @@
 
 import uuid
 
-from sqlalchemy import text
+from sqlalchemy import inspect, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker
 
+from storage.gitlab_webhook import GitlabWebhook
+from storage.maintenance_task import MaintenanceTask
 from tests import postgres_testdb
 
 NEW_COLUMNS = {
@@ -63,6 +67,32 @@ def test_existing_webhook_rows_need_no_reinstall(
             )
         ).one()
     assert tuple(row) == (None, None, 0, 0)
+
+
+def test_a_webhook_row_added_through_the_model_needs_no_reinstall(
+    session_maker: sessionmaker,
+):
+    with session_maker() as session:
+        session.add(
+            GitlabWebhook(project_id='p-1', user_id='user-1', webhook_exists=True)
+        )
+        session.commit()
+        row = session.scalars(select(GitlabWebhook)).one()
+        assert (row.reinstall_requested_gen, row.reinstall_done_gen) == (0, 0)
+
+
+def test_models_map_the_migrated_column_types(engine: Engine):
+    dialect = postgresql.dialect()
+    inspector = inspect(engine)
+    for model in (MaintenanceTask, GitlabWebhook):
+        table = model.__table__
+        migrated = {c['name']: c for c in inspector.get_columns(table.name)}
+        for table_name, column_name, *_ in NEW_COLUMNS:
+            if table_name != table.name:
+                continue
+            model_type = table.c[column_name].type.compile(dialect)
+            migrated_type = migrated[column_name]['type'].compile(dialect)
+            assert model_type == migrated_type, (table_name, column_name)
 
 
 def test_downgrade_removes_the_columns_and_upgrade_restores_them(
