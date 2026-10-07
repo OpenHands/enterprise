@@ -1342,6 +1342,11 @@ class TestIdpInviteForm:
         assert response.status_code == 200
         assert 'invitee@example.com' in response.text
         assert 'name="token"' in response.text
+        # The email is shown as plain text, not an editable form field --
+        # it's sourced solely from the verified token (see
+        # idp_invite_accept, which doesn't even accept an `email` field).
+        assert 'name="email"' not in response.text
+        assert '<p class="value-display">invitee@example.com</p>' in response.text
 
     def test_400_on_invalid_token(self, client):
         with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
@@ -1349,6 +1354,24 @@ class TestIdpInviteForm:
                 f'/oauth/{IDP_INVITE_PATH}', params={'token': 'garbage'}
             )
         assert response.status_code == 400
+
+    def test_escapes_email_in_rendered_html(self, client, jwt_svc):
+        """Defense in depth: even though ``EmailStr`` validation on the
+        minting endpoint should reject HTML-special characters, the email
+        is still HTML-escaped before being rendered as page text."""
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with patch(
+                'server.routes.idp._verify_signup_link_token',
+                return_value='<script>alert(1)</script>@example.com',
+            ):
+                with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                    response = client.get(
+                        f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
+                    )
+        assert response.status_code == 200
+        assert '<script>' not in response.text
+        assert '&lt;script&gt;' in response.text
 
     def test_400_on_expired_token(self, client, jwt_svc):
         from datetime import datetime, timezone
@@ -1550,6 +1573,53 @@ class TestIdpInviteAccept:
         assert mock_complete.call_args.kwargs['is_new_user'] is True
         assert mock_complete.call_args.kwargs['user'] is mock_user
         # Does not grant the super-admin role -- ordinary invited user.
+        assert mock_complete.call_args.kwargs['email'] == 'invitee@example.com'
+
+    def test_ignores_client_supplied_email_field(self, client, jwt_svc):
+        """The route doesn't even declare an ``email`` Form field, so a
+        client cannot override the email embedded in the token -- the
+        account is always created/claimed for the token's email."""
+        user_id = derive_idp_user_id('invitee@example.com')
+        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=mock_user,
+                ) as mock_create,
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                        'email': 'attacker@evil.com',
+                    },
+                    follow_redirects=False,
+                )
+
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.args[0] == user_id
         assert mock_complete.call_args.kwargs['email'] == 'invitee@example.com'
 
     def test_create_user_failure_returns_500(self, client, jwt_svc):

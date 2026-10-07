@@ -70,6 +70,7 @@ IDP for ``/oauth/idp-login``, it does not merely fill in for a missing one.
 
 from __future__ import annotations
 
+import html
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -288,6 +289,9 @@ _FORM_CSS = """    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Sego
              font-size: 14px; outline: none; }}
     input:focus {{ border-color: #6366f1; }}
     input[readonly] {{ color: #a3a3a3; }}
+    .value-display {{ width: 100%; box-sizing: border-box; padding: 10px 12px;
+             border-radius: 6px; border: 1px solid #404040; background: transparent;
+             color: #a3a3a3; font-size: 14px; margin: 0; word-break: break-all; }}
     button {{ width: 100%; margin-top: 20px; padding: 10px; border-radius: 6px;
               border: none; background: #fff; color: #1a1a1a; font-size: 14px;
               font-weight: 500; cursor: pointer; }}
@@ -354,8 +358,8 @@ _INVITE_FORM_HTML_TEMPLATE = (
     {error_html}
     <form method="POST" action="{form_action}">
       <input type="hidden" name="token" value="{token}">
-      <label for="email">Email</label>
-      <input type="email" id="email" value="{email}" readonly tabindex="-1">
+      <label>Email</label>
+      <p class="value-display">{email}</p>
       <label for="password">Password</label>
       <input type="password" id="password" name="password" required
              minlength="{min_password_length}" autofocus>
@@ -419,10 +423,12 @@ def _render_invite_form(
 ) -> str:
     """Render the set-password form for an admin-issued sign-up link.
 
-    Unlike ``_render_form``, the email is read-only (sourced from the
-    verified token, never user-editable) and the form carries the token
-    itself rather than a ``redirect_url`` — there is no "sign in" sibling
-    page to link to, since a given link is either usable or it isn't.
+    Unlike ``_render_form``, the email is shown as plain, non-editable text
+    (sourced from the verified token, never user-editable, and not part of
+    the submitted form at all — see ``idp_invite_accept``) and the form
+    carries the token itself rather than a ``redirect_url``: there is no
+    "sign in" sibling page to link to, since a given link is either usable
+    or it isn't.
     """
     error_html = ''
     if error:
@@ -433,7 +439,7 @@ def _render_invite_form(
         error_html=error_html,
         form_action=f'{web_url}/oauth/{IDP_INVITE_PATH}',
         token=token,
-        email=email,
+        email=html.escape(email),
         min_password_length=MIN_PASSWORD_LENGTH,
     )
 
