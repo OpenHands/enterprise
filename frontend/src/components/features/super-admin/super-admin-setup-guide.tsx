@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { NavLink, useLocation, useNavigate } from "react-router";
+import {
+  NavLink,
+  useLocation,
+  useNavigate,
+  type NavigateFunction,
+} from "react-router";
 import { useTranslation } from "react-i18next";
 import {
   ArrowUpRight,
@@ -15,6 +20,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
 import { cn } from "#/utils/utils";
 import {
   settingsListContainerClassName,
@@ -42,7 +48,7 @@ import {
 } from "#/components/features/setup/tours/tour-engine";
 
 async function runSuperAdminSetupTour(
-  navigate: (to: string) => void,
+  navigate: NavigateFunction,
   startAtStepId?: string,
 ): Promise<void> {
   // A step in Agent Canvas has no tour stop: the page load into Canvas would
@@ -52,7 +58,9 @@ async function runSuperAdminSetupTour(
     step &&
     !SUPER_ADMIN_SETUP_TOUR.steps.some((stop) => stop.checklistId === step.id)
   ) {
-    navigate(step.to);
+    // /canvas/... steps need a page load: the in-app /canvas route shows an
+    // error when the same URL is opened twice in a session.
+    navigateOrHardRedirect(navigate, step.to);
     return;
   }
   // Checklist completion is driven by real actions (e.g. LLM saved),
@@ -411,7 +419,7 @@ export function SuperAdminSetupFloatingWidget() {
             tourStarting={tourStarting}
             onOpenStep={(step) => {
               stopGuidedTour();
-              navigate(step.to);
+              navigateOrHardRedirect(navigate, step.to);
             }}
             onStartTour={async (stepId) => {
               await startTour(stepId);
@@ -494,7 +502,7 @@ function SetupStepRow({
       <button
         type="button"
         className="min-w-0 flex-1 space-y-1 rounded-md text-left hover:opacity-90"
-        onClick={() => navigate(step.to)}
+        onClick={() => navigateOrHardRedirect(navigate, step.to)}
       >
         <p
           className={cn(

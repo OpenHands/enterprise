@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Outlet, createRoutesStub, useNavigate } from "react-router";
@@ -190,6 +190,25 @@ describe("SuperAdminSetupFloatingWidget", () => {
 
     // Assert
     expect(await screen.findByText("1/4")).toBeInTheDocument();
+  });
+
+  it("opens Agent Canvas's MCP page with a page load for Add an integration", async () => {
+    // Arrange
+    const replace = vi.fn();
+    vi.stubGlobal("location", { ...window.location, replace });
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(
+      within(
+        screen.getByTestId("super-admin-setup-floating-step-add-integration"),
+      ).getByRole("button", { name: /SUPER_ADMIN\$SETUP_STEP_INTEGRATION/ }),
+    );
+
+    // Assert
+    expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+    vi.unstubAllGlobals();
   });
 
   it("is not shown to a user the server gives no guide", () => {
