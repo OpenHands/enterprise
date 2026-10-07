@@ -7,17 +7,17 @@ directly, instead of standing up an external IDP just to get started.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
 regular IDP provider, but is modeled as an in-memory sentinel
-(``DevIdpProvider``, id = ``DEV_IDP_PROVIDER_ID``) rather than a row in
+(``IdpProvider``, id = ``IDP_PROVIDER_ID``) rather than a row in
 ``oauth_providers``. Whenever ``ENABLE_INTEGRATED_IDP`` is on:
 
-* ``OAuthProviderStore.get_first_idp()`` returns the ``DevIdpProvider``
+* ``OAuthProviderStore.get_first_idp()`` returns the ``IdpProvider``
   sentinel — in preference to any configured real IDP, not merely as a
   fallback for when none is configured.
-* ``GET /oauth/idp-login`` redirects to ``/oauth/{DEV_IDP_PROVIDER_ID}/login``,
+* ``GET /oauth/idp-login`` redirects to ``/oauth/{IDP_PROVIDER_ID}/login``,
   which ``oauth_v2`` intercepts and redirects to the fixed
-  ``/oauth/dev-idp/login`` page served by this module.
+  ``/oauth/idp/login`` page served by this module.
 * Unlike a real IDP, this one requires a **password**: ``GET
-  /oauth/dev-idp/login`` and ``GET /oauth/dev-idp/signup`` serve HTML
+  /oauth/idp/login`` and ``GET /oauth/idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
   (sign-in) or create an account (sign-up) and set the same ``openhands_auth``
   JWT cookie the real OAuth v2 callback uses. Passwords are hashed with
@@ -35,11 +35,11 @@ ever signed in through a real IDP). The gate is
 ``UserStore.has_super_admin_with_password()``, not
 ``UserStore.has_super_admin()``: a super admin *row* existing is not enough
 to hide this form — only a super admin who can actually log in with a
-password is. Once that's true, ``/oauth/dev-idp/signup`` redirects to the
+password is. Once that's true, ``/oauth/idp/signup`` redirects to the
 login page instead of rendering — every subsequent account must be created
 by a super admin through the existing user-management APIs, not through
 self-service sign-up. Symmetrically, while no super admin has a password
-yet, ``/oauth/dev-idp/login`` redirects to the sign-up (bootstrap) page,
+yet, ``/oauth/idp/login`` redirects to the sign-up (bootstrap) page,
 since there is no account that can log in. Submitting sign-up updates the
 password on a matching existing user (found by derived id, then by email —
 e.g. the passwordless super admin itself) instead of creating a new one;
@@ -82,39 +82,42 @@ from storage.default_org_service import DefaultOrgBootstrapService
 from storage.user import User
 from storage.user_store import UserStore
 
-dev_idp_router = APIRouter(prefix='/oauth', tags=['Dev IDP'])
+idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
 # Sentinel provider ID used by the dev IDP.  Negative so it can never collide
 # with a real DB row (Identity columns start at 1).
-DEV_IDP_PROVIDER_ID = -1
-DEV_IDP_CATEGORY = 'dev_idp'
+IDP_PROVIDER_ID = -1
+IDP_CATEGORY = 'idp'
 
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
 # the sentinel provider id. ``server.routes.oauth_v2`` redirects here once it
-# intercepts ``provider_id == DEV_IDP_PROVIDER_ID``.
-DEV_IDP_LOGIN_PATH = 'dev-idp/login'
-DEV_IDP_SIGNUP_PATH = 'dev-idp/signup'
+# intercepts ``provider_id == IDP_PROVIDER_ID``. Named "idp" rather than
+# "dev-idp" because this is an integrated IDP offered to customers who are
+# evaluating the product or have no real IDP of their own, not merely a
+# developer-only tool.
+IDP_LOGIN_PATH = 'idp/login'
+IDP_SIGNUP_PATH = 'idp/signup'
 
 # Fixed namespace for deterministic user-id derivation from email. Required
 # by ``UserStore.create_user``'s identity-preservation contract: ``User.id``
 # must be stable across calls for the same external identity (there is no
 # Keycloak ``sub`` for the dev IDP, so the email itself fills that role).
-_DEV_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
+_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
 
 
 @dataclass(frozen=True)
-class DevIdpProvider:
+class IdpProvider:
     """Sentinel that quacks like ``OAuthProvider`` for the OAuth v2 flow.
 
     Returned by ``OAuthProviderStore.get_first_idp()`` whenever
     ``ENABLE_INTEGRATED_IDP`` is on — including when a real IDP is also
     configured. The OAuth v2 routes check ``provider.id ==
-    DEV_IDP_PROVIDER_ID`` to intercept and redirect to the dev IDP
+    IDP_PROVIDER_ID`` to intercept and redirect to the dev IDP
     email+password form instead of building an external OAuth URL.
     """
 
-    id: int = DEV_IDP_PROVIDER_ID
-    provider_category: str = DEV_IDP_CATEGORY
+    id: int = IDP_PROVIDER_ID
+    provider_category: str = IDP_CATEGORY
     display_name: str = 'Password Login'
     is_idp: bool = True
     authorization_url: str | None = None
@@ -125,7 +128,7 @@ class DevIdpProvider:
     client_secret: dict[str, str] | None = None
 
 
-def derive_dev_idp_user_id(email: str) -> str:
+def derive_idp_user_id(email: str) -> str:
     """Derive a deterministic UUID from an email address.
 
     Uses ``uuid.uuid5`` (SHA-1 based) so the same email always maps to the
@@ -133,10 +136,10 @@ def derive_dev_idp_user_id(email: str) -> str:
     ``Alice@Example.COM`` and ``alice@example.com`` resolve to the same user.
     """
     normalized = email.strip().lower()
-    return str(uuid.uuid5(_DEV_IDP_NAMESPACE, normalized))
+    return str(uuid.uuid5(_IDP_NAMESPACE, normalized))
 
 
-async def is_dev_idp_available() -> bool:
+async def is_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
     Governed solely by ``ENABLE_INTEGRATED_IDP`` (explicit opt-in via env
@@ -149,7 +152,7 @@ async def is_dev_idp_available() -> bool:
     return ENABLE_INTEGRATED_IDP
 
 
-async def get_dev_idp_if_available() -> DevIdpProvider | None:
+async def get_idp_if_available() -> IdpProvider | None:
     """Return the dev IDP sentinel if available, else ``None``.
 
     Used by ``OAuthProviderStore.get_first_idp()`` to make the dev IDP take
@@ -157,14 +160,14 @@ async def get_dev_idp_if_available() -> DevIdpProvider | None:
     ``ENABLE_INTEGRATED_IDP`` is on, and by ``get_idp_providers()`` to make it
     appear as a regular IDP when no real one is configured.
     """
-    if await is_dev_idp_available():
-        return DevIdpProvider()
+    if await is_idp_available():
+        return IdpProvider()
     return None
 
 
-def is_dev_idp_provider_id(provider_id: int) -> bool:
+def is_idp_provider_id(provider_id: int) -> bool:
     """Whether ``provider_id`` refers to the dev IDP sentinel."""
-    return provider_id == DEV_IDP_PROVIDER_ID
+    return provider_id == IDP_PROVIDER_ID
 
 
 # ── dev IDP login / sign-up forms (served as HTML, no frontend changes) ────
@@ -257,9 +260,7 @@ def _render_form(
     only option (see the route handlers for the redirect logic).
     """
     is_signup = mode == 'signup'
-    form_action = (
-        f'{web_url}/oauth/{DEV_IDP_SIGNUP_PATH if is_signup else DEV_IDP_LOGIN_PATH}'
-    )
+    form_action = f'{web_url}/oauth/{IDP_SIGNUP_PATH if is_signup else IDP_LOGIN_PATH}'
     error_html = ''
     if error:
         message = _ERROR_MESSAGES.get(error, 'Something went wrong. Please try again.')
@@ -286,8 +287,8 @@ def _render_form(
     )
 
 
-async def _require_dev_idp_available() -> None:
-    if not await is_dev_idp_available():
+async def _require_idp_available() -> None:
+    if not await is_idp_available():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
@@ -301,15 +302,15 @@ def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectRes
     "only option" (see module docstring): sign-up while no super admin
     exists yet, login once one does.
     """
-    path = DEV_IDP_SIGNUP_PATH if mode == 'signup' else DEV_IDP_LOGIN_PATH
+    path = IDP_SIGNUP_PATH if mode == 'signup' else IDP_LOGIN_PATH
     target = f'{web_url}/oauth/{path}'
     if redirect_url:
         target = f'{target}?{urlencode({"redirect_url": redirect_url})}'
     return RedirectResponse(target, status_code=302)
 
 
-@dev_idp_router.get(f'/{DEV_IDP_LOGIN_PATH}')
-async def dev_idp_login_form(
+@idp_router.get(f'/{IDP_LOGIN_PATH}')
+async def idp_login_form(
     request: Request,
     redirect_url: str = '',
     error: str = '',
@@ -322,7 +323,7 @@ async def dev_idp_login_form(
     until one is created (or an existing passwordless super admin claims
     their account).
     """
-    await _require_dev_idp_available()
+    await _require_idp_available()
     web_url = get_web_url(request)
     if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
@@ -332,8 +333,8 @@ async def dev_idp_login_form(
     return HTMLResponse(content=html)
 
 
-@dev_idp_router.get(f'/{DEV_IDP_SIGNUP_PATH}')
-async def dev_idp_signup_form(
+@idp_router.get(f'/{IDP_SIGNUP_PATH}')
+async def idp_signup_form(
     request: Request,
     redirect_url: str = '',
     error: str = '',
@@ -349,7 +350,7 @@ async def dev_idp_signup_form(
     hide this form — it is still needed to finish that super admin's
     bootstrap.
     """
-    await _require_dev_idp_available()
+    await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
@@ -363,7 +364,7 @@ def _form_redirect(
     web_url: str, *, mode: str, error: str, redirect_url: str
 ) -> RedirectResponse:
     """Redirect back to the login/sign-up form with an error message."""
-    path = DEV_IDP_SIGNUP_PATH if mode == 'signup' else DEV_IDP_LOGIN_PATH
+    path = IDP_SIGNUP_PATH if mode == 'signup' else IDP_LOGIN_PATH
     params = {'error': error}
     if redirect_url:
         params['redirect_url'] = redirect_url
@@ -371,8 +372,8 @@ def _form_redirect(
     return RedirectResponse(target, status_code=302)
 
 
-@dev_idp_router.post(f'/{DEV_IDP_LOGIN_PATH}')
-async def dev_idp_login(
+@idp_router.post(f'/{IDP_LOGIN_PATH}')
+async def idp_login(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
@@ -386,13 +387,13 @@ async def dev_idp_login(
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
-    await _require_dev_idp_available()
+    await _require_idp_available()
     web_url = get_web_url(request)
     if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
-    user = await UserStore.get_user_by_id(derive_dev_idp_user_id(email_str))
+    user = await UserStore.get_user_by_id(derive_idp_user_id(email_str))
     if user is None:
         user = await UserStore.get_user_by_email(email_str)
 
@@ -401,7 +402,7 @@ async def dev_idp_login(
         or not user.password_hash
         or not verify_password(password, user.password_hash)
     ):
-        logger.info('dev_idp:login_failed', extra={'email': email_str})
+        logger.info('idp:login_failed', extra={'email': email_str})
         return _form_redirect(
             web_url,
             mode='login',
@@ -409,7 +410,7 @@ async def dev_idp_login(
             redirect_url=redirect_url,
         )
 
-    return await _complete_dev_idp_login(
+    return await _complete_idp_login(
         request=request,
         user=user,
         is_new_user=False,
@@ -418,8 +419,8 @@ async def dev_idp_login(
     )
 
 
-@dev_idp_router.post(f'/{DEV_IDP_SIGNUP_PATH}')
-async def dev_idp_signup(
+@idp_router.post(f'/{IDP_SIGNUP_PATH}')
+async def idp_signup(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
@@ -444,7 +445,7 @@ async def dev_idp_signup(
     (password already set), a too-short password, or a confirm-password
     mismatch.
     """
-    await _require_dev_idp_available()
+    await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
@@ -470,7 +471,7 @@ async def dev_idp_signup(
             redirect_url=redirect_url,
         )
 
-    user_id = derive_dev_idp_user_id(email_str)
+    user_id = derive_idp_user_id(email_str)
     existing = await UserStore.get_user_by_id(user_id)
     if existing is None:
         existing = await UserStore.get_user_by_email(email_str)
@@ -502,9 +503,7 @@ async def dev_idp_signup(
         await _set_password_hash(str(existing.id), hashed)
         user = await UserStore.grant_super_admin(str(existing.id))
         if user is None:
-            logger.error(
-                'dev_idp:signup_claim_grant_failed', extra={'email': email_str}
-            )
+            logger.error('idp:signup_claim_grant_failed', extra={'email': email_str})
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail='Failed to grant super-admin role',
@@ -519,7 +518,7 @@ async def dev_idp_signup(
         }
         user = await UserStore.create_user(user_id, user_info)
         if user is None:
-            logger.error('dev_idp:failed_to_create_user', extra={'email': email_str})
+            logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail='Failed to create user',
@@ -527,7 +526,7 @@ async def dev_idp_signup(
         await _set_password_hash(str(user.id), hashed)
         is_new_user = True
 
-    return await _complete_dev_idp_login(
+    return await _complete_idp_login(
         request=request,
         user=user,
         is_new_user=is_new_user,
@@ -539,7 +538,7 @@ async def dev_idp_signup(
 # ── shared post-authentication steps (mirrors the real OAuth v2 callback) ──
 
 
-async def _complete_dev_idp_login(
+async def _complete_idp_login(
     *,
     request: Request,
     user: User,
@@ -549,7 +548,7 @@ async def _complete_dev_idp_login(
 ) -> RedirectResponse:
     """Finish a successful dev IDP login/sign-up: TOS, org, analytics, cookie.
 
-    Shared by ``dev_idp_login`` (existing account) and ``dev_idp_signup``
+    Shared by ``idp_login`` (existing account) and ``idp_signup``
     (brand-new account) so both end up with identical post-auth behavior.
     """
     user_id = str(user.id)
@@ -558,7 +557,7 @@ async def _complete_dev_idp_login(
     # requiring TOS acceptance adds friction without security value.
     has_accepted_tos = user.accepted_tos is not None
     if not has_accepted_tos:
-        await _accept_tos_for_dev_user(user_id)
+        await _accept_tos_for_idp_user(user_id)
         has_accepted_tos = True
 
     await UserStore.record_login(user_id)
@@ -571,22 +570,22 @@ async def _complete_dev_idp_login(
             )
         except Exception:
             logger.exception(
-                'dev_idp:default_org_bootstrap_failed',
+                'idp:default_org_bootstrap_failed',
                 extra={'user_id': user_id},
                 stack_info=True,
             )
 
     # Best-effort analytics identify — never block login on analytics.
     try:
-        await _track_dev_idp_login(user_id, email)
+        await _track_idp_login(user_id, email)
     except Exception:
-        logger.exception('dev_idp:analytics_failed', stack_info=True)
+        logger.exception('idp:analytics_failed', stack_info=True)
 
     web_url = get_web_url(request)
     final_redirect_url = redirect_url or '/'
 
     # Check onboarding redirect (self-hosted: only the first owner/super-admin).
-    should_onboard = await _should_redirect_to_onboarding_dev(user_id, user)
+    should_onboard = await _should_redirect_to_onboarding_idp_user(user_id, user)
     if should_onboard:
         from server.routes.auth import _build_onboarding_redirect
 
@@ -598,7 +597,7 @@ async def _complete_dev_idp_login(
 
     response = RedirectResponse(final_redirect_url, status_code=302)
 
-    _set_dev_idp_cookie(
+    _set_idp_cookie(
         request=request,
         response=response,
         user_id=user_id,
@@ -607,7 +606,7 @@ async def _complete_dev_idp_login(
     )
 
     logger.info(
-        'dev_idp:user_logged_in',
+        'idp:user_logged_in',
         extra={'user_id': user_id, 'is_new_user': is_new_user},
     )
     return response
@@ -616,13 +615,13 @@ async def _complete_dev_idp_login(
 # ── status endpoint (for config injection) ─────────────────────────────────
 
 
-def _dev_idp_status_router() -> APIRouter:
-    """Create a separate router for the status endpoint at /api/dev-idp/status."""
-    router = APIRouter(prefix='/api/dev-idp', tags=['Dev IDP'])
+def _idp_status_router() -> APIRouter:
+    """Create a separate router for the status endpoint at /api/idp/status."""
+    router = APIRouter(prefix='/api/idp', tags=['IDP'])
 
     @router.get('/status')
-    async def dev_idp_status() -> JSONResponse:
-        enabled = await is_dev_idp_available()
+    async def idp_status() -> JSONResponse:
+        enabled = await is_idp_available()
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={'enabled': enabled},
@@ -631,13 +630,13 @@ def _dev_idp_status_router() -> APIRouter:
     return router
 
 
-dev_idp_status_router = _dev_idp_status_router()
+idp_status_router = _idp_status_router()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
 
-def _set_dev_idp_cookie(
+def _set_idp_cookie(
     request: Request,
     response: RedirectResponse,
     user_id: str,
@@ -687,7 +686,7 @@ async def _set_password_hash(user_id: str, password_hash: str) -> None:
         await session.commit()
 
 
-async def _accept_tos_for_dev_user(user_id: str) -> None:
+async def _accept_tos_for_idp_user(user_id: str) -> None:
     """Auto-accept TOS for a dev IDP user (dev mode only)."""
     from sqlalchemy import select
 
@@ -706,7 +705,7 @@ async def _accept_tos_for_dev_user(user_id: str) -> None:
         await session.commit()
 
 
-async def _track_dev_idp_login(user_id: str, email: str) -> None:
+async def _track_idp_login(user_id: str, email: str) -> None:
     """Best-effort analytics identify for dev IDP login."""
     from openhands.analytics import get_analytics_service
 
@@ -726,13 +725,13 @@ async def _track_dev_idp_login(user_id: str, email: str) -> None:
         ctx=ctx,
         email=email,
         org_name=None,
-        idp='dev_idp',
+        idp='idp',
         orgs=[],
     )
-    analytics.track_user_logged_in(ctx=ctx, idp='dev_idp')
+    analytics.track_user_logged_in(ctx=ctx, idp='idp')
 
 
-async def _should_redirect_to_onboarding_dev(user_id: str, user) -> bool:
+async def _should_redirect_to_onboarding_idp_user(user_id: str, user) -> bool:
     """Check onboarding redirect for dev IDP users.
 
     Delegates to the shared ``_should_redirect_to_onboarding`` logic from

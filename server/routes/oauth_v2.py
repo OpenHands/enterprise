@@ -399,23 +399,23 @@ async def oauth_v2_login(
     Encodes an encrypted state blob (redirect URL, mode, nonce) and redirects
     the browser to the provider's authorization URL.
     """
-    # Dev IDP is handled by its own routes (registered before this router).
+    # Integrated IDP is handled by its own routes (registered before this router).
     # The sentinel provider id (-1) never matches a real DB row, so intercept
     # it here and redirect to the dedicated email+password login page.
-    from server.routes.dev_idp import (
-        DEV_IDP_LOGIN_PATH,
-        DEV_IDP_PROVIDER_ID,
-        is_dev_idp_available,
+    from server.routes.idp import (
+        IDP_LOGIN_PATH,
+        IDP_PROVIDER_ID,
+        is_idp_available,
     )
 
-    if provider_id == DEV_IDP_PROVIDER_ID:
-        if not await is_dev_idp_available():
+    if provider_id == IDP_PROVIDER_ID:
+        if not await is_idp_available():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Password login is not available',
             )
         web_url = get_web_url(request)
-        target = f'{web_url}/oauth/{DEV_IDP_LOGIN_PATH}'
+        target = f'{web_url}/oauth/{IDP_LOGIN_PATH}'
         params: dict[str, str] = {}
         if redirect_url:
             params['redirect_url'] = redirect_url
@@ -471,10 +471,10 @@ async def oauth_v2_callback(
     Exchanges the code, persists tokens, and either links the provider to the
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
-    # Dev IDP callbacks are handled by dedicated routes.
-    from server.routes.dev_idp import DEV_IDP_PROVIDER_ID
+    # Integrated IDP callbacks are handled by dedicated routes.
+    from server.routes.idp import IDP_PROVIDER_ID
 
-    if provider_id == DEV_IDP_PROVIDER_ID:
+    if provider_id == IDP_PROVIDER_ID:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login callback must use POST with email field',

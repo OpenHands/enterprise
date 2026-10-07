@@ -55,7 +55,7 @@ class OAuthProviderStore:
     async def get_idp_providers(self) -> list:
         """Return all IDP providers, including the dev IDP sentinel if active.
 
-        When no real IDP is configured, the dev IDP sentinel (``DevIdpProvider``)
+        When no real IDP is configured, the dev IDP sentinel (``IdpProvider``)
         is returned in its place so the OAuth v2 flow treats it as a regular
         IDP. Unlike ``get_first_idp``, a configured real IDP is never
         superseded by the dev IDP here: this list backs IDP-token-refresh
@@ -72,28 +72,28 @@ class OAuthProviderStore:
             )
             providers = list(result.scalars().all())
         if not providers:
-            from server.routes.dev_idp import get_dev_idp_if_available
+            from server.routes.idp import get_idp_if_available
 
-            dev = await get_dev_idp_if_available()
-            if dev is not None:
-                return [dev]
+            idp_provider = await get_idp_if_available()
+            if idp_provider is not None:
+                return [idp_provider]
         return providers
 
     async def get_first_idp(self):
         """Return the IDP that ``/oauth/idp-login`` should use.
 
-        The dev IDP sentinel (``DevIdpProvider``) takes priority whenever
+        The dev IDP sentinel (``IdpProvider``) takes priority whenever
         ``ENABLE_INTEGRATED_IDP`` is on: the integrated email+password login
         is used instead of any configured real IDP, not merely as a fallback
         for when none is configured. Only when the flag is off is a
         configured real IDP used — exclusively; the dev IDP is never
         returned in that case. Returns ``None`` when neither is available.
         """
-        from server.routes.dev_idp import get_dev_idp_if_available
+        from server.routes.idp import get_idp_if_available
 
-        dev = await get_dev_idp_if_available()
-        if dev is not None:
-            return dev
+        idp_provider = await get_idp_if_available()
+        if idp_provider is not None:
+            return idp_provider
 
         async with a_session_maker() as session:
             result = await session.execute(

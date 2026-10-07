@@ -57,6 +57,10 @@ export interface WebClientFeatureFlags {
    *  in for a missing one. Used to show an email+password login form
    *  instead of OAuth provider buttons. */
   enable_integrated_idp?: boolean;
+  /** When true, unauthenticated users are sent to the new OAuth v2 entry
+   *  point (``/oauth/idp-login``, a backend redirect) instead of the legacy
+   *  ``/login`` page. Mirrors the ENABLE_OAUTH_V2_LOGIN env var. */
+  enable_oauth_v2_login?: boolean;
 }
 
 export interface ACPModelOption {

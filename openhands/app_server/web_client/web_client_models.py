@@ -52,6 +52,12 @@ class WebClientFeatureFlags(BaseModel):
     # to show an email+password login form instead of OAuth provider
     # buttons.
     enable_integrated_idp: bool = False
+    # Mirrors the ENABLE_OAUTH_V2_LOGIN env var. When true, the frontend
+    # sends unauthenticated users to the new OAuth v2 entry point
+    # (/oauth/idp-login, a backend redirect) instead of the legacy Keycloak
+    # /login page. Defaults to False so existing installs keep the legacy
+    # login path until they opt in.
+    enable_oauth_v2_login: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

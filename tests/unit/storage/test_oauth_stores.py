@@ -126,7 +126,7 @@ class TestOAuthProviderStore:
         ]
 
     @pytest.mark.asyncio
-    async def test_get_idp_providers_keeps_real_idp_even_when_dev_idp_enabled(
+    async def test_get_idp_providers_keeps_real_idp_even_when_idp_enabled(
         self, patched_session, make_provider
     ):
         """Unlike ``get_first_idp``, ``get_idp_providers`` must keep listing a
@@ -135,7 +135,7 @@ class TestOAuthProviderStore:
         sessions already authenticated against that real IDP."""
         real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
-        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
             idps = await OAuthProviderStore().get_idp_providers()
 
         assert [p.id for p in idps] == [real.id]
@@ -164,20 +164,20 @@ class TestOAuthProviderStore:
         assert await OAuthProviderStore().get_first_idp() is None
 
     @pytest.mark.asyncio
-    async def test_get_first_idp_prefers_dev_idp_when_enabled(
+    async def test_get_first_idp_prefers_idp_when_enabled(
         self, patched_session, make_provider
     ):
         """``ENABLE_INTEGRATED_IDP`` makes ``/oauth/idp-login`` (which calls
         ``get_first_idp``) use the integrated IDP rather than a configured
         real one — not merely as a fallback for when none is configured."""
-        from server.routes.dev_idp import DevIdpProvider
+        from server.routes.idp import IdpProvider
 
         await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
-        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', True):
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
             got = await OAuthProviderStore().get_first_idp()
 
-        assert isinstance(got, DevIdpProvider)
+        assert isinstance(got, IdpProvider)
 
     @pytest.mark.asyncio
     async def test_get_first_idp_uses_real_idp_when_disabled(
@@ -187,7 +187,7 @@ class TestOAuthProviderStore:
         used exclusively — the dev IDP is never returned."""
         real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
-        with patch('server.routes.dev_idp.ENABLE_INTEGRATED_IDP', False):
+        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
             got = await OAuthProviderStore().get_first_idp()
 
         assert got is not None

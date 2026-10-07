@@ -2,7 +2,7 @@
 
 Real IDP users never have a local password — they authenticate via OAuth/OIDC
 and ``User.password_hash`` stays ``NULL`` for them. Only accounts created
-through the dev IDP sign-up flow (``server.routes.dev_idp``) set this column.
+through the dev IDP sign-up flow (``server.routes.idp``) set this column.
 
 Uses Argon2id (the OWASP-recommended default) via ``argon2-cffi``, a
 dependency already pulled in transitively by ``jupyter-server`` and promoted
