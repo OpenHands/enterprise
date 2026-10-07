@@ -1636,19 +1636,3 @@ class TestCreateSignupLink:
         token = query['token'][0]
         with _patch_jwt_service(jwt_svc):
             assert idp._verify_signup_link_token(token) == 'invitee@example.com'
-
-    def test_rate_limited(self, app, client):
-        with (
-            _available(),
-            _authenticated_as(app, 'admin-1'),
-            _superadmin(),
-            patch(
-                'server.routes.idp.check_rate_limit_by_user_id',
-                new_callable=AsyncMock,
-                side_effect=HTTPException(status_code=429, detail='Too many requests'),
-            ),
-        ):
-            response = client.post(
-                '/api/idp/signup-links', json={'email': 'invitee@example.com'}
-            )
-        assert response.status_code == 429

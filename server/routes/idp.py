@@ -96,7 +96,6 @@ from server.constants import ENABLE_INTEGRATED_IDP
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
     RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
-    RATE_LIMIT_SIGNUP_LINK_USER_SECONDS,
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
@@ -855,13 +854,6 @@ def _idp_invite_router() -> APIRouter:
                 detail='Not authenticated',
             )
         await authorize_permission(request, user_id, Permission.CREATE_SIGNUP_LINK)
-
-        await check_rate_limit_by_user_id(
-            request=request,
-            key_prefix='idp_create_signup_link',
-            user_id=user_id,
-            user_rate_limit_seconds=RATE_LIMIT_SIGNUP_LINK_USER_SECONDS,
-        )
 
         email_str = body.email.strip().lower()
         token = _create_signup_link_token(email_str)
