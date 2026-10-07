@@ -57,7 +57,8 @@
                 "OH_SANDBOX_SPEC_KIND": "openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service.DynamicRemoteSandboxSpecServiceInjector",
                 "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
                 "USER_PROVISIONING_ENABLED": "1",
-                "OH_SANDBOX_MAX_NUM_SANDBOXES": "5"
+                "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
+                "ENABLE_INTEGRATED_IDP": "1"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,

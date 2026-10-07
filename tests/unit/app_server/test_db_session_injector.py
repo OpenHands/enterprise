@@ -39,6 +39,7 @@ with patch.dict(
         build_asyncpg_connect_args,
         build_db_url_query,
         build_pg8000_connect_args,
+        build_psycopg_connect_args,
     )
 
 
@@ -339,6 +340,12 @@ class TestDbSessionInjectorConnections:
         assert build_asyncpg_connect_args('prefer') == {}
         assert build_asyncpg_connect_args('require') == {'ssl': 'require'}
         assert build_asyncpg_connect_args('disable') == {'ssl': 'disable'}
+
+    def test_build_psycopg_connect_args_for_ssl_modes(self):
+        assert build_psycopg_connect_args(None) == {}
+        assert build_psycopg_connect_args('prefer') == {}
+        assert build_psycopg_connect_args('require') == {'sslmode': 'require'}
+        assert build_psycopg_connect_args('disable') == {'sslmode': 'disable'}
 
     def test_build_db_url_query_for_ssl_modes(self):
         assert build_db_url_query(None) == ''

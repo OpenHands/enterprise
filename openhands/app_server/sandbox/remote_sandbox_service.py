@@ -902,7 +902,9 @@ class RemoteSandboxService(SandboxService):
             )
         return archived
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self, max_num_sandboxes: int, exclude_id: str | None = None
+    ) -> list[str]:
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
@@ -912,6 +914,8 @@ class RemoteSandboxService(SandboxService):
             raise ValueError('max_num_sandboxes must not be negative')
 
         running = await self._get_user_running_sandboxes()
+        if exclude_id is not None:
+            running = [sandbox for sandbox in running if sandbox.id != exclude_id]
 
         if len(running) <= max_num_sandboxes:
             return []

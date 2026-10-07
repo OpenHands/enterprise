@@ -1080,6 +1080,110 @@ class TestResolveFlag:
         assert config.feature_flags.enable_billing is True
 
 
+class TestResolveEnableIntegratedIdp:
+    """Tests for _resolve_enable_integrated_idp and its wiring into feature_flags.
+
+    enable_integrated_idp lives on WebClientFeatureFlags (not as a top-level
+    WebClientConfig field) so it behaves like the other feature flags the
+    frontend reads from ``config.feature_flags``.
+
+    Like ``TestResolveFlag`` above, a lightweight fake module is injected into
+    ``sys.modules`` instead of importing the real ``server.routes.dev_idp``:
+    that module pulls in the full SaaS DB-model graph, which is unnecessary
+    here and can collide with other tests' SQLAlchemy metadata when this file
+    is run in isolation.
+    """
+
+    def _fake_dev_idp_module(self, is_dev_idp_available):
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.routes.dev_idp')
+        fake_module.is_dev_idp_available = is_dev_idp_available
+        return patch.dict(sys.modules, {'server.routes.dev_idp': fake_module})
+
+    def _fake_feature_flag_service_module(self):
+        """Stub out server.services.feature_flag_service too.
+
+        get_web_client_config also calls _get_db_feature_flags, which
+        imports this module for real unless faked. A real import here pulls
+        in the SaaS storage/DB-model graph, which is unnecessary for this
+        test and can collide with SQLAlchemy declarative registration done
+        elsewhere in the test session.
+        """
+        import sys
+        import types
+
+        class _FakeService:
+            async def get_global_flags(self):
+                return {}
+
+            async def resolve(self, key):
+                # Mirrors the env-var fallback _resolve_flag would otherwise
+                # use; irrelevant to this test, which only asserts on
+                # enable_integrated_idp.
+                return False
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _FakeService()
+        return patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        )
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_is_dev_idp_available(self):
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        async def _available():
+            return True
+
+        with self._fake_dev_idp_module(_available):
+            assert await mod._resolve_enable_integrated_idp() is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_import_error(self):
+        """OSS installs without the enterprise dev-idp module default to False."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            assert await mod._resolve_enable_integrated_idp() is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_surfaces_flag_under_feature_flags(self):
+        """The resolved value lands on feature_flags.enable_integrated_idp,
+        not on a top-level WebClientConfig field."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        async def _available():
+            return True
+
+        with (
+            self._fake_dev_idp_module(_available),
+            self._fake_feature_flag_service_module(),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_integrated_idp is True
+        assert not hasattr(config, 'integrated_idp_enabled')
+
+
 class TestSurfacedACPProviders:
     """The web-client config emits exactly the harnesses Cloud offers.
 

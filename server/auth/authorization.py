@@ -39,6 +39,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.email_validation import ADMIN_EMAIL_DOMAINS
 from storage.org_member_store import OrgMemberStore
 from storage.role import Role
 from storage.role_store import RoleStore
@@ -586,7 +587,7 @@ async def require_financial_data_access(
 
     Allows access if ANY of these conditions are met:
     1. User has Admin or Owner role in the organization
-    2. User has @openhands.dev email domain
+    2. User has an allowed admin email domain
 
     This is used for the organization members financial data endpoint.
 
@@ -624,13 +625,13 @@ async def require_financial_data_access(
                 detail='API key is not authorized for this organization',
             )
 
-    # Check if user has @openhands.dev email
+    # Check if user has admin email domain
     user_auth = await get_user_auth(request)
     user_email = await user_auth.get_user_email()
 
-    if user_email and user_email.endswith('@openhands.dev'):
+    if user_email and user_email.endswith(ADMIN_EMAIL_DOMAINS):
         logger.debug(
-            'Financial data access granted via @openhands.dev email',
+            'Financial data access granted via admin email domain',
             extra={'user_id': user_id, 'org_id': str(org_id)},
         )
         return user_id

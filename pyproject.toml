@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.68.1"
+version = "1.69.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -14,6 +14,7 @@ dependencies = [
   "alembic==1.18.4",
   "anthropic[vertex]",
   "anyio==4.14.2",
+  "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.30.0",
   "authlib==1.6.12",                                # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
@@ -184,7 +185,9 @@ lint.flake8-bugbear.extend-immutable-calls = [
   "Depends",
   "fastapi.Body",
   "fastapi.Depends",
+  "fastapi.Form",
   "fastapi.params.Depends",
+  "Form",
   "openhands.app_server.services.db_session.depends_db_session",
   "server.auth.user.user_authorizer.depends_user_authorizer",
 ]

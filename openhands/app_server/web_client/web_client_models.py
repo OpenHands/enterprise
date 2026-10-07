@@ -45,6 +45,13 @@ class WebClientFeatureFlags(BaseModel):
     # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
     # distinguish "export disabled on this deployment" from "buy credits to enable".
     enable_byor_export: bool = False
+    # Whether the integrated, locally-hosted IDP (email+password login) is
+    # available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
+    # takes priority over any configured real IDP for /oauth/idp-login, not
+    # merely a fallback for when none is configured. The frontend uses this
+    # to show an email+password login form instead of OAuth provider
+    # buttons.
+    enable_integrated_idp: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

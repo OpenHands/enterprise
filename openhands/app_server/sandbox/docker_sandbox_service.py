@@ -2,21 +2,25 @@ import asyncio
 import logging
 import os
 import socket
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import AsyncGenerator
+from typing import AsyncGenerator, ClassVar
 
 import base62
 import docker
-import httpx
 from docker.errors import APIError, NotFound
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
+    ManagedSandboxServiceInjector,
+    ProviderOutcome,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -36,7 +40,6 @@ from openhands.app_server.sandbox.sandbox_service import (
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
@@ -45,20 +48,20 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     StoredSandbox,
-    get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
+STOP_TIMEOUT_SECONDS = 10
+MAX_PORT_ATTEMPTS = 100
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
 # managed containers so that one with no row can be found.
@@ -104,12 +107,14 @@ class ExposedPort(BaseModel):
 
 
 @dataclass
-class DockerSandboxService(SandboxService):
+class DockerSandboxService(ManagedSandboxService):
     """Sandbox service built on docker.
 
     The Docker API does not currently support async operations, so some of these operations will block.
     Given that the docker API is intended for local use on a single machine, this is probably acceptable.
     """
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     sandbox_spec_service: SandboxSpecService
     container_name_prefix: str
@@ -118,10 +123,6 @@ class DockerSandboxService(SandboxService):
     mounts: list[VolumeMount]
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
-    httpx_client: httpx.AsyncClient
-    max_num_sandboxes: int
-    user_context: UserContext
-    db_session: AsyncSession
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
@@ -129,12 +130,6 @@ class DockerSandboxService(SandboxService):
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
     kvm_enabled: bool = False
-
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
-        """Get a sandbox row, or None when the caller may not see it."""
-        return await get_stored_sandbox(
-            self.db_session, self.user_context, DOCKER_BACKEND, sandbox_id
-        )
 
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
@@ -166,13 +161,32 @@ class DockerSandboxService(SandboxService):
         except APIError as exc:
             raise SandboxError(f'Could not read container {sandbox_id}: {exc}') from exc
 
-    def _find_unused_port(self) -> int:
-        """Find an unused port on the host machine."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-        return port
+    def _reserved_host_ports(self) -> set[int]:
+        """The host ports that managed containers bind, in any state.
+
+        A stopped container binds its ports again when it starts, but the host
+        sees them as free while it is stopped.
+        """
+        ports: set[int] = set()
+        for container in self._managed_containers_by_name().values():
+            host_config = container.attrs.get('HostConfig') or {}  # type: ignore[attr-defined]
+            for bindings in (host_config.get('PortBindings') or {}).values():
+                for binding in bindings or []:
+                    # Empty when Docker picked the port itself.
+                    if binding.get('HostPort'):
+                        ports.add(int(binding['HostPort']))
+        return ports
+
+    def _find_unused_port(self, reserved: Collection[int] = ()) -> int:
+        """Find a port that is free on the host and not in ``reserved``."""
+        for _ in range(MAX_PORT_ATTEMPTS):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                s.listen(1)
+                port = s.getsockname()[1]
+            if port not in reserved:
+                return port
+        raise SandboxError('Could not find a free host port')
 
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
@@ -464,6 +478,7 @@ class DockerSandboxService(SandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+        env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
@@ -505,8 +520,9 @@ class DockerSandboxService(SandboxService):
         else:
             # Bridge network mode: map container ports to random host ports
             port_mappings = {}
+            reserved_ports = self._reserved_host_ports()
             for exposed_port in self.exposed_ports:
-                host_port = self._find_unused_port()
+                host_port = self._find_unused_port(reserved_ports)
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
@@ -519,13 +535,11 @@ class DockerSandboxService(SandboxService):
         }
 
         # The id is ours, so the row is written before the container exists.
-        stored_sandbox = StoredSandbox(
+        stored_sandbox = self._new_stored_sandbox(
             id=container_name,
-            backend=DOCKER_BACKEND,
             created_by_user_id=user_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
-            created_at=utc_now(),
         )
         self.db_session.add(stored_sandbox)
         await self.db_session.flush()
@@ -586,89 +600,83 @@ class DockerSandboxService(SandboxService):
         except APIError as e:
             raise SandboxError('Failed to start container') from e
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _resume_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Start or unfreeze the sandbox's container.
 
         The session API key is unchanged. Docker bakes it into the container
         environment at create, so rotating it means replacing the container
         and losing the workspace with it.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
-
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        container = self._get_container(sandbox_id)
+        container = self._get_container(stored_sandbox.id)
         if container is None:
-            return False
-
+            return ProviderOutcome.FAILED
         try:
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
                 container.start()
-            return True
+            else:
+                return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
-            return False
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox.
+    async def _pause_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Stop the sandbox's container.
+
+        Stopping frees the sandbox's memory, where freezing it would not. The
+        container keeps its filesystem, its port bindings and its environment,
+        and ``_resume_at_provider`` starts it again. Processes the agent left
+        running do not survive, just as on the k8s backend, where a pause
+        deletes the pod.
 
         The key hash is kept. The container has the same key after resume, so
         clearing the hash would not revoke anything.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        container = self._get_container(sandbox_id)
+        container = self._get_container(stored_sandbox.id)
         if container is None:
-            return False
-
+            return ProviderOutcome.FAILED
         try:
-            if container.status == 'running':
-                container.pause()
-            return True
+            if container.status == 'exited':
+                return ProviderOutcome.ALREADY_DONE
+            # A frozen container is one an earlier release paused.
+            if container.status not in ('running', 'paused'):
+                # Starting or dead: there is nothing to pause.
+                return ProviderOutcome.SKIPPED
+            # The agent server gets SIGTERM, then SIGKILL after the timeout.
+            # The wait runs off the event loop.
+            await asyncio.to_thread(container.stop, timeout=STOP_TIMEOUT_SECONDS)
         except (NotFound, APIError):
-            return False
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox and its row.
+    async def _delete_at_provider(self, stored_sandbox: StoredSandbox) -> None:
+        """Stop and remove the sandbox's container.
 
-        A container the daemon has already lost still has its row removed, so
-        the record cannot outlive what it describes.
-
-        Returns False only when there is no such sandbox or the caller may not
-        see it. A daemon failure part way through raises
-        ``SandboxDeleteRetryError`` and keeps the row, so a container that is
-        still running is never reported as gone.
+        A container the daemon has already lost counts as deleted, so the row
+        cannot outlive what it describes.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-
-        container = self._get_container(sandbox_id)
-        if container is not None:
-            try:
-                # Stop the container if it's running
-                if container.status in ['running', 'paused']:
-                    container.stop(timeout=10)
-
-                # Remove the container
-                container.remove()
-            except NotFound:
-                # Removed under us. The row still needs removing.
-                pass
-            except APIError as exc:
-                _logger.exception(
-                    f'Error deleting container {sandbox_id}', stack_info=True
-                )
-                raise SandboxDeleteRetryError(
-                    f'Could not complete delete for sandbox {sandbox_id}: {exc}'
-                ) from exc
-
-        await self.db_session.delete(stored_sandbox)
-        return True
+        container = self._get_container(stored_sandbox.id)
+        if container is None:
+            return
+        try:
+            if container.status in ['running', 'paused']:
+                container.stop(timeout=STOP_TIMEOUT_SECONDS)
+            container.remove()
+        except NotFound:
+            # Removed under us.
+            pass
+        except APIError as exc:
+            _logger.exception(
+                f'Error deleting container {stored_sandbox.id}', stack_info=True
+            )
+            raise SandboxDeleteRetryError(
+                f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
+            ) from exc
 
 
 def _default_exposed_ports() -> list[ExposedPort]:
@@ -687,8 +695,10 @@ def _default_exposed_ports() -> list[ExposedPort]:
     return ports
 
 
-class DockerSandboxServiceInjector(SandboxServiceInjector):
+class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     container_url_pattern: str = Field(
         default='http://localhost:{port}',
@@ -798,4 +808,5 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 startup_grace_seconds=self.startup_grace_seconds,
                 use_host_network=self.use_host_network,
                 kvm_enabled=self.kvm_enabled,
+                lifecycle=self.lifecycle,
             )
