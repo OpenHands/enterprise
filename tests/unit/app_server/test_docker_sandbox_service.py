@@ -54,7 +54,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN
+from openhands.app_server.user.user_models import LOCAL_USER_ID
+from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
 
 OWNER_ID = 'user123'
 CREATED_AT = datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
@@ -1586,6 +1589,28 @@ class TestDockerSandboxServiceOwnership:
         pause.assert_not_called()
         admin_service.docker_client.containers.run.assert_not_called()
         assert (await db_session.execute(select(StoredSandbox))).first() is None
+
+    async def test_oss_default_auth_starts_and_lists_its_sandbox(
+        self, service, mock_running_container
+    ):
+        """OSS mode's single user owns its sandboxes, so it can start and list them."""
+        service.user_context = AuthUserContext(user_auth=DefaultUserAuth())
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            started = await service.start_sandbox()
+        mock_running_container.name = started.id
+        service.docker_client.containers.list.return_value = [mock_running_container]
+        page = await service.search_sandboxes()
+
+        assert started.created_by_user_id == LOCAL_USER_ID
+        assert [item.id for item in page.items] == [started.id]
+        assert page.items[0].created_by_user_id == LOCAL_USER_ID
+        # Secret lookup and webhook callbacks rebuild the owner's auth from this id.
+        assert isinstance(
+            await DefaultUserAuth.get_for_user(started.created_by_user_id),
+            DefaultUserAuth,
+        )
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')
