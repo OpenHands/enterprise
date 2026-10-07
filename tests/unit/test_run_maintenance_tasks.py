@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import create_engine, event, update
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 from run_maintenance_tasks import (
     DEFAULT_CLAIM_LEASE_SECONDS,
@@ -52,6 +54,19 @@ def _set(session_maker, task_id: int, **values) -> None:
         session.commit()
 
 
+def _runner_sessions_with(session_maker, setting: str):
+    """Point the runner at the test database with a server setting applied."""
+    engine = create_engine(session_maker.kw['bind'].url, poolclass=NullPool)
+
+    @event.listens_for(engine, 'connect')
+    def _apply(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute(f'SET {setting}')
+        cursor.close()
+
+    return patch('run_maintenance_tasks.session_maker', sessionmaker(bind=engine))
+
+
 @pytest.fixture(autouse=True)
 def runner_sessions(session_maker):
     with patch('run_maintenance_tasks.session_maker', session_maker):
@@ -81,7 +96,9 @@ def test_concurrent_claims_take_different_tasks(session_maker):
         other_run.query(MaintenanceTask).filter(
             MaintenanceTask.id == older
         ).with_for_update().one()
-        task = claim_next_task(uuid.uuid4(), LEASE)
+        # A claim that waits on the lock fails here instead of hanging the suite.
+        with _runner_sessions_with(session_maker, "lock_timeout = '5s'"):
+            task = claim_next_task(uuid.uuid4(), LEASE)
         other_run.rollback()
 
     assert task is not None and task.id == newer
@@ -117,6 +134,53 @@ def test_a_claim_past_its_lease_is_taken_over(session_maker):
     assert _get(session_maker, task_id).claim_run_id == run_id
 
 
+def test_a_taken_over_claim_gets_a_fresh_lease(session_maker):
+    previous_run = uuid.uuid4()
+    task_id = _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        claim_run_id=previous_run,
+        claimed_at=datetime.now(timezone.utc) - LEASE - timedelta(minutes=1),
+        started_at=_naive_utc(-LEASE - timedelta(minutes=1)),
+    )
+    run_id = uuid.uuid4()
+
+    with patch('run_maintenance_tasks.logger') as logger:
+        assert claim_next_task(run_id, LEASE) is not None
+
+    logger.warning.assert_called_once_with(
+        'maintenance_task.reclaimed',
+        extra={
+            'task_id': task_id,
+            'previous_claim_run_id': str(previous_run),
+            'claim_run_id': str(run_id),
+        },
+    )
+    assert claim_next_task(uuid.uuid4(), LEASE) is None
+
+
+def test_the_started_at_fallback_is_read_as_utc(session_maker):
+    """A non-UTC session time zone must not age a claim-less row early."""
+    _add_task(
+        session_maker,
+        status=MaintenanceTaskStatus.WORKING,
+        started_at=_naive_utc(-timedelta(minutes=5)),
+    )
+
+    with _runner_sessions_with(session_maker, "TIME ZONE 'Asia/Tokyo'"):
+        assert claim_next_task(uuid.uuid4(), LEASE) is None
+
+
+def test_tasks_created_together_are_claimed_by_id(session_maker):
+    created_at = _naive_utc(-timedelta(hours=1))
+    _add_task(session_maker, id=1002, created_at=created_at)
+    _add_task(session_maker, id=1001, created_at=created_at)
+
+    task = claim_next_task(uuid.uuid4(), LEASE)
+
+    assert task is not None and task.id == 1001
+
+
 def test_a_working_task_without_a_claim_uses_started_at(session_maker):
     """Rows from code without claims are reclaimable once started_at passes the lease."""
     abandoned = _add_task(
@@ -147,8 +211,13 @@ def test_a_run_that_lost_its_claim_cannot_write(session_maker):
     )
     assert claim_next_task(second_run, LEASE) is not None
 
-    assert not finish_task(
-        task_id, first_run, {'stale': True}, MaintenanceTaskStatus.COMPLETED
+    with patch('run_maintenance_tasks.logger') as logger:
+        assert not finish_task(
+            task_id, first_run, {'stale': True}, MaintenanceTaskStatus.COMPLETED
+        )
+    logger.warning.assert_called_once_with(
+        'maintenance_task.stale_write_rejected',
+        extra={'task_id': task_id, 'claim_run_id': str(first_run)},
     )
     stored = _get(session_maker, task_id)
     assert stored.status == MaintenanceTaskStatus.WORKING
