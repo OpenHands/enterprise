@@ -569,13 +569,19 @@ class TestOverlappingSyncRuns:
         )
         mock_add_contact.side_effect = RuntimeError('resend down')
 
-        sync_users_to_resend()
+        with patch('sync.resend_keycloak.logger') as mock_logger:
+            sync_users_to_resend()
 
         mock_add_contact.assert_called_once_with(
             'test_audience_id', 'fails@example.com', None, None
         )
         mock_send_welcome.assert_not_called()
         assert read_synced_emails('test_audience_id') == {'taken@example.com'}
+        mock_logger.info.assert_any_call(
+            "Sync completed: {'total_users': 2, 'backfilled_contacts': 0, "
+            "'already_synced': 1, 'added_contacts': 0, "
+            "'skipped_invalid_emails': 0, 'errors': 1}"
+        )
 
     @patch('sync.resend_keycloak.get_resend_contacts')
     def test_backfill_counts_only_contacts_this_run_marked(
