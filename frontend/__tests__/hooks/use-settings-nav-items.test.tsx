@@ -740,6 +740,24 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/your-budget"),
       ).toBeUndefined();
     });
+
+    it("should hide Your Budget and Budgets when enable_litellm is false", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockConfigWithFeatureFlags("saas", { enable_litellm: false });
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
   });
 });
 

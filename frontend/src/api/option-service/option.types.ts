@@ -61,6 +61,12 @@ export interface WebClientFeatureFlags {
    *  point (``/oauth/idp-login``, a backend redirect) instead of the legacy
    *  ``/login`` page. Mirrors the ENABLE_OAUTH_V2_LOGIN env var. */
   enable_oauth_v2_login?: boolean;
+  /** Deployment-wide switch for the bundled/external LiteLLM gateway.
+   *  Defaults to true for backward compatibility with existing installs.
+   *  When false, hide every feature that depends on LiteLLM (Budgets,
+   *  managed/OpenHands models, managed LLM key create/refresh) and show a
+   *  "Please enable LiteLLM to use this feature" placeholder instead. */
+  enable_litellm?: boolean;
 }
 
 export interface ACPModelOption {
