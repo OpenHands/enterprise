@@ -31313,23 +31313,6 @@
     "uk": "Створити посилання для скидання пароля",
     "ca": "Crea un enllaç de restabliment de contrasenya"
   },
-  "ORG$CREATE_PASSWORD_RESET_LINK_DESCRIPTION": {
-    "en": "Generate a one-time link that lets {{email}} set a new password. Share it with them yourself; no email is sent.",
-    "ja": "{{email}} が新しいパスワードを設定できる1回限りのリンクを生成します。本人に直接共有してください。メールは送信されません。",
-    "zh-CN": "生成一个一次性链接，供 {{email}} 设置新密码。请自行与对方分享；系统不会发送邮件。",
-    "zh-TW": "產生一個一次性連結，供 {{email}} 設定新密碼。請自行與對方分享；系統不會發送郵件。",
-    "ko-KR": "{{email}}이(가) 새 비밀번호를 설정할 수 있는 일회용 링크를 생성합니다. 본인에게 직접 공유하세요. 이메일은 전송되지 않습니다.",
-    "no": "Generer en engangslenke som lar {{email}} angi et nytt passord. Del den selv med vedkommende; ingen e-post blir sendt.",
-    "it": "Genera un link monouso che consente a {{email}} di impostare una nuova password. Condividilo tu stesso con l'utente; non viene inviata alcuna email.",
-    "pt": "Gere um link de uso único que permite que {{email}} defina uma nova senha. Compartilhe-o você mesmo com o usuário; nenhum e-mail é enviado.",
-    "es": "Genere un enlace de un solo uso que permita a {{email}} establecer una nueva contraseña. Compártalo usted mismo con el usuario; no se envía ningún correo electrónico.",
-    "ar": "أنشئ رابطًا لمرة واحدة يتيح لـ {{email}} تعيين كلمة مرور جديدة. شاركه بنفسك مع المستخدم؛ لن يتم إرسال أي بريد إلكتروني.",
-    "fr": "Générez un lien à usage unique permettant à {{email}} de définir un nouveau mot de passe. Partagez-le vous-même avec l'utilisateur ; aucun e-mail n'est envoyé.",
-    "tr": "{{email}} adresinin yeni bir parola belirlemesini sağlayan tek seferlik bir bağlantı oluşturun. Bağlantıyı kullanıcıyla kendiniz paylaşın; e-posta gönderilmez.",
-    "de": "Erstellen Sie einen einmaligen Link, mit dem {{email}} ein neues Passwort festlegen kann. Teilen Sie ihn selbst mit dieser Person; es wird keine E-Mail gesendet.",
-    "uk": "Створіть одноразове посилання, яке дозволяє {{email}} встановити новий пароль. Поділіться ним із користувачем самостійно; електронний лист не надсилається.",
-    "ca": "Genereu un enllaç d'un sol ús que permeti a {{email}} establir una nova contrasenya. Compartiu-lo vosaltres mateixos amb l'usuari; no s'envia cap correu."
-  },
   "ORG$PASSWORD_RESET_LINK_CREATED": {
     "en": "Password Reset Link Created",
     "ja": "パスワードリセットリンクを作成しました",

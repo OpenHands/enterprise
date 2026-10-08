@@ -21,6 +21,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { adminService } from "#/api/admin-service/admin-service.api";
+import { idpService } from "#/api/idp-service/idp-service.api";
 
 const mockQueryClient = vi.hoisted(() => {
   const { QueryClient } = require("@tanstack/react-query");
@@ -745,6 +746,14 @@ describe("Manage Organization Members Route", () => {
         }),
       );
 
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
+        .mockResolvedValue({
+          url: "https://example.com/signup/abc123",
+          role: "member",
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        });
+
       // Super admin "bob" (admin) viewing Acme Corp -- doesn't have
       // permission to change the owner's role, but can still mint a
       // password-reset link for them.
@@ -767,8 +776,21 @@ describe("Manage Organization Members Route", () => {
         within(menu).getByTestId("create-password-reset-link-option"),
       );
 
+      // No interim "are you sure" step -- the link is minted immediately
+      // and only the result modal is shown.
       expect(
-        await screen.findByTestId("create-password-reset-link-modal"),
+        screen.queryByTestId("create-password-reset-link-modal"),
+      ).not.toBeInTheDocument();
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: "alice@acme.org",
+        role: "member",
+      });
+
+      const resultModal = await screen.findByTestId(
+        "password-reset-link-result-modal",
+      );
+      expect(
+        within(resultModal).getByText("alice@acme.org"),
       ).toBeInTheDocument();
     });
 

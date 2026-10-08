@@ -22,57 +22,57 @@ interface CreatePasswordResetLinkModalProps {
  * Only rendered when ``enable_integrated_idp`` is on (see
  * ``option.types.ts``), since the generated link is otherwise meaningless --
  * there is no local-password login to reset into.
+ *
+ * The email (and role -- always ``member`` here) are already known, so
+ * there's nothing for the admin to configure or confirm: the link is minted
+ * as soon as this mounts, and only the result (with its copy button) is
+ * ever shown. On error the toast from `useCreateSignupLink` is enough
+ * feedback, so this just closes rather than leaving an empty modal up.
  */
 export function CreatePasswordResetLinkModal({
   email,
   onClose,
 }: CreatePasswordResetLinkModalProps) {
   const { t } = useTranslation();
-  const { mutate: createSignupLink, isPending } = useCreateSignupLink(
+  const { mutate: createSignupLink } = useCreateSignupLink(
     I18nKey.ORG$CREATE_PASSWORD_RESET_LINK_ERROR,
   );
   const [link, setLink] = React.useState<string | null>(null);
+  const hasRequestedRef = React.useRef(false);
 
-  const handleSubmit = () => {
+  React.useEffect(() => {
+    if (hasRequestedRef.current) return;
+    hasRequestedRef.current = true;
     createSignupLink(
       { email, role: "member" },
-      { onSuccess: (data) => setLink(data.url) },
+      {
+        onSuccess: (data) => setLink(data.url),
+        onError: () => onClose(),
+      },
     );
-  };
+  }, [createSignupLink, email, onClose]);
 
-  if (link) {
-    return (
-      <OrgModal
-        testId="password-reset-link-result-modal"
-        title={t(I18nKey.ORG$PASSWORD_RESET_LINK_CREATED)}
-        description={t(I18nKey.ORG$PASSWORD_RESET_LINK_CREATED_DESCRIPTION)}
-        primaryButtonText={t(I18nKey.BUTTON$CLOSE)}
-        onPrimaryClick={() => onClose()}
-        onClose={onClose}
-        hideSecondaryButton
-      >
-        <div
-          className="flex items-center justify-between gap-2 text-sm"
-          data-testid="password-reset-link-result"
-        >
-          <span className="truncate">{email}</span>
-          <CopyInviteLinkButton inviteUrl={link} />
-        </div>
-      </OrgModal>
-    );
+  if (!link) {
+    return null;
   }
 
   return (
     <OrgModal
-      testId="create-password-reset-link-modal"
-      title={t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK)}
-      description={t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK_DESCRIPTION, {
-        email,
-      })}
-      primaryButtonText={t(I18nKey.BUTTON$CREATE)}
-      onPrimaryClick={handleSubmit}
+      testId="password-reset-link-result-modal"
+      title={t(I18nKey.ORG$PASSWORD_RESET_LINK_CREATED)}
+      description={t(I18nKey.ORG$PASSWORD_RESET_LINK_CREATED_DESCRIPTION)}
+      primaryButtonText={t(I18nKey.BUTTON$CLOSE)}
+      onPrimaryClick={() => onClose()}
       onClose={onClose}
-      isLoading={isPending}
-    />
+      hideSecondaryButton
+    >
+      <div
+        className="flex items-center justify-between gap-2 text-sm"
+        data-testid="password-reset-link-result"
+      >
+        <span className="truncate">{email}</span>
+        <CopyInviteLinkButton inviteUrl={link} />
+      </div>
+    </OrgModal>
   );
 }
