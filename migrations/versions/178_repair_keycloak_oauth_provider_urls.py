@@ -73,6 +73,12 @@ def _resolve_keycloak_realm_base_url() -> str:
         if auth_web_host:
             auth_url = f'https://{auth_web_host}'
 
+    # If there is still no auth url, we try the keycloak variables
+    if not auth_url:
+        auth_url = os.getenv('KEYCLOAK_SERVER_URL_EXT', '')
+    if not auth_url:
+        auth_url = os.getenv('KEYCLOAK_SERVER_URL', '')
+
     kc_realm = os.getenv('KEYCLOAK_REALM_NAME', '').strip()
     if not auth_url or not kc_realm:
         return ''
