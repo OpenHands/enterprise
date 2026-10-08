@@ -14,6 +14,10 @@ const resolvedAnchors = new Map<string, Element>();
 const tourActiveListeners = new Set<() => void>();
 let tourActive = false;
 let setupStepListener: ((event: Event) => void) | null = null;
+// Bumped whenever a tour is stopped or replaced. driver.js keeps its state at
+// module level, so a delayed callback from an older tour would act on (and
+// destroy) the current one; callbacks check their generation first.
+let tourGeneration = 0;
 
 function setTourActive(next: boolean): void {
   if (tourActive === next) {
@@ -311,6 +315,7 @@ function findStartIndex(tour: GuidedTour, startAtStepId?: string): number {
 }
 
 export function stopGuidedTour(): void {
+  tourGeneration += 1;
   clearSetupStepListener();
   clearAlsoHighlight();
   activeDriver?.destroy();
@@ -330,6 +335,8 @@ export async function startGuidedTour(
   },
 ): Promise<void> {
   stopGuidedTour();
+  const generation = tourGeneration;
+  const isCurrent = () => generation === tourGeneration;
 
   const startIndex = findStartIndex(tour, options?.startAtStepId);
   const steps = startIndex > 0 ? tour.steps.slice(startIndex) : [...tour.steps];
@@ -342,6 +349,9 @@ export async function startGuidedTour(
     await wait(280);
   }
   await prepareStep(steps[0], navigate);
+  if (!isCurrent()) {
+    return;
+  }
 
   let index = 0;
   options?.onStep?.(steps[0].id, startIndex);
@@ -371,6 +381,9 @@ export async function startGuidedTour(
       nextButton.style.display = current?.waitForComplete ? "none" : "";
     },
     advanceFrom: async (instanceApi, nextIndex) => {
+      if (!isCurrent()) {
+        return;
+      }
       const nextStep = steps[nextIndex];
       if (!nextStep) {
         instanceApi.destroy();
@@ -379,6 +392,9 @@ export async function startGuidedTour(
       clearSetupStepListener();
       tourCtl.clearAnchorClickHandler();
       await prepareStep(nextStep, navigate);
+      if (!isCurrent()) {
+        return;
+      }
       index = nextIndex;
       options?.onStep?.(nextStep.id, startIndex + index);
       // Prefer moveTo so we can jump past micro-steps (e.g. create-org →
@@ -389,6 +405,9 @@ export async function startGuidedTour(
         instanceApi.moveNext();
       }
       window.setTimeout(() => {
+        if (!isCurrent()) {
+          return;
+        }
         instanceApi.refresh();
         tourCtl.bindInteractiveStep(instanceApi);
       }, 30);
@@ -512,10 +531,16 @@ export async function startGuidedTour(
       clearSetupStepListener();
       tourCtl.clearAnchorClickHandler();
       await prepareStep(prevStep, navigate);
+      if (!isCurrent()) {
+        return;
+      }
       index = Math.max(0, index - 1);
       options?.onStep?.(prevStep.id, startIndex + index);
       instanceApi.movePrevious();
       window.setTimeout(() => {
+        if (!isCurrent()) {
+          return;
+        }
         instanceApi.refresh();
         tourCtl.bindInteractiveStep(instanceApi);
       }, 30);
@@ -544,6 +569,9 @@ export async function startGuidedTour(
   applyAlsoHighlight(steps[0]);
   instance.drive();
   window.setTimeout(() => {
+    if (!isCurrent()) {
+      return;
+    }
     instance.refresh();
     tourCtl.bindInteractiveStep(instance);
     applyAlsoHighlight(steps[index]);

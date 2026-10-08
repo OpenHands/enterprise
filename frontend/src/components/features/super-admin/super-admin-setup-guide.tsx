@@ -3,6 +3,7 @@ import {
   NavLink,
   useLocation,
   useNavigate,
+  useSearchParams,
   type NavigateFunction,
 } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -34,6 +35,7 @@ import {
 import { BrandButton } from "./super-admin-chrome";
 import {
   SUPER_ADMIN_SETUP_STEPS,
+  getNextSuperAdminSetupStep,
   useSuperAdminSetup,
   type SuperAdminSetupStep,
   type SuperAdminSetupStepId,
@@ -47,27 +49,42 @@ import {
   subscribeGuidedTourActive,
 } from "#/components/features/setup/tours/tour-engine";
 
+/**
+ * Names the setup step whose tour to start when a page loads. Agent Canvas
+ * reads it on the links this guide opens, and this guide on the links Canvas
+ * opens.
+ */
+const SETUP_TOUR_PARAM = "setup_tour";
+
+function tourStopsFor(stepId: SuperAdminSetupStepId) {
+  return SUPER_ADMIN_SETUP_TOUR.steps.filter(
+    (stop) => stop.checklistId === stepId,
+  );
+}
+
 async function runSuperAdminSetupTour(
   navigate: NavigateFunction,
-  startAtStepId?: string,
+  stepId: SuperAdminSetupStepId,
 ): Promise<void> {
-  // A step in Agent Canvas has no tour stop: the page load into Canvas would
-  // end the tour, so open the step instead.
-  const step = SUPER_ADMIN_SETUP_STEPS.find(({ id }) => id === startAtStepId);
-  if (
-    step &&
-    !SUPER_ADMIN_SETUP_TOUR.steps.some((stop) => stop.checklistId === step.id)
-  ) {
-    // /canvas/... steps need a page load: the in-app /canvas route shows an
-    // error when the same URL is opened twice in a session.
-    navigateOrHardRedirect(navigate, step.to);
+  const stops = tourStopsFor(stepId);
+  if (stops.length === 0) {
+    // A step in Agent Canvas has no tour stop here: the page load into Canvas
+    // would end the tour. Open the step and let Canvas start its own tour.
+    const step = SUPER_ADMIN_SETUP_STEPS.find(({ id }) => id === stepId);
+    if (step) {
+      // /canvas/... steps need a page load: the in-app /canvas route shows an
+      // error when the same URL is opened twice in a session.
+      navigateOrHardRedirect(
+        navigate,
+        `${step.to}?${SETUP_TOUR_PARAM}=${step.id}`,
+      );
+    }
     return;
   }
+  // One step at a time: once the step is done, the guide opens the next one.
   // Checklist completion is driven by real actions (e.g. LLM saved),
   // not by walking through spotlight tips.
-  await startGuidedTour(SUPER_ADMIN_SETUP_TOUR, navigate, {
-    startAtStepId,
-  });
+  await startGuidedTour({ ...SUPER_ADMIN_SETUP_TOUR, steps: stops }, navigate);
 }
 
 function SetupProgressBar({
@@ -301,24 +318,61 @@ export function SuperAdminSetupFloatingWidget() {
     }
   }, [pathname, visible, refetch]);
 
+  // When the guide's next step is done, open the step after it the way Start
+  // does. A step finished out of order, or not confirmed by the server, only
+  // refreshes the progress; nothing opens after the last required step.
+  const nextStepId = nextStep?.id ?? null;
   useEffect(() => {
     if (!visible) {
       return undefined;
     }
-    const onStep = () => {
-      refetch();
+    const onStep = async (event: Event) => {
+      const completedId = (event as CustomEvent<{ id?: string }>).detail?.id;
+      const { data } = await refetch();
+      const guideSteps = data?.guide_steps;
+      if (!guideSteps || !completedId || completedId !== nextStepId) {
+        return;
+      }
+      const after = getNextSuperAdminSetupStep(guideSteps);
+      if (after && after.id !== completedId) {
+        await runSuperAdminSetupTour(navigate, after.id);
+      }
     };
     window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
     return () =>
       window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
-  }, [visible, refetch]);
+  }, [visible, refetch, nextStepId, navigate]);
+
+  // A page opened from Agent Canvas's guide names the step whose tour to
+  // start. Canvas steps have no tour here, so only enterprise steps start.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tourParam = searchParams.get(SETUP_TOUR_PARAM);
+  const startedTourParam = useRef<string | null>(null);
+  useEffect(() => {
+    if (!visible || !tourParam || startedTourParam.current === tourParam) {
+      return;
+    }
+    startedTourParam.current = tourParam;
+    setSearchParams(
+      (params) => {
+        const rest = new URLSearchParams(params);
+        rest.delete(SETUP_TOUR_PARAM);
+        return rest;
+      },
+      { replace: true },
+    );
+    const step = SUPER_ADMIN_SETUP_STEPS.find(({ id }) => id === tourParam);
+    if (step && tourStopsFor(step.id).length > 0) {
+      runSuperAdminSetupTour(navigate, step.id);
+    }
+  }, [visible, tourParam, setSearchParams, navigate]);
 
   const setWidgetOpen = (next: boolean) => {
     userClosedRef.current = !next;
     setOpen(next);
   };
 
-  const startTour = async (fromStepId?: string) => {
+  const startTour = async (fromStepId?: SuperAdminSetupStepId) => {
     setTourStarting(true);
     setOpen(false);
     try {

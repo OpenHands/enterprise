@@ -242,8 +242,12 @@ describe("SuperAdminSetupGuide", () => {
       // Act
       await user.click(screen.getByTestId("super-admin-setup-start-guide"));
 
-      // Assert
-      await waitFor(() => expect(replace).toHaveBeenCalledWith("/canvas/mcp"));
+      // Assert: Agent Canvas starts the step's tour.
+      await waitFor(() =>
+        expect(replace).toHaveBeenCalledWith(
+          "/canvas/mcp?setup_tour=add-integration",
+        ),
+      );
     });
 
     it("opens Agent Canvas's MCP page from its step", async () => {
