@@ -7,20 +7,17 @@ import AzureDevOpsLogo from "#/assets/branding/azure-devops-logo.svg?react";
 import SlackLogo from "#/icons/slack.svg?react";
 import { cn } from "#/utils/utils";
 
-export const INTEGRATION_PROVIDER_IDS = [
-  "github",
-  "gitlab",
-  "bitbucket",
-  "bitbucket_data_center",
-  "azure_devops",
-  "forgejo",
-  "slack",
-  "jira",
-  "jira-dc",
-  "linear",
-] as const;
-
-export type IntegrationProviderId = (typeof INTEGRATION_PROVIDER_IDS)[number];
+export type IntegrationProviderId =
+  | "github"
+  | "gitlab"
+  | "bitbucket"
+  | "bitbucket_data_center"
+  | "azure_devops"
+  | "forgejo"
+  | "slack"
+  | "jira"
+  | "jira-dc"
+  | "linear";
 
 interface IntegrationProviderIconProps {
   provider: IntegrationProviderId;
