@@ -160,14 +160,20 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("(@openhands)", "@openhands")  # True
         >>> has_exact_mention("user@openhands.com", "@openhands")  # False
         >>> has_exact_mention("Hello @OpenHands!", "@openhands")  # True (case-insensitive)
+        >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
+        >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
+        >>> has_exact_mention("see @openhands.com", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
     mention_lower = mention.lower()
 
     pattern = re.escape(mention_lower)
-    # Match mention that is not part of a larger word
-    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-])', text_lower))
+    # Match mention that is not part of a larger word. A '/' or '.' ends the
+    # mention only when no word follows it, so scoped package names
+    # (@openhands/pkg) and domains (@openhands.com) do not match, but a
+    # sentence end (Thanks @openhands.) does.
+    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w-])', text_lower))
 
 
 def infer_repo_from_message(user_msg: str) -> list[str]:
