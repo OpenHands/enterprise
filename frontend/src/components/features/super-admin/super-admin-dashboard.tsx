@@ -33,6 +33,10 @@ import {
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
 
+// All statuses, so the Conversations tab lists every conversation the Users
+// tab counts. The org-level usage dashboard starts at "running".
+const DEFAULT_CONVERSATION_STATUS = "";
+
 function selectedOrgLabel(
   selectedIds: string[],
   orgs: { id: string; name: string }[],
@@ -203,7 +207,9 @@ export function SuperAdminDashboard() {
   const [selectedOrgIds, setSelectedOrgIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState("");
   const [conversationSearch, setConversationSearch] = useState("");
-  const [conversationStatus, setConversationStatus] = useState("running");
+  const [conversationStatus, setConversationStatus] = useState(
+    DEFAULT_CONVERSATION_STATUS,
+  );
   const [conversationSortBy, setConversationSortBy] = useState("updated_at");
   const [conversationSortOrder, setConversationSortOrder] = useState("desc");
   const [conversationSandboxStatus, setConversationSandboxStatus] =
@@ -529,6 +535,7 @@ export function SuperAdminDashboard() {
           conversationSortBy={conversationSortBy}
           conversationSortOrder={conversationSortOrder}
           conversationSandboxStatus={conversationSandboxStatus}
+          defaultConversationStatus={DEFAULT_CONVERSATION_STATUS}
           exportUrl={exportUrl}
           conversationPage={conversationPage}
           conversationPerPage={conversationPerPage}

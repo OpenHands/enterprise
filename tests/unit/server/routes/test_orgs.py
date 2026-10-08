@@ -34,6 +34,7 @@ from server.routes.org_models import (
     OrgNameExistsError,
     OrgNotFoundError,
     OrgUpdate,
+    OrgUserUsageStats,
     OrphanedUserError,
     RoleNotFoundError,
 )
@@ -4667,3 +4668,38 @@ async def test_own_usage_rejects_an_unknown_time_window(own_budget_api, org_id):
     # Assert
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     usage_service.get_my_usage_stats.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_usage_counts_conversations_in_the_requested_time_window(
+    mock_app, org_id
+):
+    """
+    GIVEN: An org admin viewing usage for a time window
+    WHEN: GET .../conversations/user-usage?time_window=7d is called
+    THEN: The window is passed on for the per-user conversation count
+    """
+    # Arrange
+    usage_service = AsyncMock()
+    usage_service.get_user_usage_stats.return_value = OrgUserUsageStats(items=[])
+    mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
+        lambda: usage_service
+    )
+    admin_role = MagicMock()
+    admin_role.name = 'admin'
+
+    # Act
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=admin_role),
+    ):
+        response = TestClient(mock_app).get(
+            f'/api/organizations/{org_id}/conversations/user-usage',
+            params={'time_window': '7d'},
+        )
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    usage_service.get_user_usage_stats.assert_awaited_once_with(
+        org_id=uuid.UUID(org_id), limit=500, offset=0, time_window='7d'
+    )

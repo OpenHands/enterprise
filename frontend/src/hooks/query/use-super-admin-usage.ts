@@ -106,10 +106,12 @@ export function useSuperAdminUsage({
             orgId: org.id,
             timeWindow,
           }),
+          // Same window as the conversations, so both tabs count alike.
           organizationService.getUserUsageStats({
             orgId: org.id,
             limit: 50,
             offset: 0,
+            timeWindow: conversationTimeWindow,
           }),
           organizationService.getConversations({
             orgId: org.id,
