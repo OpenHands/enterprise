@@ -54,6 +54,7 @@ repos:
             types-docker,
             types-Markdown,
             types-redis,
+            types-croniter,
             pydantic,
             lxml,
             "openhands-sdk==1.39.1",
