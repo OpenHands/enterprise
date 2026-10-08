@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
@@ -1288,6 +1288,7 @@ class OrgConversationService:
         org_id: UUID,
         limit: int = 500,
         offset: int = 0,
+        time_window: str | None = None,
     ) -> OrgUserUsageStats:
         now = datetime.now(UTC)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1299,6 +1300,16 @@ class OrgConversationService:
             StoredConversationMetadata.conversation_version == 'V1',
             StoredConversationMetadataSaas.org_id == org_id,
         ]
+
+        # The conversation count matches list_org_conversations: top-level
+        # conversations only, created within the time window when one is given.
+        # Spend columns keep their own periods (MTD, YTD, lifetime).
+        counted: ColumnElement[bool] = (
+            StoredConversationMetadata.parent_conversation_id.is_(None)
+        )
+        if time_window and time_window in TIME_WINDOW_OPTIONS:
+            cutoff = now - timedelta(days=TIME_WINDOW_OPTIONS[time_window])
+            counted = and_(counted, StoredConversationMetadata.created_at >= cutoff)
 
         cost_events_subquery = (
             select(
@@ -1350,9 +1361,9 @@ class OrgConversationService:
                 User.git_user_name,
                 User.first_login_at,
                 User.last_login_at,
-                func.count(StoredConversationMetadata.conversation_id).label(
-                    'conversation_count'
-                ),
+                func.count(
+                    case((counted, StoredConversationMetadata.conversation_id))
+                ).label('conversation_count'),
                 func.min(StoredConversationMetadata.created_at).label(
                     'first_conversation_at'
                 ),
