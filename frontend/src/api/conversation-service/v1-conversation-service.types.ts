@@ -54,12 +54,7 @@ export interface V1SendMessageRequest {
 }
 
 type ObservabilityMetadataValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | boolean[];
+  string | number | boolean | string[] | number[] | boolean[];
 
 export interface V1AppConversationStartRequest {
   sandbox_id?: string | null;

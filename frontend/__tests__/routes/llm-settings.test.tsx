@@ -217,7 +217,9 @@ function buildSettingsWithAdvancedToggle(
 }
 
 async function selectProvider(providerLabel: "OpenHands" | "OpenAI") {
-  const providerInput = screen.getByTestId("llm-provider-input");
+  const providerInput = screen.getByTestId("llm-provider-input") as HTMLElement;
+  // HeroUI v3 ComboBox only reopens on a fresh focus, so drop focus first.
+  providerInput.blur();
   await userEvent.click(providerInput);
   await userEvent.click(await screen.findByText(providerLabel));
   await waitFor(() => {
@@ -227,7 +229,8 @@ async function selectProvider(providerLabel: "OpenHands" | "OpenAI") {
 }
 
 async function selectModel(modelLabel: string) {
-  const modelInput = screen.getByTestId("llm-model-input");
+  const modelInput = screen.getByTestId("llm-model-input") as HTMLElement;
+  modelInput.blur();
   await userEvent.click(modelInput);
   await userEvent.click(await screen.findByText(modelLabel));
   await waitFor(() => {
@@ -1407,8 +1410,7 @@ describe("LlmSettingsScreen", () => {
         } as NonNullable<Settings["agent_settings"]>;
 
         const agentSettingsDiff = settings.agent_settings_diff as
-          | Settings["agent_settings"]
-          | undefined;
+          Settings["agent_settings"] | undefined;
         if (agentSettingsDiff) {
           Object.assign(nextAgentSettings, agentSettingsDiff);
         }

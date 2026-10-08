@@ -67,23 +67,23 @@ vi.mock("#/hooks/mutation/stripe/use-create-stripe-checkout-session", () => ({
   }),
 }));
 
+const { mockQueryClient } = vi.hoisted(() => ({
+  mockQueryClient: (() => {
+    const { QueryClient } = require("@tanstack/react-query");
+    return new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+  })(),
+}));
+
+// Mock queryClient to use our test instance
+vi.mock("#/query-client-config", () => ({
+  queryClient: mockQueryClient,
+}));
+
 describe("Billing Route", () => {
-  const { mockQueryClient } = vi.hoisted(() => ({
-    mockQueryClient: (() => {
-      const { QueryClient } = require("@tanstack/react-query");
-      return new QueryClient({
-        defaultOptions: {
-          queries: { retry: false },
-        },
-      });
-    })(),
-  }));
-
-  // Mock queryClient to use our test instance
-  vi.mock("#/query-client-config", () => ({
-    queryClient: mockQueryClient,
-  }));
-
   const createMockUser = (
     overrides: Partial<OrganizationMember> = {},
   ): OrganizationMember => ({
@@ -346,8 +346,7 @@ describe("Billing Route", () => {
      */
     function renderWithForcedReRenders(
       query:
-        | "checkout=success&amount=25&session_id=sess_123"
-        | "checkout=cancel",
+        "checkout=success&amount=25&session_id=sess_123" | "checkout=cancel",
     ) {
       searchParamsOverride.current = [new URLSearchParams(query), vi.fn()];
 

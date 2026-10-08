@@ -26,21 +26,26 @@ export function ActionTooltip({ type, onClick }: ActionTooltipProps) {
     : `${t(I18nKey.BUTTON$CANCEL)} ⇧⌘⌫`;
 
   return (
-    <Tooltip content={content} closeDelay={100}>
-      <button
-        data-testid={`action-${type}-button`}
-        type="button"
-        aria-label={ariaLabel}
-        className={cn(
-          "rounded px-2 h-6.5 text-sm font-medium leading-5 cursor-pointer hover:opacity-80",
-          type === "confirm"
-            ? "bg-tertiary text-white"
-            : "bg-white text-[#0D0F11]",
-        )}
-        onClick={onClick}
-      >
-        {buttonLabel}
-      </button>
+    <Tooltip delay={0} closeDelay={100}>
+      <Tooltip.Trigger>
+        <button
+          data-testid={`action-${type}-button`}
+          type="button"
+          aria-label={ariaLabel}
+          className={cn(
+            "rounded px-2 h-6.5 text-sm font-medium leading-5 cursor-pointer hover:opacity-80",
+            type === "confirm"
+              ? "bg-tertiary text-white"
+              : "bg-white text-[#0D0F11]",
+          )}
+          onClick={onClick}
+        >
+          {buttonLabel}
+        </button>
+      </Tooltip.Trigger>
+      <Tooltip.Content className="bg-white text-black">
+        {content}
+      </Tooltip.Content>
     </Tooltip>
   );
 }

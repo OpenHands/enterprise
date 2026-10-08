@@ -1,10 +1,9 @@
-import { Autocomplete, AutocompleteItem } from "@heroui/react";
+import { ComboBox, Input, ListBox } from "@heroui/react";
 import React, { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { OptionalTag } from "./optional-tag";
 import { cn } from "#/utils/utils";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
-import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 
 interface SettingsDropdownInputProps {
   testId: string;
@@ -20,6 +19,7 @@ interface SettingsDropdownInputProps {
   selectedKey?: string | null;
   isClearable?: boolean;
   allowsCustomValue?: boolean;
+  formValue?: "text" | "key";
   required?: boolean;
   onSelectionChange?: (key: React.Key | null) => void;
   onInputChange?: (value: string) => void;
@@ -43,6 +43,7 @@ export function SettingsDropdownInput({
   selectedKey,
   isClearable,
   allowsCustomValue,
+  formValue,
   required,
   onSelectionChange,
   onInputChange,
@@ -63,43 +64,63 @@ export function SettingsDropdownInput({
           {showOptionalTag && <OptionalTag />}
         </div>
       )}
-      <Autocomplete
+      <ComboBox
         aria-label={typeof label === "string" ? label : name}
-        data-testid={testId}
         name={name}
         items={items}
         defaultSelectedKey={defaultSelectedKey}
         selectedKey={selectedKey}
         onSelectionChange={onSelectionChange}
         onInputChange={onInputChange}
-        isClearable={isClearable}
         isDisabled={isDisabled || isLoading}
-        isLoading={isLoading}
-        placeholder={isLoading ? t("HOME$LOADING") : placeholder}
-        allowsCustomValue={allowsCustomValue}
         isRequired={required}
+        allowsCustomValue={allowsCustomValue}
+        formValue={formValue}
+        defaultFilter={defaultFilter}
         className="w-full"
-        classNames={{
-          popoverContent: "bg-content1 rounded-xl",
-          selectorButton: heroUiAutocompleteSelectorButtonClassName,
-        }}
-        selectorButtonProps={{ disableRipple: true }}
-        inputProps={{
-          classNames: {
-            inputWrapper: cn(
+      >
+        <ComboBox.InputGroup>
+          {startContent}
+          <Input
+            data-testid={testId}
+            placeholder={isLoading ? t("HOME$LOADING") : placeholder}
+            className={cn(
               formControlSettingsFieldClassName,
               inputWrapperClassName,
-            ),
-            input: inputClassName,
-          },
-        }}
-        defaultFilter={defaultFilter}
-        startContent={startContent || null}
-      >
-        {(item) => (
-          <AutocompleteItem key={item.key}>{item.label}</AutocompleteItem>
-        )}
-      </Autocomplete>
+              inputClassName,
+            )}
+          />
+          {isClearable ? (
+            <button
+              type="button"
+              aria-label="Clear"
+              data-testid={`${testId}-clear`}
+              className="shrink-0 cursor-pointer px-1 text-tertiary-alt hover:text-white"
+              onClick={() => {
+                onSelectionChange?.(null);
+                onInputChange?.("");
+              }}
+            >
+              &times;
+            </button>
+          ) : null}
+          <ComboBox.Trigger />
+        </ComboBox.InputGroup>
+        <ComboBox.Popover>
+          <ListBox>
+            {(item: { key: React.Key; label: string }) => (
+              <ListBox.Item
+                key={item.key}
+                id={item.key as string | number}
+                textValue={item.label}
+              >
+                {item.label}
+                <ListBox.ItemIndicator />
+              </ListBox.Item>
+            )}
+          </ListBox>
+        </ComboBox.Popover>
+      </ComboBox>
     </label>
   );
 }
