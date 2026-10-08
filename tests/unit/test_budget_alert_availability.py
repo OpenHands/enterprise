@@ -8,6 +8,7 @@ from server.routes.org_models import OrgBudgetSettingsUpdate
 from server.services.org_budget_service import OrgBudgetService
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.slack_team import SlackTeam
+from storage.slack_user import SlackUser
 
 
 @pytest.fixture
@@ -185,6 +186,137 @@ async def alert_http(alert_service, create_org):
             transport=httpx.ASGITransport(app=app), base_url='http://test'
         ) as client:
             yield client, org.id
+
+
+@pytest.mark.asyncio
+async def test_resolves_legacy_org_workspace_with_multiple_installs(
+    alert_service, monkeypatch, create_org
+):
+    enable_slack(monkeypatch)
+    org_id = create_org().id
+    legacy_user = SlackUser(
+        keycloak_user_id='user-1',
+        org_id=org_id,
+        slack_user_id='U_TARGET',
+        slack_display_name='Target User',
+    )
+    alert_service.db_session.add_all(
+        [
+            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
+            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
+            legacy_user,
+        ]
+    )
+    await alert_service.db_session.flush()
+
+    def client_for_token(token: str) -> AsyncMock:
+        client = AsyncMock()
+        client.users_info.return_value = {'ok': token == 'target-token'}
+        return client
+
+    with patch(
+        'server.services.org_budget_service.AsyncWebClient',
+        side_effect=client_for_token,
+    ):
+        team_id = await alert_service._resolve_slack_team_id(None, org_id)
+
+    assert team_id == 'T_TARGET'
+    assert legacy_user.team_id == 'T_TARGET'
+
+
+@pytest.mark.asyncio
+async def test_api_saves_org_slack_workspace_with_multiple_installs(
+    alert_http, alert_service, monkeypatch
+):
+    from sqlalchemy import select
+
+    enable_slack(monkeypatch)
+    client, org_id = alert_http
+    alert_service.db_session.add_all(
+        [
+            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
+            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
+            SlackUser(
+                keycloak_user_id='user-1',
+                org_id=org_id,
+                slack_user_id='U_TARGET',
+                slack_display_name='Target User',
+                team_id='T_TARGET',
+            ),
+        ]
+    )
+    await alert_service.db_session.commit()
+
+    response = await client.patch(
+        f'/api/organizations/{org_id}/budgets',
+        json={
+            'slack_channel': '#on-callstatus',
+            'thresholds': [
+                {
+                    'percentage': 80,
+                    'email_enabled': False,
+                    'slack_enabled': True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['slack_team_id'] == 'T_TARGET'
+    settings = (
+        await alert_service.db_session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        )
+    ).scalar_one()
+    assert settings.slack_team_id == 'T_TARGET'
+
+
+@pytest.mark.asyncio
+async def test_slack_alert_uses_org_workspace_with_multiple_installs(
+    alert_service, monkeypatch, create_org
+):
+    enable_slack(monkeypatch)
+    org_id = create_org().id
+    alert_service.db_session.add_all(
+        [
+            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
+            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
+            SlackUser(
+                keycloak_user_id='user-1',
+                org_id=org_id,
+                slack_user_id='U_TARGET',
+                slack_display_name='Target User',
+                team_id='T_TARGET',
+            ),
+        ]
+    )
+    await alert_service.db_session.flush()
+    settings = OrgBudgetSettings(
+        org_id=org_id,
+        monthly_limit=100,
+        slack_channel='#on-callstatus',
+    )
+    client = AsyncMock()
+    client.chat_postMessage.return_value = {'ok': True}
+
+    with patch(
+        'server.services.org_budget_service.AsyncWebClient', return_value=client
+    ) as client_factory:
+        delivered = await alert_service._send_slack_alert(
+            'Test organization', settings, 80, 85, 85
+        )
+
+    assert delivered
+    assert settings.slack_team_id == 'T_TARGET'
+    client_factory.assert_called_once_with(token='target-token')
+    client.chat_postMessage.assert_awaited_once_with(
+        channel='#on-callstatus',
+        text=(
+            ':warning: OpenHands budget alert for *Test organization*\n'
+            'Threshold: *80%*\n'
+            'Current spend: *$85.00* (85.0% of $100.00)'
+        ),
+    )
 
 
 @pytest.mark.asyncio
