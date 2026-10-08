@@ -75,6 +75,22 @@ def _get_maintenance_start_time() -> datetime | None:
         return None
 
 
+def _get_provider_default_hosts() -> dict[str, str]:
+    """Return the deployment's default host for each git provider.
+
+    Bitbucket Data Center has no public host, so it is included only when
+    BITBUCKET_DATA_CENTER_HOST is set.
+    """
+    hosts = {
+        provider.value: host
+        for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
+    }
+    bitbucket_dc_host = os.getenv('BITBUCKET_DATA_CENTER_HOST', '').strip()
+    if bitbucket_dc_host:
+        hosts[ProviderType.BITBUCKET_DATA_CENTER.value] = bitbucket_dc_host
+    return hosts
+
+
 def _is_gitlab_enabled() -> bool:
     """Return whether GitLab OAuth is configured for the web client."""
     return bool(os.getenv('GITLAB_APP_CLIENT_ID', '').strip())
@@ -319,10 +335,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     github_app_slug: str | None = Field(default_factory=_get_github_app_slug)
     gitlab_enabled: bool = Field(default_factory=_is_gitlab_enabled)
     provider_default_hosts: dict[str, str] = Field(
-        default_factory=lambda: {
-            provider.value: host
-            for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
-        }
+        default_factory=_get_provider_default_hosts
     )
     slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)

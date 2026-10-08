@@ -7,7 +7,9 @@ import {
   SearchIcon,
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
+import { useConfig } from "#/hooks/query/use-config";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
+import { Provider } from "#/types/settings";
 import {
   AreaChart,
   KPICard,
@@ -18,16 +20,16 @@ import {
 import {
   buildExportFilename,
   formatAgentLabel,
-  formatAssociatedPr,
   formatBudget,
   formatCost,
   formatDateTimeOrDash,
   formatDuration,
   formatMergedStatus,
+  formatPrLabel,
   formatTokens,
   rowsToCsv,
 } from "./usage-dashboard-utils";
-import { cn, downloadBlob } from "#/utils/utils";
+import { cn, constructPullRequestUrl, downloadBlob } from "#/utils/utils";
 import {
   formControlFilterTriggerClassName,
   formControlInlineInputClassName,
@@ -297,6 +299,7 @@ export type ConversationRow = {
   updated_at?: string | null;
   pr_number?: number[];
   selected_repository?: string | null;
+  git_provider?: Provider | null;
   pr_merged?: boolean | null;
   agent_kind?: string | null;
   llm_model?: string | null;
@@ -305,6 +308,68 @@ export type ConversationRow = {
   sandbox_status?: string | null;
   title?: string | null;
 };
+
+// One PR in the Associated PR cell. The link is built from the deployment's
+// provider host. The viewer's own token host is not used: the viewer is often
+// an admin who looks at other members' PRs.
+function PullRequestLink({
+  number,
+  repository,
+  provider,
+}: {
+  number: number;
+  repository?: string | null;
+  provider?: Provider | null;
+}) {
+  const { data: config } = useConfig();
+  const host = provider ? config?.provider_default_hosts?.[provider] : null;
+  const label = formatPrLabel(number, repository);
+  const href =
+    repository && provider
+      ? constructPullRequestUrl(provider, repository, number, host)
+      : "";
+
+  if (!href) return <span>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-400 hover:underline"
+    >
+      {label}
+    </a>
+  );
+}
+
+// The PRs that a conversation opened. Each PR is assumed to be in the
+// conversation's selected repository.
+export function AssociatedPrCell({
+  conversation,
+}: {
+  conversation: Pick<
+    ConversationRow,
+    "pr_number" | "selected_repository" | "git_provider"
+  >;
+}) {
+  // The same number can be stored twice; it is the same PR.
+  const prNumbers = [...new Set(conversation.pr_number ?? [])];
+
+  if (prNumbers.length === 0) return "-";
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {prNumbers.map((number) => (
+        <PullRequestLink
+          key={number}
+          number={number}
+          repository={conversation.selected_repository}
+          provider={conversation.git_provider}
+        />
+      ))}
+    </div>
+  );
+}
 
 export type ConversationsResponse = {
   items: ConversationRow[];
@@ -630,7 +695,7 @@ export function ConversationsTab({
                       {formatDateTimeOrDash(conversation.updated_at)}
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
-                      {formatAssociatedPr(conversation)}
+                      <AssociatedPrCell conversation={conversation} />
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatMergedStatus(conversation.pr_merged)}

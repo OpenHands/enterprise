@@ -161,6 +161,9 @@ _conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+# Upper bound for the provider lookup of a repository started without a
+# provider, so a slow git provider cannot hold up the conversation start.
+_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -548,6 +551,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             ):
                 yield updated_task
 
+            # Resolve the provider before the agent-server starts the
+            # conversation, so the save below is not delayed while the
+            # "started" webhook may already be writing the row. The agent
+            # gets the same provider, so its PLAN.md path matches the one
+            # that sub-conversations inherit from the saved row.
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
+
             _logger.info(
                 'app_conversation_start:building_start_request',
                 extra={
@@ -567,7 +581,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     conversation_id,
                     request.initial_message,
                     request.system_message_suffix,
-                    request.git_provider,
+                    git_provider,
                     working_dir,
                     request.agent_type,
                     request.llm_model,
@@ -677,8 +691,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
-            if request.git_provider:
-                conversation_tags['git_provider'] = request.git_provider.value
+            if git_provider:
+                conversation_tags['git_provider'] = git_provider.value
             if request.selected_branch:
                 conversation_tags['selected_branch'] = request.selected_branch
 
@@ -692,7 +706,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # Git parameters
                 selected_repository=request.selected_repository,
                 selected_branch=request.selected_branch,
-                git_provider=request.git_provider,
+                git_provider=git_provider,
                 trigger=request.trigger,
                 pr_number=request.pr_number,
                 parent_conversation_id=request.parent_conversation_id,
@@ -2843,6 +2857,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             f'Successfully updated agent-server conversation {conversation_id} title to "{new_title}"'
         )
 
+    async def _resolve_git_provider(self, repository: str) -> ProviderType | None:
+        """Return the provider of a repository that was started without one.
+
+        The clone already resolves the provider from the user's tokens, but the
+        start request may not carry it (e.g. API clients). Best effort: returns
+        None when the provider cannot be found in time, so the start never fails.
+        """
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            repo = await asyncio.wait_for(
+                provider_handler.verify_repo_provider(repository, is_optional=True),
+                timeout=_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS,
+            )
+            return repo.git_provider
+        except Exception:
+            _logger.warning(
+                f'Could not resolve the git provider of {repository}', exc_info=True
+            )
+            return None
+
     def _validate_repository_update(
         self,
         request: AppConversationUpdateRequest,
@@ -2861,10 +2895,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if 'selected_repository' in request.model_fields_set:
             repo = request.selected_repository
             if repo is not None:
-                # Validate repository format (owner/repo)
-                if '/' not in repo or repo.count('/') != 1:
+                # Validate repository format: owner/repo, or more segments for
+                # Azure DevOps (org/project/repo) and GitLab subgroups.
+                segments = repo.split('/')
+                if len(segments) < 2 or not all(segments):
                     raise ValueError(
-                        f"Invalid repository format: '{repo}'. Expected 'owner/repo'."
+                        f"Invalid repository format: '{repo}'. Expected 'owner/repo' "
+                        "or more path segments (e.g. 'org/project/repo')."
                     )
 
                 # Sanitize: check for dangerous characters
