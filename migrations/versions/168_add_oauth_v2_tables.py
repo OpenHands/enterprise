@@ -12,6 +12,13 @@ Seeding: one IDP row for Keycloak (from ``KEYCLOAK_*`` env vars) and one row
 per configured git provider (when its ``*_CLIENT_ID`` env var is set).
 ``client_secret`` is encrypted at rest via the existing JWE service.
 
+The Keycloak IDP's ``authorization_url`` / ``token_url`` / ``userinfo_url``
+are derived from ``AUTH_URL`` (falling back to ``AUTH_WEB_HOST``, then
+``auth.{WEB_HOST}``) — the externally-reachable Keycloak hostname — never
+from ``KEYCLOAK_SERVER_URL``, which is the in-cluster address used for
+server-to-server admin calls. Hosts that ran an earlier version of this
+migration (seeded from ``KEYCLOAK_SERVER_URL``) are repaired by migration 178.
+
 Revision ID: 168
 Revises: 167
 Create Date: 2026-09-23 00:00:00.000000
@@ -85,6 +92,37 @@ def _seed_row(
     )
 
 
+def _resolve_keycloak_realm_base_url() -> str:
+    """Resolve the externally-reachable Keycloak realm base URL.
+
+    ``KEYCLOAK_SERVER_URL`` is the in-cluster URL used for server-to-server
+    admin calls; it is not reachable by end users' browsers, so it must never
+    be used to build the ``authorization_url`` / ``token_url`` /
+    ``userinfo_url`` stored for the IDP. Those are derived instead from:
+
+    - ``AUTH_URL``, if set, else
+    - ``https://{AUTH_WEB_HOST}``, if ``AUTH_WEB_HOST`` is set, else
+    - ``https://auth.{WEB_HOST}``, if ``WEB_HOST`` is set.
+
+    Returns an empty string if none of the above resolve to a usable URL (or
+    ``KEYCLOAK_REALM_NAME`` is unset).
+    """
+    auth_url = os.getenv('AUTH_URL', '').strip().rstrip('/')
+    if not auth_url:
+        auth_web_host = os.getenv('AUTH_WEB_HOST', '').strip()
+        if not auth_web_host:
+            web_host = os.getenv('WEB_HOST', '').strip()
+            if web_host:
+                auth_web_host = f'auth.{web_host}'
+        if auth_web_host:
+            auth_url = f'https://{auth_web_host}'
+
+    kc_realm = os.getenv('KEYCLOAK_REALM_NAME', '').strip()
+    if not auth_url or not kc_realm:
+        return ''
+    return f'{auth_url}/realms/{kc_realm}'
+
+
 def _seed_from_environment() -> None:
     """Seed oauth_providers from environment variables.
 
@@ -96,12 +134,8 @@ def _seed_from_environment() -> None:
     # Keycloak as IDP
     kc_client_id = os.getenv('KEYCLOAK_CLIENT_ID', '').strip()
     if kc_client_id:
-        kc_server_url = os.getenv('KEYCLOAK_SERVER_URL', '').rstrip('/')
-        kc_realm = os.getenv('KEYCLOAK_REALM_NAME', '')
         kc_client_secret = os.getenv('KEYCLOAK_CLIENT_SECRET', '').strip()
-        kc_base = (
-            f'{kc_server_url}/realms/{kc_realm}' if kc_server_url and kc_realm else ''
-        )
+        kc_base = _resolve_keycloak_realm_base_url()
         _seed_row(
             bind,
             provider_category='enterprise_sso',
