@@ -29,8 +29,10 @@ from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
     ORG_SETTINGS_VERSION,
+    get_default_llm_api_key,
     get_default_llm_base_url,
     get_default_llm_model,
+    is_in_cluster_url,
 )
 from server.routes.org_models import OrgUpdate, OrphanedUserError
 from storage.database import a_session_maker
@@ -405,25 +407,49 @@ class OrgStore:
         # Public OpenHands provider model with no explicit (or a managed-host)
         # base_url is managed.
         if is_openhands_model(model):
-            return normalized_base_url is None or (
-                'all-hands.dev' in normalized_base_url.lower()
+            return (
+                normalized_base_url is None
+                or 'all-hands.dev' in normalized_base_url.lower()
+                or is_in_cluster_url(normalized_base_url)
             )
+        # The bundled proxy's route; its URL env is gone once LiteLLM is off.
+        if model.startswith('litellm_proxy/'):
+            return normalized_base_url is None or is_in_cluster_url(normalized_base_url)
         return False
+
+    @staticmethod
+    def _needs_gateway_off_repair(org: Org) -> bool:
+        """Whether the org still defaults to a LiteLLM model the deployment no longer serves."""
+        model = (dict(org.agent_settings).get('llm') or {}).get('model')
+        return OrgStore._uses_managed_default_llm(org) and (
+            model != get_default_llm_model()
+        )
+
+    @staticmethod
+    def _deployment_default_llm(
+        gateway_enabled: bool,
+    ) -> tuple[dict[str, Any], str | None]:
+        """The deployment default LLM, plus the install key to share when there is no gateway."""
+        llm = {'model': get_default_llm_model(), 'base_url': get_default_llm_base_url()}
+        return llm, None if gateway_enabled else get_default_llm_api_key()
 
     @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
-        if org and org.org_version < ORG_SETTINGS_VERSION:
+        gateway_enabled = await is_litellm_enabled()
+        if org and (
+            org.org_version < ORG_SETTINGS_VERSION
+            or (not gateway_enabled and OrgStore._needs_gateway_off_repair(org))
+        ):
             org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
-                org_kwargs['agent_settings_diff'] = {
-                    'llm': {
-                        'model': get_default_llm_model(),
-                        'base_url': get_default_llm_base_url(),
-                    },
-                }
+                llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
+                org_kwargs['agent_settings_diff'] = {'llm': llm}
+                # The org key outranks members' dead LiteLLM keys.
+                if shared_key:
+                    org_kwargs['llm_api_key'] = shared_key
             org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
             # One-time, best-effort repair of a stale free-tier LiteLLM team
             # allowlist (the version bump is the once-per-org trigger). A

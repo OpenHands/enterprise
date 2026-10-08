@@ -135,6 +135,13 @@ class TestNewOrgDefault:
         assert constants.get_default_llm_model() == 'openai/gpt-5'
         assert constants.get_default_llm_base_url() == 'https://llm.example.com/v1'
 
+    def test_litellm_disabled_is_not_a_bundled_proxy(self, bundled_proxy, monkeypatch):
+        monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', False)
+        assert constants.uses_bundled_litellm_proxy() is False
+        assert constants.is_bundled_proxy_base_url(PROXY_URL) is False
+        assert not constants.get_default_llm_model().startswith('openhands/')
+        assert constants.get_default_llm_base_url() is None
+
 
 class TestCanonicalizeStoredLLM:
     def test_bundled_proxy_route_uses_public_name_and_keeps_base_url(
@@ -281,6 +288,32 @@ class TestStoredProfiles:
         assert default.base_url == 'https://llm.example.com/v1'
         assert default.api_key.get_secret_value() == 'test-direct-key'
         assert 'test-direct-key' not in default.model_dump_json()
+
+    @pytest.mark.parametrize('litellm_on', [True, False])
+    def test_bundled_proxy_default_moves_to_direct_only_when_litellm_off(
+        self, bundled_proxy, monkeypatch, litellm_on
+    ):
+        in_cluster = 'http://openhands-litellm.openhands.svc.cluster.local:4000'
+        monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', litellm_on)
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'direct')
+        monkeypatch.setattr(
+            constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'anthropic/claude-x'
+        )
+        monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', None)
+        monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_API_KEY', 'sk-install')
+        stale = LLM(model='openhands/claude-sonnet-4-5', base_url=in_cluster)
+        profiles = LLMProfiles(profiles={'Default': stale}, active='Default')
+
+        materialize_default_llm_profile(profiles, None)
+
+        default = profiles.require('Default')
+        if litellm_on:
+            assert default.model == 'openhands/claude-sonnet-4-5'
+            assert default.base_url == in_cluster
+        else:
+            assert default.model == 'anthropic/claude-x'
+            assert default.base_url is None
+            assert default.api_key.get_secret_value() == 'sk-install'
 
     def test_cloud_default_without_db_default_is_dropped(self, saas_proxy):
         profiles = LLMProfiles(

@@ -474,6 +474,8 @@ export function ApiKeysManager() {
   const billingEnabled = !!config?.feature_flags?.enable_billing;
   const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
   const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
+  // `undefined` means the flag isn't set on this deployment; treat that as ON.
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
 
   // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
@@ -508,16 +510,17 @@ export function ApiKeysManager() {
   return (
     <>
       <div className="flex flex-col gap-6">
-        {llmKeyExportAvailable ? (
-          <LlmApiKeyManager
-            llmApiKey={llmApiKey}
-            isLoadingLlmKey={isLoadingLlmKey}
-            isPaymentRequired={isPaymentRequired}
-            refreshLlmApiKey={refreshLlmApiKey}
-          />
-        ) : (
-          <LlmApiKeyDisabled />
-        )}
+        {litellmEnabled &&
+          (llmKeyExportAvailable ? (
+            <LlmApiKeyManager
+              llmApiKey={llmApiKey}
+              isLoadingLlmKey={isLoadingLlmKey}
+              isPaymentRequired={isPaymentRequired}
+              refreshLlmApiKey={refreshLlmApiKey}
+            />
+          ) : (
+            <LlmApiKeyDisabled />
+          ))}
 
         <div className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex items-start justify-between gap-4">
