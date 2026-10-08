@@ -511,3 +511,45 @@ async def test_my_usage_lists_own_six_most_recent_top_level_conversations(
         f'mine-{age}' for age in range(6)
     ]
     assert stats.recent_usage[1].accumulated_cost == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_user_usage_counts_top_level_conversations_in_the_time_window(
+    async_session_maker,
+):
+    # Arrange: a recent and an old top-level conversation, and a
+    # sub-conversation of the recent one.
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        await _conversation(
+            session, 'recent', 'label', 1.0, 0, 0, created_at=now - timedelta(days=1)
+        )
+        await _conversation(
+            session, 'old', 'label', 2.0, 0, 0, created_at=now - timedelta(days=45)
+        )
+        await _conversation(
+            session,
+            'child',
+            'label',
+            4.0,
+            0,
+            0,
+            created_at=now - timedelta(hours=1),
+            parent_conversation_id='recent',
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        service = OrgConversationService(db_session=session)
+        all_time = await service.get_user_usage_stats(org_id=ORG_ID)
+        last_30_days = await service.get_user_usage_stats(
+            org_id=ORG_ID, time_window='30d'
+        )
+
+    # Assert: the count follows the org's conversation list, while spend still
+    # covers every conversation.
+    assert [row.conversation_count for row in all_time.items] == [2]
+    assert [row.conversation_count for row in last_30_days.items] == [1]
+    assert all_time.items[0].spend_lifetime == pytest.approx(7.0)
+    assert last_30_days.items[0].spend_lifetime == pytest.approx(7.0)

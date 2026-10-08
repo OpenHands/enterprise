@@ -333,17 +333,23 @@ export const organizationService = {
     orgId,
     limit,
     offset,
+    timeWindow,
   }: {
     orgId: string;
     limit?: number;
     offset?: number;
+    /** Limits the conversation count; spend columns keep their own periods. */
+    timeWindow?: string;
   }) => {
-    const params: Record<string, number> = {};
+    const params: Record<string, number | string> = {};
     if (typeof limit === "number") {
       params.limit = limit;
     }
     if (typeof offset === "number") {
       params.offset = offset;
+    }
+    if (timeWindow) {
+      params.time_window = timeWindow;
     }
     const { data } = await openHands.get<OrgUserUsageStats>(
       `/api/organizations/${orgId}/conversations/user-usage`,
