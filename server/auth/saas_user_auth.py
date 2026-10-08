@@ -36,7 +36,11 @@ from server.auth.authorization import (
     get_user_org_role,
     get_user_super_role,
 )
-from server.auth.constants import AZURE_DEVOPS_ORGANIZATION, BITBUCKET_DATA_CENTER_HOST
+from server.auth.constants import (
+    AZURE_DEVOPS_ORGANIZATION,
+    BITBUCKET_DATA_CENTER_HOST,
+    ENABLE_SUPER_ADMIN,
+)
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
 from server.logger import logger
@@ -222,10 +226,26 @@ class SaasUserAuth(UserAuth):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail='User is not a member of the requested organization',
             )
+
+        from server.auth.org_access import (
+            OrgNotUsableError,
+            assert_org_usable_for_product,
+        )
+
+        try:
+            await assert_org_usable_for_product(override_org_id, user_id=self.user_id)
+        except OrgNotUsableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=exc.detail,
+            ) from exc
+
         return override_org_id
 
     async def _resolve_org_id(self, *, verify_membership: bool) -> UUID | None:
-        """Shared resolver for :meth:`get_effective_org_id` and
+        """Shared resolver for effective-org and permission-check org targeting.
+
+        Used by :meth:`get_effective_org_id` and
         :meth:`get_target_org_id_for_permission_check`.
 
         Precedence (highest first):
@@ -260,12 +280,32 @@ class SaasUserAuth(UserAuth):
 
         Raises:
             HTTPException: 400 for a malformed ``X-Org-Id`` header,
-                403 for API-key / membership conflicts.
+                403 for API-key / membership conflicts or suspended
+                org / membership when ``verify_membership`` is True.
         """
         from fastapi import status
 
+        from server.auth.org_access import (
+            OrgNotUsableError,
+            assert_org_usable_for_product,
+        )
+
+        async def _finalize(resolved: UUID | None) -> UUID | None:
+            """Apply product-lifecycle gates for effective-org resolution."""
+            if resolved is None or not verify_membership:
+                return resolved
+            try:
+                await assert_org_usable_for_product(resolved, user_id=self.user_id)
+            except OrgNotUsableError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=exc.detail,
+                ) from exc
+            return resolved
+
         override_org_id = await self._resolve_and_verify_override_org()
         if override_org_id is not None:
+            # Override path already ran assert_org_usable_for_product.
             return override_org_id
 
         header_value = self._x_org_id_header
@@ -298,7 +338,7 @@ class SaasUserAuth(UserAuth):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail='API key is not authorized for this organization',
                 )
-            return self.api_key_org_id
+            return await _finalize(self.api_key_org_id)
 
         # Case 2: X-Org-Id override.
         if requested is not None:
@@ -341,7 +381,7 @@ class SaasUserAuth(UserAuth):
                             'super_role': super_role.name,
                         },
                     )
-                    return requested
+                    return await _finalize(requested)
 
                 logger.warning(
                     'x_org_id_not_a_member',
@@ -354,13 +394,13 @@ class SaasUserAuth(UserAuth):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail='User is not a member of the requested organization',
                 )
-            return requested
+            return await _finalize(requested)
 
         # Case 3: Fall back to the user's currently-selected org.
         user = await UserStore.get_user_by_id(self.user_id)
         if user is None:
             return None
-        return user.current_org_id
+        return await _finalize(user.current_org_id)
 
     async def get_effective_org_id(self) -> UUID | None:
         """Resolve the effective organization ID for this request.
@@ -381,8 +421,9 @@ class SaasUserAuth(UserAuth):
         return self._effective_org_id
 
     async def get_target_org_id_for_permission_check(self) -> UUID | None:
-        """Resolve the target organization for a permission check
-        **without** requiring the authenticated user to be a member.
+        """Resolve the target organization for a permission check.
+
+        Does **not** require the authenticated user to be a member.
 
         Delegates to :meth:`_resolve_org_id` with ``verify_membership=False``.
         Used by ``require_permission`` on routes that lack an explicit
@@ -1041,6 +1082,16 @@ class SaasUserAuth(UserAuth):
         if instance is None:
             logger.debug('saas_user_auth_get_instance:no_credentials')
             raise NoCredentialsError('failed to authenticate')
+        # Checked here rather than per credential type, so a disabled user is
+        # refused with an API key, a legacy cookie or an OAuth v2 cookie alike.
+        # Only the Super Admin directory disables users, so the lookup is
+        # skipped while it is off.
+        if (
+            ENABLE_SUPER_ADMIN
+            and instance.user_id
+            and await UserStore.is_user_disabled(instance.user_id)
+        ):
+            raise AuthError('User account is disabled')
         # Capture the raw X-Org-Id header (if any) so it can be validated
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.

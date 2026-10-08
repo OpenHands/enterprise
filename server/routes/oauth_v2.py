@@ -527,6 +527,10 @@ async def oauth_v2_callback(
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
+        if await UserStore.is_user_disabled(user_id):
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),

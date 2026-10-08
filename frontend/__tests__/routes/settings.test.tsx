@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createRoutesStub } from "react-router";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -52,13 +53,13 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
-          SETTINGS$NAV_APPLICATION: "Application",
+          SETTINGS$NAV_APPLICATION: "Application Settings",
           SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
           SETTINGS$NAV_LLM: "LLM",
           SETTINGS$NAV_SECRETS: "Secrets",
           SETTINGS$NAV_MCP: "MCP",
-          SETTINGS$NAV_USER: "User",
+          SETTINGS$NAV_USER: "User Settings",
           SETTINGS$NAV_BILLING: "Billing & Credits",
           SETTINGS$TITLE: "Settings",
           COMMON$LANGUAGE_MODEL_LLM: "LLM",
@@ -187,7 +188,7 @@ describe("Settings Screen", () => {
     });
 
   it("should render the navbar", async () => {
-    const sectionsToInclude = ["llm", "integrations", "application", "secrets"];
+    const sectionsToInclude = ["llm", "integrations", "secrets"];
     const sectionsToExclude = ["api keys", "credits", "billing"];
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
     // @ts-expect-error - only return app mode
@@ -213,6 +214,12 @@ describe("Settings Screen", () => {
       });
       expect(sectionElement).not.toBeInTheDocument();
     });
+    await userEvent.click(
+      within(navbar).getByTestId("settings-nav-user-trigger"),
+    );
+    expect(
+      within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+    ).toBeInTheDocument();
 
     getConfigSpy.mockRestore();
   });
@@ -236,9 +243,7 @@ describe("Settings Screen", () => {
 
     const sectionsToInclude = [
       "llm", // LLM settings are now always shown in SaaS mode
-      "user",
       "integrations",
-      "application",
       "billing", // The nav item shows "Billing" text and routes to /billing
       "secrets",
       "api keys",
@@ -263,6 +268,15 @@ describe("Settings Screen", () => {
       });
       expect(sectionElement).not.toBeInTheDocument();
     });
+    await userEvent.click(
+      within(navbar).getByTestId("settings-nav-user-trigger"),
+    );
+    expect(
+      within(navbar).getByRole("menuitem", { name: "User Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+    ).toBeInTheDocument();
   });
 
   it("should not link to the Agent Profiles library in the saas navbar", async () => {
@@ -598,7 +612,7 @@ describe("Settings Screen", () => {
       );
     };
 
-    it("should group User under an Account settings header for an admin in a team org", async () => {
+    it("should show the Account settings header to an admin in a team org and keep User in the account menu", async () => {
       // Arrange
       seedTeamOrgUser("admin");
 
@@ -608,10 +622,16 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
-      const labelsInOrder = within(navbar)
-        .getAllByText(/^(USER\$ACCOUNT_SETTINGS|User)$/)
-        .map((element) => element.textContent);
-      expect(labelsInOrder).toEqual(["USER$ACCOUNT_SETTINGS", "User"]);
+      // User is an account-menu destination, not a rail item.
+      expect(
+        within(navbar).queryByRole("link", { name: "User Settings" }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
+      ).toBeInTheDocument();
     });
 
     it("should not show the Account settings header to a member of a team org", async () => {
@@ -623,7 +643,7 @@ describe("Settings Screen", () => {
 
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
-      await within(navbar).findByText("User");
+      await within(navbar).findByText("Secrets");
       expect(
         within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
       ).not.toBeInTheDocument();
@@ -965,12 +985,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Billing", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
       expect(
-        within(navbar).getByText("User", { exact: false }),
+        within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
       expect(
-        within(navbar).getByText("Integrations", { exact: false }),
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -1008,12 +1030,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Integrations", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
-      expect(
-        within(navbar).getByText("User", { exact: false }),
-      ).toBeInTheDocument();
       expect(
         within(navbar).getByText("Billing", { exact: false }),
+      ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -1047,12 +1071,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Integrations", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
-      expect(
-        within(navbar).getByText("Application", { exact: false }),
-      ).toBeInTheDocument();
       expect(
         within(navbar).getByText("LLM", { exact: false }),
+      ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "Application Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -1084,8 +1110,11 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByText("LLM", { exact: false }),
       ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
       expect(
-        within(navbar).getByText("Application", { exact: false }),
+        within(navbar).getByRole("menuitem", { name: "Application Settings" }),
       ).toBeInTheDocument();
     });
   });

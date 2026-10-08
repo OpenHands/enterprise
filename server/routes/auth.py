@@ -27,6 +27,7 @@ from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import TokenRefreshError
 from server.auth.constants import (
+    ENABLE_SUPER_ADMIN,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL_EXT,
@@ -65,6 +66,7 @@ from server.utils.rate_limit_utils import (
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
+from storage.instance_settings import InstanceSettings
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -337,6 +339,12 @@ async def keycloak_callback(
                 logger.warning(
                     f'Failed to clean up orphaned Keycloak user {user_info.sub}: {e}'
                 )
+        # A disabled user lands here from a browser sign-in, so send them to
+        # the login page to read why instead of a raw JSON 401.
+        if authorization.error_detail == 'account_disabled':
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
         # Return unauthorized
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -699,7 +707,15 @@ async def keycloak_callback(
         # User has accepted TOS - check if they need onboarding
         # Only redirect to onboarding if user has a valid offline token,
         # otherwise they need to complete the Keycloak offline token flow first
-        if valid_offline_token and await _should_redirect_to_onboarding(user_id, user):
+        if valid_offline_token and await _should_redirect_to_install(user_id):
+            redirect_url = f'{web_url}/install'
+            logger.info(
+                'Redirecting returning first Super Admin to the install wizard',
+                extra={'user_id': user_id},
+            )
+        elif valid_offline_token and await _should_redirect_to_onboarding(
+            user_id, user
+        ):
             # Preserve the user's originally requested destination as
             # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
             # restore it after the user finishes the form.
@@ -981,6 +997,26 @@ def _build_onboarding_redirect(original_url: str, web_url: str) -> str:
     return f'{onboarding_url}?returnTo={quote(relative, safe="")}'
 
 
+async def _get_setup_state(user_id: str) -> InstanceSettings | None:
+    """Return the first-install state if ``user_id`` is the first Super Admin.
+
+    That user runs the ``/install`` wizard instead of the onboarding survey.
+    """
+    if not ENABLE_SUPER_ADMIN:
+        return None
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    if settings is None or str(settings.setup_user_id) != user_id:
+        return None
+    return settings
+
+
+async def _should_redirect_to_install(user_id: str) -> bool:
+    """Check if the user is the first Super Admin and has not finished the wizard."""
+    settings = await _get_setup_state(user_id)
+    return settings is not None and not settings.wizard_completed
+
+
 async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
     """Check if user should be redirected to onboarding after TOS acceptance.
     Backend always redirects applicable users to /onboarding.
@@ -994,6 +1030,7 @@ async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
     Returns False if:
     - User has onboarding_completed=True (already completed)
     - User has onboarding_completed=None (existing users before this feature)
+    - User is the first Super Admin (the install wizard replaces the survey)
     """
     # Already completed onboarding
     if user.onboarding_completed is True:
@@ -1001,6 +1038,9 @@ async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
 
     # Existing user before this feature (NULL in database)
     if user.onboarding_completed is None:
+        return False
+
+    if await _get_setup_state(user_id) is not None:
         return False
 
     # Cloud SaaS: all users go to onboarding
@@ -1033,6 +1073,12 @@ async def _get_post_auth_redirect(
     Returns:
         The URL to redirect the user to.
     """
+    if await _should_redirect_to_install(user_id):
+        logger.info(
+            'Redirecting first Super Admin to the install wizard',
+            extra={'user_id': user_id},
+        )
+        return f'{web_url}/install'
     if not user:
         user = await UserStore.get_user_by_id(user_id)
     if user and await _should_redirect_to_onboarding(user_id, user):

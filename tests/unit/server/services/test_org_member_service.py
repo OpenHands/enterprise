@@ -2306,6 +2306,33 @@ class TestOrgMemberServiceGetMe:
             assert str(org_id) in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_get_me_instance_super_admin_non_member_raises_not_found(
+        self, org_id, current_user_id
+    ):
+        """GIVEN: An instance Super Admin who is not a member of the organization
+        WHEN: get_me is called
+        THEN: Raises OrgMemberNotFoundError -- the Super Admin must join first
+        """
+        # Arrange
+        super_role = MagicMock()
+        super_role.name = 'admin'
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.auth.authorization.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=super_role,
+            ),
+        ):
+            # Act & Assert
+            with pytest.raises(OrgMemberNotFoundError):
+                await OrgMemberService.get_me(org_id, current_user_id)
+
+    @pytest.mark.asyncio
     async def test_get_me_role_not_found_raises_error(
         self, org_id, current_user_id, mock_org_member
     ):

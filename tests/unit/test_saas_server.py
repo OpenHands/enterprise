@@ -4,6 +4,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 
 def test_static_member_routes_precede_member_detail(tmp_path):
     frontend_build = tmp_path / 'frontend' / 'build'
@@ -243,3 +245,88 @@ def test_saas_server_starts_when_canvas_bundle_absent(tmp_path):
     # to the '/' catch-all SPA.
     assert matches['/canvas/'] == 'dist'
     assert matches['/'] == 'dist'
+
+
+@pytest.mark.parametrize(
+    ('flag_value', 'organizations_route', 'users_route'),
+    [
+        ('true', 'list_admin_organizations', 'list_admin_users'),
+        ('false', 'dist', 'dist'),
+    ],
+)
+def test_admin_directory_routes_follow_super_admin_flag(
+    tmp_path, flag_value, organizations_route, users_route
+):
+    """The /api/admin directory is served only while ENABLE_SUPER_ADMIN is on.
+
+    With the flag off the paths fall through to the '/' SPA mount. The
+    super-admins API and the instance-wide user list are not part of the
+    directory and stay mounted.
+    """
+    frontend_build = tmp_path / 'frontend' / 'build'
+    frontend_build.mkdir(parents=True)
+    (frontend_build / 'index.html').write_text('<html>app</html>')
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env['FRONTEND_DIRECTORY'] = str(frontend_build)
+    env['PYTHONPATH'] = f'{repo_root}:{env.get("PYTHONPATH", "")}'
+    env['OPENHANDS_SUPPRESS_BANNER'] = '1'
+    env['POSTHOG_CLIENT_KEY'] = 'test-posthog-key'
+    env['SERVE_FRONTEND'] = 'false'
+    env['ENABLE_SUPER_ADMIN'] = flag_value
+
+    script = textwrap.dedent(
+        """
+        from starlette.routing import Match
+
+        import saas_server
+
+        def matched_route(path):
+            scope = {
+                'type': 'http',
+                'path': path,
+                'root_path': '',
+                'method': 'GET',
+                'scheme': 'http',
+                'server': ('testserver', 80),
+                'client': ('testclient', 50000),
+                'headers': [],
+                'query_string': b'',
+            }
+            for route in saas_server.app.router.routes:
+                match, _ = route.matches(scope)
+                if match == Match.FULL:
+                    return getattr(route, 'name', None)
+            return None
+
+        for path in (
+            '/api/admin/organizations',
+            '/api/admin/directory/users',
+            '/api/admin/users',
+            '/api/admin/super-admins',
+        ):
+            print(f'RESULT {path}={matched_route(path)}')
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    matches = {
+        line.removeprefix('RESULT ').split('=', 1)[0]: line.split('=', 1)[1]
+        for line in result.stdout.splitlines()
+        if line.startswith('RESULT ')
+    }
+
+    assert matches['/api/admin/organizations'] == organizations_route
+    assert matches['/api/admin/directory/users'] == users_route
+    assert matches['/api/admin/super-admins'] == 'list_super_admins'
+    # The instance-wide user list (``super_admins.admin_users_router``) is not
+    # part of the directory and stays mounted either way.
+    assert matches['/api/admin/users'] == 'list_all_users'

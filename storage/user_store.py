@@ -9,11 +9,13 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from server.auth.constants import ENABLE_SUPER_ADMIN
 from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -31,6 +33,7 @@ from storage.encrypt_utils import (
     decrypt_legacy_value,
     encrypt_legacy_value,
 )
+from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
@@ -139,6 +142,13 @@ class UserStore:
                             'user_store:create_user:first_user_designated_superadmin',
                             extra={'user_id': user_id},
                         )
+                        # This Super Admin runs the first-install wizard.
+                        if ENABLE_SUPER_ADMIN:
+                            await session.execute(
+                                insert(InstanceSettings)
+                                .values(id=1, setup_user_id=user_uuid)
+                                .on_conflict_do_nothing(index_elements=['id'])
+                            )
 
             org = await session.get(Org, user_uuid)
             org_created = False
@@ -1183,10 +1193,11 @@ class UserStore:
     async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
         """Revoke the instance-level super-admin role from a user.
 
-        Clears ``user.role_id``. Refuses to remove the **last** remaining
+        Clears ``user.role_id``. Refuses to remove the **last** enabled
         super admin so an installation can never be left with no instance
-        administrator (this also covers self-removal: a super admin may
-        demote themselves as long as another super admin still exists).
+        administrator who can sign in (this also covers self-removal: a super
+        admin may demote themselves as long as another enabled super admin
+        still exists).
 
         Concurrency: the whole set of current super admins is selected
         ``FOR UPDATE`` before the count/clear, so simultaneous revokes
@@ -1219,7 +1230,10 @@ class UserStore:
                     else SuperAdminRevokeResult.NOT_SUPER_ADMIN
                 )
 
-            if len(super_admins) <= 1:
+            if not any(
+                admin.id != target_uuid and not admin.is_disabled
+                for admin in super_admins
+            ):
                 logger.warning(
                     'user_store:revoke_super_admin:refused_last_super_admin',
                     extra={'user_id': user_id},
@@ -1233,6 +1247,132 @@ class UserStore:
                 extra={'user_id': user_id},
             )
             return SuperAdminRevokeResult.REVOKED
+
+    @staticmethod
+    async def is_user_disabled(user_id: str) -> bool:
+        """Whether a Super Admin has disabled the user.
+
+        A user without a row yet, such as on a first sign-in, is not disabled.
+        """
+        async with a_session_maker() as session:
+            disabled = await session.scalar(
+                select(User.is_disabled).filter(User.id == uuid.UUID(user_id))
+            )
+            return bool(disabled)
+
+    @staticmethod
+    async def set_user_disabled(user_id: UUID, disabled: bool) -> bool:
+        """Disable or re-enable a user's sign-in, sessions and API keys.
+
+        Returns ``False``, changing nothing, when disabling the last enabled
+        super admin. The super admins are selected ``FOR UPDATE`` as in
+        :meth:`revoke_super_admin`, so two admins disabling each other
+        serialize and cannot leave the instance without one.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.role_id == admin_role_id).with_for_update()
+            )
+            super_admins = list(result.scalars().all())
+
+            is_super_admin = any(admin.id == user_id for admin in super_admins)
+            another_enabled = any(
+                admin.id != user_id and not admin.is_disabled for admin in super_admins
+            )
+            if disabled and is_super_admin and not another_enabled:
+                logger.warning(
+                    'user_store:set_user_disabled:refused_last_super_admin',
+                    extra={'user_id': str(user_id)},
+                )
+                return False
+
+            await session.execute(
+                sa.update(User).where(User.id == user_id).values(is_disabled=disabled)
+            )
+            await session.commit()
+            logger.info(
+                'user_store:set_user_disabled',
+                extra={'user_id': str(user_id), 'disabled': disabled},
+            )
+            return True
+
+    @staticmethod
+    async def delete_user_and_owned_data(user_id: UUID) -> None:
+        """Delete a user and the rows they own in every organization.
+
+        Backs the Super Admin dashboard's ``DELETE /api/admin/directory/users/{user_id}``.
+        Unlike :meth:`delete_user`, which keeps the user's conversations, this
+        deletes them.
+
+        Runs in one transaction. Their conversations, credentials, personal
+        secrets, quota and budget rows and legacy settings are deleted. Git
+        claims and invitations they made in a team org pass to another owner
+        of that org, so the team keeps them. The personal workspace
+        (``org.id == user.id``) is left without members; delete it with
+        ``OrgStore.delete_org_cascade``. LiteLLM and Keycloak are not
+        touched, and callers are responsible for the last-owner check.
+
+        A table that adds a foreign key to ``user.id`` must be cleared here,
+        or the final ``DELETE`` fails.
+        """
+        params = {'user_id': str(user_id)}
+        async with a_session_maker() as session:
+            for table, column in (
+                ('org_git_claim', 'claimed_by'),
+                ('org_invitation', 'inviter_id'),
+            ):
+                await session.execute(
+                    text(f"""
+                        UPDATE {table}
+                        SET {column} = other_owner.user_id
+                        FROM (
+                            SELECT DISTINCT ON (om.org_id) om.org_id, om.user_id
+                            FROM org_member om
+                            JOIN role r ON r.id = om.role_id
+                            WHERE r.name = 'owner' AND om.user_id != :user_id
+                            ORDER BY om.org_id, om.user_id
+                        ) AS other_owner
+                        WHERE {table}.org_id = other_owner.org_id
+                        AND {table}.{column} = :user_id
+                    """),
+                    params,
+                )
+            for statement in (
+                """
+                DELETE FROM conversation_metadata
+                WHERE conversation_id IN (
+                    SELECT conversation_id FROM conversation_metadata_saas
+                    WHERE user_id = :user_id
+                )
+                """,
+                'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
+                'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
+                'DELETE FROM quota_increase_request WHERE user_id = :user_id',
+                'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
+                'DELETE FROM api_keys WHERE user_id = :user_id',
+                'DELETE FROM auth_tokens WHERE keycloak_user_id = :user_id',
+                'DELETE FROM offline_tokens WHERE user_id = :user_id',
+                'DELETE FROM device_codes WHERE keycloak_user_id = :user_id',
+                'DELETE FROM custom_secrets WHERE keycloak_user_id = :user_id AND is_org_shared = false',
+                # A leftover legacy settings row re-creates the user on lookup.
+                'DELETE FROM user_settings WHERE keycloak_user_id = :user_id',
+                'UPDATE instance_settings SET setup_user_id = NULL WHERE setup_user_id = :user_id',
+                'UPDATE org_invitation SET accepted_by_user_id = NULL WHERE accepted_by_user_id = :user_id',
+                # Claims and invitations left in orgs with no other owner.
+                'DELETE FROM org_git_claim WHERE claimed_by = :user_id',
+                'DELETE FROM org_invitation WHERE inviter_id = :user_id',
+                'DELETE FROM org_member WHERE user_id = :user_id',
+                'DELETE FROM "user" WHERE id = :user_id',
+            ):
+                await session.execute(text(statement), params)
+            await session.commit()
+        logger.info(
+            'user_store:delete_user_and_owned_data:deleted',
+            extra={'user_id': str(user_id)},
+        )
 
     @staticmethod
     async def delete_user(user_id: str) -> UserDeleteResult:
@@ -1249,7 +1389,7 @@ class UserStore:
         one at a time.
 
         Refuses (``LAST_SUPER_ADMIN``) if the target is the only remaining
-        super admin, mirroring ``revoke_super_admin``'s "never lock out
+        enabled super admin, mirroring ``revoke_super_admin``'s "never lock out
         instance administration" guard -- deleting that row would remove
         the super-admin role just as surely as revoking it would.
 
@@ -1273,7 +1413,12 @@ class UserStore:
             if user.role_id == admin_role_id:
                 other_super_admin_exists = await session.scalar(
                     select(User.id)
-                    .filter(User.role_id == admin_role_id, User.id != target_uuid)
+                    .filter(
+                        User.role_id == admin_role_id,
+                        User.id != target_uuid,
+                        # A disabled super admin cannot sign in to administer.
+                        User.is_disabled.is_(False),
+                    )
                     .limit(1)
                 )
                 if other_super_admin_exists is None:
