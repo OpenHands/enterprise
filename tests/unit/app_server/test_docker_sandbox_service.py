@@ -36,6 +36,7 @@ from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     _connect_to_docker,
     get_docker_client,
 )
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -53,7 +54,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN
+from openhands.app_server.user.user_models import LOCAL_USER_ID
+from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
 
 OWNER_ID = 'user123'
 CREATED_AT = datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc)
@@ -1034,6 +1038,24 @@ class TestDockerSandboxService:
         )
         assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
 
+    @pytest.mark.parametrize(
+        ('idle_seconds', 'expected'),
+        [(600, '600'), (0, None)],
+    )
+    async def test_start_sandbox_caps_terminal_commands_below_the_idle_pause(
+        self, service, idle_seconds, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        service.lifecycle = SandboxLifecycleSettings(idle_seconds=idle_seconds)
+        service.docker_client.containers.run.return_value = MagicMock(
+            status='running', attrs={'Config': {'Env': []}, 'NetworkSettings': {}}
+        )
+
+        await service.start_sandbox()
+
+        env_vars = service.docker_client.containers.run.call_args[1]['environment']
+        assert env_vars.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
+
     async def test_resume_sandbox_from_paused(self, service, store):
         """Test resuming a paused sandbox."""
         # Setup
@@ -1054,7 +1076,7 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_called_once()
         mock_container.start.assert_not_called()
         # Verify cleanup was called with the correct limit
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
 
     async def test_resume_sandbox_from_exited(self, service, store):
         """Test resuming an exited sandbox."""
@@ -1076,7 +1098,7 @@ class TestDockerSandboxService:
         mock_container.start.assert_called_once()
         mock_container.unpause.assert_not_called()
         # Verify cleanup was called with the correct limit
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
 
     async def test_resume_sandbox_unmanaged_container(self, service):
         """Test resuming a container that this service has no record of."""
@@ -1096,7 +1118,7 @@ class TestDockerSandboxService:
         assert result is False
         mock_container.unpause.assert_not_called()
         # Verify cleanup was still called
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
 
     async def test_resume_sandbox_not_found(self, service):
         """Test resuming non-existent sandbox."""
@@ -1114,7 +1136,7 @@ class TestDockerSandboxService:
         # Verify
         assert result is False
         # Verify cleanup was still called
-        mock_cleanup.assert_called_once_with(2)
+        mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
 
     async def test_pause_sandbox_stops_the_container(self, service, store):
         """Stopping frees the sandbox's memory, where freezing it would not."""
@@ -1567,6 +1589,28 @@ class TestDockerSandboxServiceOwnership:
         pause.assert_not_called()
         admin_service.docker_client.containers.run.assert_not_called()
         assert (await db_session.execute(select(StoredSandbox))).first() is None
+
+    async def test_oss_default_auth_starts_and_lists_its_sandbox(
+        self, service, mock_running_container
+    ):
+        """OSS mode's single user owns its sandboxes, so it can start and list them."""
+        service.user_context = AuthUserContext(user_auth=DefaultUserAuth())
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            started = await service.start_sandbox()
+        mock_running_container.name = started.id
+        service.docker_client.containers.list.return_value = [mock_running_container]
+        page = await service.search_sandboxes()
+
+        assert started.created_by_user_id == LOCAL_USER_ID
+        assert [item.id for item in page.items] == [started.id]
+        assert page.items[0].created_by_user_id == LOCAL_USER_ID
+        # Secret lookup and webhook callbacks rebuild the owner's auth from this id.
+        assert isinstance(
+            await DefaultUserAuth.get_for_user(started.created_by_user_id),
+            DefaultUserAuth,
+        )
 
     @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
     @patch('os.urandom')

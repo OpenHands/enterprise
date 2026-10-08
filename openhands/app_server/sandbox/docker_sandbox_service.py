@@ -9,7 +9,6 @@ from typing import AsyncGenerator, ClassVar
 
 import base62
 import docker
-import httpx
 from docker.errors import APIError, NotFound
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +18,7 @@ from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -40,7 +40,6 @@ from openhands.app_server.sandbox.sandbox_service import (
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
@@ -124,7 +123,6 @@ class DockerSandboxService(ManagedSandboxService):
     mounts: list[VolumeMount]
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
-    httpx_client: httpx.AsyncClient
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
@@ -480,6 +478,7 @@ class DockerSandboxService(ManagedSandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+        env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
@@ -680,8 +679,10 @@ class DockerSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class DockerSandboxServiceInjector(SandboxServiceInjector):
+class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     container_url_pattern: str = Field(
         default='http://localhost:{port}',
@@ -822,4 +823,5 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 startup_grace_seconds=self.startup_grace_seconds,
                 use_host_network=self.use_host_network,
                 kvm_enabled=self.kvm_enabled,
+                lifecycle=self.lifecycle,
             )

@@ -3,6 +3,9 @@
 from procrastinate import App, PsycopgConnector
 from pydantic import BaseModel, Field
 
+from openhands.app_server.sandbox.lifecycle.tasks import lifecycle
+from openhands.app_server.worker.housekeeping import housekeeping
+
 
 class WorkerConfig(BaseModel):
     """Worker settings, from ``OH_WORKER_*`` environment variables."""
@@ -20,3 +23,9 @@ class WorkerConfig(BaseModel):
 # Every task has an explicit name, so that moving its code does not strand jobs
 # already in the queue.
 app = App(connector=PsycopgConnector())
+app.add_tasks_from(housekeeping, namespace='worker')
+app.add_tasks_from(lifecycle, namespace='sandbox_lifecycle')
+
+# Only the queues this app's tasks use, so the worker never takes a job it has
+# no task for and fails it with TaskNotFound.
+QUEUES = ['default']

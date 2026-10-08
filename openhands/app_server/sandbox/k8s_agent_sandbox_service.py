@@ -33,6 +33,7 @@ from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
+    ManagedSandboxServiceInjector,
     ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
@@ -48,7 +49,6 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -301,7 +301,6 @@ class K8sAgentSandboxService(ManagedSandboxService):
     backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
 
     sandbox_spec_service: SandboxSpecService
-    httpx_client: httpx.AsyncClient
     k8s: AgentSandboxClient
     router_url: str
     claim_timeout_seconds: int
@@ -681,6 +680,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
                 **get_agent_server_env(),
             },
         }
+        body['env'].update(self._lifecycle_env())
 
         cors_origins = []
         if self.web_url:
@@ -750,10 +750,14 @@ class K8sAgentSandboxService(ManagedSandboxService):
         the router path and the stored key are the same after a resume.
         """
         claim = await self.k8s.get_claim(stored_sandbox.id)
-        if claim is None or _claim_status(claim) == SandboxStatus.MISSING:
+        status = _claim_status(claim)
+        if claim is None or status == SandboxStatus.MISSING:
             return ProviderOutcome.FAILED
         sandbox_name = _sandbox_name(claim)
         if sandbox_name is None:
+            if status == SandboxStatus.ERROR:
+                # The claim failed before it got a pod.
+                return ProviderOutcome.SKIPPED
             raise SandboxError(
                 f'Sandbox {stored_sandbox.id} has no pod yet, so there is nothing '
                 'to pause'
@@ -775,8 +779,10 @@ class K8sAgentSandboxService(ManagedSandboxService):
             ) from exc
 
 
-class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
+class K8sAgentSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for k8s agent-sandbox sandbox services."""
+
+    backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
 
     namespace: str = Field(
         default_factory=lambda: os.getenv('AGENT_SANDBOX_NAMESPACE', 'default'),
@@ -862,6 +868,7 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
                     web_url=config.web_url,
                     webhook_base_url=self.webhook_base_url,
                     permitted_cors_origins=config.permitted_cors_origins,
+                    lifecycle=self.lifecycle,
                 )
         finally:
             await k8s.close()

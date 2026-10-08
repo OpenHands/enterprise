@@ -1,6 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { replace } from "react-router";
 
+// Import after mocks are set up
+import {
+  createPermissionGuard,
+  getIsSuperAdmin,
+} from "#/utils/org/permission-guard";
+import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+import { adminService } from "#/api/admin-service/admin-service.api";
+
 // Mock dependencies before importing the module under test
 vi.mock("react-router", () => ({
   replace: vi.fn((path: string) => ({ type: "replace", path })),
@@ -42,9 +50,11 @@ vi.mock("#/query-client-config", () => ({
   },
 }));
 
-// Import after mocks are set up
-import { createPermissionGuard } from "#/utils/org/permission-guard";
-import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn(),
+  },
+}));
 
 // Helper to create a mock request
 const createMockRequest = (pathname: string = "/settings/billing") => ({
@@ -186,6 +196,60 @@ describe("createPermissionGuard", () => {
       // Assert: should NOT redirect to avoid infinite loop
       expect(replace).not.toHaveBeenCalled();
       expect(result).toEqual({});
+    });
+  });
+
+  describe("extraBypassCheck", () => {
+    it("should allow access when extraBypassCheck resolves true, without consulting org permissions", async () => {
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      const guard = createPermissionGuard("view_billing", undefined, () =>
+        Promise.resolve(true),
+      );
+      const result = await guard(createMockRequest("/settings/billing"));
+
+      expect(replace).not.toHaveBeenCalled();
+      expect(getActiveOrganizationUser).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+
+    it("should fall back to the org permission check when extraBypassCheck resolves false", async () => {
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      const guard = createPermissionGuard("view_billing", undefined, () =>
+        Promise.resolve(false),
+      );
+      await guard(createMockRequest("/settings/billing"));
+
+      expect(replace).toHaveBeenCalledWith("/settings/user");
+    });
+
+    it("getIsSuperAdmin resolves true/false from adminService and false on error", async () => {
+      const { queryClient } = await import("#/query-client-config");
+      const delegateToQueryFn = (opts: { queryFn?: () => unknown }) =>
+        Promise.resolve(opts.queryFn?.());
+      const fetchQueryMock = vi.mocked(queryClient.fetchQuery);
+
+      fetchQueryMock.mockImplementationOnce(
+        delegateToQueryFn as typeof queryClient.fetchQuery,
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValueOnce(true);
+      expect(await getIsSuperAdmin()).toBe(true);
+
+      fetchQueryMock.mockImplementationOnce(
+        delegateToQueryFn as typeof queryClient.fetchQuery,
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValueOnce(
+        false,
+      );
+      expect(await getIsSuperAdmin()).toBe(false);
+
+      // A rejected fetchQuery (e.g. the underlying request failing) must not
+      // throw into the clientLoader -- it should just deny the bypass.
+      vi.mocked(queryClient.fetchQuery).mockRejectedValueOnce(
+        new Error("network error"),
+      );
+      expect(await getIsSuperAdmin()).toBe(false);
     });
   });
 

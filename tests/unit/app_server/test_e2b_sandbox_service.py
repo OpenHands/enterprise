@@ -40,6 +40,7 @@ from openhands.app_server.sandbox.e2b_sandbox_service import (
     E2BSandboxService,
 )
 from openhands.app_server.sandbox.e2b_sandbox_spec_service import E2BSandboxSpecInfo
+from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -222,6 +223,7 @@ def _service(
     init_api_key: str | None = INIT_API_KEY,
     init_timeout_seconds: int = 5,
     resume_retries: int = 3,
+    lifecycle: SandboxLifecycleSettings | None = None,
 ) -> E2BSandboxService:
     spec = E2BSandboxSpecInfo(
         id=TEMPLATE,
@@ -245,6 +247,7 @@ def _service(
         api_url='https://api.e2b.example.com',
         web_url=web_url,
         permitted_cors_origins=permitted_cors_origins or [],
+        lifecycle=lifecycle or SandboxLifecycleSettings(),
     )
 
 
@@ -431,6 +434,26 @@ class TestInitHandshake:
         assert env[WORKER_2] == str(WORKER_2_PORT)
         assert env['LLM_API_KEY'] == 'sk-secret'
         assert env['LLM_TIMEOUT'] == '3600'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('idle_seconds', 'expected'),
+        [(1200, '1200'), (0, None)],
+    )
+    async def test_env_caps_terminal_commands_below_the_idle_pause(
+        self, sdk, db_session, idle_seconds, expected
+    ):
+        """One long terminal command must not look like an idle sandbox."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session,
+            httpx_client=agent_server,
+            lifecycle=SandboxLifecycleSettings(idle_seconds=idle_seconds),
+        ).start_sandbox()
+
+        env = agent_server.init_post_bodies[0]['env']
+        assert env.get('OH_RUNTIME_IDLE_TIMEOUT_SECONDS') == expected
 
     @pytest.mark.asyncio
     async def test_cors_origins_include_permitted_origins(self, sdk, db_session):
@@ -1040,6 +1063,52 @@ class TestLifecycle:
     async def test_resume_does_not_retry_a_vanished_sandbox(self, sdk, db_session):
         sdk.get_info.return_value = _e2b_info(state=SandboxState.PAUSED)
         sdk.connect.side_effect = SandboxNotFoundException('Paused sandbox not found')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
+
+        assert sdk.connect.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_resume_survives_a_transient_lookup_error(self, sdk, db_session):
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        sdk.connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resume_retries_connect_after_a_transient_lookup_error(
+        self, sdk, db_session
+    ):
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+        sdk.connect.side_effect = [SandboxException('503: Service Unavailable'), None]
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        assert sdk.connect.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_resume_after_a_failed_lookup_keeps_a_running_rows_times(
+        self, sdk, db_session
+    ):
+        stored_sandbox = await _service(db_session)._get_stored_sandbox(SANDBOX_ID)
+        assert stored_sandbox is not None
+        await db_session.refresh(stored_sandbox)
+        state_changed_at = stored_sandbox.state_changed_at
+        last_active_at = stored_sandbox.last_active_at
+        sdk.get_info.side_effect = SandboxException('503: Service Unavailable')
+
+        assert await _service(db_session).resume_sandbox(SANDBOX_ID) is True
+
+        assert stored_sandbox.state_changed_at == state_changed_at
+        assert stored_sandbox.last_active_at == last_active_at
+
+    @pytest.mark.asyncio
+    async def test_resume_of_a_sandbox_e2b_does_not_know_returns_false(
+        self, sdk, db_session
+    ):
+        sdk.get_info.side_effect = SandboxNotFoundException('gone')
+        sdk.connect.side_effect = SandboxNotFoundException('gone')
 
         assert await _service(db_session).resume_sandbox(SANDBOX_ID) is False
 

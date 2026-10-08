@@ -587,7 +587,13 @@ class SaasUserAuth(UserAuth):
                 self.refreshed = True
             return SecretStr(token)
 
-        # No IDP token row for this user — the v2 cookie is stale.
+        # No IDP token row for this user. In dev IDP mode (no real IDP
+        # configured), there are no IDP tokens to resolve — the session is
+        # authenticated by the cookie JWT alone, so return None instead of
+        # raising ExpiredError. For real IDP sessions, a missing token row
+        # means the cookie is stale and the caller should clear it.
+        if not await OAuthProviderStore()._has_real_idp():
+            return None
         raise ExpiredError()
 
     def _v2_idp_token_needs_refresh(self) -> bool:

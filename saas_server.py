@@ -51,6 +51,12 @@ from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
+from server.routes.idp import (  # noqa: E402
+    idp_invite_router,
+    idp_password_router,
+    idp_router,
+    idp_status_router,
+)
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
@@ -71,7 +77,10 @@ from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
-from server.routes.super_admins import super_admin_router  # noqa: E402
+from server.routes.super_admins import (  # noqa: E402
+    admin_users_router,
+    super_admin_router,
+)
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
     user_provisioning_router,
@@ -116,6 +125,12 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+base_app.include_router(idp_router)  # Integrated password IDP (self-hosted)
+base_app.include_router(idp_status_router)  # Integrated IDP status endpoint
+base_app.include_router(
+    idp_password_router
+)  # Authenticated self-service set/change password
+base_app.include_router(idp_invite_router)  # Super-admin-issued, expiring sign-up links
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
@@ -187,6 +202,9 @@ base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+base_app.include_router(
+    admin_users_router
+)  # Add routes for the instance-wide user directory (super-admin-only)
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
