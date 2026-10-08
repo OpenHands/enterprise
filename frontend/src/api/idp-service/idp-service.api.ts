@@ -1,8 +1,10 @@
 import { openHands } from "../open-hands-axios";
 import {
+  CreateSignupLinkParams,
   HasPasswordResponse,
   SetPasswordParams,
   SetPasswordResponse,
+  SignupLinkResponse,
 } from "./idp.types";
 
 /**
@@ -33,6 +35,24 @@ export const idpService = {
         new_password: newPassword,
         confirm_password: confirmPassword,
       },
+      { withCredentials: true },
+    );
+    return data;
+  },
+
+  /**
+   * Mint a super-admin-only sign-up link (``POST /api/idp/signup-links``).
+   * The caller shares the returned URL with the invitee out of band; no
+   * password ever passes through this request.
+   */
+  createSignupLink: async ({
+    email,
+    role,
+    orgId,
+  }: CreateSignupLinkParams): Promise<SignupLinkResponse> => {
+    const { data } = await openHands.post<SignupLinkResponse>(
+      "/api/idp/signup-links",
+      { email, role, org_id: orgId },
       { withCredentials: true },
     );
     return data;
