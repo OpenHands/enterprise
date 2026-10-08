@@ -1,6 +1,7 @@
 """Store for ``oauth_providers`` — CRUD + IDP/git provider lookups.
 
-The provider table is seeded by migration 168 from environment variables, but
+The provider table is seeded by migration 168 (real IDP + git providers) and
+migration 179 (integrated/password IDP) from environment variables, but
 runtime reads and (future) config mutations go through this store.
 """
 
@@ -52,17 +53,13 @@ class OAuthProviderStore:
             )
             return result.scalar_one_or_none() is not None
 
-    async def get_idp_providers(self) -> list:
-        """Return all IDP providers, including the dev IDP sentinel if active.
+    async def get_idp_providers(self) -> list[OAuthProvider]:
+        """Return all IDP providers, including the integrated/password IDP.
 
-        When no real IDP is configured, the dev IDP sentinel (``IdpProvider``)
-        is returned in its place so the OAuth v2 flow treats it as a regular
-        IDP. Unlike ``get_first_idp``, a configured real IDP is never
-        superseded by the dev IDP here: this list backs IDP-token-refresh
-        iteration for already-authenticated sessions (see
-        ``_v2_get_idp_access_token``), not the ``/oauth/idp-login`` entry
-        point, so an existing real-IDP session must keep seeing its real
-        provider even when ``ENABLE_INTEGRATED_IDP`` is also on.
+        The integrated IDP (``server.routes.idp``) is a real row like any
+        other (``provider_category=INTEGRATED_IDP_CATEGORY``, seeded by
+        migration 179 from ``ENABLE_INTEGRATED_IDP``), so no special-casing
+        is needed here.
         """
         async with a_session_maker() as session:
             result = await session.execute(
@@ -70,36 +67,22 @@ class OAuthProviderStore:
                 .where(OAuthProvider.is_idp.is_(True))
                 .order_by(OAuthProvider.id)
             )
-            providers = list(result.scalars().all())
-        if not providers:
-            from server.routes.idp import get_idp_if_available
+            return list(result.scalars().all())
 
-            idp_provider = await get_idp_if_available()
-            if idp_provider is not None:
-                return [idp_provider]
-        return providers
-
-    async def get_first_idp(self):
+    async def get_first_idp(self) -> OAuthProvider | None:
         """Return the IDP that ``/oauth/idp-login`` should use.
 
-        The dev IDP sentinel (``IdpProvider``) takes priority whenever
-        ``ENABLE_INTEGRATED_IDP`` is on: the integrated email+password login
-        is used instead of any configured real IDP, not merely as a fallback
-        for when none is configured. Only when the flag is off is a
-        configured real IDP used — exclusively; the dev IDP is never
-        returned in that case. Returns ``None`` when neither is available.
+        Priority is whichever ``is_idp`` row was created most recently
+        (``created_at`` descending, ``id`` descending as a tiebreaker for
+        same-timestamp inserts) -- there is no special-casing of the
+        integrated/password IDP vs. a configured real IDP: whichever was
+        configured last wins. Returns ``None`` when no IDP is configured.
         """
-        from server.routes.idp import get_idp_if_available
-
-        idp_provider = await get_idp_if_available()
-        if idp_provider is not None:
-            return idp_provider
-
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
                 .where(OAuthProvider.is_idp.is_(True))
-                .order_by(OAuthProvider.id)
+                .order_by(OAuthProvider.created_at.desc(), OAuthProvider.id.desc())
                 .limit(1)
             )
             return result.scalars().one_or_none()
@@ -209,7 +192,7 @@ class _ScopedProviderStore:
         result = await self._session.execute(
             select(OAuthProvider)
             .where(OAuthProvider.is_idp.is_(True))
-            .order_by(OAuthProvider.id)
+            .order_by(OAuthProvider.created_at.desc(), OAuthProvider.id.desc())
             .limit(1)
         )
         return result.scalars().one_or_none()

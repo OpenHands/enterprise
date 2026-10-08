@@ -35,6 +35,13 @@ from storage.encrypt_utils import EncryptedJSON
 # IDP actually rejects it.
 DEFAULT_PERMITTED_DRIFT_SECONDS = 60
 
+# ``provider_category`` for the integrated/password IDP (``server.routes.idp``)
+# -- a real row seeded by migration 179 from ``ENABLE_INTEGRATED_IDP`` rather
+# than an in-memory sentinel, so it has no external ``token_url`` and
+# participates in ``OAuthProviderStore`` like any other IDP row. Not a
+# ``ProviderType`` value (it is login-only, never a git provider).
+INTEGRATED_IDP_CATEGORY = 'integrated_idp'
+
 
 class OAuthProvider(Base):
     """Per-provider OAuth/OIDC configuration.
