@@ -414,6 +414,55 @@ describe("MainApp", () => {
       );
     });
 
+    describe("when enable_oauth_v2_login is on", () => {
+      beforeEach(() => {
+        // /oauth/idp-login is a backend-only endpoint, so the redirect is a
+        // full page navigation (window.location.href) rather than
+        // client-side routing; jsdom doesn't implement real navigation, so
+        // stub location with a plain mutable object to observe the write.
+        vi.stubGlobal("location", { href: "" });
+
+        // @ts-expect-error - partial mock for testing
+        vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+          app_mode: "saas",
+          posthog_client_key: "test-posthog-key",
+          providers_configured: ["github"],
+          auth_url: "https://auth.example.com",
+          feature_flags: {
+            enable_billing: false,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: true,
+            enable_oauth_v2_login: true,
+          },
+        });
+      });
+
+      it("should hard-redirect to /oauth/idp-login instead of /login", async () => {
+        renderWithLoginStub(RouterStubWithLogin, ["/"]);
+
+        await waitFor(() => {
+          expect(window.location.href).toContain("/oauth/idp-login");
+        });
+
+        expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
+      });
+
+      it("should forward the current path as redirect_url", async () => {
+        renderWithLoginStub(RouterStubWithLogin, ["/settings"]);
+
+        await waitFor(() => {
+          expect(window.location.href).toContain(
+            `/oauth/idp-login?redirect_url=${encodeURIComponent("/settings")}`,
+          );
+        });
+      });
+    });
   });
 
   describe("Re-authentication with stored login method", () => {

@@ -47,6 +47,22 @@ async def test_get_openhands_user_id_success(mock_request, mock_user_auth):
 
 
 @pytest.mark.asyncio
+async def test_get_admin_user_id_all_hands_domain_success(mock_request, mock_user_auth):
+    """
+    GIVEN: Valid user ID and @all-hands.dev email
+    WHEN: get_admin_user_id is called
+    THEN: User ID is returned successfully
+    """
+    user_id = 'test-user-123'
+    mock_user_auth.get_user_email.return_value = 'test@all-hands.dev'
+
+    with patch('server.email_validation.get_user_auth', return_value=mock_user_auth):
+        result = await get_admin_user_id(mock_request, user_id)
+
+    assert result == user_id
+
+
+@pytest.mark.asyncio
 async def test_get_openhands_user_id_no_user_id(mock_request):
     """
     GIVEN: No user ID provided (None)
@@ -101,7 +117,7 @@ async def test_get_openhands_user_id_invalid_domain(mock_request, mock_user_auth
             await get_admin_user_id(mock_request, user_id)
 
         assert exc_info.value.status_code == 403
-        assert 'openhands.dev' in exc_info.value.detail.lower()
+        assert exc_info.value.detail == 'Access restricted to admin users'
 
 
 @pytest.mark.asyncio
@@ -312,7 +328,7 @@ async def test_get_org_creator_user_id_feature_disabled_uses_admin_check(
             await get_org_creator_user_id(mock_request, user_id)
 
     assert exc_info.value.status_code == 403
-    assert 'openhands.dev' in exc_info.value.detail.lower()
+    assert exc_info.value.detail == 'Access restricted to admin users'
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,16 @@ RATE_LIMIT_ORG_INVITATION_USER_SECONDS = int(
     os.environ.get('RATE_LIMIT_ORG_INVITATION_USER_SECONDS', '6')
 )
 
+# Dev IDP self-service password set/change (server.routes.idp). Short windows
+# since this is an interactive form submission, not a bulk/notification
+# action — mainly here to slow down guessing of the current password.
+RATE_LIMIT_SET_PASSWORD_USER_SECONDS = int(
+    os.environ.get('RATE_LIMIT_SET_PASSWORD_USER_SECONDS', '5')
+)
+RATE_LIMIT_SET_PASSWORD_IP_SECONDS = int(
+    os.environ.get('RATE_LIMIT_SET_PASSWORD_IP_SECONDS', '10')
+)
+
 
 async def check_rate_limit_by_user_id(
     request: Request,

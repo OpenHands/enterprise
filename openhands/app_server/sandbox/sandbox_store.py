@@ -174,6 +174,24 @@ async def get_stored_sandbox(
     return result.scalar_one_or_none()
 
 
+async def lock_stored_sandbox_if_free(
+    db_session: AsyncSession, backend: str, sandbox_id: str
+) -> StoredSandbox | None:
+    """Lock a sandbox's row for the lifecycle worker, without waiting.
+
+    Returns None when the row is gone, or when a transition holds its lock.
+    Either way the worker leaves the sandbox alone until its next pass.
+    """
+    stmt = (
+        select(StoredSandbox)
+        .where(StoredSandbox.backend == backend, StoredSandbox.id == sandbox_id)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    result = await db_session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def get_stored_sandbox_by_session_api_key(
     db_session: AsyncSession,
     user_context: UserContext,

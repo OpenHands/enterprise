@@ -86,6 +86,10 @@ class User(Base):
     is_disabled: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default='false'
     )
+    # Argon2id hash of the user's dev-IDP password (``server.auth.password_hashing``).
+    # NULL for every user who authenticates via a real OAuth/OIDC IDP — only
+    # accounts created through the dev IDP sign-up flow set this column.
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

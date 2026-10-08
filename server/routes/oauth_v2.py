@@ -399,7 +399,34 @@ async def oauth_v2_login(
     Encodes an encrypted state blob (redirect URL, mode, nonce) and redirects
     the browser to the provider's authorization URL.
     """
+    # Integrated IDP is handled by its own routes (registered before this router).
+    # The sentinel provider id (-1) never matches a real DB row, so intercept
+    # it here and redirect to the dedicated email+password login page.
+    from server.routes.idp import (
+        IDP_LOGIN_PATH,
+        IDP_PROVIDER_ID,
+        is_idp_available,
+    )
+
+    if provider_id == IDP_PROVIDER_ID:
+        if not await is_idp_available():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Password login is not available',
+            )
+        web_url = get_web_url(request)
+        target = f'{web_url}/oauth/{IDP_LOGIN_PATH}'
+        params: dict[str, str] = {}
+        if redirect_url:
+            params['redirect_url'] = redirect_url
+        if mode and mode != 'login':
+            params['mode'] = mode
+        if params:
+            target = f'{target}?{urlencode(params)}'
+        return RedirectResponse(target, status_code=302)
+
     provider = await _get_provider(provider_id)
+
     auth_url = provider.authorization_url
     if not auth_url:
         raise HTTPException(
@@ -444,6 +471,15 @@ async def oauth_v2_callback(
     Exchanges the code, persists tokens, and either links the provider to the
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
+    # Integrated IDP callbacks are handled by dedicated routes.
+    from server.routes.idp import IDP_PROVIDER_ID
+
+    if provider_id == IDP_PROVIDER_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Password login callback must use POST with email field',
+        )
+
     if error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -464,6 +500,7 @@ async def oauth_v2_callback(
         ) from exc
 
     provider = await _get_provider(provider_id)
+
     web_url = get_web_url(request)
     redirect_uri = f'{web_url}/oauth/{provider_id}/callback'
 

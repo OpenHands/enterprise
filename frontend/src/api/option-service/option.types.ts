@@ -55,6 +55,16 @@ export interface WebClientFeatureFlags {
    *  for instance Super Admins. Defaults to false until ENABLE_SUPER_ADMIN
    *  is set. */
   enable_super_admin?: boolean;
+  /** Whether the integrated, locally-hosted IDP (email+password login) is
+   *  available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
+   *  takes priority over any configured real IDP rather than only filling
+   *  in for a missing one. Used to show an email+password login form
+   *  instead of OAuth provider buttons. */
+  enable_integrated_idp?: boolean;
+  /** When true, unauthenticated users are sent to the new OAuth v2 entry
+   *  point (``/oauth/idp-login``, a backend redirect) instead of the legacy
+   *  ``/login`` page. Mirrors the ENABLE_OAUTH_V2_LOGIN env var. */
+  enable_oauth_v2_login?: boolean;
 }
 
 export interface ACPModelOption {

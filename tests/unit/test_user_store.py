@@ -2437,7 +2437,11 @@ async def _seed_org(async_session_maker) -> uuid.UUID:
 
 
 async def _seed_user(
-    async_session_maker, org_id: uuid.UUID, role_id: int | None, email: str
+    async_session_maker,
+    org_id: uuid.UUID,
+    role_id: int | None,
+    email: str,
+    password_hash: str | None = None,
 ) -> str:
     """Insert a User row with the given super ``role_id`` and return its id."""
     user_id = uuid.uuid4()
@@ -2448,6 +2452,7 @@ async def _seed_user(
                 current_org_id=org_id,
                 role_id=role_id,
                 email=email,
+                password_hash=password_hash,
             )
         )
         await session.commit()
@@ -2520,6 +2525,106 @@ async def test_list_super_admins_only_returns_super_admins(async_session_maker):
         admins = await UserStore.list_super_admins()
 
     assert [str(u.id) for u in admins] == [a]
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_false_when_none_exist(async_session_maker):
+    """No user holds the admin role yet — e.g. a fresh, un-bootstrapped
+    installation."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, None, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_true_when_one_exists(async_session_maker):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_none_exist(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, None, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_super_admin_has_no_password(
+    async_session_maker,
+):
+    """A super admin row with ``password_hash=None`` (e.g. backfilled by
+    migration 138, or only ever signed in via a real IDP) does not count —
+    they cannot actually log in with a password yet."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_true_when_super_admin_has_password(
+    async_session_maker,
+):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(
+        async_session_maker,
+        org_id,
+        admin_role_id,
+        'a@example.com',
+        password_hash='hashed-password',
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_only_non_admin_has_password(
+    async_session_maker,
+):
+    """A password set on a non-super-admin user doesn't count."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(
+        async_session_maker, org_id, None, 'a@example.com', password_hash='hashed'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
 
 
 @pytest.mark.asyncio

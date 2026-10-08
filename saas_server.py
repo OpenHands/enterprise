@@ -51,6 +51,12 @@ from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
+from server.routes.idp import (  # noqa: E402
+    idp_invite_router,
+    idp_password_router,
+    idp_router,
+    idp_status_router,
+)
 from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
@@ -117,6 +123,12 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+base_app.include_router(idp_router)  # Integrated password IDP (self-hosted)
+base_app.include_router(idp_status_router)  # Integrated IDP status endpoint
+base_app.include_router(
+    idp_password_router
+)  # Authenticated self-service set/change password
+base_app.include_router(idp_invite_router)  # Super-admin-issued, expiring sign-up links
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
