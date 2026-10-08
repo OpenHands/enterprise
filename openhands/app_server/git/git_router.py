@@ -231,7 +231,8 @@ async def search_branches(
 ) -> BranchPage:
     """Search branches in a repository.
 
-    Returns a paginated list of branches matching the search query.
+    If query is empty, returns a paginated list of all branches.
+    If query is provided, returns one page of matching branches with no next page.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()

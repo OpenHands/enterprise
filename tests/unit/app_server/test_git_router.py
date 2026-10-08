@@ -409,9 +409,7 @@ class TestSearchRepositories:
         """Following next_page_id must show every repository exactly once.
 
         The providers use page-number pagination: page N returns items
-        (N-1)*per_page+1 .. N*per_page. The mock behaves the same way, so a
-        router that asks for a per_page other than limit loses items at page
-        boundaries (100 repos, limit 30 lost repos 31, 62 and 93).
+        (N-1)*per_page+1 .. N*per_page. The mock behaves the same way.
         """
         # Arrange
         all_repos = [
@@ -661,7 +659,7 @@ class TestSearchRepositories:
     async def test_search_with_query_rejects_non_first_page(self, mock_handler_cls):
         """Search with a query returns 400 for a page after the first.
 
-        Without this, the endpoint would return the first page again.
+        search_repositories takes no page number, so it cannot return a later page.
         """
         # Arrange
         mock_handler = MagicMock()
