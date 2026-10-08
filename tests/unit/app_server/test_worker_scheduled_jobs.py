@@ -1,7 +1,9 @@
 """The worker schedules the CronJob jobs only when told to (worker/scheduled_jobs.py)."""
 
+import asyncio
 import logging
 import os
+import signal
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,6 +280,39 @@ async def test_an_invalid_flag_stops_the_worker_before_it_starts(monkeypatch, st
         await worker_main.run()
 
     assert started.calls == {}
+
+
+@pytest.fixture
+def restore_signal_handlers():
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
+
+
+@pytest.mark.usefixtures('app_db_session', 'restore_signal_handlers')
+async def test_a_second_signal_stops_every_running_child(monkeypatch, started):
+    """procrastinate restores this handler after it handles the first signal."""
+    stops: list[str] = []
+
+    async def stop_all_children() -> None:
+        stops.append('stopped')
+
+    async def run_worker_async(**kwargs):
+        # What procrastinate leaves installed once it has handled a first signal.
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(worker_main, 'stop_all_children', stop_all_children)
+    monkeypatch.setattr(started.app, 'run_worker_async', run_worker_async)
+    monkeypatch.delenv(FLAG, raising=False)
+
+    await worker_main.run()
+
+    assert stops == ['stopped']
+    assert [r for r in started.caplog.records if r.getMessage() == 'worker.forced_stop']
 
 
 # --- A real worker on this test's Postgres --------------------------------
