@@ -6,16 +6,23 @@ no real IDP configured yet, with their first administrator account bootstrapped
 directly, instead of standing up an external IDP just to get started.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
-regular IDP provider, but is modeled as an in-memory sentinel
-(``IdpProvider``, id = ``IDP_PROVIDER_ID``) rather than a row in
-``oauth_providers``. Whenever ``ENABLE_INTEGRATED_IDP`` is on:
+regular IDP provider, and (since migration 179) *is* one: a real row in
+``oauth_providers`` (``provider_category=INTEGRATED_IDP_CATEGORY``) seeded
+once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an in-memory
+sentinel re-checked on every request. This removes the need to special-case
+it anywhere: whether it is "available" is simply whether that row exists
+(``_get_integrated_idp_provider``), and every session authenticated through
+it carries the row's real id wherever a provider id is needed, including the
+``openhands_auth`` cookie — the same as a real external IDP. Subsequent
+enable/disable is expected to go through a future ``oauth_providers`` CRUD
+API, not this env var (which is only read by the migration).
 
-* ``OAuthProviderStore.get_first_idp()`` returns the ``IdpProvider``
-  sentinel — in preference to any configured real IDP, not merely as a
-  fallback for when none is configured.
-* ``GET /oauth/idp-login`` redirects to ``/oauth/{IDP_PROVIDER_ID}/login``,
-  which ``oauth_v2`` intercepts and redirects to the fixed
-  ``/oauth/idp/login`` page served by this module.
+* ``OAuthProviderStore.get_first_idp()`` picks whichever ``is_idp`` row was
+  created most recently — no special-casing of the integrated IDP vs. a
+  configured real IDP.
+* ``GET /oauth/idp-login`` redirects to ``/oauth/{id}/login`` for that row,
+  which ``oauth_v2`` intercepts (by ``provider_category``, not by id) and
+  redirects to the fixed ``/oauth/idp/login`` page served by this module.
 * Unlike a real IDP, this one requires a **password**: ``GET
   /oauth/idp/login`` and ``GET /oauth/idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
@@ -67,16 +74,15 @@ grants the same cross-organization ``user.role_id`` the minting caller
 itself holds — see ``server.routes.super_admins``). See the "admin-issued
 sign-up links" section below for the full design.
 
-When ``ENABLE_INTEGRATED_IDP`` is off, the sentinel is never returned (even
-if a real IDP is configured) and every route in this module returns ``404``.
+When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset or the
+deployment is cloud when migration 179 ran), every route in this module
+returns ``404``.
 
 **This IDP is not a substitute for a real identity provider** (no rate
 limiting, no email verification, no self-service "forgot password" flow —
 only the admin-issued link above, no MFA). It must never be enabled on
-cloud (``app.all-hands.dev``) or any deployment where security matters.
-Gated solely by the ``ENABLE_INTEGRATED_IDP`` env var (explicit opt-in) —
-turning it on takes priority over any configured real IDP for
-``/oauth/idp-login``, it does not merely fill in for a missing one.
+cloud (``app.all-hands.dev``) or any deployment where security matters —
+migration 179 refuses to seed its row there even if the env var is set.
 """
 
 from __future__ import annotations
@@ -105,7 +111,6 @@ from server.auth.password_hashing import (
     verify_password,
 )
 from server.constants import (
-    ENABLE_INTEGRATED_IDP,
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
@@ -117,6 +122,8 @@ from server.utils.rate_limit_utils import (
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.default_org_service import DefaultOrgBootstrapService
+from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
+from storage.oauth_provider_store import OAuthProviderStore
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -126,17 +133,12 @@ from storage.user_store import UserStore
 
 idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
-# Sentinel provider ID used by the dev IDP.  Negative so it can never collide
-# with a real DB row (Identity columns start at 1).
-IDP_PROVIDER_ID = -1
-IDP_CATEGORY = 'idp'
-
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
-# the sentinel provider id. ``server.routes.oauth_v2`` redirects here once it
-# intercepts ``provider_id == IDP_PROVIDER_ID``. Named "idp" rather than
-# "dev-idp" because this is an integrated IDP offered to customers who are
-# evaluating the product or have no real IDP of their own, not merely a
-# developer-only tool.
+# the provider's DB id. ``server.routes.oauth_v2`` redirects here once it
+# intercepts a login/callback for the ``INTEGRATED_IDP_CATEGORY`` row. Named
+# "idp" rather than "dev-idp" because this is an integrated IDP offered to
+# customers who are evaluating the product or have no real IDP of their own,
+# not merely a developer-only tool.
 IDP_LOGIN_PATH = 'idp/login'
 IDP_SIGNUP_PATH = 'idp/signup'
 # Super-admin-issued, one-time sign-up link: GET renders a set-password form
@@ -176,29 +178,6 @@ _SIGNUP_LINK_ROLES = _SIGNUP_LINK_ORG_ROLES | {_SIGNUP_LINK_ROLE_SUPERADMIN}
 # must be stable across calls for the same external identity (there is no
 # Keycloak ``sub`` for the dev IDP, so the email itself fills that role).
 _IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
-
-
-@dataclass(frozen=True)
-class IdpProvider:
-    """Sentinel that quacks like ``OAuthProvider`` for the OAuth v2 flow.
-
-    Returned by ``OAuthProviderStore.get_first_idp()`` whenever
-    ``ENABLE_INTEGRATED_IDP`` is on — including when a real IDP is also
-    configured. The OAuth v2 routes check ``provider.id ==
-    IDP_PROVIDER_ID`` to intercept and redirect to the dev IDP
-    email+password form instead of building an external OAuth URL.
-    """
-
-    id: int = IDP_PROVIDER_ID
-    provider_category: str = IDP_CATEGORY
-    display_name: str = 'Password Login'
-    is_idp: bool = True
-    authorization_url: str | None = None
-    token_url: str | None = None
-    userinfo_url: str | None = None
-    scopes: list[str] | None = None
-    client_id: str = 'dev-idp'
-    client_secret: dict[str, str] | None = None
 
 
 def derive_idp_user_id(email: str) -> str:
@@ -294,35 +273,27 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
 
 
+async def _get_integrated_idp_provider() -> OAuthProvider | None:
+    """Return the integrated/password IDP's ``oauth_providers`` row, if any.
+
+    The single source of truth for whether the integrated IDP is available
+    and, when it is, which row backs it: used both to gate every route in
+    this module (``is_idp_available`` / ``_require_idp_available``) and to
+    resolve the id baked into the ``openhands_auth`` cookie at login
+    (``_complete_idp_login``), so the two can never disagree.
+    """
+    return await OAuthProviderStore().get_first_by_category(INTEGRATED_IDP_CATEGORY)
+
+
 async def is_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
-    Governed solely by ``ENABLE_INTEGRATED_IDP`` (explicit opt-in via env
-    var). Whether a real IDP is *also* configured does not affect
-    availability: ``/oauth/idp-login`` prefers the dev IDP over any
-    configured real IDP whenever this flag is on (see
-    ``OAuthProviderStore.get_first_idp``); only when it is off is a
-    configured real IDP used, exclusively.
+    Governed solely by whether migration 179 seeded an ``oauth_providers``
+    row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
+    migration time). Whether a real IDP is *also* configured does not affect
+    availability.
     """
-    return ENABLE_INTEGRATED_IDP
-
-
-async def get_idp_if_available() -> IdpProvider | None:
-    """Return the dev IDP sentinel if available, else ``None``.
-
-    Used by ``OAuthProviderStore.get_first_idp()`` to make the dev IDP take
-    priority over any configured real IDP for ``/oauth/idp-login`` whenever
-    ``ENABLE_INTEGRATED_IDP`` is on, and by ``get_idp_providers()`` to make it
-    appear as a regular IDP when no real one is configured.
-    """
-    if await is_idp_available():
-        return IdpProvider()
-    return None
-
-
-def is_idp_provider_id(provider_id: int) -> bool:
-    """Whether ``provider_id`` refers to the dev IDP sentinel."""
-    return provider_id == IDP_PROVIDER_ID
+    return await _get_integrated_idp_provider() is not None
 
 
 # ── dev IDP login / sign-up forms (served as HTML, no frontend changes) ────
@@ -546,11 +517,10 @@ async def idp_login_form(
 ):
     """Serve the email+password login form.
 
-    Returns ``404`` if this IDP is not available (real IDP configured or
-    cloud deployment). Redirects to the sign-up (bootstrap) page if no super
-    admin can log in with a password yet — there is nothing to log into
-    until one is created (or an existing passwordless super admin claims
-    their account).
+    Returns ``404`` if this IDP is not available (see ``is_idp_available``).
+    Redirects to the sign-up (bootstrap) page if no super admin can log in
+    with a password yet — there is nothing to log into until one is created
+    (or an existing passwordless super admin claims their account).
     """
     await _require_idp_available()
     web_url = get_web_url(request)
@@ -570,14 +540,13 @@ async def idp_signup_form(
 ):
     """Serve the email+password admin-account-creation form.
 
-    Returns ``404`` if this IDP is not available (real IDP configured or
-    cloud deployment). Redirects to the login page once a super admin can
-    already log in with a password — self-service account creation is
-    bootstrap-only; every subsequent account is created by a super admin,
-    not through this form. A super admin *row* existing with no password set
-    yet (e.g. backfilled before ``User.password_hash`` existed) does **not**
-    hide this form — it is still needed to finish that super admin's
-    bootstrap.
+    Returns ``404`` if this IDP is not available (see ``is_idp_available``).
+    Redirects to the login page once a super admin can already log in with a
+    password — self-service account creation is bootstrap-only; every
+    subsequent account is created by a super admin, not through this form.
+    A super admin *row* existing with no password set yet (e.g. backfilled
+    before ``User.password_hash`` existed) does **not** hide this form — it
+    is still needed to finish that super admin's bootstrap.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
@@ -1118,6 +1087,16 @@ async def _complete_idp_login(
     Shared by ``idp_login`` (existing account) and ``idp_signup``
     (brand-new account) so both end up with identical post-auth behavior.
     """
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
+        # Should not happen -- every route reaching here already passed
+        # ``_require_idp_available()`` -- but fail the same way if the row
+        # disappeared between that check and this one.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Password login is not available',
+        )
+
     user_id = str(user.id)
 
     # Auto-accept TOS in dev mode — the dev IDP is for trial/dev only and
@@ -1170,6 +1149,7 @@ async def _complete_idp_login(
         user_id=user_id,
         accepted_tos=has_accepted_tos,
         secure=web_url.startswith('https'),
+        idp_provider_id=provider.id,
     )
 
     logger.info(
@@ -1209,7 +1189,8 @@ idp_status_router = _idp_status_router()
 # authenticated (dev IDP sign-up, a real OAuth/OIDC IDP, or an admin-issued
 # invite link). They live under the same ``/api/idp`` prefix as the status
 # endpoint (JSON APIs, not the HTML form flow under ``/oauth``), and are
-# equally gated by ``ENABLE_INTEGRATED_IDP`` — see ``_require_idp_available``.
+# equally gated by the integrated-IDP row's existence — see
+# ``_require_idp_available``.
 
 
 class SetPasswordRequest(BaseModel):
@@ -1319,12 +1300,15 @@ def _set_idp_cookie(
     user_id: str,
     accepted_tos: bool,
     secure: bool,
+    idp_provider_id: int,
 ) -> None:
     """Set the ``openhands_auth`` JWT cookie for a dev IDP session.
 
     Mirrors ``_set_oauth_v2_cookie`` from ``oauth_v2.py`` but with no IDP
-    token expiry (the dev IDP has no external token to refresh). The cookie
-    carries only ``user_id``, ``accepted_tos``, and ``iat``.
+    token expiry (the integrated IDP has no external token to refresh).
+    ``idp_provider_id`` is still baked in (the integrated IDP's real
+    ``oauth_providers.id``, resolved by the caller) so IDP-token refresh can
+    identify this session the same uniform way as a real external IDP.
     """
     from server.auth.oauth_v2_refresh import COOKIE_MAX_AGE_CAP_SECONDS
 
@@ -1333,6 +1317,7 @@ def _set_idp_cookie(
         user_id,
         access_token_expires_at=None,
         accepted_tos=accepted_tos,
+        idp_provider_id=idp_provider_id,
     )
     signed = sign_oauth_v2_cookie(payload, max_age_seconds)
     response.set_cookie(

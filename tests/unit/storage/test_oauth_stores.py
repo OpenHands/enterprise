@@ -23,7 +23,7 @@ from sqlalchemy import select
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
-from storage.oauth_provider import OAuthProvider
+from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token import OAuthToken
@@ -70,19 +70,23 @@ def make_provider(async_session_maker, jwt_svc):
 
     async def _make(
         *,
-        category: ProviderType = ProviderType.GITHUB,
+        category: ProviderType | str = ProviderType.GITHUB,
         is_idp: bool = False,
         client_secret: str | None = 'secret',
+        token_url: str | None = 'https://example.com/token',
     ) -> OAuthProvider:
+        category_value = (
+            category.value if isinstance(category, ProviderType) else category
+        )
         provider = OAuthProvider(
-            provider_category=category.value,
-            display_name=category.value.title(),
+            provider_category=category_value,
+            display_name=category_value.title(),
             is_idp=is_idp,
-            client_id='cid-' + category.value,
+            client_id='cid-' + category_value,
             client_secret=wrap_token(client_secret) if client_secret else None,
-            authorization_url='https://example.com/auth',
-            token_url='https://example.com/token',
-            userinfo_url='https://example.com/user',
+            authorization_url='https://example.com/auth' if token_url else None,
+            token_url=token_url,
+            userinfo_url='https://example.com/user' if token_url else None,
             scopes=['repo'],
             permitted_drift_seconds=60,
         )
@@ -126,19 +130,20 @@ class TestOAuthProviderStore:
         ]
 
     @pytest.mark.asyncio
-    async def test_get_idp_providers_keeps_real_idp_even_when_idp_enabled(
+    async def test_get_idp_providers_lists_integrated_idp_alongside_real_idp(
         self, patched_session, make_provider
     ):
-        """Unlike ``get_first_idp``, ``get_idp_providers`` must keep listing a
-        configured real IDP even when ``ENABLE_INTEGRATED_IDP`` is on —
-        ``_v2_get_idp_access_token`` relies on it to refresh tokens for
-        sessions already authenticated against that real IDP."""
+        """``get_idp_providers`` lists every ``is_idp`` row, including the
+        integrated/password IDP, which (since migration 179) is a real row
+        like any other — ``_v2_get_idp_access_token`` relies on this to
+        resolve a session's provider by id for sessions authenticated
+        against either kind."""
         real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        integrated = await make_provider(category=INTEGRATED_IDP_CATEGORY, is_idp=True)
 
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
-            idps = await OAuthProviderStore().get_idp_providers()
+        idps = await OAuthProviderStore().get_idp_providers()
 
-        assert [p.id for p in idps] == [real.id]
+        assert {p.id for p in idps} == {real.id, integrated.id}
 
     @pytest.mark.asyncio
     async def test_get_by_category(self, patched_session, make_provider):
@@ -148,14 +153,19 @@ class TestOAuthProviderStore:
         assert rows[0].provider_category == 'github'
 
     @pytest.mark.asyncio
-    async def test_get_first_idp(self, patched_session, make_provider):
-        first = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
-        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+    async def test_get_first_idp_picks_most_recently_created(
+        self, patched_session, make_provider
+    ):
+        """``get_first_idp`` (used by ``/oauth/idp-login``) picks whichever
+        ``is_idp`` row was created most recently — not the oldest, and not
+        special-cased by category."""
         await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        last = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
         got = await OAuthProviderStore().get_first_idp()
         assert got is not None
-        assert got.id == first.id
+        assert got.id == last.id
         assert got.is_idp is True
 
     @pytest.mark.asyncio
@@ -164,31 +174,35 @@ class TestOAuthProviderStore:
         assert await OAuthProviderStore().get_first_idp() is None
 
     @pytest.mark.asyncio
-    async def test_get_first_idp_prefers_idp_when_enabled(
+    async def test_get_first_idp_integrated_idp_wins_when_created_after_real_idp(
         self, patched_session, make_provider
     ):
-        """``ENABLE_INTEGRATED_IDP`` makes ``/oauth/idp-login`` (which calls
-        ``get_first_idp``) use the integrated IDP rather than a configured
-        real one — not merely as a fallback for when none is configured."""
-        from server.routes.idp import IdpProvider
-
+        """The integrated/password IDP is a real row like any other: when it
+        was configured (seeded) after a real IDP, it is what
+        ``/oauth/idp-login`` uses — not merely a fallback for when no real
+        IDP is configured."""
         await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        integrated = await make_provider(
+            category=INTEGRATED_IDP_CATEGORY, is_idp=True, token_url=None
+        )
 
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
-            got = await OAuthProviderStore().get_first_idp()
+        got = await OAuthProviderStore().get_first_idp()
 
-        assert isinstance(got, IdpProvider)
+        assert got is not None
+        assert got.id == integrated.id
 
     @pytest.mark.asyncio
-    async def test_get_first_idp_uses_real_idp_when_disabled(
+    async def test_get_first_idp_real_idp_wins_when_created_after_integrated_idp(
         self, patched_session, make_provider
     ):
-        """When ``ENABLE_INTEGRATED_IDP`` is off, a configured real IDP is
-        used exclusively — the dev IDP is never returned."""
+        """The reverse of the above: a real IDP configured after the
+        integrated one takes priority for ``/oauth/idp-login``."""
+        await make_provider(
+            category=INTEGRATED_IDP_CATEGORY, is_idp=True, token_url=None
+        )
         real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
-            got = await OAuthProviderStore().get_first_idp()
+        got = await OAuthProviderStore().get_first_idp()
 
         assert got is not None
         assert got.id == real.id
