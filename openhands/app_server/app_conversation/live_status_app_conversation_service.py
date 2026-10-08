@@ -551,6 +551,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             ):
                 yield updated_task
 
+            # Resolve the provider before the agent-server starts the
+            # conversation, so the save below is not delayed while the
+            # "started" webhook may already be writing the row.
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
+
             _logger.info(
                 'app_conversation_start:building_start_request',
                 extra={
@@ -678,11 +687,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 agent_kind = 'openhands'
 
             conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
-            git_provider = request.git_provider
-            if request.selected_repository and git_provider is None:
-                git_provider = await self._resolve_git_provider(
-                    request.selected_repository
-                )
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
             if git_provider:
@@ -2894,7 +2898,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 segments = repo.split('/')
                 if len(segments) < 2 or not all(segments):
                     raise ValueError(
-                        f"Invalid repository format: '{repo}'. Expected 'owner/repo'."
+                        f"Invalid repository format: '{repo}'. Expected 'owner/repo' "
+                        "or more path segments (e.g. 'org/project/repo')."
                     )
 
                 # Sanitize: check for dangerous characters
