@@ -64,6 +64,7 @@ def test_has_exact_mention():
         is False
     )
     assert has_exact_mention('see @openhands.com', '@openhands') is False
+    assert has_exact_mention('Bump @openhands/agent-canvas', '@openhands') is False
     assert (
         has_exact_mention('@openhands/agent-canvas and @openhands', '@openhands')
         is True

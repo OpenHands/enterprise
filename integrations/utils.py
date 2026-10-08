@@ -170,9 +170,9 @@ def has_exact_mention(text: str, mention: str) -> bool:
 
     pattern = re.escape(mention_lower)
     # Match mention that is not part of a larger word. A '/' or '.' ends the
-    # mention only when no word follows it, so scoped package names
-    # (@openhands/pkg) and domains (@openhands.com) do not match, but a
-    # sentence end (Thanks @openhands.) does.
+    # mention only when no word character or '-' follows it, so scoped
+    # package names (@openhands/pkg) and domains (@openhands.com) do not
+    # match, but a sentence end (Thanks @openhands.) does.
     return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w-])', text_lower))
 
 
