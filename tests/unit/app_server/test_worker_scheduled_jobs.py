@@ -88,6 +88,8 @@ def test_schedule_deadline_and_backoff_can_be_set_per_job():
     [
         ('OH_JOB_RESEND_SYNC__ENABLED', 'yes'),
         ('OH_JOB_RESEND_SYNC__SCHEDULE', 'daily'),
+        ('OH_JOB_RESEND_SYNC__SCHEDULE', 'foo bar baz qux quux'),
+        ('OH_JOB_RESEND_SYNC__SCHEDULE', '61 * * * *'),
         ('OH_JOB_RESEND_SYNC__BACKOFF_LIMIT', '-1'),
         ('OH_JOB_RESEND_SYNC__ACTIVE_DEADLINE_SECONDS', '0'),
         ('OH_JOB_RESEND_SYNC__ACTIVE_DEADLINE_SECONDS', 'soon'),

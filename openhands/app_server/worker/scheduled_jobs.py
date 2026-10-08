@@ -17,6 +17,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
+from croniter import croniter
 from procrastinate import App, Blueprint, JobContext
 from procrastinate.jobs import Status
 
@@ -144,7 +145,7 @@ def configure(
 
 def _settle(job: ScheduledJob, environ: Mapping[str, str]) -> ScheduledJob:
     schedule = environ.get(f'{job.prefix}SCHEDULE', job.schedule).strip()
-    if len(schedule.split()) not in (5, 6):
+    if not croniter.is_valid(schedule):
         raise ScheduledJobsConfigError(
             f'{job.prefix}SCHEDULE={schedule!r} is not a cron expression.'
         )
