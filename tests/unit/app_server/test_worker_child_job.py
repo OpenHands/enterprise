@@ -8,11 +8,17 @@ from pathlib import Path
 
 import pytest
 
+from openhands.app_server.worker import child_job
 from openhands.app_server.worker.child_job import (
     ChildJobDeadlineExceeded,
     ChildJobFailed,
+    ChildJobStopped,
     run_child_job,
+    stop_all_children,
 )
+
+# A broken stop path hangs on a child that never exits; fail it instead.
+pytestmark = pytest.mark.timeout(30)
 
 # Short timings so the tests run in seconds; production uses a Job's backoff.
 FAST = {
@@ -25,6 +31,13 @@ FAST = {
 
 async def always_current() -> bool:
     return True
+
+
+@pytest.fixture(autouse=True)
+def no_forced_stop(monkeypatch):
+    # A forced stop is process-wide; each test starts without one.
+    monkeypatch.setattr(child_job, '_stop_requested', asyncio.Event())
+    monkeypatch.setattr(child_job, '_live', set())
 
 
 def _module(tmp_path: Path, name: str, body: str) -> dict[str, str]:
@@ -73,6 +86,33 @@ HANGS = """
     )
     (state / 'grandchild.pid').write_text(str(grandchild.pid))
     (state / 'child.pid').write_text(str(os.getpid()))
+    time.sleep(600)
+"""
+
+
+# Exits 3 after a short run, so several attempts together outlast the deadline.
+SLOW_FAIL = """
+    import sys, time
+    time.sleep(0.8)
+    sys.exit(3)
+"""
+
+# Its SIGTERM handler waits for a grandchild that exits on its own SIGTERM.
+GRACEFUL = """
+    import os, pathlib, signal, subprocess, sys, time
+    state = pathlib.Path(os.environ['STATE_DIR'])
+    grandchild = subprocess.Popen([sys.executable, '-c', (
+        'import pathlib, signal, sys, time\\n'
+        'def term(*_):\\n'
+        f'    pathlib.Path({str(state)!r}, "grandchild.term").write_text("1")\\n'
+        '    sys.exit(0)\\n'
+        'signal.signal(signal.SIGTERM, term)\\n'
+        f'pathlib.Path({str(state)!r}, "grandchild.ready").write_text("1")\\n'
+        'time.sleep(600)\\n'
+    )])
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(grandchild.wait()))
+    while not (state / 'grandchild.ready').exists():
+        time.sleep(0.01)
     time.sleep(600)
 """
 
@@ -262,6 +302,29 @@ async def test_a_failed_status_read_is_retried_and_never_starts_an_attempt(
     assert result.attempts == 1
 
 
+async def test_a_status_read_that_times_out_is_retried_not_the_deadline(tmp_path):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+    reads: list[str] = []
+
+    async def timing_out_read() -> bool:
+        reads.append('read')
+        if len(reads) == 1:
+            raise TimeoutError('db connect timeout')
+        return True
+
+    result = await run_child_job(
+        'job_ok',
+        env=env,
+        deadline_seconds=30,
+        backoff_limit=3,
+        still_current=timing_out_read,
+        **FAST,
+    )
+
+    assert len(reads) == 2
+    assert result.attempts == 1
+
+
 async def test_a_status_read_that_keeps_failing_ends_at_the_deadline(tmp_path):
     env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
 
@@ -310,6 +373,30 @@ async def test_cancelling_the_job_stops_the_child_before_the_cancel_returns(
     assert await _gone(grandchild)
 
 
+async def test_cancelling_during_the_deadline_stop_still_stops_the_child(tmp_path):
+    env = _module(tmp_path, 'job_hangs', HANGS) | {'IGNORE_SIGTERM': '1'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_hangs',
+            env=env,
+            deadline_seconds=1,
+            backoff_limit=3,
+            still_current=always_current,
+            **(FAST | {'stop_grace_seconds': 3}),
+        )
+    )
+    child, grandchild = await _pids(tmp_path)
+
+    # The deadline has passed and SIGTERM was ignored: the grace period is running.
+    await asyncio.sleep(1.5)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    assert not _alive(child)
+    assert await _gone(grandchild)
+
+
 async def test_a_blocking_child_does_not_block_the_event_loop(tmp_path):
     env = _module(
         tmp_path,
@@ -336,3 +423,170 @@ async def test_a_blocking_child_does_not_block_the_event_loop(tmp_path):
     ticker.cancel()
 
     assert ticks >= 10
+
+
+async def test_one_deadline_covers_every_attempt(tmp_path):
+    env = _module(tmp_path, 'job_slow_fail', SLOW_FAIL)
+
+    with pytest.raises(ChildJobDeadlineExceeded) as exceeded:
+        await run_child_job(
+            'job_slow_fail',
+            env=env,
+            deadline_seconds=1.2,
+            backoff_limit=5,
+            still_current=always_current,
+            **FAST,
+        )
+
+    # The second attempt gets only what the first left, so the deadline stops it.
+    assert (exceeded.value.attempts, exceeded.value.exit_code) == (2, None)
+
+
+async def test_backoff_doubles_up_to_the_cap(tmp_path, monkeypatch):
+    env = _module(tmp_path, 'job_bad', FLAKY) | {'FAIL_TIMES': '99'}
+    backoffs: list[float] = []
+    monkeypatch.setattr(
+        child_job._logger,
+        'info',
+        lambda msg, extra: backoffs.append(extra['backoff_seconds']),
+    )
+
+    with pytest.raises(ChildJobFailed):
+        await run_child_job(
+            'job_bad',
+            env=env,
+            deadline_seconds=30,
+            backoff_limit=4,
+            still_current=always_current,
+            **FAST | {'backoff_base_seconds': 0.01, 'backoff_max_seconds': 0.04},
+        )
+
+    assert backoffs == [0.01, 0.02, 0.04, 0.04]
+
+
+async def test_the_deadline_sends_sigterm_to_the_whole_group(tmp_path):
+    env = _module(tmp_path, 'job_graceful', GRACEFUL)
+
+    with pytest.raises(ChildJobDeadlineExceeded):
+        await run_child_job(
+            'job_graceful',
+            env=env,
+            deadline_seconds=2,
+            backoff_limit=0,
+            still_current=always_current,
+            **FAST,
+        )
+
+    assert (tmp_path / 'grandchild.term').exists()
+
+
+async def test_a_status_read_that_hangs_ends_at_the_deadline(tmp_path):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+
+    async def hung_read() -> bool:
+        await asyncio.sleep(600)
+        return True
+
+    with pytest.raises(ChildJobDeadlineExceeded) as exceeded:
+        await asyncio.wait_for(
+            run_child_job(
+                'job_ok',
+                env=env,
+                deadline_seconds=0.5,
+                backoff_limit=3,
+                still_current=hung_read,
+                **FAST,
+            ),
+            5,
+        )
+
+    assert exceeded.value.attempts == 0
+    assert not (tmp_path / 'runs').exists()
+
+
+async def test_a_wall_clock_step_does_not_end_the_job(tmp_path, monkeypatch):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+    # An NTP step a day forward after the first reading.
+    readings = iter([0.0])
+    monkeypatch.setattr(time, 'time', lambda: next(readings, 86400.0))
+
+    result = await run_child_job(
+        'job_ok',
+        env=env,
+        deadline_seconds=30,
+        backoff_limit=0,
+        still_current=always_current,
+        **FAST,
+    )
+
+    assert result.attempts == 1
+
+
+async def test_a_forced_stop_stops_running_children_and_ends_their_jobs(tmp_path):
+    env = _module(tmp_path, 'job_hangs', HANGS) | {'IGNORE_SIGTERM': '1'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_hangs',
+            env=env,
+            deadline_seconds=60,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST,
+        )
+    )
+    child, grandchild = await _pids(tmp_path)
+
+    await stop_all_children(stop_grace_seconds=FAST['stop_grace_seconds'])
+
+    assert not _alive(child)
+    assert await _gone(grandchild)
+    with pytest.raises(ChildJobStopped) as stopped:
+        await job
+    # Not retried: the child ran once.
+    assert stopped.value.attempts == 1
+
+
+async def test_a_forced_stop_during_a_backoff_ends_the_job_at_once(tmp_path):
+    env = _module(tmp_path, 'job_bad', FLAKY) | {'FAIL_TIMES': '99'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_bad',
+            env=env,
+            deadline_seconds=600,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST | {'backoff_base_seconds': 300, 'backoff_max_seconds': 300},
+        )
+    )
+    for _ in range(200):
+        if (tmp_path / 'runs').exists():
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)
+
+    started = time.monotonic()
+    await stop_all_children()
+    with pytest.raises(ChildJobStopped) as stopped:
+        await job
+
+    assert time.monotonic() - started < 2
+    assert (stopped.value.attempts, stopped.value.exit_code) == (1, None)
+    assert (tmp_path / 'runs').read_text() == '1'
+
+
+async def test_after_a_forced_stop_no_child_starts(tmp_path):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+    await stop_all_children()
+
+    with pytest.raises(ChildJobStopped) as stopped:
+        await run_child_job(
+            'job_ok',
+            env=env,
+            deadline_seconds=30,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST,
+        )
+
+    assert stopped.value.attempts == 0
+    assert not (tmp_path / 'runs').exists()
