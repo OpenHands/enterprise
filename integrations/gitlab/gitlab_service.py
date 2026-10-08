@@ -411,7 +411,7 @@ class SaaSGitLabService(GitLabService):
         deleted = 0
         try:
             # List every page before deleting, since deleting shifts the pages.
-            hook_ids = []
+            hook_ids: list[int] = []
             page = 1
             while True:
                 hooks, headers = await self._make_request(
