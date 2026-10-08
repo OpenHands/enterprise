@@ -161,6 +161,9 @@ _conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+# Upper bound for the provider lookup of a repository started without a
+# provider, so a slow git provider cannot hold up the conversation start.
+_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -675,10 +678,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 agent_kind = 'openhands'
 
             conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
-            if request.git_provider:
-                conversation_tags['git_provider'] = request.git_provider.value
+            if git_provider:
+                conversation_tags['git_provider'] = git_provider.value
             if request.selected_branch:
                 conversation_tags['selected_branch'] = request.selected_branch
 
@@ -692,7 +700,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # Git parameters
                 selected_repository=request.selected_repository,
                 selected_branch=request.selected_branch,
-                git_provider=request.git_provider,
+                git_provider=git_provider,
                 trigger=request.trigger,
                 pr_number=request.pr_number,
                 parent_conversation_id=request.parent_conversation_id,
@@ -2842,6 +2850,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         _logger.info(
             f'Successfully updated agent-server conversation {conversation_id} title to "{new_title}"'
         )
+
+    async def _resolve_git_provider(self, repository: str) -> ProviderType | None:
+        """Return the provider of a repository that was started without one.
+
+        The clone already resolves the provider from the user's tokens, but the
+        start request may not carry it (e.g. API clients). Best effort: returns
+        None when the provider cannot be found in time, so the start never fails.
+        """
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            repo = await asyncio.wait_for(
+                provider_handler.verify_repo_provider(repository, is_optional=True),
+                timeout=_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS,
+            )
+            return repo.git_provider
+        except Exception:
+            _logger.warning(
+                f'Could not resolve the git provider of {repository}', exc_info=True
+            )
+            return None
 
     def _validate_repository_update(
         self,
