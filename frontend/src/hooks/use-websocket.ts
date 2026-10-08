@@ -143,6 +143,12 @@ export const useWebSocket = <T = string>(
         // Remove this WebSocket from the allowed list BEFORE closing
         // so its onclose handler won't try to reconnect
         allowedToReconnectRef.current.delete(wsRef.current);
+        // Detach handlers so a late error/close from this socket cannot
+        // update state or push error banners after the component unmounts.
+        wsRef.current.onopen = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
         // Only close if not already closed/closing
         if (
           readyState === WebSocket.CONNECTING ||
