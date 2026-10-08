@@ -36,7 +36,11 @@ from server.auth.authorization import (
     get_user_org_role,
     get_user_super_role,
 )
-from server.auth.constants import AZURE_DEVOPS_ORGANIZATION, BITBUCKET_DATA_CENTER_HOST
+from server.auth.constants import (
+    AZURE_DEVOPS_ORGANIZATION,
+    BITBUCKET_DATA_CENTER_HOST,
+    ENABLE_SUPER_ADMIN,
+)
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
 from server.logger import logger
@@ -1080,7 +1084,13 @@ class SaasUserAuth(UserAuth):
             raise NoCredentialsError('failed to authenticate')
         # Checked here rather than per credential type, so a disabled user is
         # refused with an API key, a legacy cookie or an OAuth v2 cookie alike.
-        if instance.user_id and await UserStore.is_user_disabled(instance.user_id):
+        # Only the Super Admin directory disables users, so the lookup is
+        # skipped while it is off.
+        if (
+            ENABLE_SUPER_ADMIN
+            and instance.user_id
+            and await UserStore.is_user_disabled(instance.user_id)
+        ):
             raise AuthError('User account is disabled')
         # Capture the raw X-Org-Id header (if any) so it can be validated
         # lazily by `get_effective_org_id()` the first time the request

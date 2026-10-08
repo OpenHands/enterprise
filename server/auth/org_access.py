@@ -13,6 +13,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import ENABLE_SUPER_ADMIN
 
 
 class OrgNotUsableError(Exception):
@@ -44,7 +45,13 @@ async def assert_org_usable_for_product(
     Call this whenever an org id is about to become the request's effective
     org (``SaasUserAuth.get_effective_org_id``) or a resolver conversation
     target (``resolve_org_for_repo`` / override org).
+
+    Does nothing while ``ENABLE_SUPER_ADMIN`` is off: only the Super Admin
+    directory suspends orgs or memberships, so the lookups would find nothing.
     """
+    if not ENABLE_SUPER_ADMIN:
+        return
+
     # Local imports keep this module free of circular imports with stores
     # that pull authorization helpers.
     from storage.org_member_store import OrgMemberStore
