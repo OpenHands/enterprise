@@ -21,10 +21,13 @@ combined with ``KEYCLOAK_REALM_NAME`` into
 ``{auth_base_url}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/{auth,token,userinfo}``.
 
 This migration repairs hosts that already ran 168 before that fix landed, by
-recomputing the same three URLs for the existing Keycloak IDP row(s)
-(``provider_category = 'enterprise_sso'``, ``is_idp = true``) from the current
-environment. There is no admin API for editing ``oauth_providers`` rows, so
-this is the only way to correct an already-seeded value.
+recomputing the same three URLs for any row whose ``authorization_url``
+starts with the known-broken in-cluster prefix (``http://keycloak.keycloak``)
+from the current environment. Matching on the broken value itself (rather
+than ``provider_category``/``is_idp``) targets exactly the rows the bug
+produced and leaves any row an operator may already have corrected alone.
+There is no admin API for editing ``oauth_providers`` rows, so this is the
+only way to correct an already-seeded value.
 
 The repair only writes when the current environment resolves to a usable
 auth base URL *and* ``KEYCLOAK_REALM_NAME`` is set; otherwise the existing
@@ -46,6 +49,11 @@ revision: str = '178'
 down_revision: str | None = '177'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+# The in-cluster Keycloak address migration 168 mistakenly used to seed
+# externally-facing URLs. Any ``authorization_url`` starting with this is
+# unambiguously the bug's output, not a legitimate configuration.
+_BROKEN_URL_PREFIX = 'http://keycloak.keycloak'
 
 
 def _resolve_keycloak_realm_base_url() -> str:
@@ -81,8 +89,6 @@ def upgrade() -> None:
     oauth_providers = sa.table(
         'oauth_providers',
         sa.column('id', sa.Integer()),
-        sa.column('provider_category', sa.String()),
-        sa.column('is_idp', sa.Boolean()),
         sa.column('authorization_url', sa.String()),
         sa.column('token_url', sa.String()),
         sa.column('userinfo_url', sa.String()),
@@ -90,10 +96,7 @@ def upgrade() -> None:
     )
     bind.execute(
         oauth_providers.update()
-        .where(
-            oauth_providers.c.provider_category == 'enterprise_sso',
-            oauth_providers.c.is_idp.is_(True),
-        )
+        .where(oauth_providers.c.authorization_url.startswith(_BROKEN_URL_PREFIX))
         .values(
             authorization_url=f'{kc_base}/protocol/openid-connect/auth',
             token_url=f'{kc_base}/protocol/openid-connect/token',

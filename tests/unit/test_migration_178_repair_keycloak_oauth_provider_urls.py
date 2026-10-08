@@ -3,6 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+from tests import postgres_testdb
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -106,7 +110,7 @@ def test_upgrade_noop_when_no_base_url_resolves(monkeypatch):
     assert bind.writes == []
 
 
-def test_upgrade_updates_enterprise_sso_idp_row(monkeypatch):
+def test_upgrade_updates_rows_with_broken_authorization_url(monkeypatch):
     bind = _run(
         monkeypatch,
         AUTH_URL='https://auth.staging.all-hands.dev',
@@ -115,8 +119,8 @@ def test_upgrade_updates_enterprise_sso_idp_row(monkeypatch):
     assert len(bind.writes) == 1
     sql, params = bind.writes[0]
     assert 'UPDATE oauth_providers' in sql
-    assert params['provider_category_1'] == 'enterprise_sso'
-    assert 'oauth_providers.is_idp IS true' in sql
+    assert 'oauth_providers.authorization_url LIKE' in sql
+    assert params['authorization_url_1'] == 'http://keycloak.keycloak'
     assert (
         params['authorization_url']
         == 'https://auth.staging.all-hands.dev/realms/allhands'
@@ -147,3 +151,114 @@ def test_upgrade_runs_with_fallback_derivations(monkeypatch, env):
 def test_downgrade_is_noop():
     # No fixture needed: downgrade must not touch ``op`` at all.
     migration_178.downgrade()
+
+
+# ── real-DB: matches on authorization_url, not provider_category/is_idp ─────
+
+
+def _insert_provider(
+    engine: Engine,
+    *,
+    provider_category: str,
+    is_idp: bool,
+    authorization_url: str,
+    token_url: str,
+    userinfo_url: str,
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO oauth_providers
+                    (provider_category, display_name, is_idp, client_id,
+                     authorization_url, token_url, userinfo_url,
+                     permitted_drift_seconds)
+                VALUES
+                    (:provider_category, 'Test Provider', :is_idp, 'client-id',
+                     :authorization_url, :token_url, :userinfo_url, 60)
+                """
+            ),
+            {
+                'provider_category': provider_category,
+                'is_idp': is_idp,
+                'authorization_url': authorization_url,
+                'token_url': token_url,
+                'userinfo_url': userinfo_url,
+            },
+        )
+
+
+def _provider_urls(engine: Engine) -> list[tuple[str, bool, str, str, str]]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                'SELECT provider_category, is_idp, authorization_url, '
+                'token_url, userinfo_url FROM oauth_providers '
+                'ORDER BY id'
+            )
+        )
+        return [tuple(row) for row in rows]
+
+
+def test_upgrade_matches_by_broken_url_regardless_of_category(
+    monkeypatch,
+    engine: Engine,
+    test_database: postgres_testdb.TestDatabase,
+):
+    """The real bug, and the fix, must key off ``authorization_url`` alone."""
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'downgrade', '177'
+    )
+
+    # Broken row seeded by the old 168 -- not an IDP, to prove the repair
+    # does not key off ``provider_category``/``is_idp`` at all.
+    _insert_provider(
+        engine,
+        provider_category='github',
+        is_idp=False,
+        authorization_url='http://keycloak.keycloak/realms/allhands'
+        '/protocol/openid-connect/auth',
+        token_url='http://keycloak.keycloak/realms/allhands'
+        '/protocol/openid-connect/token',
+        userinfo_url='http://keycloak.keycloak/realms/allhands'
+        '/protocol/openid-connect/userinfo',
+    )
+    # A legitimate enterprise_sso IDP row that was never broken -- proves the
+    # repair does not blanket-overwrite every enterprise_sso/IDP row either.
+    _insert_provider(
+        engine,
+        provider_category='enterprise_sso',
+        is_idp=True,
+        authorization_url='https://auth.example.com/realms/allhands'
+        '/protocol/openid-connect/auth',
+        token_url='https://auth.example.com/realms/allhands'
+        '/protocol/openid-connect/token',
+        userinfo_url='https://auth.example.com/realms/allhands'
+        '/protocol/openid-connect/userinfo',
+    )
+
+    monkeypatch.setenv('AUTH_URL', 'https://auth.staging.all-hands.dev')
+    monkeypatch.setenv('KEYCLOAK_REALM_NAME', 'allhands')
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'upgrade', 'head'
+    )
+
+    rows = _provider_urls(engine)
+    assert len(rows) == 2
+
+    repaired = next(r for r in rows if r[0] == 'github')
+    assert repaired[2:] == (
+        'https://auth.staging.all-hands.dev/realms/allhands'
+        '/protocol/openid-connect/auth',
+        'https://auth.staging.all-hands.dev/realms/allhands'
+        '/protocol/openid-connect/token',
+        'https://auth.staging.all-hands.dev/realms/allhands'
+        '/protocol/openid-connect/userinfo',
+    )
+
+    untouched = next(r for r in rows if r[0] == 'enterprise_sso')
+    assert untouched[2:] == (
+        'https://auth.example.com/realms/allhands/protocol/openid-connect/auth',
+        'https://auth.example.com/realms/allhands/protocol/openid-connect/token',
+        'https://auth.example.com/realms/allhands/protocol/openid-connect/userinfo',
+    )
