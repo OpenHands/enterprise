@@ -1,7 +1,7 @@
 """Create instance_settings for the Super Admin company name and logo.
 
-Revision ID: 178
-Revises: 177
+Revision ID: 179
+Revises: 178
 Create Date: 2026-10-04
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '178'
-down_revision: str | None = '177'
+revision: str = '179'
+down_revision: str | None = '178'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

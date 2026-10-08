@@ -1,7 +1,7 @@
 """Add status column to org for Super Admin suspend/resume.
 
-Revision ID: 181
-Revises: 180
+Revision ID: 182
+Revises: 181
 Create Date: 2026-09-23
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '181'
-down_revision: str | None = '180'
+revision: str = '182'
+down_revision: str | None = '181'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
