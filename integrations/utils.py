@@ -145,7 +145,10 @@ def get_summary_instruction():
 
 
 def has_exact_mention(text: str, mention: str) -> bool:
-    """Check if the text contains an exact mention (not part of a larger word).
+    """Check if the text contains an exact mention.
+
+    The mention must not be part of a larger word, a scoped package name
+    (@openhands/pkg) or a domain (@openhands.com).
 
     Args:
         text: The text to check for mentions

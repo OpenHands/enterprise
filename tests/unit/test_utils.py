@@ -36,6 +36,10 @@ def test_has_exact_mention():
     # Test multiple mentions
     assert has_exact_mention('@openhands and @openhands again', '@openhands') is True
     assert has_exact_mention('@openhands-agent and @openhands', '@openhands') is True
+    assert (
+        has_exact_mention('@openhands/agent-canvas and @openhands', '@openhands')
+        is True
+    )
 
     # Test with surrounding punctuation
     assert has_exact_mention('Hey, @openhands!', '@openhands') is True
@@ -65,10 +69,6 @@ def test_has_exact_mention():
     )
     assert has_exact_mention('see @openhands.com', '@openhands') is False
     assert has_exact_mention('Bump @openhands/agent-canvas', '@openhands') is False
-    assert (
-        has_exact_mention('@openhands/agent-canvas and @openhands', '@openhands')
-        is True
-    )
 
 
 def test_markdown_to_jira_markup():
