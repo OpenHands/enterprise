@@ -7,6 +7,7 @@ head. It exits when it cannot reach the database.
 """
 
 import asyncio
+import os
 
 from dotenv import load_dotenv
 
@@ -17,10 +18,23 @@ from openhands.app_server.config import get_global_config  # noqa: E402
 from openhands.app_server.utils.logger import openhands_logger  # noqa: E402
 from openhands.app_server.worker.app import QUEUES, WorkerConfig, app  # noqa: E402
 from openhands.app_server.worker.database import build_connector  # noqa: E402
+from openhands.app_server.worker.housekeeping import SCHEDULED_JOBS_QUEUE  # noqa: E402
+from openhands.app_server.worker.scheduled_jobs import (  # noqa: E402
+    configure,
+    register_scheduled_jobs,
+    scheduled_jobs_enabled,
+)
 
 
 async def run() -> None:
     config: WorkerConfig = from_env(WorkerConfig, 'OH_WORKER')
+    # Read once, before connecting: a bad value stops the worker at startup.
+    scheduling = scheduled_jobs_enabled(os.environ)
+    queues = list(QUEUES)
+    scheduled = configure(os.environ) if scheduling else []
+    if scheduling:
+        register_scheduled_jobs(app, scheduled)
+        queues.append(SCHEDULED_JOBS_QUEUE)
     connector = build_connector(
         get_global_config().db_session,
         # One connection per running job, plus the worker's own queries.
@@ -30,9 +44,14 @@ async def run() -> None:
         async with app.open_async():
             openhands_logger.info(
                 'worker.started',
-                extra={'concurrency': config.concurrency, 'queues': QUEUES},
+                extra={
+                    'concurrency': config.concurrency,
+                    'queues': queues,
+                    'scheduled_jobs_enabled': scheduling,
+                    'scheduled_jobs': [item.job.name for item in scheduled],
+                },
             )
-            await app.run_worker_async(concurrency=config.concurrency, queues=QUEUES)
+            await app.run_worker_async(concurrency=config.concurrency, queues=queues)
 
 
 def main() -> None:
