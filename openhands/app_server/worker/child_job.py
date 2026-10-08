@@ -8,7 +8,8 @@ Like a Job, a failed attempt is retried after a backoff, and one deadline covers
 every attempt, the backoffs between them and the checks before them. A child
 that outlives the deadline, or the worker's cancellation of the job, is stopped
 with its whole process group before this returns: a worker slot is never freed
-while the job's process still runs.
+while the job's process still runs. ``stop_all_children`` does the same for every
+running child at once when the worker is stopped by force.
 """
 
 import asyncio
@@ -30,6 +31,10 @@ STOP_GRACE_SECONDS = 30.0
 # How long to wait before reading the job's status again after a failed read.
 STATUS_RETRY_SECONDS = 5.0
 
+# Every running child, so a forced stop of the worker can stop them all.
+_live: set[asyncio.subprocess.Process] = set()
+_stop_requested = asyncio.Event()
+
 
 class ChildJobError(Exception):
     def __init__(self, module: str, attempts: int, exit_code: int | None):
@@ -45,6 +50,10 @@ class ChildJobFailed(ChildJobError):
 
 class ChildJobDeadlineExceeded(ChildJobError):
     """The deadline passed. A child still running was stopped, and not retried."""
+
+
+class ChildJobStopped(ChildJobError):
+    """The worker was stopped by force. A running child was stopped; no attempt follows."""
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,8 @@ async def run_child_job(
 
     attempts = 0
     while True:
+        if _stop_requested.is_set():
+            raise ChildJobStopped(module, attempts, None)
         if not await _ask_still_current(
             still_current, remaining, status_retry_seconds, module, attempts
         ):
@@ -89,6 +100,8 @@ async def run_child_job(
             raise ChildJobDeadlineExceeded(module, attempts, None)
         if exit_code == 0:
             return ChildJobResult(attempts=attempts, superseded=False)
+        if _stop_requested.is_set():
+            raise ChildJobStopped(module, attempts, exit_code)
         if attempts > backoff_limit:
             raise ChildJobFailed(module, attempts, exit_code)
         backoff = min(backoff_base_seconds * 2 ** (attempts - 1), backoff_max_seconds)
@@ -103,7 +116,26 @@ async def run_child_job(
                 'backoff_seconds': backoff,
             },
         )
-        await asyncio.sleep(backoff)
+        await _sleep_unless_stopped(backoff)
+
+
+async def stop_all_children(stop_grace_seconds: float = STOP_GRACE_SECONDS) -> None:
+    """Stop every running child's process group, and start no further attempt.
+
+    For a forced stop of the worker: each running job then ends with
+    ChildJobStopped, so its slot is freed only once its child is gone.
+    """
+    _stop_requested.set()
+    await asyncio.gather(
+        *(_stop(process, stop_grace_seconds) for process in list(_live))
+    )
+
+
+async def _sleep_unless_stopped(seconds: float) -> None:
+    try:
+        await asyncio.wait_for(_stop_requested.wait(), seconds)
+    except TimeoutError:
+        pass
 
 
 async def _ask_still_current(
@@ -115,6 +147,8 @@ async def _ask_still_current(
 ) -> bool:
     # A failed read never starts an attempt: it is read again until the deadline.
     while True:
+        if _stop_requested.is_set():
+            raise ChildJobStopped(module, attempts, None)
         if remaining() <= 0:
             raise ChildJobDeadlineExceeded(module, attempts, None)
         try:
@@ -129,7 +163,7 @@ async def _ask_still_current(
                 extra={'job_module': module},
                 exc_info=True,
             )
-        await asyncio.sleep(min(retry_seconds, max(remaining(), 0)))
+        await _sleep_unless_stopped(min(retry_seconds, max(remaining(), 0)))
 
 
 async def _run_once(
@@ -150,6 +184,7 @@ async def _run_once(
     )
     try:
         process = await asyncio.shield(spawning)
+        _live.add(process)
         return await asyncio.wait_for(process.wait(), timeout)
     except TimeoutError:
         # A cancellation during the stop must not free the slot before the child
@@ -168,6 +203,9 @@ async def _run_once(
             asyncio.ensure_future(_stop(process, stop_grace_seconds))
         )
         raise
+    finally:
+        if spawning.done() and not spawning.cancelled() and not spawning.exception():
+            _live.discard(spawning.result())
 
 
 async def _despite_cancellation[T](task: asyncio.Future[T]) -> tuple[T, bool]:

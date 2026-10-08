@@ -12,7 +12,9 @@ from openhands.app_server.worker import child_job
 from openhands.app_server.worker.child_job import (
     ChildJobDeadlineExceeded,
     ChildJobFailed,
+    ChildJobStopped,
     run_child_job,
+    stop_all_children,
 )
 
 # A broken stop path hangs on a child that never exits; fail it instead.
@@ -29,6 +31,13 @@ FAST = {
 
 async def always_current() -> bool:
     return True
+
+
+@pytest.fixture(autouse=True)
+def no_forced_stop(monkeypatch):
+    # A forced stop is process-wide; each test starts without one.
+    monkeypatch.setattr(child_job, '_stop_requested', asyncio.Event())
+    monkeypatch.setattr(child_job, '_live', set())
 
 
 def _module(tmp_path: Path, name: str, body: str) -> dict[str, str]:
@@ -511,3 +520,73 @@ async def test_a_wall_clock_step_does_not_end_the_job(tmp_path, monkeypatch):
     )
 
     assert result.attempts == 1
+
+
+async def test_a_forced_stop_stops_running_children_and_ends_their_jobs(tmp_path):
+    env = _module(tmp_path, 'job_hangs', HANGS) | {'IGNORE_SIGTERM': '1'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_hangs',
+            env=env,
+            deadline_seconds=60,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST,
+        )
+    )
+    child, grandchild = await _pids(tmp_path)
+
+    await stop_all_children(stop_grace_seconds=FAST['stop_grace_seconds'])
+
+    assert not _alive(child)
+    assert await _gone(grandchild)
+    with pytest.raises(ChildJobStopped) as stopped:
+        await job
+    # Not retried: the child ran once.
+    assert stopped.value.attempts == 1
+
+
+async def test_a_forced_stop_during_a_backoff_ends_the_job_at_once(tmp_path):
+    env = _module(tmp_path, 'job_bad', FLAKY) | {'FAIL_TIMES': '99'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_bad',
+            env=env,
+            deadline_seconds=600,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST | {'backoff_base_seconds': 300, 'backoff_max_seconds': 300},
+        )
+    )
+    for _ in range(200):
+        if (tmp_path / 'runs').exists():
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)
+
+    started = time.monotonic()
+    await stop_all_children()
+    with pytest.raises(ChildJobStopped) as stopped:
+        await job
+
+    assert time.monotonic() - started < 2
+    assert (stopped.value.attempts, stopped.value.exit_code) == (1, None)
+    assert (tmp_path / 'runs').read_text() == '1'
+
+
+async def test_after_a_forced_stop_no_child_starts(tmp_path):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+    await stop_all_children()
+
+    with pytest.raises(ChildJobStopped) as stopped:
+        await run_child_job(
+            'job_ok',
+            env=env,
+            deadline_seconds=30,
+            backoff_limit=3,
+            still_current=always_current,
+            **FAST,
+        )
+
+    assert stopped.value.attempts == 0
+    assert not (tmp_path / 'runs').exists()
