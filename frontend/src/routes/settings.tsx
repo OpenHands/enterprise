@@ -17,7 +17,7 @@ import { SAAS_NAV_ITEMS, OSS_NAV_ITEMS } from "#/constants/settings-nav";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import { getSettingsQueryFn } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
-import { getIsSuperAdmin } from "#/utils/org/permission-guard";
+import { getIsSuperAdminWithIntegratedIdp } from "#/utils/org/permission-guard";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
@@ -232,7 +232,10 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       // Instance-level super admins keep access here even with the Personal
       // Workspace selected -- it becomes the instance-wide "All Users" view
       // rather than this org's member list (see ManageOrganizationMembers).
-      const isSuperAdmin = await getIsSuperAdmin();
+      // Only applies when `enable_integrated_idp` is on, since that's the
+      // only thing the bypass unlocks; otherwise this is the plain
+      // permission check from before super admins got any special access.
+      const isSuperAdmin = await getIsSuperAdminWithIntegratedIdp();
       if (
         !isSuperAdmin &&
         (!user ||

@@ -485,11 +485,14 @@ describe("Settings Screen", () => {
       expect(response.headers.get("Location")).toBe("/settings");
     });
 
-    it("should allow a super admin direct URL access to /settings/org-members when personal org is selected", async () => {
+    it("should allow a super admin direct URL access to /settings/org-members when personal org is selected and enable_integrated_idp is on", async () => {
       // Clear any cached super-admin status from a previous test in this file
       mockQueryClient.clear();
       // Set up config and organizations in query client so clientLoader can access them
-      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: { enable_integrated_idp: true },
+      });
       mockQueryClient.setQueryData(["organizations"], {
         items: [MOCK_PERSONAL_ORG],
         currentOrgId: MOCK_PERSONAL_ORG.id,
@@ -510,6 +513,35 @@ describe("Settings Screen", () => {
 
       // Assert: no redirect for a super admin, even on their personal org
       expect(result).not.toBeInstanceOf(Response);
+    });
+
+    it("should not allow a super admin direct URL access to /settings/org-members on a personal org when enable_integrated_idp is off", async () => {
+      // Clear any cached super-admin status from a previous test in this file
+      mockQueryClient.clear();
+      // Set up config and organizations in query client so clientLoader can access them
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role: "member", org_id: "1" }),
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      const request = new Request("http://localhost/settings/org-members");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      const result = await clientLoader({ request, params: {} });
+
+      // Assert: without the flag, a super admin gets no new access -- same
+      // redirect as any other member on a personal org (see the test above).
+      expect(result).not.toBeNull();
+      expect(result).toBeInstanceOf(Response);
+      const response = result as Response;
+      expect(response.status).toBe(302);
+      expect(response.headers.get("Location")).toBe("/settings");
     });
 
     it("should not allow direct URL access to /settings/billing when team org is selected", async () => {

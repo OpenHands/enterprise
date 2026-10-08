@@ -40,6 +40,22 @@ async function getConfig(): Promise<WebClientConfig | undefined> {
 }
 
 /**
+ * Super-admin bypass for the org-members page, scoped to the admin-issued
+ * sign-up link feature (``enable_integrated_idp``). Without it there's no
+ * new capability for a super admin to reach the page for -- no sign-up
+ * link minting, no instance-wide "All Users" view -- so access must fall
+ * back to the plain org-permission check, same as on main before that
+ * feature existed.
+ */
+export async function getIsSuperAdminWithIntegratedIdp(): Promise<boolean> {
+  const config = await getConfig();
+  if (!config?.feature_flags?.enable_integrated_idp) {
+    return false;
+  }
+  return getIsSuperAdmin();
+}
+
+/**
  * Gets the appropriate fallback path for permission denied scenarios.
  * Respects feature flags to avoid redirecting to hidden pages.
  */

@@ -625,6 +625,23 @@ describe("Manage Organization Members Route", () => {
 
     it("should show a Create Sign-up Link button (not Invite Members) for super admins, and mint a link on submit", async () => {
       vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
 
       await setupInviteTest();
 
@@ -644,6 +661,21 @@ describe("Manage Organization Members Route", () => {
       expect(screen.queryByTestId("invite-modal")).not.toBeInTheDocument();
     });
 
+    it("should show the regular Invite Members button for a super admin when enable_integrated_idp is off", async () => {
+      // Default `beforeEach` config has no `enable_integrated_idp` flag --
+      // a super admin should get no new options and fall back to exactly
+      // the pre-existing behavior (the regular invite flow, since this
+      // user still has normal org invite permission).
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      await setupInviteTest();
+
+      await screen.findByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i });
+      expect(
+        screen.queryByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i }),
+      ).not.toBeInTheDocument();
+    });
+
     it("should still show the regular Invite Members button for non-super-admins", async () => {
       vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
 
@@ -657,6 +689,23 @@ describe("Manage Organization Members Route", () => {
 
     it("should render the instance-wide all-users view when a super admin has their Personal Workspace selected", async () => {
       vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
       vi.mocked(adminService.getAllUsers).mockResolvedValue({
         items: [
           { user_id: "u-1", email: "alice@example.com", is_super_admin: true },
@@ -841,6 +890,23 @@ describe("Manage Organization Members Route", () => {
 
     it("should delete a user from the All Users view via the context menu", async () => {
       vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
       vi.mocked(adminService.getAllUsers).mockResolvedValue({
         items: [
           { user_id: "u-1", email: "alice@example.com", is_super_admin: true },

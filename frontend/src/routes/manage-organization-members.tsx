@@ -33,7 +33,7 @@ import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getAvailableRolesAUserCanAssign } from "#/utils/org/permission-checks";
 import {
   createPermissionGuard,
-  getIsSuperAdmin,
+  getIsSuperAdminWithIntegratedIdp,
 } from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
 import { Pagination } from "#/ui/pagination";
@@ -52,7 +52,7 @@ import {
 export const clientLoader = createPermissionGuard(
   "invite_user_to_organization",
   undefined,
-  getIsSuperAdmin,
+  getIsSuperAdminWithIntegratedIdp,
 );
 
 export const handle = { hideTitle: true };
@@ -77,7 +77,10 @@ const limit = 10;
  * Org-scoped member list: the page's original behavior, unchanged for org
  * admins. Super admins (who can also reach this view with an org selected)
  * get a "Create Sign-up Link" button instead of "Add Members" -- see
- * ``MintSignupLinkModal``.
+ * ``MintSignupLinkModal``. ``isSuperAdmin`` here already means "is a super
+ * admin AND ``enable_integrated_idp`` is on" (see ``ManageOrganizationMembers``);
+ * without the flag there's no new capability to grant, so this renders
+ * exactly as it did before super admins got any special treatment.
  */
 function OrganizationMembersSection({
   organizationId,
@@ -108,8 +111,6 @@ function OrganizationMembersSection({
   const hasError = membersError || countError;
 
   const { data: user } = useMe();
-  const { data: config } = useConfig();
-  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const { mutate: updateMemberRole, isPending: isUpdatingRole } =
     useUpdateMemberRole();
   const { mutate: removeMember, isPending: isRemovingMember } =
@@ -316,9 +317,7 @@ function OrganizationMembersSection({
                     status={member.status}
                     hasPermissionToChangeRole={canAssignUserRole(member)}
                     availableRolesToChangeTo={availableRolesToChangeTo}
-                    canCreatePasswordResetLink={
-                      isSuperAdmin && enableIntegratedIdp
-                    }
+                    canCreatePasswordResetLink={isSuperAdmin}
                     onCreatePasswordResetLink={() =>
                       setMemberForPasswordReset(member)
                     }
@@ -590,12 +589,23 @@ function AllUsersSection() {
 function ManageOrganizationMembers() {
   const { organizationId, isPersonalOrg } = useOrgTypeAndAccess();
   const { data: isSuperAdmin = false } = useIsSuperAdmin();
+  const { data: config } = useConfig();
+  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
+
+  // Super admins only get the sign-up-link-minting treatment (this branch,
+  // the "Create Sign-up Link" button, password-reset links, ...) when
+  // `enable_integrated_idp` is on -- that's the only feature any of it
+  // supports. With it off, a super admin without org permissions of their
+  // own sees exactly what they would have on main before any of this
+  // existed (and the clientLoader guard above won't have let them reach a
+  // personal org's page at all in that case).
+  const superAdminFeaturesEnabled = isSuperAdmin && enableIntegratedIdp;
 
   // A super admin viewing their Personal Workspace has no real org members
   // to manage there, so this becomes the instance-wide "All Users" view
   // instead (see the clientLoader guard above, which lets super admins
   // reach this page from a personal workspace in the first place).
-  if (isSuperAdmin && isPersonalOrg) {
+  if (superAdminFeaturesEnabled && isPersonalOrg) {
     return <AllUsersSection />;
   }
 
@@ -606,7 +616,7 @@ function ManageOrganizationMembers() {
   return (
     <OrganizationMembersSection
       organizationId={organizationId}
-      isSuperAdmin={isSuperAdmin}
+      isSuperAdmin={superAdminFeaturesEnabled}
     />
   );
 }
