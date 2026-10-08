@@ -58,6 +58,10 @@ import type {
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
 
+// Mirrors ProvisionUserRequest.password min_length on the server, which
+// re-validates and is authoritative.
+const MIN_PROVISION_PASSWORD_LENGTH = 8;
+
 function navCopy(path: string) {
   return (
     SUPER_ADMIN_NAV_ITEMS.find((item) => item.to === path) ??
@@ -371,6 +375,7 @@ export function SuperAdminUsers() {
     Record<string, "member" | "admin" | "owner">
   >({});
   const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | undefined>();
   const [provisionResult, setProvisionResult] =
     useState<ProvisionUserResponse | null>(null);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
@@ -429,10 +434,22 @@ export function SuperAdminUsers() {
 
   const handleProvision = () => {
     const trimmedEmail = email.trim();
+    const trimmedPassword = password.trim();
     const assignments = Object.entries(orgRoles).map(([orgId, role]) => ({
       orgId,
       role,
     }));
+    if (
+      trimmedPassword &&
+      trimmedPassword.length < MIN_PROVISION_PASSWORD_LENGTH
+    ) {
+      setPasswordError(
+        t(I18nKey.SETTINGS$NEW_PASSWORD_TOO_SHORT, {
+          minLength: MIN_PROVISION_PASSWORD_LENGTH,
+        }),
+      );
+      return;
+    }
     if (!trimmedEmail || assignments.length === 0) {
       return;
     }
@@ -440,7 +457,7 @@ export function SuperAdminUsers() {
       {
         assignments,
         email: trimmedEmail,
-        ...(password.trim() ? { password: password.trim() } : {}),
+        ...(trimmedPassword ? { password: trimmedPassword } : {}),
       },
       {
         onSuccess: (responses) => {
@@ -461,6 +478,7 @@ export function SuperAdminUsers() {
     setEmail("");
     setOrgRoles({});
     setPassword("");
+    setPasswordError(undefined);
   };
 
   const managedUser = users.find((user) => user.id === managedUserId) ?? null;
@@ -683,7 +701,11 @@ export function SuperAdminUsers() {
                 placeholder={t(
                   I18nKey.SUPER_ADMIN$PROVISION_PASSWORD_PLACEHOLDER,
                 )}
-                onChange={setPassword}
+                onChange={(value) => {
+                  setPassword(value);
+                  setPasswordError(undefined);
+                }}
+                error={passwordError}
               />
               <div className="flex flex-col gap-1.5 text-sm">
                 <span>{t(I18nKey.SUPER_ADMIN$PROVISION_ORGS)}</span>
