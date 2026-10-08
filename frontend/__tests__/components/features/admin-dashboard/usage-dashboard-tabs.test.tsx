@@ -10,6 +10,7 @@ import {
   ModelsTab,
   OverviewTab,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
+import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -288,6 +289,37 @@ describe("AssociatedPrCell", () => {
     );
 
     expect(screen.getByText("#295")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  // Conversations started without a provider are not backfilled.
+  it("shows org/repo #N as plain text when the provider is unknown", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        provider_default_hosts: { github: "github.com" },
+      }),
+    );
+    // Shares the config query, so the assertion runs after the config loads.
+    function ConfigLoaded() {
+      const { data } = useConfig();
+      return data ? <span data-testid="config-loaded" /> : null;
+    }
+
+    renderWithProviders(
+      <>
+        <ConfigLoaded />
+        <AssociatedPrCell
+          conversation={{
+            pr_number: [295],
+            selected_repository: "acme/widgets",
+            git_provider: null,
+          }}
+        />
+      </>,
+    );
+    await screen.findByTestId("config-loaded");
+
+    expect(screen.getByText("acme/widgets #295")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
