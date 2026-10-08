@@ -122,6 +122,33 @@ def test_a_jobs_settings_reach_only_its_own_child():
         assert 'ENABLED' not in child_env
 
 
+def test_the_reserved_job_settings_never_reach_the_child():
+    [item] = configure(
+        {
+            'OH_JOB_RESEND_SYNC__ENABLED': 'true',
+            'OH_JOB_RESEND_SYNC__SCHEDULE': '0 4 * * *',
+            'OH_JOB_RESEND_SYNC__BACKOFF_LIMIT': '1',
+            'OH_JOB_RESEND_SYNC__ACTIVE_DEADLINE_SECONDS': '60',
+        }
+    )
+
+    assert not {'SCHEDULE', 'BACKOFF_LIMIT', 'ACTIVE_DEADLINE_SECONDS'} & set(item.env)
+
+
+def test_blank_values_fall_back_to_the_defaults():
+    # A Compose .env file can leave a setting blank.
+    assert scheduled_jobs_enabled({FLAG: '   '}) is False
+    [item] = configure(
+        {
+            'OH_JOB_MAINTENANCE_TASKS__ENABLED': 'true',
+            'OH_JOB_MAINTENANCE_TASKS__BACKOFF_LIMIT': '',
+            'OH_JOB_MAINTENANCE_TASKS__ACTIVE_DEADLINE_SECONDS': ' ',
+        }
+    )
+
+    assert (item.job.deadline_seconds, item.job.backoff_limit) == (1800, 3)
+
+
 def test_the_maintenance_lease_follows_the_longer_budget_deadline():
     default = configure({'OH_JOB_BUDGET_MAINTENANCE__ENABLED': 'true'})
     overridden = configure(
@@ -353,3 +380,45 @@ async def test_a_job_housekeeping_already_ended_starts_no_child(tmp_path, caplog
     await app.tasks['scheduled_jobs:probe'].func(context, timestamp=0)
 
     assert not (tmp_path / 'ran').exists()
+
+
+@pytest.mark.parametrize(
+    'superseded, message',
+    [(False, 'scheduled_jobs.succeeded'), (True, 'scheduled_jobs.superseded')],
+)
+async def test_the_task_hands_the_jobs_settings_to_the_child_runner(
+    monkeypatch, caplog, superseded, message
+):
+    calls = []
+
+    async def fake_run_child_job(module, **kwargs):
+        calls.append((module, kwargs))
+        return SimpleNamespace(superseded=superseded, attempts=2)
+
+    monkeypatch.setattr(scheduled_jobs_module, 'run_child_job', fake_run_child_job)
+    logger: logging.Logger | None = scheduled_jobs_module._logger
+    while logger is not None:
+        monkeypatch.setattr(logger, 'propagate', True)
+        logger = logger.parent
+    [item] = configure(
+        {
+            'OH_JOB_RESEND_SYNC__ENABLED': 'true',
+            'OH_JOB_RESEND_SYNC__ACTIVE_DEADLINE_SECONDS': '120',
+            'OH_JOB_RESEND_SYNC__BACKOFF_LIMIT': '5',
+        }
+    )
+    app = App(connector=InMemoryConnector())
+    register_scheduled_jobs(app, [item])
+    context = SimpleNamespace(job=SimpleNamespace(id=7), app=None)
+
+    with caplog.at_level(logging.INFO):
+        await app.tasks['scheduled_jobs:resend_sync'].func(context, timestamp=0)
+
+    [(module, kwargs)] = calls
+    assert module == 'sync.resend_keycloak'
+    assert (kwargs['deadline_seconds'], kwargs['backoff_limit']) == (120, 5)
+    assert kwargs['env'] == item.env
+    [record] = [
+        r for r in caplog.records if r.getMessage().startswith('scheduled_jobs.')
+    ]
+    assert (record.getMessage(), record.attempts) == (message, 2)
