@@ -134,15 +134,20 @@ async def _run_once(
     module: str, env: Mapping[str, str], timeout: float, stop_grace_seconds: float
 ) -> int | None:
     """One attempt's exit code, or None when the deadline stopped it."""
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        '-m',
-        module,
-        env=dict(env),
-        # Its own process group, so stopping it also stops anything it started.
-        start_new_session=True,
+    # Spawned as a task the cancellation cannot interrupt, so a child that has
+    # started is always seen here and stopped.
+    spawning = asyncio.ensure_future(
+        asyncio.create_subprocess_exec(
+            sys.executable,
+            '-m',
+            module,
+            env=dict(env),
+            # Its own process group, so stopping it also stops anything it started.
+            start_new_session=True,
+        )
     )
     try:
+        process = await asyncio.shield(spawning)
         return await asyncio.wait_for(process.wait(), timeout)
     except TimeoutError:
         await _stop(process, stop_grace_seconds)
@@ -150,13 +155,20 @@ async def _run_once(
     except asyncio.CancelledError:
         # The worker is cancelling the job. Hold its slot until the child is gone,
         # even if the cancellation is repeated.
-        stopping = asyncio.ensure_future(_stop(process, stop_grace_seconds))
-        while not stopping.done():
-            try:
-                await asyncio.shield(stopping)
-            except asyncio.CancelledError:
-                continue
+        process = await _despite_cancellation(spawning)
+        await _despite_cancellation(
+            asyncio.ensure_future(_stop(process, stop_grace_seconds))
+        )
         raise
+
+
+async def _despite_cancellation[T](task: asyncio.Future[T]) -> T:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
 
 
 async def _stop(process: asyncio.subprocess.Process, grace_seconds: float) -> None:
