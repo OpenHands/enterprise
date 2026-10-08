@@ -182,10 +182,19 @@ async def _reconcile_orgs(org_ids: list[str]) -> dict[str, str]:
 
 
 async def _run(phase: str, mode: str, max_age: float) -> dict[str, Any]:
+    from storage.lite_llm_manager import is_litellm_enabled
+
     generated_at = datetime.now(UTC)
     with session_maker() as session:
         schema_revision, table_present = _read_schema(session)
-        org_ids = _eligible_budget_org_ids(session) if table_present else []
+        # With the gateway disabled deployment-wide there is no LiteLLM
+        # budget state to preflight/reconcile against; skip straight to an
+        # empty (zero-org) report instead of reading/writing budgets.
+        org_ids = (
+            _eligible_budget_org_ids(session)
+            if table_present and await is_litellm_enabled()
+            else []
+        )
 
     maintenance_errors: dict[str, str] = {}
     if phase == PHASE_POST and org_ids:
