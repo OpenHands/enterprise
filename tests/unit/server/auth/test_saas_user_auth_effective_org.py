@@ -39,6 +39,13 @@ def other_org_id():
     return uuid.uuid4()
 
 
+@pytest.fixture
+def super_admin_enabled():
+    """Suspensions are enforced only while the Super Admin dashboard is on."""
+    with patch('server.auth.org_access.ENABLE_SUPER_ADMIN', True):
+        yield
+
+
 async def _seed_minimal(
     session_maker,
     user_id_str,
@@ -448,6 +455,7 @@ class TestGetEffectiveOrgId:
         assert user_auth._effective_org_id_resolved is True
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures('super_admin_enabled')
     async def test_suspended_org_current_org_raises_403(
         self, async_session_maker, user_id, org_id
     ):
@@ -469,6 +477,26 @@ class TestGetEffectiveOrgId:
         assert 'suspended' in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
+    async def test_suspended_org_is_not_checked_while_super_admin_is_off(
+        self, async_session_maker, user_id, org_id
+    ):
+        await _seed_minimal(async_session_maker, user_id, org_id)
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.status = 'suspended'
+            await session.commit()
+
+        user_auth = SaasUserAuth(
+            user_id=user_id,
+            refresh_token=SecretStr('mock'),
+        )
+        with _with_auth_stores(async_session_maker):
+            effective = await user_auth.get_effective_org_id()
+
+        assert effective == org_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('super_admin_enabled')
     async def test_suspended_org_allowed_for_instance_super_admin(
         self, async_session_maker, user_id, org_id
     ):
@@ -493,6 +521,7 @@ class TestGetEffectiveOrgId:
         assert effective == org_id
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures('super_admin_enabled')
     async def test_suspended_org_x_org_id_raises_403(
         self, async_session_maker, user_id, org_id, other_org_id
     ):
@@ -515,6 +544,7 @@ class TestGetEffectiveOrgId:
         assert 'suspended' in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures('super_admin_enabled')
     async def test_inactive_membership_raises_403(
         self, async_session_maker, user_id, org_id
     ):
