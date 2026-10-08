@@ -15,7 +15,7 @@ load_dotenv()
 from openhands.agent_server.env_parser import from_env  # noqa: E402
 from openhands.app_server.config import get_global_config  # noqa: E402
 from openhands.app_server.utils.logger import openhands_logger  # noqa: E402
-from openhands.app_server.worker.app import WorkerConfig, app  # noqa: E402
+from openhands.app_server.worker.app import QUEUES, WorkerConfig, app  # noqa: E402
 from openhands.app_server.worker.database import build_connector  # noqa: E402
 
 
@@ -29,9 +29,10 @@ async def run() -> None:
     with app.replace_connector(connector):
         async with app.open_async():
             openhands_logger.info(
-                'worker.started', extra={'concurrency': config.concurrency}
+                'worker.started',
+                extra={'concurrency': config.concurrency, 'queues': QUEUES},
             )
-            await app.run_worker_async(concurrency=config.concurrency)
+            await app.run_worker_async(concurrency=config.concurrency, queues=QUEUES)
 
 
 def main() -> None:

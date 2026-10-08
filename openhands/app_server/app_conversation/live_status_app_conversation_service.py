@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
 
 from openhands.agent_server.models import (
@@ -140,6 +140,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import ClientToolSpec
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
@@ -494,7 +495,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             resolve_agent_profile=True,
             override_agent_profile_id=request.agent_profile_id,
         )
-        validate_acp_provider_surfaced(user.agent_settings)
+        agent_settings = user.agent_settings
+        validate_acp_provider_surfaced(agent_settings)
+        if isinstance(agent_settings, ACPAgentSettings) and request.client_tools:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='client_tools are not supported for ACP agent launches',
+            )
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -569,6 +576,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_repository=request.selected_repository,
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
+                    client_tools=request.client_tools,
                     api_secrets=request.secrets,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
@@ -2067,6 +2075,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
@@ -2099,6 +2108,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository: Optional repository name
             selected_branch: Optional selected branch name
             plugins: Optional list of plugins to load
+            client_tools: Optional client-defined tools to register with the runtime.
             api_secrets: Optional secrets passed directly via the API.
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
@@ -2154,6 +2164,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'user_id': user.id,
                         'conversation_id': str(conversation_id),
                     },
+                )
+            if client_tools:
+                raise ValueError(
+                    'client_tools are not supported for ACP agent launches'
                 )
             acp_request = await self._build_acp_start_conversation_request(
                 user=user,
@@ -2404,6 +2418,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 observability_tags, request_observability_tags
             )
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
+        if client_tools:
+            create_kwargs['client_tools'] = client_tools
         title_llm_profile = _resolve_title_llm_profile(user)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
