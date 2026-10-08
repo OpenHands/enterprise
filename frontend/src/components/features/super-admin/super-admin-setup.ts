@@ -82,6 +82,13 @@ function isStepDone(
   return guideSteps[step.completion];
 }
 
+/** The first required step the server does not report as done, if any. */
+export function getNextSuperAdminSetupStep(
+  guideSteps: SetupGuideSteps | null,
+): SuperAdminSetupStep | null {
+  return REQUIRED_STEPS.find((step) => !isStepDone(step, guideSteps)) ?? null;
+}
+
 /** Tell the guided tour and the guide that a step's action just succeeded. */
 export function notifySuperAdminSetupStep(stepId: SuperAdminSetupStepId) {
   window.dispatchEvent(
@@ -101,8 +108,7 @@ export function useSuperAdminSetup() {
       (step) => step.id,
     ),
   );
-  const nextStep =
-    REQUIRED_STEPS.find((step) => !completed.has(step.id)) ?? null;
+  const nextStep = getNextSuperAdminSetupStep(guideSteps);
   // Only the first Super Admin's guide has an organization; it stays until dismissed.
   const active = Boolean(data?.guide_org_id) && !data?.guide_dismissed;
 

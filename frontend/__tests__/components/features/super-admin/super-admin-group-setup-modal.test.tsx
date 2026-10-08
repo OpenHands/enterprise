@@ -7,6 +7,7 @@ import ConfigService from "#/api/config-service/config-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import OrgProfilesService from "#/api/organization-service/org-profiles-service.api";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { SuperAdminGroupSetupModal } from "#/components/features/super-admin/super-admin-group-setup-modal";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
@@ -170,8 +171,10 @@ describe("SuperAdminGroupSetupModal", () => {
     expect(readSuperAdminNux().starterModalPending).toBe(false);
   });
 
-  it("opens the automation templates after saving the LLM", async () => {
+  it("reports the saved LLM to the setup guide, which opens the next step", async () => {
     // Arrange
+    const onSetupStep = vi.fn();
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onSetupStep);
     const user = userEvent.setup();
     renderModal();
     await chooseModel(user, "claude-sonnet-4-5");
@@ -180,9 +183,14 @@ describe("SuperAdminGroupSetupModal", () => {
     await user.click(screen.getByTestId("sa-nux-starter-confirm"));
 
     // Assert
+    await waitFor(() => expect(onSetupStep).toHaveBeenCalledTimes(1));
+    expect((onSetupStep.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      id: "add-llm",
+    });
     expect(
-      await screen.findByTestId("automation-templates-page"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("automation-templates-page"),
+    ).not.toBeInTheDocument();
+    window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onSetupStep);
   });
 
   it("shows the server error and stays open when saving fails", async () => {

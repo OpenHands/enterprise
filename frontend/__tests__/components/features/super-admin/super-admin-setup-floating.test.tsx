@@ -1,7 +1,12 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Outlet, createRoutesStub, useNavigate } from "react-router";
+import {
+  Outlet,
+  createRoutesStub,
+  useLocation,
+  useNavigate,
+} from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   superAdminService,
@@ -9,11 +14,28 @@ import {
   type SetupState,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
-import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
+import {
+  notifySuperAdminSetupStep,
+  type SuperAdminSetupStepId,
+} from "#/components/features/super-admin/super-admin-setup";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { resetSuperAdminNux } from "#/utils/org/super-admin-nux";
-import { stopGuidedTour } from "#/components/features/setup/tours/tour-engine";
+import {
+  startGuidedTour,
+  stopGuidedTour,
+} from "#/components/features/setup/tours/tour-engine";
+
+// The spotlight itself needs a real layout; these tests check which tour opens.
+vi.mock(
+  "#/components/features/setup/tours/tour-engine",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("#/components/features/setup/tours/tour-engine")
+    >()),
+    startGuidedTour: vi.fn(),
+  }),
+);
 
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => ({
@@ -41,6 +63,22 @@ const GUIDE_STATE: SetupState = {
   guide_steps: NO_STEPS_DONE,
 };
 
+function guideState(done: Partial<SetupGuideSteps>): SetupState {
+  return { ...GUIDE_STATE, guide_steps: { ...NO_STEPS_DONE, ...done } };
+}
+
+/** The checklist steps of the one tour started so far. */
+function startedTourSteps() {
+  expect(startGuidedTour).toHaveBeenCalledTimes(1);
+  const [tour] = vi.mocked(startGuidedTour).mock.calls[0];
+  return new Set(tour.steps.map((stop) => stop.checklistId));
+}
+
+function Here() {
+  const { pathname, search } = useLocation();
+  return <p data-testid="location">{`${pathname}${search}`}</p>;
+}
+
 function Jump({ to, label }: { to: string; label: string }) {
   const navigate = useNavigate();
   return (
@@ -62,30 +100,33 @@ function renderWidget(initialPath: string, state: SetupState = GUIDE_STATE) {
   queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, state);
   const RouterStub = createRoutesStub([
     {
-      path: "/super-admin",
+      path: "/",
       Component: () => (
         <>
           <SuperAdminSetupFloatingWidget />
+          <Here />
           <Outlet />
         </>
       ),
       children: [
         {
-          path: "setup",
+          path: "super-admin/setup",
           Component: () => (
             <Jump to={SUPER_ADMIN_PATHS.organizations} label="orgs" />
           ),
         },
         {
-          path: "organizations",
+          path: "super-admin/organizations",
           Component: () => (
             <Jump to={SUPER_ADMIN_PATHS.instance} label="instance" />
           ),
         },
         {
-          path: "instance",
+          path: "super-admin/instance",
           Component: () => <Jump to={SUPER_ADMIN_PATHS.setup} label="setup" />,
         },
+        { path: "settings/org-members", Component: () => null },
+        { path: "automations/templates", Component: () => null },
       ],
     },
   ]);
@@ -102,6 +143,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // The guide no longer depends on this browser having walked the wizard.
     resetSuperAdminNux();
     stopGuidedTour();
+    vi.mocked(startGuidedTour).mockReset();
     vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(GUIDE_STATE);
   });
 
@@ -209,6 +251,151 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // Assert
     expect(replace).toHaveBeenCalledWith("/canvas/mcp");
     vi.unstubAllGlobals();
+  });
+
+  it("starts only the next step's tour from Start", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(screen.getByTestId("super-admin-setup-floating-guide"));
+
+    // Assert
+    expect(startedTourSteps()).toEqual(new Set(["add-llm"]));
+  });
+
+  describe("when the guide's next step is done", () => {
+    it("opens the next step in Agent Canvas and asks Canvas for its tour", async () => {
+      // Arrange
+      renderWidget(SUPER_ADMIN_PATHS.organizations);
+      vi.mocked(superAdminService.getSetupState).mockResolvedValue(
+        guideState({ org_llm: true }),
+      );
+
+      // Act
+      act(() => notifySuperAdminSetupStep("add-llm"));
+
+      // Assert
+      await waitFor(() =>
+        expect(screen.getByTestId("location")).toHaveTextContent(
+          "/automations/templates?setup_tour=first-automation",
+        ),
+      );
+      expect(startGuidedTour).not.toHaveBeenCalled();
+    });
+
+    it("starts the tour of a next step in this app", async () => {
+      // Arrange
+      renderWidget(
+        "/settings/org-members",
+        guideState({ org_llm: true, automation: true }),
+      );
+      vi.mocked(superAdminService.getSetupState).mockResolvedValue(
+        guideState({ org_llm: true, automation: true, mcp_server: true }),
+      );
+
+      // Act
+      act(() => notifySuperAdminSetupStep("add-integration"));
+
+      // Assert
+      await waitFor(() => expect(startGuidedTour).toHaveBeenCalled());
+      expect(startedTourSteps()).toEqual(new Set(["invite-users"]));
+    });
+  });
+
+  it.each<{
+    case: string;
+    before: Partial<SetupGuideSteps>;
+    completed: SuperAdminSetupStepId;
+    after: Partial<SetupGuideSteps>;
+  }>([
+    {
+      case: "a step finished out of order",
+      before: {},
+      completed: "invite-users",
+      after: { invite: true },
+    },
+    {
+      case: "a step the server does not report done",
+      before: {},
+      completed: "add-llm",
+      after: {},
+    },
+    {
+      case: "a step finished again",
+      before: { org_llm: true },
+      completed: "add-llm",
+      after: { org_llm: true },
+    },
+    {
+      case: "the last required step",
+      before: { org_llm: true, automation: true, mcp_server: true },
+      completed: "invite-users",
+      after: {
+        org_llm: true,
+        automation: true,
+        mcp_server: true,
+        invite: true,
+      },
+    },
+  ])("opens nothing after $case", async ({ before, completed, after }) => {
+    // Arrange
+    renderWidget(SUPER_ADMIN_PATHS.organizations, guideState(before));
+    const getSetupState = vi
+      .mocked(superAdminService.getSetupState)
+      .mockResolvedValue(guideState(after));
+
+    // Act
+    act(() => notifySuperAdminSetupStep(completed));
+
+    // Assert
+    await waitFor(() => expect(getSetupState).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      SUPER_ADMIN_PATHS.organizations,
+    );
+    expect(startGuidedTour).not.toHaveBeenCalled();
+  });
+
+  describe("on a page Agent Canvas opened for a step's tour", () => {
+    it("starts that step's tour once and drops the request from the URL", async () => {
+      // Act
+      renderWidget(
+        "/settings/org-members?org=guide-org&setup_tour=invite-users",
+        guideState({ org_llm: true, automation: true, mcp_server: true }),
+      );
+
+      // Assert
+      await waitFor(() =>
+        expect(screen.getByTestId("location")).toHaveTextContent(
+          "/settings/org-members?org=guide-org",
+        ),
+      );
+      expect(screen.getByTestId("location")).not.toHaveTextContent(
+        "setup_tour",
+      );
+      expect(startedTourSteps()).toEqual(new Set(["invite-users"]));
+    });
+
+    it("ignores a request for a step that lives in Agent Canvas", async () => {
+      // Arrange
+      const replace = vi.fn();
+      vi.stubGlobal("location", { ...window.location, replace });
+
+      // Act
+      renderWidget("/settings/org-members?setup_tour=add-integration");
+
+      // Assert
+      await waitFor(() =>
+        expect(screen.getByTestId("location")).toHaveTextContent(
+          /^\/settings\/org-members$/,
+        ),
+      );
+      expect(startGuidedTour).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
   });
 
   it("is not shown to a user the server gives no guide", () => {
