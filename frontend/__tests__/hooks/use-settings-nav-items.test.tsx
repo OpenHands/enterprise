@@ -43,6 +43,15 @@ vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
 }));
 
+// Mock useIsSuperAdmin
+const mockIsSuperAdmin = vi.hoisted(() => ({
+  data: false as boolean | undefined,
+}));
+
+vi.mock("#/hooks/query/use-is-super-admin", () => ({
+  useIsSuperAdmin: () => mockIsSuperAdmin,
+}));
+
 const mockQuotaStatus = vi.hoisted(() => ({
   data: { daily_limit: 100 } as { daily_limit: number | null } | undefined,
 }));
@@ -108,6 +117,7 @@ describe("useSettingsNavItems", () => {
     mockOrgTypeAndAccess.selectedOrg = null;
     mockOrgTypeAndAccess.canViewOrgRoutes = false;
     mockMe.data = null;
+    mockIsSuperAdmin.data = false;
     mockQuotaStatus.data = { daily_limit: 100 };
   });
 
@@ -248,6 +258,55 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
+
+    it("should still show org-members for a super admin when isPersonalOrg is true and enable_integrated_idp is on", async () => {
+      mockConfigWithFeatureFlags("saas", { enable_integrated_idp: true });
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+      mockIsSuperAdmin.data = true;
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(result.current.length).toBeGreaterThan(0);
+        expect(
+          findItemByPath(result.current, "/settings/user"),
+        ).toBeDefined();
+      });
+
+      // A super admin keeps org-members even on a personal workspace...
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeDefined();
+      // ...but other org-only routes are still hidden for a personal org.
+      expect(
+        findItemByPath(result.current, "/settings/org"),
+      ).toBeUndefined();
+    });
+
+    it("should hide org-members for a super admin on a personal org when enable_integrated_idp is off", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+      mockIsSuperAdmin.data = true;
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(result.current.length).toBeGreaterThan(0);
+        expect(
+          findItemByPath(result.current, "/settings/user"),
+        ).toBeDefined();
+      });
+
+      // Without the flag, a super admin gets no new nav options -- same as
+      // on main, org-members is hidden for a personal org.
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeUndefined();
     });
 
     it("should hide org routes when user role is member", async () => {

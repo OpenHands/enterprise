@@ -17,6 +17,7 @@ import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
+import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -58,6 +59,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+  const { data: isSuperAdmin = false } = useIsSuperAdmin();
 
   // Every role has its own budget; personal workspaces have none.
   const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
@@ -67,6 +69,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     hasPermission("view_billing"),
   );
   const featureFlags = config?.feature_flags;
+  const enableIntegratedIdp = !!featureFlags?.enable_integrated_idp;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
   const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
   const acpServerName = isAcpAgent
@@ -100,10 +103,17 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/org");
   }
 
+  // Instance-level super admins keep this item even with a Personal
+  // Workspace selected, where it becomes the instance-wide "All Users"
+  // view (see ``ManageOrganizationMembers``) rather than this org's member
+  // list -- but only when ``enable_integrated_idp`` is on, since that view
+  // (and sign-up-link minting generally) is the only thing the bypass is
+  // for. Without the flag, access reverts to the plain permission check.
   if (
-    !hasPermission("invite_user_to_organization") ||
-    !organizationId ||
-    isPersonalOrg
+    !(isSuperAdmin && enableIntegratedIdp) &&
+    (!hasPermission("invite_user_to_organization") ||
+      !organizationId ||
+      isPersonalOrg)
   ) {
     items = items.filter((item) => item.to !== "/settings/org-members");
   }

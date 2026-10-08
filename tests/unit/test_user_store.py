@@ -16,7 +16,7 @@ from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.user import User
-from storage.user_store import SuperAdminRevokeResult, UserStore
+from storage.user_store import SuperAdminRevokeResult, UserDeleteResult, UserStore
 
 # --- Fixtures ---
 
@@ -480,6 +480,74 @@ async def test_create_user_reuses_existing_org(async_session_maker):
 
 
 # --- Tests for get_user_by_id ---
+
+
+async def _add_user(session, user_id, email, org_id=None, role_id=None):
+    """Create a ``User`` row with the ``current_org_id`` FK it requires."""
+    if org_id is None:
+        org_id = uuid.uuid4()
+        session.add(Org(id=org_id, name=f'org-{org_id}'))
+    session.add(User(id=user_id, current_org_id=org_id, email=email, role_id=role_id))
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_orders_and_eager_loads_role(async_session_maker):
+    """Filters by email, paginates, and flags the role-carrying super admin."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        await _add_user(session, ids[0], 'alpha@example.com', role_id=admin_role_id)
+        await _add_user(session, ids[1], 'beta@example.com')
+        await _add_user(session, ids[2], 'other@nomatch.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        users, has_more = await UserStore.list_users_paginated(
+            offset=0, limit=10, email_filter='example.com'
+        )
+
+    assert [u.id for u in users] == [ids[0], ids[1]]
+    assert has_more is False
+    assert users[0].role is not None and users[0].role.name == 'admin'
+    assert users[1].role is None
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_has_more_and_offset(async_session_maker):
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        for i in ids:
+            await _add_user(session, i, f'{i}@example.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        first_page, has_more = await UserStore.list_users_paginated(offset=0, limit=2)
+        second_page, has_more_2 = await UserStore.list_users_paginated(
+            offset=2, limit=2
+        )
+
+    assert [u.id for u in first_page] == ids[:2]
+    assert has_more is True
+    assert [u.id for u in second_page] == ids[2:]
+    assert has_more_2 is False
+
+
+@pytest.mark.asyncio
+async def test_count_users_with_and_without_filter(async_session_maker):
+    async with async_session_maker() as session:
+        await _add_user(session, uuid.uuid4(), 'match@example.com')
+        await _add_user(session, uuid.uuid4(), 'another-match@example.com')
+        await _add_user(session, uuid.uuid4(), 'nope@other.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        total = await UserStore.count_users()
+        filtered = await UserStore.count_users(email_filter='example.com')
+
+    assert total == 3
+    assert filtered == 2
 
 
 @pytest.mark.asyncio
@@ -2643,3 +2711,325 @@ async def test_revoke_unknown_user_reports_not_found(async_session_maker):
         result = await UserStore.revoke_super_admin(str(uuid.uuid4()))
 
     assert result is SuperAdminRevokeResult.NOT_FOUND
+
+
+# --- Tests for UserStore.delete_user ---
+
+
+def _patch_delete_user_stores(async_session_maker):
+    """Like ``_patch_stores``, plus a mocked LiteLLM cleanup call so
+    ``delete_user`` doesn't reach for a real LiteLLM API during tests."""
+    return (
+        *_patch_stores(async_session_maker),
+        patch(
+            'storage.org_store.OrgStore._delete_litellm_user_best_effort',
+            new=AsyncMock(),
+        ),
+    )
+
+
+async def _seed_member_role(async_session_maker) -> int:
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=2)
+        session.add(role)
+        await session.commit()
+        await session.refresh(role)
+        return role.id
+
+
+async def _seed_org_member(
+    async_session_maker, org_id: uuid.UUID, user_id: str, role_id: int
+) -> None:
+    async with async_session_maker() as session:
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=uuid.UUID(user_id),
+                role_id=role_id,
+                llm_api_key='test-key',
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_unknown_user_reports_not_found(async_session_maker):
+    await _seed_admin_role(async_session_maker)
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3:
+        result = await UserStore.delete_user(str(uuid.uuid4()))
+
+    assert result is UserDeleteResult.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_delete_user_refuses_last_super_admin(async_session_maker):
+    """The only remaining super admin cannot be deleted -- deleting their
+    row would remove the super-admin role just as surely as revoking it."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    only = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'only@example.com'
+    )
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3:
+        result = await UserStore.delete_user(only)
+
+    assert result is UserDeleteResult.LAST_SUPER_ADMIN
+
+    async with async_session_maker() as session:
+        user = await session.get(User, uuid.UUID(only))
+    assert user is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_allowed_when_another_super_admin_exists(
+    async_session_maker,
+):
+    """Deleting one of several super admins succeeds."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    a = await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'b@example.com')
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3:
+        result = await UserStore.delete_user(a)
+        admins = await UserStore.list_super_admins()
+
+    assert result is UserDeleteResult.DELETED
+    assert a not in [str(u.id) for u in admins]
+    assert len(admins) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_user_removes_user_row_and_org_membership(async_session_maker):
+    """Deleting a user drops their row and every org_member row for them,
+    and triggers a best-effort LiteLLM cleanup per org they belonged to."""
+    await _seed_admin_role(async_session_maker)
+    member_role_id = await _seed_member_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+    await _seed_org_member(async_session_maker, org_id, user_id, member_role_id)
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3 as mock_delete_litellm_user:
+        result = await UserStore.delete_user(user_id)
+
+    assert result is UserDeleteResult.DELETED
+    mock_delete_litellm_user.assert_awaited_once_with(user_id, org_id)
+
+    async with async_session_maker() as session:
+        user = await session.get(User, uuid.UUID(user_id))
+        assert user is None
+
+        members = await session.execute(
+            select(OrgMember).filter(OrgMember.user_id == uuid.UUID(user_id))
+        )
+        assert members.scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_preserves_conversations_and_drops_saas_link(
+    async_session_maker,
+):
+    """Conversation ownership survives in the legacy ``conversation_metadata``
+    table (mirrors ``downgrade_user``'s handoff); only the SaaS-specific
+    ``conversation_metadata_saas`` link -- which FKs onto ``user.id`` -- is
+    removed, since it would otherwise block the ``DELETE FROM "user"``."""
+    from sqlalchemy import text
+
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+    user_uuid = uuid.UUID(user_id)
+
+    async with async_session_maker() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO conversation_metadata
+                    (conversation_id, user_id, conversation_version, created_at, last_updated_at)
+                VALUES (:conv_id, :user_id, 'V0', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """
+            ),
+            {'conv_id': 'conv-1', 'user_id': user_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO conversation_metadata_saas (conversation_id, user_id, org_id)
+                VALUES (:conv_id, :user_id, :org_id)
+                """
+            ),
+            {'conv_id': 'conv-1', 'user_id': user_uuid, 'org_id': org_id},
+        )
+        await session.commit()
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3:
+        result = await UserStore.delete_user(user_id)
+
+    assert result is UserDeleteResult.DELETED
+
+    async with async_session_maker() as session:
+        saas_rows = (
+            await session.execute(
+                text(
+                    'SELECT 1 FROM conversation_metadata_saas WHERE user_id = :user_id'
+                ),
+                {'user_id': user_uuid},
+            )
+        ).fetchall()
+        assert saas_rows == []
+
+        legacy_row = (
+            await session.execute(
+                text(
+                    'SELECT user_id FROM conversation_metadata WHERE conversation_id = :conv_id'
+                ),
+                {'conv_id': 'conv-1'},
+            )
+        ).first()
+        assert legacy_row is not None
+        assert legacy_row.user_id == user_id
+
+
+@pytest.mark.asyncio
+async def test_delete_user_clears_other_fk_references(async_session_maker):
+    """Every other (non-cascading) FK onto ``user.id`` is released rather
+    than blocking the delete -- verifies the invariant called out in
+    ``delete_user``'s docstring."""
+    from storage.daily_conversation_usage import DailyConversationUsage
+    from storage.org_git_claim import OrgGitClaim
+    from storage.org_invitation import OrgInvitation
+    from storage.org_user_budget_override import OrgUserBudgetOverride
+    from storage.quota_increase_request import QuotaIncreaseRequest
+
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+    user_uuid = uuid.UUID(user_id)
+    other_id = await _seed_user(async_session_maker, org_id, None, 'other@example.com')
+    other_uuid = uuid.UUID(other_id)
+
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                OrgInvitation(
+                    token='tok-inviter',
+                    org_id=org_id,
+                    email='invitee1@example.com',
+                    role_id=admin_role_id,
+                    inviter_id=user_uuid,
+                    expires_at=datetime.now(),
+                ),
+                OrgInvitation(
+                    token='tok-accepted-by',
+                    org_id=org_id,
+                    email='invitee2@example.com',
+                    role_id=admin_role_id,
+                    inviter_id=other_uuid,
+                    accepted_by_user_id=user_uuid,
+                    expires_at=datetime.now(),
+                ),
+                OrgGitClaim(
+                    org_id=org_id,
+                    provider='github',
+                    git_organization='some-org',
+                    claimed_by=user_uuid,
+                    claimed_at=datetime.now(),
+                ),
+                OrgUserBudgetOverride(org_id=org_id, user_id=user_uuid),
+                DailyConversationUsage(
+                    user_id=user_uuid,
+                    usage_date=datetime.now().date(),
+                    conversation_count=1,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                ),
+                # The user's own request...
+                QuotaIncreaseRequest(
+                    user_id=user_uuid,
+                    work_email='u@example.com',
+                    baseline_limit=10,
+                    requested_limit=20,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                ),
+                # ...and one they approved for someone else, which should
+                # survive with the approver reference cleared.
+                QuotaIncreaseRequest(
+                    user_id=other_uuid,
+                    work_email='other@example.com',
+                    baseline_limit=10,
+                    requested_limit=20,
+                    approved_by_user_id=user_uuid,
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                ),
+            ]
+        )
+        await session.commit()
+
+    p1, p2, p3 = _patch_delete_user_stores(async_session_maker)
+    with p1, p2, p3:
+        result = await UserStore.delete_user(user_id)
+
+    assert result is UserDeleteResult.DELETED
+
+    async with async_session_maker() as session:
+        assert (
+            await session.execute(
+                select(OrgInvitation).filter(
+                    (OrgInvitation.inviter_id == user_uuid)
+                    | (OrgInvitation.accepted_by_user_id == user_uuid)
+                )
+            )
+        ).scalars().first() is None
+
+        assert (
+            await session.execute(
+                select(OrgGitClaim).filter(OrgGitClaim.claimed_by == user_uuid)
+            )
+        ).scalars().first() is None
+
+        assert (
+            await session.execute(
+                select(OrgUserBudgetOverride).filter(
+                    OrgUserBudgetOverride.user_id == user_uuid
+                )
+            )
+        ).scalars().first() is None
+
+        assert (
+            await session.execute(
+                select(DailyConversationUsage).filter(
+                    DailyConversationUsage.user_id == user_uuid
+                )
+            )
+        ).scalars().first() is None
+
+        assert (
+            await session.execute(
+                select(QuotaIncreaseRequest).filter(
+                    QuotaIncreaseRequest.user_id == user_uuid
+                )
+            )
+        ).scalars().first() is None
+
+        other_request = (
+            (
+                await session.execute(
+                    select(QuotaIncreaseRequest).filter(
+                        QuotaIncreaseRequest.user_id == other_uuid
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert other_request is not None
+        assert other_request.approved_by_user_id is None
