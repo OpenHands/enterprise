@@ -410,13 +410,24 @@ class SaaSGitLabService(GitLabService):
 
         deleted = 0
         try:
-            hooks, _ = await self._make_request(url, params={'per_page': 100})
-            for hook in hooks or []:
-                if hook.get('url') == webhook_url:
-                    await self._make_request(
-                        f'{url}/{hook["id"]}', method=RequestMethod.DELETE
-                    )
-                    deleted += 1
+            # List every page before deleting, since deleting shifts the pages.
+            hook_ids = []
+            page = 1
+            while True:
+                hooks, headers = await self._make_request(
+                    url, params={'per_page': 100, 'page': page}
+                )
+                hook_ids.extend(
+                    hook['id'] for hook in hooks or [] if hook.get('url') == webhook_url
+                )
+                if 'rel="next"' not in headers.get('Link', ''):
+                    break
+                page += 1
+            for hook_id in hook_ids:
+                await self._make_request(
+                    f'{url}/{hook_id}', method=RequestMethod.DELETE
+                )
+                deleted += 1
             return deleted, None
         except RateLimitError:
             return deleted, WebhookStatus.RATE_LIMITED

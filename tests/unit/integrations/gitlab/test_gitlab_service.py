@@ -238,7 +238,10 @@ class TestDeleteWebhooksWithUrl:
             )
 
         assert (deleted, status) == (2, None)
-        assert mock_request.call_args_list[0].kwargs['params'] == {'per_page': 100}
+        assert mock_request.call_args_list[0].kwargs['params'] == {
+            'per_page': 100,
+            'page': 1,
+        }
         delete_calls = mock_request.call_args_list[1:]
         assert [call.args[0] for call in delete_calls] == [
             f'{gitlab_service.BASE_URL}/groups/42/hooks/1',
@@ -247,6 +250,31 @@ class TestDeleteWebhooksWithUrl:
         assert all(
             call.kwargs['method'] == RequestMethod.DELETE for call in delete_calls
         )
+
+    async def test_deletes_matching_hooks_on_every_page(self, gitlab_service):
+        next_page = {'Link': '<https://gitlab/next>; rel="next"'}
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = [
+                ([{'id': 1, 'url': 'https://ours/hook'}], next_page),
+                ([{'id': 2, 'url': 'https://ours/hook'}], {}),
+                (None, {}),
+                (None, {}),
+            ]
+
+            deleted, status = await gitlab_service.delete_webhooks_with_url(
+                GitLabResourceType.PROJECT, '7', 'https://ours/hook'
+            )
+
+        assert (deleted, status) == (2, None)
+        calls = mock_request.call_args_list
+        assert [c.kwargs.get('params') for c in calls[:2]] == [
+            {'per_page': 100, 'page': 1},
+            {'per_page': 100, 'page': 2},
+        ]
+        assert [c.args[0] for c in calls[2:]] == [
+            f'{gitlab_service.BASE_URL}/projects/7/hooks/1',
+            f'{gitlab_service.BASE_URL}/projects/7/hooks/2',
+        ]
 
     async def test_rate_limit_part_way_reports_what_was_deleted(self, gitlab_service):
         hooks = [
