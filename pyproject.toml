@@ -31,6 +31,7 @@ dependencies = [
   "e2b==2.46.0",
   "fastapi",
   "fastmcp>=3.2,<4",
+  "fsspec==2026.6.0",                               # CVE-2026-104851 (fixed in 2026.6.0); transitive via huggingface-hub
   "gitpython==3.1.62",
   "google-api-python-client>=2.164",                # For Google Sheets API
   "google-auth-httplib2==0.3.1",                    # For Google Sheets authentication
