@@ -119,9 +119,11 @@ async def _ask_still_current(
             raise ChildJobDeadlineExceeded(module, attempts, None)
         try:
             return await asyncio.wait_for(still_current(), remaining())
-        except TimeoutError:
-            raise ChildJobDeadlineExceeded(module, attempts, None) from None
-        except Exception:
+        except Exception as error:
+            # Only the deadline's own timeout ends the job; a TimeoutError raised
+            # by the read itself (a database timeout) is a failed read.
+            if isinstance(error, TimeoutError) and remaining() <= 0:
+                raise ChildJobDeadlineExceeded(module, attempts, None) from None
             _logger.warning(
                 'child_job.status_read_failed',
                 extra={'job_module': module},
@@ -150,25 +152,33 @@ async def _run_once(
         process = await asyncio.shield(spawning)
         return await asyncio.wait_for(process.wait(), timeout)
     except TimeoutError:
-        await _stop(process, stop_grace_seconds)
+        # A cancellation during the stop must not free the slot before the child
+        # is gone, so it is held back and raised once the child has exited.
+        _, cancelled = await _despite_cancellation(
+            asyncio.ensure_future(_stop(process, stop_grace_seconds))
+        )
+        if cancelled:
+            raise asyncio.CancelledError
         return None
     except asyncio.CancelledError:
         # The worker is cancelling the job. Hold its slot until the child is gone,
         # even if the cancellation is repeated.
-        process = await _despite_cancellation(spawning)
+        process, _ = await _despite_cancellation(spawning)
         await _despite_cancellation(
             asyncio.ensure_future(_stop(process, stop_grace_seconds))
         )
         raise
 
 
-async def _despite_cancellation[T](task: asyncio.Future[T]) -> T:
+async def _despite_cancellation[T](task: asyncio.Future[T]) -> tuple[T, bool]:
+    """The task's result, and whether this was cancelled while waiting for it."""
+    cancelled = False
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            continue
-    return task.result()
+            cancelled = True
+    return task.result(), cancelled
 
 
 async def _stop(process: asyncio.subprocess.Process, grace_seconds: float) -> None:

@@ -293,6 +293,29 @@ async def test_a_failed_status_read_is_retried_and_never_starts_an_attempt(
     assert result.attempts == 1
 
 
+async def test_a_status_read_that_times_out_is_retried_not_the_deadline(tmp_path):
+    env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
+    reads: list[str] = []
+
+    async def timing_out_read() -> bool:
+        reads.append('read')
+        if len(reads) == 1:
+            raise TimeoutError('db connect timeout')
+        return True
+
+    result = await run_child_job(
+        'job_ok',
+        env=env,
+        deadline_seconds=30,
+        backoff_limit=3,
+        still_current=timing_out_read,
+        **FAST,
+    )
+
+    assert len(reads) == 2
+    assert result.attempts == 1
+
+
 async def test_a_status_read_that_keeps_failing_ends_at_the_deadline(tmp_path):
     env = _module(tmp_path, 'job_ok', FLAKY) | {'FAIL_TIMES': '0'}
 
@@ -333,6 +356,30 @@ async def test_cancelling_the_job_stops_the_child_before_the_cancel_returns(
     job.cancel()
     # A second cancellation must not free the slot before the child is gone.
     await asyncio.sleep(0.05)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    assert not _alive(child)
+    assert await _gone(grandchild)
+
+
+async def test_cancelling_during_the_deadline_stop_still_stops_the_child(tmp_path):
+    env = _module(tmp_path, 'job_hangs', HANGS) | {'IGNORE_SIGTERM': '1'}
+    job = asyncio.create_task(
+        run_child_job(
+            'job_hangs',
+            env=env,
+            deadline_seconds=1,
+            backoff_limit=3,
+            still_current=always_current,
+            **(FAST | {'stop_grace_seconds': 3}),
+        )
+    )
+    child, grandchild = await _pids(tmp_path)
+
+    # The deadline has passed and SIGTERM was ignored: the grace period is running.
+    await asyncio.sleep(1.5)
     job.cancel()
     with pytest.raises(asyncio.CancelledError):
         await job
