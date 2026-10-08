@@ -1,7 +1,7 @@
 """Add first-install wizard and setup-guide state to instance_settings.
 
-Revision ID: 180
-Revises: 179
+Revision ID: 181
+Revises: 180
 Create Date: 2026-10-04
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '180'
-down_revision: str | None = '179'
+revision: str = '181'
+down_revision: str | None = '180'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
