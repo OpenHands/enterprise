@@ -20,8 +20,7 @@ spec.loader.exec_module(migration_179)
 
 
 def _clear_env(monkeypatch):
-    for key in ('ENABLE_INTEGRATED_IDP', 'OH_DEPLOYMENT_MODE', 'WEB_HOST'):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv('ENABLE_INTEGRATED_IDP', raising=False)
 
 
 # ── _is_integrated_idp_enabled ──────────────────────────────────────────────
@@ -55,40 +54,6 @@ def test_disabled_with_falsy_value(monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'false')
     assert migration_179._is_integrated_idp_enabled() is False
-
-
-# ── _is_cloud_deployment ─────────────────────────────────────────────────
-
-
-def test_cloud_via_deployment_mode(monkeypatch):
-    _clear_env(monkeypatch)
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'cloud')
-    assert migration_179._is_cloud_deployment() is True
-
-
-def test_self_hosted_via_deployment_mode(monkeypatch):
-    _clear_env(monkeypatch)
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'self_hosted')
-    assert migration_179._is_cloud_deployment() is False
-
-
-def test_cloud_via_default_web_host(monkeypatch):
-    """No ``WEB_HOST`` set mirrors ``server.constants.HOST``'s own default
-    (``app.all-hands.dev``) -- unset means cloud."""
-    _clear_env(monkeypatch)
-    assert migration_179._is_cloud_deployment() is True
-
-
-def test_cloud_via_all_hands_dev_subdomain(monkeypatch):
-    _clear_env(monkeypatch)
-    monkeypatch.setenv('WEB_HOST', 'staging.all-hands.dev')
-    assert migration_179._is_cloud_deployment() is True
-
-
-def test_self_hosted_via_custom_web_host(monkeypatch):
-    _clear_env(monkeypatch)
-    monkeypatch.setenv('WEB_HOST', 'openhands.customer.example.com')
-    assert migration_179._is_cloud_deployment() is False
 
 
 # ── downgrade is a straightforward DELETE ────────────────────────────────
@@ -138,7 +103,6 @@ def test_upgrade_seeds_row_when_enabled(
     )
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'self_hosted')
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'upgrade', 'head'
     )
@@ -165,25 +129,6 @@ def test_upgrade_noop_when_disabled(
     )
 
     monkeypatch.delenv('ENABLE_INTEGRATED_IDP', raising=False)
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'self_hosted')
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
-    )
-
-    assert _provider_rows(engine) == []
-
-
-def test_upgrade_noop_on_cloud_even_when_enabled(
-    monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
-):
-    """The integrated IDP must never be seeded on the managed cloud
-    deployment, even if the env var were accidentally set there."""
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '178'
-    )
-
-    monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'cloud')
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'upgrade', 'head'
     )
@@ -201,7 +146,6 @@ def test_upgrade_idempotent_when_row_already_exists(
     )
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'self_hosted')
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'upgrade', 'head'
     )
@@ -228,7 +172,6 @@ def test_downgrade_removes_only_integrated_idp_row(
     )
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
-    monkeypatch.setenv('OH_DEPLOYMENT_MODE', 'self_hosted')
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'upgrade', 'head'
     )

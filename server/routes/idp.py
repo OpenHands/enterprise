@@ -290,8 +290,8 @@ async def is_idp_available() -> bool:
 
     Governed solely by whether migration 179 seeded an ``oauth_providers``
     row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
-    migration time, and never on the managed cloud deployment). Whether a
-    real IDP is *also* configured does not affect availability.
+    migration time). Whether a real IDP is *also* configured does not affect
+    availability.
     """
     return await _get_integrated_idp_provider() is not None
 
@@ -517,11 +517,10 @@ async def idp_login_form(
 ):
     """Serve the email+password login form.
 
-    Returns ``404`` if this IDP is not available (real IDP configured or
-    cloud deployment). Redirects to the sign-up (bootstrap) page if no super
-    admin can log in with a password yet — there is nothing to log into
-    until one is created (or an existing passwordless super admin claims
-    their account).
+    Returns ``404`` if this IDP is not available (see ``is_idp_available``).
+    Redirects to the sign-up (bootstrap) page if no super admin can log in
+    with a password yet — there is nothing to log into until one is created
+    (or an existing passwordless super admin claims their account).
     """
     await _require_idp_available()
     web_url = get_web_url(request)
@@ -541,14 +540,13 @@ async def idp_signup_form(
 ):
     """Serve the email+password admin-account-creation form.
 
-    Returns ``404`` if this IDP is not available (real IDP configured or
-    cloud deployment). Redirects to the login page once a super admin can
-    already log in with a password — self-service account creation is
-    bootstrap-only; every subsequent account is created by a super admin,
-    not through this form. A super admin *row* existing with no password set
-    yet (e.g. backfilled before ``User.password_hash`` existed) does **not**
-    hide this form — it is still needed to finish that super admin's
-    bootstrap.
+    Returns ``404`` if this IDP is not available (see ``is_idp_available``).
+    Redirects to the login page once a super admin can already log in with a
+    password — self-service account creation is bootstrap-only; every
+    subsequent account is created by a super admin, not through this form.
+    A super admin *row* existing with no password set yet (e.g. backfilled
+    before ``User.password_hash`` existed) does **not** hide this form — it
+    is still needed to finish that super admin's bootstrap.
     """
     await _require_idp_available()
     web_url = get_web_url(request)

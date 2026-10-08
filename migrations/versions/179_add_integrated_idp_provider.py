@@ -25,10 +25,6 @@ exactly as unavailable as it is today. The row has no ``client_secret`` /
 ``token_url`` / ``authorization_url`` -- there is no external OAuth flow to
 drive, mirroring the sentinel's previous defaults.
 
-Guarded against seeding on the managed cloud deployment even if the env var
-were ever accidentally set there: this IDP is self-hosted-only, never a
-substitute for a real identity provider (no rate limiting, no MFA).
-
 Revision ID: 179
 Revises: 178
 Create Date: 2026-10-08 00:00:00.000000
@@ -62,29 +58,8 @@ def _is_integrated_idp_enabled() -> bool:
     )
 
 
-def _is_cloud_deployment() -> bool:
-    """Best-effort cloud guard, independent of ``server.constants``.
-
-    The integrated IDP must never be enabled on the managed cloud deployment.
-    ``DEPLOYMENT_MODE``/``OH_DEPLOYMENT_MODE`` mirrors
-    ``server.constants.DEPLOYMENT_MODE``'s own resolution, duplicated here
-    (rather than imported) for the same reason as ``_INTEGRATED_IDP_CATEGORY``
-    above -- this check must not silently change behavior if that module is
-    refactored later.
-    """
-    mode = os.getenv('OH_DEPLOYMENT_MODE', '').strip().lower()
-    if mode in ('cloud', 'self_hosted'):
-        return mode == 'cloud'
-    # Mirrors server.constants.HOST's default -- WEB_HOST unset means cloud,
-    # the same as the app itself assumes.
-    host = os.getenv('WEB_HOST', 'app.all-hands.dev').strip().lower()
-    return host in ('app.all-hands.dev', 'app.openhands.ai') or host.endswith(
-        ('.all-hands.dev', '.openhands.ai', '.openhands.dev')
-    )
-
-
 def upgrade() -> None:
-    if not _is_integrated_idp_enabled() or _is_cloud_deployment():
+    if not _is_integrated_idp_enabled():
         return
 
     bind = op.get_bind()
