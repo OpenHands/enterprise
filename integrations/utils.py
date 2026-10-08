@@ -148,7 +148,8 @@ def has_exact_mention(text: str, mention: str) -> bool:
     """Check if the text contains an exact mention.
 
     The mention must not be part of a larger word, a scoped package name
-    (@openhands/pkg) or a domain (@openhands.com).
+    (@openhands/pkg), a package glob (@openhands/*), a URL-encoded scoped
+    package name (@openhands%2fpkg) or a domain (@openhands.com).
 
     Args:
         text: The text to check for mentions
@@ -173,10 +174,14 @@ def has_exact_mention(text: str, mention: str) -> bool:
 
     pattern = re.escape(mention_lower)
     # Match mention that is not part of a larger word. A '/' or '.' ends the
-    # mention only when no word character or '-' follows it, so scoped
-    # package names (@openhands/pkg) and domains (@openhands.com) do not
-    # match, but a sentence end (Thanks @openhands.) does.
-    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w-])', text_lower))
+    # mention only when no word character, '-' or '*' follows it, so scoped
+    # package names (@openhands/pkg), package globs (@openhands/*) and domains
+    # (@openhands.com) do not match, but a sentence end (Thanks @openhands.)
+    # does. A URL-encoded '/' (@openhands%2fpkg) does not match either; the
+    # text is lowercase, so '%2f' also covers '%2F'.
+    return bool(
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w*-]|%2f)', text_lower)
+    )
 
 
 def infer_repo_from_message(user_msg: str) -> list[str]:
