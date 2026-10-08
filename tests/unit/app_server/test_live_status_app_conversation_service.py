@@ -4065,6 +4065,38 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     @pytest.mark.asyncio
+    async def test_start_app_conversation_starts_the_agent_with_the_resolved_provider(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """The agent gets the same provider as the saved row, so the PLAN.md
+        path matches the one that sub-conversations inherit."""
+        provider_handler = Mock()
+        provider_handler.verify_repo_provider = AsyncMock(
+            return_value=Mock(git_provider=ProviderType.GITLAB)
+        )
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=provider_handler
+        )
+        request = AppConversationStartRequest(
+            selected_repository='group/sub/repo', selected_branch='main'
+        )
+
+        await self._start_and_get_saved_info(
+            request, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
+        build_args = (
+            self.service._build_start_conversation_request_for_user.call_args.args
+        )
+        assert build_args[5] == ProviderType.GITLAB
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
     async def test_start_app_conversation_starts_when_the_provider_lookup_fails(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):

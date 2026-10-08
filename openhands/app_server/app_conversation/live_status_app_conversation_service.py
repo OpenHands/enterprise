@@ -553,7 +553,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             # Resolve the provider before the agent-server starts the
             # conversation, so the save below is not delayed while the
-            # "started" webhook may already be writing the row.
+            # "started" webhook may already be writing the row. The agent
+            # gets the same provider, so its PLAN.md path matches the one
+            # that sub-conversations inherit from the saved row.
             git_provider = request.git_provider
             if request.selected_repository and git_provider is None:
                 git_provider = await self._resolve_git_provider(
@@ -579,7 +581,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     conversation_id,
                     request.initial_message,
                     request.system_message_suffix,
-                    request.git_provider,
+                    git_provider,
                     working_dir,
                     request.agent_type,
                     request.llm_model,
