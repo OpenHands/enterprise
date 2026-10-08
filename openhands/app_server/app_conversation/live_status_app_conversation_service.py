@@ -2889,8 +2889,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if 'selected_repository' in request.model_fields_set:
             repo = request.selected_repository
             if repo is not None:
-                # Validate repository format (owner/repo)
-                if '/' not in repo or repo.count('/') != 1:
+                # Validate repository format: owner/repo, or more segments for
+                # Azure DevOps (org/project/repo) and GitLab subgroups.
+                segments = repo.split('/')
+                if len(segments) < 2 or not all(segments):
                     raise ValueError(
                         f"Invalid repository format: '{repo}'. Expected 'owner/repo'."
                     )

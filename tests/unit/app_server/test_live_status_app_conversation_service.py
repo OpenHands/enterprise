@@ -4230,6 +4230,31 @@ class TestLiveStatusAppConversationService:
         assert result.title == 'New title'
         assert result.tags == {'environmenturl': 'https://env/a'}
 
+    @pytest.mark.parametrize(
+        'repository',
+        ['owner/repo', 'org/project/repo', 'group/sub/repo'],
+    )
+    def test_validate_repository_update_accepts_provider_repository_names(
+        self, repository
+    ):
+        """Azure DevOps and GitLab subgroup names have more than one slash."""
+        request = AppConversationUpdateRequest(
+            selected_repository=repository, selected_branch='main'
+        )
+
+        self.service._validate_repository_update(request)
+
+    @pytest.mark.parametrize(
+        'repository', ['repo', 'owner//repo', '/repo', 'owner/repo;rm']
+    )
+    def test_validate_repository_update_rejects_invalid_names(self, repository):
+        request = AppConversationUpdateRequest(
+            selected_repository=repository, selected_branch='main'
+        )
+
+        with pytest.raises(ValueError):
+            self.service._validate_repository_update(request)
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
