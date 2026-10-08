@@ -284,6 +284,21 @@ describe("Budgets", () => {
     );
   });
 
+  it("shows the Slack channel input without a # prefix icon", async () => {
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      slack_channel: "#alerts",
+    });
+    await renderBudgets();
+
+    const input = screen.getByLabelText("Slack channel");
+    expect(input).toHaveValue("#alerts");
+    expect(input).toHaveAttribute("placeholder", "#budget-alerts");
+    // The channel value already starts with "#" (the API requires it), so a
+    // "#" icon in front of the input would show it twice.
+    expect(input.parentElement?.querySelector("svg")).toBeNull();
+  });
+
   it("preserves hidden alert settings when saving the monthly limit", async () => {
     const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
