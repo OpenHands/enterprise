@@ -1480,6 +1480,10 @@ class OrgBudgetService:
             'spend_observed_at': (
                 snapshot.observed_at if snapshot is not None else None
             ),
+            # LiteLLM enforces the organization cap as well as the member's
+            # own, so the page needs both to show what can still be spent.
+            'org_monthly_limit': settings.monthly_limit,
+            'org_current_spend': _litellm_cycle_spend(settings, snapshot),
         }
 
     async def _record_litellm_sync(

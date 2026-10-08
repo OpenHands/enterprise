@@ -637,6 +637,8 @@ export const ORG_HANDLERS = [
       ).toISOString(),
       spend_status: "live",
       spend_observed_at: now.toISOString(),
+      org_monthly_limit: 1000,
+      org_current_spend: 912.4,
     });
   }),
 

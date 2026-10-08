@@ -1,3 +1,4 @@
+import { BarChart2, Wallet } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -11,6 +12,7 @@ import {
   formatShortDate,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
 import { SpendMeter } from "#/components/features/budgets/budgets-components";
+import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { useMyBudget } from "#/hooks/query/use-my-budget";
 import { useMyUsage } from "#/hooks/query/use-my-usage";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
@@ -46,6 +48,15 @@ const TIME_WINDOWS = [
 
 type TimeWindow = (typeof TIME_WINDOWS)[number];
 
+// The third card can show either the member's own figures or the
+// organization's; LiteLLM enforces both caps.
+const BUDGET_SCOPES = [
+  { value: "user", label: I18nKey.SETTINGS$NAV_YOUR_BUDGET },
+  { value: "org", label: I18nKey.SETTINGS$YOUR_BUDGET_SCOPE_ORG },
+] as const;
+
+type BudgetScope = (typeof BUDGET_SCOPES)[number]["value"];
+
 const formatLongDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, {
     year: "numeric",
@@ -64,45 +75,90 @@ function Spinner({ testId }: { testId: string }) {
   );
 }
 
-function StatCard({
-  label,
-  value,
-  sublines,
-  testId,
-}: {
+interface StatFigureProps {
   label: string;
   value: string;
-  sublines: (string | null)[];
   testId: string;
-}) {
+  sublines?: (string | null)[];
+  /** Explanation shown in an info tooltip next to the label. */
+  help?: string;
+  /** Leading icon, shown in a circle beside the figure. */
+  icon?: React.ReactNode;
+  /** Sentence-case label for the compact figures inside the scope card. */
+  plainLabel?: boolean;
+}
+
+function StatFigure({
+  label,
+  value,
+  testId,
+  sublines = [],
+  help,
+  icon,
+  plainLabel = false,
+}: StatFigureProps) {
   return (
-    <div
-      className={cn(CARD_CLASS_NAME, "flex flex-col gap-2 px-4 py-5")}
-      data-testid={testId}
-    >
-      <span className="text-xs font-medium uppercase tracking-wide text-muted">
-        {label}
-      </span>
-      <span className="text-2xl font-bold leading-none text-foreground">
-        {value}
-      </span>
-      {sublines.filter(Boolean).map((subline) => (
-        <span key={subline} className="text-xs text-muted">
-          {subline}
+    <div className="flex gap-3" data-testid={testId}>
+      {icon && (
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-tertiary text-foreground">
+          {icon}
         </span>
-      ))}
+      )}
+      <div className="flex min-w-0 flex-col gap-2">
+        <span
+          className={cn(
+            "flex items-center gap-1.5 text-muted",
+            icon ? "min-h-10" : undefined,
+            plainLabel
+              ? "text-sm"
+              : "text-xs font-medium uppercase tracking-wide",
+          )}
+        >
+          {label}
+          {help && <InfoTooltip content={help} />}
+        </span>
+        <span className="text-2xl font-bold leading-none text-foreground">
+          {value}
+        </span>
+        {sublines.filter(Boolean).map((subline) => (
+          <span key={subline} className="text-xs text-muted">
+            {subline}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
 
 function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
   const { t } = useTranslation();
+  const [scope, setScope] = React.useState<BudgetScope>("user");
 
   const limit = budget.monthly_limit ?? null;
   const spend = budget.current_spend ?? null;
   const remaining =
     limit !== null && spend !== null ? Math.max(limit - spend, 0) : null;
-  const percentage = limit && spend !== null ? (spend / limit) * 100 : null;
+  const orgLimit = budget.org_monthly_limit ?? null;
+  const orgSpend = budget.org_current_spend ?? null;
+  const orgRemaining =
+    orgLimit !== null && orgSpend !== null
+      ? Math.max(orgLimit - orgSpend, 0)
+      : null;
+  // LiteLLM enforces the organization cap as well as the personal one, so
+  // the tighter of the two is what can actually still be spent. When one
+  // side is unknown or unlimited, the other is the only cap.
+  let available = remaining ?? orgRemaining;
+  if (remaining !== null && orgRemaining !== null) {
+    available = Math.min(remaining, orgRemaining);
+  }
+  const scoped =
+    scope === "user"
+      ? { limit, spend, remaining }
+      : { limit: orgLimit, spend: orgSpend, remaining: orgRemaining };
+  const percentage =
+    scoped.limit && scoped.spend !== null
+      ? (scoped.spend / scoped.limit) * 100
+      : null;
 
   const now = Date.now();
   const elapsedDays = budget.cycle_start_at
@@ -174,32 +230,100 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <StatCard
-          testId="your-budget-allocation"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_ALLOCATION)}
-          value={
-            limit === null
-              ? t(I18nKey.SETTINGS$YOUR_BUDGET_NO_LIMIT)
-              : formatCost(limit)
-          }
-          sublines={[allocationNote]}
-        />
-        <StatCard
-          testId="your-budget-spent"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_SPENT)}
-          value={spend === null ? EMPTY_VALUE : formatCost(spend)}
-          sublines={[spendNote, staleNote]}
-        />
-        <StatCard
-          testId="your-budget-remaining"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING)}
-          value={remaining === null ? EMPTY_VALUE : formatCost(remaining)}
-          sublines={[remainingNote]}
-        />
+      <div className="@container">
+        <div className="grid grid-cols-1 gap-4 @xl:grid-cols-2">
+          <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
+            <StatFigure
+              testId="your-budget-available"
+              icon={<Wallet className="size-5" strokeWidth={2} aria-hidden />}
+              label={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE)}
+              help={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE_TOOLTIP)}
+              value={available === null ? EMPTY_VALUE : formatCost(available)}
+              sublines={[t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE_HELP)]}
+            />
+          </div>
+          <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
+            <StatFigure
+              testId="your-budget-spent"
+              icon={
+                <BarChart2 className="size-5" strokeWidth={2} aria-hidden />
+              }
+              label={t(I18nKey.SETTINGS$YOUR_BUDGET_SPENT)}
+              value={spend === null ? EMPTY_VALUE : formatCost(spend)}
+              sublines={[spendNote, staleNote]}
+            />
+          </div>
+          {/* The scope card needs the most room, so it takes a full row. */}
+          <div
+            className={cn(
+              CARD_CLASS_NAME,
+              "flex flex-col gap-4 px-4 py-5 @xl:col-span-2",
+            )}
+            data-testid="your-budget-scope"
+          >
+            <div
+              className="flex rounded-lg border border-border-subtle p-0.5"
+              data-testid="your-budget-scope-toggle"
+            >
+              {BUDGET_SCOPES.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setScope(option.value)}
+                  aria-pressed={option.value === scope}
+                  className={cn(
+                    "flex-1 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium",
+                    option.value === scope
+                      ? "bg-tertiary text-foreground"
+                      : "text-muted hover:text-foreground",
+                  )}
+                >
+                  {t(option.label)}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 divide-x divide-border-subtle">
+              <div className="pr-4">
+                <StatFigure
+                  testId="your-budget-allocation"
+                  plainLabel
+                  label={t(I18nKey.SETTINGS$YOUR_BUDGET_ALLOCATION)}
+                  help={
+                    scope === "user"
+                      ? allocationNote
+                      : t(I18nKey.SETTINGS$YOUR_BUDGET_ORG_ALLOCATION_HELP)
+                  }
+                  value={
+                    scoped.limit === null
+                      ? t(I18nKey.SETTINGS$YOUR_BUDGET_NO_LIMIT)
+                      : formatCost(scoped.limit)
+                  }
+                />
+              </div>
+              <div className="pl-4">
+                <StatFigure
+                  testId="your-budget-remaining"
+                  plainLabel
+                  label={t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING)}
+                  help={
+                    scope === "user"
+                      ? (remainingNote ??
+                        t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING_HELP))
+                      : t(I18nKey.SETTINGS$YOUR_BUDGET_ORG_REMAINING_HELP)
+                  }
+                  value={
+                    scoped.remaining === null
+                      ? EMPTY_VALUE
+                      : formatCost(scoped.remaining)
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {limit !== null && (
+      {scoped.limit !== null && (
         <div
           className={cn(CARD_CLASS_NAME, "flex flex-col gap-3 p-4")}
           data-testid="your-budget-meter"

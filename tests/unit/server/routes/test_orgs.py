@@ -4378,6 +4378,32 @@ async def test_member_reads_own_budget_without_admin_privileges(own_budget_api, 
 
 
 @pytest.mark.asyncio
+async def test_own_budget_includes_the_organization_figures(own_budget_api, org_id):
+    """
+    GIVEN: The member's budget comes with the organization's limit and cycle spend
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: Both organization figures are returned alongside the member's own
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+    budget_service.get_my_budget.return_value = {
+        'enabled': True,
+        'monthly_limit': 50.0,
+        'current_spend': 10.0,
+        'org_monthly_limit': 1000.0,
+        'org_current_spend': 912.4,
+    }
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['org_monthly_limit'] == 1000.0
+    assert response.json()['org_current_spend'] == 912.4
+
+
+@pytest.mark.asyncio
 async def test_own_budget_is_always_read_for_the_authenticated_user(
     own_budget_api, org_id, target_user_id
 ):

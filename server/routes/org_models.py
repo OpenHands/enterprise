@@ -853,6 +853,8 @@ class OrgMyBudgetResponse(BaseModel):
     cycle_end_at: datetime | None = None
     spend_status: Literal['live', 'stale', 'unavailable'] | None = None
     spend_observed_at: datetime | None = None
+    org_monthly_limit: float | None = None
+    org_current_spend: float | None = None
 
 
 class OrgBudgetSettingsResponse(BaseModel):
