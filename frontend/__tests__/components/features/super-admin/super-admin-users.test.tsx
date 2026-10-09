@@ -341,6 +341,11 @@ describe("Super Admin Users page", () => {
         "password-reset-link-result-modal",
       );
       expect(within(resultModal).getByText(SAM.email)).toBeInTheDocument();
+      // "invite" wording doesn't fit a password reset, unlike the sign-up
+      // link modals that reuse this same button.
+      expect(
+        within(resultModal).getByText("ORG$COPY_LINK"),
+      ).toBeInTheDocument();
     });
   });
 

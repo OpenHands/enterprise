@@ -71,7 +71,11 @@ export function CreatePasswordResetLinkModal({
         data-testid="password-reset-link-result"
       >
         <span className="truncate">{email}</span>
-        <CopyInviteLinkButton inviteUrl={link} />
+        <CopyInviteLinkButton
+          inviteUrl={link}
+          label={I18nKey.ORG$COPY_LINK}
+          copiedLabel={I18nKey.ORG$LINK_COPIED}
+        />
       </div>
     </OrgModal>
   );
