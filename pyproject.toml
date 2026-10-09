@@ -52,7 +52,7 @@ dependencies = [
   "kubernetes>=33.1",
   "libtmux>=0.46.2",
   "limits==5.8.0",
-  "litellm==1.94.0",                                # Exact pin; litellm 1.94.0 is required by openhands-sdk 1.38.0+ (>=1.93.0). Bump explicitly when upgrading to ensure only the tested version is used.
+  "litellm==1.94.3",                                # Exact pin; litellm 1.94.0 is required by openhands-sdk 1.38.0+ (>=1.93.0). Bump explicitly when upgrading to ensure only the tested version is used.
   "lmnr>=0.7.20",
   "mcp==1.28.1",
   "memory-profiler==0.61.0",
