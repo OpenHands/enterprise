@@ -38,6 +38,18 @@ vi.mock("#/hooks/mutation/use-org-llm-profile-mutations", () => ({
   }),
 }));
 
+// Provider connections live in a sub-manager rendered by OrgLlmProfilesManager.
+// Mock the query so the list section renders without a QueryClient provider.
+const connectionsState: {
+  data: unknown[] | undefined;
+  isLoading: boolean;
+  error: Error | null;
+} = { data: undefined, isLoading: false, error: null };
+
+vi.mock("#/hooks/query/use-provider-connections", () => ({
+  useProviderConnections: () => connectionsState,
+}));
+
 const sampleProfiles: ProfilesList = {
   profiles: [
     {
@@ -58,10 +70,12 @@ const sampleProfiles: ProfilesList = {
 
 function renderManager({
   canManage,
+  showProviderConnections,
   onAddProfile,
   onEditProfile,
 }: {
   canManage?: boolean;
+  showProviderConnections?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
 } = {}) {
@@ -69,6 +83,7 @@ function renderManager({
     <OrgLlmProfilesManager
       orgId="org-1"
       canManage={canManage}
+      showProviderConnections={showProviderConnections}
       onAddProfile={onAddProfile}
       onEditProfile={onEditProfile}
     />,
@@ -79,6 +94,9 @@ beforeEach(() => {
   profilesState.data = sampleProfiles;
   profilesState.isLoading = false;
   profilesState.error = null;
+  connectionsState.data = [];
+  connectionsState.isLoading = false;
+  connectionsState.error = null;
   activateMock.mockReset().mockResolvedValue(undefined);
   deleteMock.mockReset().mockResolvedValue(undefined);
   renameMock.mockReset().mockResolvedValue(undefined);
@@ -108,5 +126,51 @@ describe("OrgLlmProfilesManager", () => {
     expect(
       screen.queryByTestId("profile-menu-trigger"),
     ).not.toBeInTheDocument();
+  });
+
+  it("only renders the provider connections section when asked to", () => {
+    const { unmount } = renderManager({ canManage: true });
+    expect(
+      screen.queryByTestId("provider-connections-manager"),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    renderManager({ canManage: true, showProviderConnections: true });
+    expect(
+      screen.getByTestId("provider-connections-manager"),
+    ).toBeInTheDocument();
+  });
+
+  it("groups profiles under their linked provider connection's name", () => {
+    profilesState.data = {
+      profiles: [
+        {
+          name: "gpt",
+          model: "openai/gpt-4o",
+          base_url: null,
+          api_key_set: true,
+          provider_connection_id: "conn-1",
+        },
+        {
+          name: "sonnet",
+          model: "openhands/claude-sonnet-4-5-20250929",
+          base_url: null,
+          api_key_set: true,
+        },
+      ],
+      active_profile: "gpt",
+    };
+    connectionsState.data = [{ id: "conn-1", display_name: "OpenAI key" }];
+
+    renderManager({ canManage: true });
+
+    const headers = screen.getAllByTestId("profile-group-header");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toHaveTextContent("OpenAI key");
+    expect(headers[1]).toHaveTextContent("SETTINGS$PROFILES_UNGROUPED");
+
+    const rows = screen.getAllByTestId("profile-row");
+    expect(rows[0]).toHaveTextContent("gpt");
+    expect(rows[1]).toHaveTextContent("sonnet");
   });
 });
