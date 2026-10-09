@@ -88,7 +88,7 @@ describe("SettingsNavigation", () => {
   });
 
   describe("settings brand header", () => {
-    it("should show Account label and Back to App link to canvas", async () => {
+    it("should show Account label and Back to App link to canvas on the selected org", async () => {
       renderSettingsNavigation();
 
       await screen.findByTestId("settings-navbar");
@@ -97,10 +97,25 @@ describe("SettingsNavigation", () => {
       expect(backLinks.length).toBeGreaterThan(0);
       expect(backLinks[0]).toHaveAttribute(
         "href",
-        `${window.location.origin}/canvas`,
+        `${window.location.origin}/canvas?org=org-1`,
       );
       expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
       expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+    });
+
+    it("should link Back to App to plain canvas while no org is selected", async () => {
+      // Arrange
+      useSelectedOrganizationStore.setState({ organizationId: null });
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(screen.getAllByTestId("settings-back-to-app")[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
     });
 
     it("should show the instance logo saved by a Super Admin", async () => {
@@ -178,9 +193,9 @@ describe("SettingsNavigation", () => {
       expect(
         (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
       ).toBeGreaterThan(0);
-      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        screen.getAllByText("SETTINGS$NAV_API_KEYS").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render empty nav when given an empty items list", async () => {
