@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
@@ -349,6 +349,111 @@ describe("Super Admin Users page", () => {
     });
   });
 
+  describe("Grant Super Admin", () => {
+    beforeEach(() => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig(),
+      );
+      vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+        {
+          user_id: "u-1",
+          email: "ada@acme.org",
+          name: "Ada",
+          status: "active",
+          memberships: [],
+        },
+        {
+          user_id: "u-2",
+          email: "grace@acme.org",
+          name: "Grace",
+          status: "active",
+          memberships: [],
+        },
+      ]);
+      vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue([
+        { user_id: "u-2", email: "grace@acme.org" },
+      ]);
+    });
+
+    it("is disabled for a user who is already a Super Admin, enabled for others", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      await renderUsersPage();
+
+      // Act
+      await user.click(
+        await screen.findByTestId("super-admin-user-actions-u-1"),
+      );
+
+      // Assert: not yet a Super Admin, so the action is available.
+      expect(
+        screen.getByTestId("super-admin-user-grant-admin-u-1"),
+      ).not.toBeDisabled();
+
+      // Act: open the other user's menu (closes the first one).
+      await user.click(screen.getByTestId("super-admin-user-actions-u-2"));
+
+      // Assert: already a Super Admin, so granting again is disabled.
+      expect(
+        screen.getByTestId("super-admin-user-grant-admin-u-2"),
+      ).toBeDisabled();
+    });
+
+    it("grants Super Admin to a user once the confirmation is accepted", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      const grantSuperAdmin = vi
+        .spyOn(superAdminService, "grantSuperAdmin")
+        .mockResolvedValue({ user_id: "u-1", email: "ada@acme.org" });
+      await renderUsersPage();
+
+      // Act
+      await user.click(
+        await screen.findByTestId("super-admin-user-actions-u-1"),
+      );
+      await user.click(screen.getByTestId("super-admin-user-grant-admin-u-1"));
+      const dialog = screen.getByTestId("super-admin-user-grant-admin-confirm");
+      expect(
+        within(dialog).getByText("SUPER_ADMIN$GRANT_ADMIN_CONFIRM"),
+      ).toBeInTheDocument();
+      await user.click(
+        within(dialog).getByRole("button", { name: "BUTTON$CONFIRM" }),
+      );
+
+      // Assert
+      await waitFor(() =>
+        expect(grantSuperAdmin).toHaveBeenCalledExactlyOnceWith({
+          userId: "u-1",
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("super-admin-user-grant-admin-confirm"),
+        ).not.toBeInTheDocument(),
+      );
+    });
+
+    it("does not grant Super Admin when the confirmation is cancelled", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      const grantSuperAdmin = vi.spyOn(superAdminService, "grantSuperAdmin");
+      await renderUsersPage();
+
+      // Act
+      await user.click(
+        await screen.findByTestId("super-admin-user-actions-u-1"),
+      );
+      await user.click(screen.getByTestId("super-admin-user-grant-admin-u-1"));
+      await user.click(screen.getByRole("button", { name: "BUTTON$CANCEL" }));
+
+      // Assert
+      expect(
+        screen.queryByTestId("super-admin-user-grant-admin-confirm"),
+      ).not.toBeInTheDocument();
+      expect(grantSuperAdmin).not.toHaveBeenCalled();
+    });
+  });
+
   describe("Create Sign-up Link", () => {
     beforeEach(() => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
@@ -499,7 +604,7 @@ describe("Super Admin user memberships", () => {
   it("lets a super admin open an org from a membership row", async () => {
     const user = userEvent.setup();
     const onOrgClick = vi.fn();
-    const memberships = SUPER_ADMIN_USERS[3].memberships;
+    const { memberships } = SUPER_ADMIN_USERS[3];
 
     render(
       <SuperAdminUserMemberships
