@@ -736,6 +736,7 @@ async def test_get_instance_rejects_a_disabled_user(mock_request):
     mock_auth.user_id = 'disabled_user_id'
 
     with (
+        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', True),
         patch(
             'server.auth.saas_user_auth.saas_user_auth_from_bearer',
             return_value=mock_auth,
@@ -750,6 +751,35 @@ async def test_get_instance_rejects_a_disabled_user(mock_request):
             await SaasUserAuth.get_instance(mock_request)
 
     is_user_disabled.assert_awaited_once_with('disabled_user_id')
+
+
+@pytest.mark.asyncio
+async def test_get_instance_skips_the_disabled_check_while_super_admin_is_off(
+    mock_request,
+):
+    """Only the Super Admin directory disables users, so with it off no
+    request pays for the lookup."""
+    # Arrange
+    mock_auth = MagicMock()
+    mock_auth.user_id = 'user_id'
+
+    with (
+        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', False),
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=True),
+        ) as is_user_disabled,
+    ):
+        # Act
+        instance = await SaasUserAuth.get_instance(mock_request)
+
+    # Assert
+    assert instance is mock_auth
+    is_user_disabled.assert_not_awaited()
 
 
 @pytest.mark.asyncio

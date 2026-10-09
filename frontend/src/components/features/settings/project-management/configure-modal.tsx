@@ -3,13 +3,12 @@ import { Trans, useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
+import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
+import { ModalBody } from "#/components/shared/modals/modal-body";
 import {
-  HubModal,
-  hubModalBodyClassName,
-} from "#/components/features/settings/integrations/integration-modal";
-import { HubProviderModalHeader } from "#/components/features/settings/integrations/integration-provider-modal-header";
-import { getLegacyResolver } from "#/components/features/settings/integrations/legacy-resolvers";
-import { BaseModalDescription } from "#/components/shared/modals/confirmation-modals/base-modal";
+  BaseModalDescription,
+  BaseModalTitle,
+} from "#/components/shared/modals/confirmation-modals/base-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
 import { useConfig } from "#/hooks/query/use-config";
@@ -550,23 +549,17 @@ export function ConfigureModal({
     ? I18nKey.PROJECT_MANAGEMENT$JIRA_DC_REMOVE_WITH_REVOKE_CONFIRM
     : I18nKey.PROJECT_MANAGEMENT$JIRA_DC_REMOVE_WITHOUT_REVOKE_CONFIRM;
 
-  const resolver = getLegacyResolver(platform);
-  const headerTitle = resolver ? t(resolver.nameKey) : platformName;
-  const headerSubtitle = resolver ? t(resolver.sublineKey) : undefined;
-
   return (
-    <HubModal
-      ariaLabel={headerTitle}
-      testId="project-management-configure-modal"
-      width="md"
-      onClose={handleClose}
-    >
-      <div className={hubModalBodyClassName}>
-        <HubProviderModalHeader
-          provider={platform}
-          title={headerTitle}
-          subtitle={headerSubtitle}
-          className="mb-6"
+    <ModalBackdrop onClose={handleClose}>
+      <ModalBody className="items-start border border-[var(--oh-border)] w-96">
+        <BaseModalTitle
+          title={
+            showConfigurationFields
+              ? t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_MODAL_TITLE, {
+                  platform: platformName,
+                })
+              : t(I18nKey.PROJECT_MANAGEMENT$LINK_CONFIRMATION_TITLE)
+          }
         />
         <BaseModalDescription>
           {showConfigurationFields ? (
@@ -622,7 +615,7 @@ export function ConfigureModal({
             </p>
           )}
         </BaseModalDescription>
-        <div className="mt-6 flex w-full flex-col gap-4">
+        <div className="w-full flex flex-col gap-4 mt-1">
           <div>
             <div className="flex gap-2 items-end">
               <div className="flex-1">
@@ -873,7 +866,27 @@ export function ConfigureModal({
             </>
           )}
         </div>
-        <div className="flex flex-col gap-4 w-full mt-4">
+        <div className="flex flex-col gap-2 w-full mt-4">
+          {/* Hide the connect/edit button if workspace exists but is not editable,
+              or if the caller may not configure an unconfigured workspace */}
+          {(!existingWorkspace || isWorkspaceEditable) &&
+            !memberCannotConfigure && (
+              <BrandButton
+                variant="primary"
+                onClick={handleConnect}
+                testId="connect-button"
+                type="button"
+                className="w-full"
+                isDisabled={isConnectDisabled}
+              >
+                {(() => {
+                  if (existingWorkspace && showConfigurationFields) {
+                    return t(I18nKey.PROJECT_MANAGEMENT$UPDATE_BUTTON_LABEL);
+                  }
+                  return t(I18nKey.PROJECT_MANAGEMENT$CONNECT_BUTTON_LABEL);
+                })()}
+              </BrandButton>
+            )}
           {showAdminRemove && (
             <div className="flex flex-col gap-2">
               <p className="text-xs text-tertiary-alt">
@@ -906,7 +919,18 @@ export function ConfigureModal({
                       }
                     />
                   )}
-                  <div className="flex w-full items-center justify-end gap-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <BrandButton
+                      variant="danger"
+                      onClick={confirmAdminRemove}
+                      testId="confirm-remove-integration-button"
+                      type="button"
+                      className="w-full"
+                    >
+                      {t(
+                        I18nKey.PROJECT_MANAGEMENT$REMOVE_INTEGRATION_BUTTON_LABEL,
+                      )}
+                    </BrandButton>
                     <BrandButton
                       variant="secondary"
                       onClick={() => {
@@ -915,18 +939,9 @@ export function ConfigureModal({
                       }}
                       testId="cancel-remove-integration-button"
                       type="button"
+                      className="w-full"
                     >
                       {t(I18nKey.FEEDBACK$CANCEL_LABEL)}
-                    </BrandButton>
-                    <BrandButton
-                      variant="danger"
-                      onClick={confirmAdminRemove}
-                      testId="confirm-remove-integration-button"
-                      type="button"
-                    >
-                      {t(
-                        I18nKey.PROJECT_MANAGEMENT$REMOVE_INTEGRATION_BUTTON_LABEL,
-                      )}
                     </BrandButton>
                   </div>
                 </>
@@ -936,6 +951,7 @@ export function ConfigureModal({
                   onClick={() => setShowRemoveConfirm(true)}
                   testId="remove-integration-button"
                   type="button"
+                  className="w-full"
                 >
                   {t(
                     I18nKey.PROJECT_MANAGEMENT$REMOVE_INTEGRATION_BUTTON_LABEL,
@@ -944,37 +960,17 @@ export function ConfigureModal({
               )}
             </div>
           )}
-          <div className="flex w-full items-center justify-end gap-2">
-            <BrandButton
-              variant="secondary"
-              onClick={handleClose}
-              testId="cancel-button"
-              type="button"
-            >
-              {t(I18nKey.FEEDBACK$CANCEL_LABEL)}
-            </BrandButton>
-            {/* Hide the connect/edit button if workspace exists but is not editable,
-                or if the caller may not configure an unconfigured workspace */}
-            {(!existingWorkspace || isWorkspaceEditable) &&
-              !memberCannotConfigure && (
-                <BrandButton
-                  variant="primary"
-                  onClick={handleConnect}
-                  testId="connect-button"
-                  type="button"
-                  isDisabled={isConnectDisabled}
-                >
-                  {(() => {
-                    if (existingWorkspace && showConfigurationFields) {
-                      return t(I18nKey.PROJECT_MANAGEMENT$UPDATE_BUTTON_LABEL);
-                    }
-                    return t(I18nKey.PROJECT_MANAGEMENT$CONNECT_BUTTON_LABEL);
-                  })()}
-                </BrandButton>
-              )}
-          </div>
+          <BrandButton
+            variant="secondary"
+            onClick={handleClose}
+            testId="cancel-button"
+            type="button"
+            className="w-full"
+          >
+            {t(I18nKey.FEEDBACK$CANCEL_LABEL)}
+          </BrandButton>
         </div>
-      </div>
-    </HubModal>
+      </ModalBody>
+    </ModalBackdrop>
   );
 }

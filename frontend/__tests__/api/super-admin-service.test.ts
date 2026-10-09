@@ -90,20 +90,20 @@ const REQUESTS: {
     method: "listUsers",
     call: () => superAdminService.listUsers(),
     verb: "get",
-    args: ["/api/admin/users"],
+    args: ["/api/admin/directory/users"],
   },
   {
     method: "updateUserStatus",
     call: () =>
       superAdminService.updateUserStatus({ userId: "7", status: "inactive" }),
     verb: "patch",
-    args: ["/api/admin/users/7", { status: "inactive" }],
+    args: ["/api/admin/directory/users/7", { status: "inactive" }],
   },
   {
     method: "removeUser",
     call: () => superAdminService.removeUser({ userId: "7" }),
     verb: "delete",
-    args: ["/api/admin/users/7"],
+    args: ["/api/admin/directory/users/7"],
   },
   {
     method: "updateUserGroups",
@@ -116,7 +116,7 @@ const REQUESTS: {
       }),
     verb: "post",
     args: [
-      "/api/admin/users/7/groups",
+      "/api/admin/directory/users/7/groups",
       { action: "set_role", org_ids: ["org-1"], role: "admin" },
     ],
   },

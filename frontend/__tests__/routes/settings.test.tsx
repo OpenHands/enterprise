@@ -8,6 +8,7 @@ import { getFirstAvailablePath } from "#/utils/settings-utils";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { adminService } from "#/api/admin-service/admin-service.api";
 import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
@@ -28,6 +29,18 @@ vi.mock("#/hooks/use-app-logout", () => ({
 
 vi.mock("#/query-client-config", () => ({
   queryClient: mockQueryClient,
+}));
+
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn().mockResolvedValue(false),
+    getAllUsers: vi.fn().mockResolvedValue({
+      items: [],
+      current_page: 1,
+      per_page: 10,
+    }),
+    getAllUsersCount: vi.fn().mockResolvedValue(0),
+  },
 }));
 
 // Mock the i18next hook
@@ -479,6 +492,65 @@ describe("Settings Screen", () => {
       const result = await clientLoader({ request, params: {} });
 
       // Assert: Should redirect away from org-members settings for personal org
+      expect(result).not.toBeNull();
+      expect(result).toBeInstanceOf(Response);
+      const response = result as Response;
+      expect(response.status).toBe(302);
+      expect(response.headers.get("Location")).toBe("/settings");
+    });
+
+    it("should allow a super admin direct URL access to /settings/org-members when personal org is selected and enable_integrated_idp is on", async () => {
+      // Clear any cached super-admin status from a previous test in this file
+      mockQueryClient.clear();
+      // Set up config and organizations in query client so clientLoader can access them
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: { enable_integrated_idp: true },
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      // Use Zustand store for selected org ID
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+
+      // Mock getMe so getActiveOrganizationUser returns a plain member --
+      // the super-admin bypass must grant access regardless of org role.
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role: "member", org_id: "1" }),
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      const request = new Request("http://localhost/settings/org-members");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      const result = await clientLoader({ request, params: {} });
+
+      // Assert: no redirect for a super admin, even on their personal org
+      expect(result).not.toBeInstanceOf(Response);
+    });
+
+    it("should not allow a super admin direct URL access to /settings/org-members on a personal org when enable_integrated_idp is off", async () => {
+      // Clear any cached super-admin status from a previous test in this file
+      mockQueryClient.clear();
+      // Set up config and organizations in query client so clientLoader can access them
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role: "member", org_id: "1" }),
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      const request = new Request("http://localhost/settings/org-members");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      const result = await clientLoader({ request, params: {} });
+
+      // Assert: without the flag, a super admin gets no new access -- same
+      // redirect as any other member on a personal org (see the test above).
       expect(result).not.toBeNull();
       expect(result).toBeInstanceOf(Response);
       const response = result as Response;

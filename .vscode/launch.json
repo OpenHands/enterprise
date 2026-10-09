@@ -59,7 +59,6 @@
                 "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
                 "USER_PROVISIONING_ENABLED": "1",
                 "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
-                "ENABLE_INTEGRATED_IDP": "1"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
@@ -129,6 +128,7 @@
                 "DB_PORT": "5432",
                 "DB_NAME": "openhands",
                 "DB_USER": "postgres",
+                "ENABLE_INTEGRATED_IDP": "1",
                 "KEYCLOAK_CLIENT_ID": "allhands",
                 "KEYCLOAK_REALM_NAME": "allhands",
                 "KEYCLOAK_SERVER_URL": "https://auth.staging.all-hands.dev"

@@ -381,29 +381,32 @@ export const SUPER_ADMIN_HANDLERS = [
     });
   }),
 
-  http.get("/api/admin/users", ({ request }) => {
+  http.get("/api/admin/directory/users", ({ request }) => {
     ensureFreshSaAdminState(request);
     return HttpResponse.json({ users: adminUsers });
   }),
 
-  http.patch("/api/admin/users/:userId", async ({ params, request }) => {
-    const { userId } = params;
-    const body = (await request.json()) as { status?: "active" | "inactive" };
-    const target = adminUsers.find((user) => user.user_id === userId);
-    if (!target) {
-      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
-    }
-    if (body.status !== "active" && body.status !== "inactive") {
-      return HttpResponse.json(
-        { detail: "Invalid user status" },
-        { status: 400 },
-      );
-    }
-    target.status = body.status;
-    return HttpResponse.json(target);
-  }),
+  http.patch(
+    "/api/admin/directory/users/:userId",
+    async ({ params, request }) => {
+      const { userId } = params;
+      const body = (await request.json()) as { status?: "active" | "inactive" };
+      const target = adminUsers.find((user) => user.user_id === userId);
+      if (!target) {
+        return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+      }
+      if (body.status !== "active" && body.status !== "inactive") {
+        return HttpResponse.json(
+          { detail: "Invalid user status" },
+          { status: 400 },
+        );
+      }
+      target.status = body.status;
+      return HttpResponse.json(target);
+    },
+  ),
 
-  http.delete("/api/admin/users/:userId", ({ params }) => {
+  http.delete("/api/admin/directory/users/:userId", ({ params }) => {
     const { userId } = params;
     const target = adminUsers.find((user) => user.user_id === userId);
     if (!target) {
@@ -521,151 +524,154 @@ export const SUPER_ADMIN_HANDLERS = [
     );
   }),
 
-  http.post("/api/admin/users/:userId/groups", async ({ params, request }) => {
-    const { userId } = params;
-    const body = (await request.json()) as {
-      action?: "suspend" | "resume" | "remove" | "add" | "set_role";
-      org_ids?: string[];
-      role?: string;
-    };
-    const target = adminUsers.find((user) => user.user_id === userId);
-    if (!target) {
-      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
-    }
-    const orgIds = body.org_ids ?? [];
-    if (orgIds.length === 0) {
+  http.post(
+    "/api/admin/directory/users/:userId/groups",
+    async ({ params, request }) => {
+      const { userId } = params;
+      const body = (await request.json()) as {
+        action?: "suspend" | "resume" | "remove" | "add" | "set_role";
+        org_ids?: string[];
+        role?: string;
+      };
+      const target = adminUsers.find((user) => user.user_id === userId);
+      if (!target) {
+        return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+      }
+      const orgIds = body.org_ids ?? [];
+      if (orgIds.length === 0) {
+        return HttpResponse.json(
+          { detail: "Select one or more organizations." },
+          { status: 400 },
+        );
+      }
+
+      if (body.action === "suspend" || body.action === "resume") {
+        const status = body.action === "suspend" ? "inactive" : "active";
+        target.memberships = target.memberships.map((membership) =>
+          orgIds.includes(membership.org_id)
+            ? { ...membership, status }
+            : membership,
+        );
+        return HttpResponse.json(target);
+      }
+
+      if (body.action === "remove") {
+        const blocked = orgIds.filter((orgId) => {
+          const membership = target.memberships.find(
+            (row) => row.org_id === orgId && row.role === "owner",
+          );
+          if (!membership) {
+            return false;
+          }
+          return !adminUsers.some(
+            (user) =>
+              user.user_id !== target.user_id &&
+              user.memberships.some(
+                (row) => row.org_id === orgId && row.role === "owner",
+              ),
+          );
+        });
+        if (blocked.length > 0) {
+          const names = blocked.map(
+            (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
+          );
+          return HttpResponse.json(
+            {
+              detail: `Cannot remove user: last owner of ${names.join(", ")}`,
+            },
+            { status: 409 },
+          );
+        }
+        target.memberships = target.memberships.filter(
+          (membership) => !orgIds.includes(membership.org_id),
+        );
+        adminOrgs = adminOrgs.map((org) =>
+          orgIds.includes(org.id)
+            ? { ...org, member_count: Math.max(0, org.member_count - 1) }
+            : org,
+        );
+        return HttpResponse.json(target);
+      }
+
+      if (body.action === "set_role") {
+        const role = body.role ?? "member";
+        const blocked = orgIds.filter((orgId) => {
+          const membership = target.memberships.find(
+            (row) => row.org_id === orgId && row.role === "owner",
+          );
+          if (!membership || role === "owner") {
+            return false;
+          }
+          return !adminUsers.some(
+            (user) =>
+              user.user_id !== target.user_id &&
+              user.memberships.some(
+                (row) => row.org_id === orgId && row.role === "owner",
+              ),
+          );
+        });
+        if (blocked.length > 0) {
+          const names = blocked.map(
+            (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
+          );
+          return HttpResponse.json(
+            {
+              detail: `Cannot change role: last owner of ${names.join(", ")}`,
+            },
+            { status: 409 },
+          );
+        }
+        target.memberships = target.memberships.map((membership) =>
+          orgIds.includes(membership.org_id)
+            ? { ...membership, role }
+            : membership,
+        );
+        return HttpResponse.json(target);
+      }
+
+      if (body.action === "add") {
+        const role = body.role ?? "member";
+        orgIds.forEach((orgId) => {
+          const org = adminOrgs.find((row) => row.id === orgId);
+          if (!org || org.is_personal) {
+            return;
+          }
+          const existing = target.memberships.find(
+            (membership) => membership.org_id === orgId,
+          );
+          if (existing) {
+            if (existing.status !== "active") {
+              existing.role = role;
+              existing.status = "active";
+            }
+            return;
+          }
+          target.memberships.push({
+            org_id: orgId,
+            org_name: org.name,
+            role,
+            status: "active",
+          });
+          org.member_count += 1;
+          membershipAddedListeners.forEach((listener) =>
+            listener({
+              userId: target.user_id,
+              orgId,
+              orgName: org.name,
+              role,
+            }),
+          );
+        });
+        target.status = "active";
+        return HttpResponse.json(target);
+      }
+
       return HttpResponse.json(
-        { detail: "Select one or more organizations." },
+        { detail: "Invalid group action" },
         { status: 400 },
       );
-    }
-
-    if (body.action === "suspend" || body.action === "resume") {
-      const status = body.action === "suspend" ? "inactive" : "active";
-      target.memberships = target.memberships.map((membership) =>
-        orgIds.includes(membership.org_id)
-          ? { ...membership, status }
-          : membership,
-      );
-      return HttpResponse.json(target);
-    }
-
-    if (body.action === "remove") {
-      const blocked = orgIds.filter((orgId) => {
-        const membership = target.memberships.find(
-          (row) => row.org_id === orgId && row.role === "owner",
-        );
-        if (!membership) {
-          return false;
-        }
-        return !adminUsers.some(
-          (user) =>
-            user.user_id !== target.user_id &&
-            user.memberships.some(
-              (row) => row.org_id === orgId && row.role === "owner",
-            ),
-        );
-      });
-      if (blocked.length > 0) {
-        const names = blocked.map(
-          (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
-        );
-        return HttpResponse.json(
-          {
-            detail: `Cannot remove user: last owner of ${names.join(", ")}`,
-          },
-          { status: 409 },
-        );
-      }
-      target.memberships = target.memberships.filter(
-        (membership) => !orgIds.includes(membership.org_id),
-      );
-      adminOrgs = adminOrgs.map((org) =>
-        orgIds.includes(org.id)
-          ? { ...org, member_count: Math.max(0, org.member_count - 1) }
-          : org,
-      );
-      return HttpResponse.json(target);
-    }
-
-    if (body.action === "set_role") {
-      const role = body.role ?? "member";
-      const blocked = orgIds.filter((orgId) => {
-        const membership = target.memberships.find(
-          (row) => row.org_id === orgId && row.role === "owner",
-        );
-        if (!membership || role === "owner") {
-          return false;
-        }
-        return !adminUsers.some(
-          (user) =>
-            user.user_id !== target.user_id &&
-            user.memberships.some(
-              (row) => row.org_id === orgId && row.role === "owner",
-            ),
-        );
-      });
-      if (blocked.length > 0) {
-        const names = blocked.map(
-          (orgId) => adminOrgs.find((org) => org.id === orgId)?.name ?? orgId,
-        );
-        return HttpResponse.json(
-          {
-            detail: `Cannot change role: last owner of ${names.join(", ")}`,
-          },
-          { status: 409 },
-        );
-      }
-      target.memberships = target.memberships.map((membership) =>
-        orgIds.includes(membership.org_id)
-          ? { ...membership, role }
-          : membership,
-      );
-      return HttpResponse.json(target);
-    }
-
-    if (body.action === "add") {
-      const role = body.role ?? "member";
-      orgIds.forEach((orgId) => {
-        const org = adminOrgs.find((row) => row.id === orgId);
-        if (!org || org.is_personal) {
-          return;
-        }
-        const existing = target.memberships.find(
-          (membership) => membership.org_id === orgId,
-        );
-        if (existing) {
-          if (existing.status !== "active") {
-            existing.role = role;
-            existing.status = "active";
-          }
-          return;
-        }
-        target.memberships.push({
-          org_id: orgId,
-          org_name: org.name,
-          role,
-          status: "active",
-        });
-        org.member_count += 1;
-        membershipAddedListeners.forEach((listener) =>
-          listener({
-            userId: target.user_id,
-            orgId,
-            orgName: org.name,
-            role,
-          }),
-        );
-      });
-      target.status = "active";
-      return HttpResponse.json(target);
-    }
-
-    return HttpResponse.json(
-      { detail: "Invalid group action" },
-      { status: 400 },
-    );
-  }),
+    },
+  ),
 
   http.get("/api/admin/instance-settings", () =>
     HttpResponse.json(instanceSettings),

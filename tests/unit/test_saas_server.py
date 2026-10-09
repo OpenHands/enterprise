@@ -260,7 +260,8 @@ def test_admin_directory_routes_follow_super_admin_flag(
     """The /api/admin directory is served only while ENABLE_SUPER_ADMIN is on.
 
     With the flag off the paths fall through to the '/' SPA mount. The
-    super-admins API is not part of the directory and stays mounted.
+    super-admins API and the instance-wide user list are not part of the
+    directory and stay mounted.
     """
     frontend_build = tmp_path / 'frontend' / 'build'
     frontend_build.mkdir(parents=True)
@@ -301,6 +302,7 @@ def test_admin_directory_routes_follow_super_admin_flag(
 
         for path in (
             '/api/admin/organizations',
+            '/api/admin/directory/users',
             '/api/admin/users',
             '/api/admin/super-admins',
         ):
@@ -323,5 +325,8 @@ def test_admin_directory_routes_follow_super_admin_flag(
     }
 
     assert matches['/api/admin/organizations'] == organizations_route
-    assert matches['/api/admin/users'] == users_route
+    assert matches['/api/admin/directory/users'] == users_route
     assert matches['/api/admin/super-admins'] == 'list_super_admins'
+    # The instance-wide user list (``super_admins.admin_users_router``) is not
+    # part of the directory and stays mounted either way.
+    assert matches['/api/admin/users'] == 'list_all_users'
