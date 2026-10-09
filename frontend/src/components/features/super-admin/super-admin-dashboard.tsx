@@ -1,5 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
@@ -23,6 +23,10 @@ import {
   useSuperAdminUsage,
 } from "#/hooks/query/use-super-admin-usage";
 import { I18nKey } from "#/i18n/declaration";
+import {
+  DEFAULT_SUPER_ADMIN_DASHBOARD_TIME_WINDOW,
+  useSuperAdminDashboardStore,
+} from "#/stores/super-admin-dashboard-store";
 import { cn } from "#/utils/utils";
 import { formControlFilterTriggerClassName } from "#/utils/form-control-classes";
 import {
@@ -32,6 +36,10 @@ import {
 
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
+
+// All statuses, so the Conversations tab lists every conversation the Users
+// tab counts. The org-level usage dashboard starts at "running".
+const DEFAULT_CONVERSATION_STATUS = "";
 
 function selectedOrgLabel(
   selectedIds: string[],
@@ -199,11 +207,29 @@ function filterConversations(
 export function SuperAdminDashboard() {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabType>("overview");
-  const [timeWindow, setTimeWindow] = useState("30d");
-  const [selectedOrgIds, setSelectedOrgIds] = useState<string[]>([]);
+  // Kept across visits to the dashboard (see the store).
+  const selectedOrgIds = useSuperAdminDashboardStore(
+    (state) => state.selectedOrgIds,
+  );
+  const setSelectedOrgIds = useSuperAdminDashboardStore(
+    (state) => state.setSelectedOrgIds,
+  );
+  const savedTimeWindow = useSuperAdminDashboardStore(
+    (state) => state.timeWindow,
+  );
+  const setTimeWindow = useSuperAdminDashboardStore(
+    (state) => state.setTimeWindow,
+  );
+  const timeWindow = TIME_WINDOWS.some(
+    (option) => option.value === savedTimeWindow,
+  )
+    ? savedTimeWindow
+    : DEFAULT_SUPER_ADMIN_DASHBOARD_TIME_WINDOW;
   const [modelSearch, setModelSearch] = useState("");
   const [conversationSearch, setConversationSearch] = useState("");
-  const [conversationStatus, setConversationStatus] = useState("running");
+  const [conversationStatus, setConversationStatus] = useState(
+    DEFAULT_CONVERSATION_STATUS,
+  );
   const [conversationSortBy, setConversationSortBy] = useState("updated_at");
   const [conversationSortOrder, setConversationSortOrder] = useState("desc");
   const [conversationSandboxStatus, setConversationSandboxStatus] =
@@ -220,11 +246,26 @@ export function SuperAdminDashboard() {
 
   const {
     orgs,
+    orgsLoaded,
     usage,
     isLoading: usageLoading,
     isError: usageError,
   } = useSuperAdminUsage({ selectedOrgIds, timeWindow });
   const invalidateUsage = useInvalidateSuperAdminUsage();
+
+  // Drop saved organizations that no longer exist, so the dashboard doesn't
+  // show an empty selection labelled as all organizations.
+  useEffect(() => {
+    if (!orgsLoaded) {
+      return;
+    }
+    const known = selectedOrgIds.filter((id) =>
+      orgs.some((org) => org.id === id),
+    );
+    if (known.length !== selectedOrgIds.length) {
+      setSelectedOrgIds(known);
+    }
+  }, [orgsLoaded, orgs, selectedOrgIds, setSelectedOrgIds]);
 
   const stopConversation = useMutation({
     mutationFn: ({
@@ -529,6 +570,7 @@ export function SuperAdminDashboard() {
           conversationSortBy={conversationSortBy}
           conversationSortOrder={conversationSortOrder}
           conversationSandboxStatus={conversationSandboxStatus}
+          defaultConversationStatus={DEFAULT_CONVERSATION_STATUS}
           exportUrl={exportUrl}
           conversationPage={conversationPage}
           conversationPerPage={conversationPerPage}

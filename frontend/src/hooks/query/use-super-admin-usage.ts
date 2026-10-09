@@ -64,6 +64,8 @@ export function useSuperAdminUsage({
   timeWindow: string;
 }): {
   orgs: { id: string; name: string }[];
+  /** Whether `orgs` holds the server's list, rather than an empty placeholder. */
+  orgsLoaded: boolean;
   usage: SuperAdminUsageView;
   isLoading: boolean;
   isError: boolean;
@@ -72,6 +74,7 @@ export function useSuperAdminUsage({
     data: adminOrgs,
     isLoading: orgsLoading,
     isError: orgsError,
+    isSuccess: orgsLoaded,
   } = useSuperAdminOrganizations();
 
   const orgs = useMemo(
@@ -106,10 +109,12 @@ export function useSuperAdminUsage({
             orgId: org.id,
             timeWindow,
           }),
+          // Same window as the conversations, so both tabs count alike.
           organizationService.getUserUsageStats({
             orgId: org.id,
             limit: 50,
             offset: 0,
+            timeWindow: conversationTimeWindow,
           }),
           organizationService.getConversations({
             orgId: org.id,
@@ -153,7 +158,7 @@ export function useSuperAdminUsage({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
   }, [dataUpdatedAt, selectedOrgIds]);
 
-  return { orgs, usage, isLoading, isError };
+  return { orgs, orgsLoaded, usage, isLoading, isError };
 }
 
 export function useInvalidateSuperAdminUsage() {
