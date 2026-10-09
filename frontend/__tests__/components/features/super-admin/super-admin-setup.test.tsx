@@ -205,6 +205,19 @@ describe("SuperAdminSetupGuide", () => {
     );
   });
 
+  it("shows Start first, then the next step beside it", () => {
+    // Act
+    renderSetupPage(guideState({ ...NO_STEPS_DONE, org_llm: true }));
+
+    // Assert
+    const start = screen.getByTestId("super-admin-setup-start-guide");
+    const next = screen.getByTestId("super-admin-setup-next");
+    const row = Array.from(start.parentElement?.children ?? []);
+    expect(row.indexOf(start)).toBe(0);
+    expect(row.indexOf(next)).toBe(1);
+    expect(next).toHaveTextContent("SUPER_ADMIN$SETUP_NEXT");
+  });
+
   it("opens the template page instead of a tour when the next step is in Agent Canvas", async () => {
     // Arrange
     const user = userEvent.setup();

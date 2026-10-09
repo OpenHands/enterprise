@@ -158,6 +158,82 @@ describe("Super Admin Instance page", () => {
     expect(updateInstanceSettings).toHaveBeenCalledWith({ logo: null });
   });
 
+  it("saves the trimmed company name when the field loses focus", async () => {
+    // Arrange
+    mockSuperAdminConfig();
+    vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+      company_name: "Acme",
+      logo: null,
+    });
+    const updateInstanceSettings = vi
+      .spyOn(superAdminService, "updateInstanceSettings")
+      .mockResolvedValue({ company_name: "Acme Corp", logo: null });
+    const user = userEvent.setup();
+    await renderInstancePage();
+    const input = await screen.findByTestId("instance-company-name");
+    await waitFor(() => expect(input).toHaveValue("Acme"));
+
+    // Act
+    await user.clear(input);
+    await user.type(input, "  Acme Corp ");
+    await user.tab();
+
+    // Assert
+    expect(updateInstanceSettings).toHaveBeenCalledWith({
+      company_name: "Acme Corp",
+    });
+    await waitFor(() => expect(input).toHaveValue("Acme Corp"));
+  });
+
+  it("clears the company name on Enter when the field is emptied", async () => {
+    // Arrange
+    mockSuperAdminConfig();
+    vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+      company_name: "Acme",
+      logo: null,
+    });
+    const updateInstanceSettings = vi
+      .spyOn(superAdminService, "updateInstanceSettings")
+      .mockResolvedValue({ company_name: null, logo: null });
+    const user = userEvent.setup();
+    await renderInstancePage();
+    const input = await screen.findByTestId("instance-company-name");
+    await waitFor(() => expect(input).toHaveValue("Acme"));
+
+    // Act
+    await user.clear(input);
+    await user.type(input, "{Enter}");
+
+    // Assert
+    expect(updateInstanceSettings).toHaveBeenCalledWith({
+      company_name: null,
+    });
+  });
+
+  it("does not save a company name that did not change", async () => {
+    // Arrange
+    mockSuperAdminConfig();
+    vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+      company_name: "Acme",
+      logo: null,
+    });
+    const updateInstanceSettings = vi.spyOn(
+      superAdminService,
+      "updateInstanceSettings",
+    );
+    const user = userEvent.setup();
+    await renderInstancePage();
+    const input = await screen.findByTestId("instance-company-name");
+    await waitFor(() => expect(input).toHaveValue("Acme"));
+
+    // Act
+    await user.type(input, " ");
+    await user.tab();
+
+    // Assert
+    expect(updateInstanceSettings).not.toHaveBeenCalled();
+  });
+
   it("saves hiding the setup guide on the server", async () => {
     // Arrange
     mockSuperAdminConfig();

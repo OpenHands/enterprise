@@ -157,6 +157,31 @@ describe("SuperAdminUserGroupsModal", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows Bulk Actions as active once a group is checked", async () => {
+    // Arrange
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+    const bulkInput = screen
+      .getByTestId("super-admin-groups-bulk")
+      .querySelector("input") as HTMLInputElement;
+    expect(bulkInput).toBeDisabled();
+    expect(bulkInput).not.toHaveClass("placeholder:text-white");
+
+    // Act
+    await events.click(screen.getByTestId("super-admin-group-current-2"));
+    await events.click(screen.getByTestId("super-admin-group-current-4"));
+
+    // Assert
+    expect(bulkInput).toBeEnabled();
+    expect(bulkInput).toHaveClass("placeholder:text-white");
+  });
+
   it("suspends and removes only the checked groups", async () => {
     const events = userEvent.setup();
     render(
