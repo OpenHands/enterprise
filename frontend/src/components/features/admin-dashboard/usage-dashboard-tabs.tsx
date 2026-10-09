@@ -87,14 +87,16 @@ function countActiveConversationFilters({
   conversationSortBy,
   conversationSortOrder,
   conversationSandboxStatus,
+  defaultConversationStatus,
 }: {
   conversationStatus: string;
   conversationSortBy: string;
   conversationSortOrder: string;
   conversationSandboxStatus: string;
+  defaultConversationStatus: string;
 }) {
   return [
-    conversationStatus !== DEFAULT_CONVERSATION_STATUS,
+    conversationStatus !== defaultConversationStatus,
     conversationSortBy !== DEFAULT_CONVERSATION_SORT_BY,
     conversationSortOrder !== DEFAULT_CONVERSATION_SORT_ORDER,
     conversationSandboxStatus !== DEFAULT_CONVERSATION_SANDBOX_STATUS,
@@ -383,6 +385,7 @@ export function ConversationsTab({
   conversationSortBy,
   conversationSortOrder,
   conversationSandboxStatus,
+  defaultConversationStatus = DEFAULT_CONVERSATION_STATUS,
   exportUrl,
   conversationPage,
   conversationPerPage,
@@ -409,6 +412,8 @@ export function ConversationsTab({
   conversationSortBy: string;
   conversationSortOrder: string;
   conversationSandboxStatus: string;
+  /** The status "Reset filters" returns to; "" means all statuses. */
+  defaultConversationStatus?: string;
   exportUrl: string;
   conversationPage: number;
   conversationPerPage: number;
@@ -443,10 +448,11 @@ export function ConversationsTab({
     conversationSortBy,
     conversationSortOrder,
     conversationSandboxStatus,
+    defaultConversationStatus,
   });
 
   const clearFilters = () => {
-    onStatusChange(DEFAULT_CONVERSATION_STATUS);
+    onStatusChange(defaultConversationStatus);
     onSortByChange(DEFAULT_CONVERSATION_SORT_BY);
     onSortOrderChange(DEFAULT_CONVERSATION_SORT_ORDER);
     onSandboxStatusChange(DEFAULT_CONVERSATION_SANDBOX_STATUS);
