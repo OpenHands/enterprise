@@ -128,8 +128,9 @@ async def search_repositories(
 ) -> RepositoryPage:
     """Get or search repositories.
 
-    If query is provided, searches repositories across the git provider.
-    If query is not provided, returns a paginated list of the authenticated user's repositories.
+    If query is empty, returns a paginated list of the authenticated user's repositories.
+    If query is provided, returns one page of matching repositories with no next page.
+    A page after the first returns 400.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
