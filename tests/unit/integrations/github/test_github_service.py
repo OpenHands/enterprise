@@ -4,6 +4,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from integrations.github.github_service import SaaSGitHubService
 from openhands.app_server.integrations.github.github_service import GitHubService
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
@@ -49,6 +50,71 @@ async def test_github_service_token_refresh():
     latest_token = await service.get_latest_token()
     assert isinstance(latest_token, SecretStr)
     assert latest_token.get_secret_value() == 'test-token'  # Compare with known value
+
+
+@pytest.mark.asyncio
+async def test_github_service_reactive_refresh_replaces_stale_token():
+    service = GitHubService(user_id=None, token=SecretStr('stale-token'))
+    service.refresh = True
+
+    stale_response = Mock()
+    stale_response.status_code = 401
+
+    fresh_response = Mock()
+    fresh_response.status_code = 200
+    fresh_response.headers = {}
+    fresh_response.json.return_value = {'login': 'test-user'}
+    fresh_response.raise_for_status = Mock()
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = [stale_response, fresh_response]
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    with (
+        patch('httpx.AsyncClient', return_value=mock_client),
+        patch.object(
+            service,
+            'get_latest_token',
+            AsyncMock(return_value=SecretStr('fresh-token')),
+        ) as get_latest_token,
+    ):
+        result, _ = await service._make_request('https://api.github.com/user')
+
+    assert result == {'login': 'test-user'}
+    get_latest_token.assert_awaited_once()
+    assert service.token.get_secret_value() == 'fresh-token'
+    first_headers = mock_client.get.call_args_list[0].kwargs['headers']
+    second_headers = mock_client.get.call_args_list[1].kwargs['headers']
+    assert first_headers['Authorization'] == 'Bearer stale-token'
+    assert second_headers['Authorization'] == 'Bearer fresh-token'
+
+
+@pytest.mark.asyncio
+async def test_saas_github_service_enables_reactive_refresh_with_user_context():
+    service = SaaSGitHubService(
+        external_auth_id='openhands-user-id',
+        token=SecretStr('stale-token'),
+    )
+
+    assert service.refresh is True
+
+
+@pytest.mark.asyncio
+async def test_saas_github_reactive_refresh_forces_provider_refresh():
+    service = SaaSGitHubService(
+        external_auth_token=SecretStr('keycloak-access-token'),
+        token=SecretStr('stale-token'),
+    )
+    service.token_manager.get_idp_token = AsyncMock(return_value='fresh-token')
+
+    token = await service._refresh_latest_token()
+
+    assert token is not None
+    assert token.get_secret_value() == 'fresh-token'
+    service.token_manager.get_idp_token.assert_awaited_once_with(
+        'keycloak-access-token', ProviderType.GITHUB, force_refresh=True
+    )
 
 
 @pytest.mark.asyncio

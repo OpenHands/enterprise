@@ -51,6 +51,9 @@ class GitHubMixinBase(BaseGitService, HTTPClient):
     async def get_latest_token(self) -> SecretStr | None:  # type: ignore[override]
         return self.token
 
+    async def _refresh_latest_token(self) -> SecretStr | None:
+        return await self.get_latest_token()
+
     async def _make_request(
         self,
         url: str,
@@ -70,9 +73,11 @@ class GitHubMixinBase(BaseGitService, HTTPClient):
                     method=method,
                 )
 
-                # Handle token refresh if needed
+                # Handle token refresh if needed.
                 if self.refresh and self._has_token_expired(response.status_code):
-                    await self.get_latest_token()
+                    latest_token = await self._refresh_latest_token()
+                    if latest_token:
+                        self.token = latest_token
                     github_headers = await self._get_headers()
                     response = await self.execute_request(
                         client=client,
