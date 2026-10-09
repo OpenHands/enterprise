@@ -570,5 +570,13 @@ describe("Super Admin user memberships", () => {
     await user.click(screen.getByRole("button", { name: "Row actions" }));
     expect(onMenu).not.toHaveBeenCalled();
     expect(onRowClick).toHaveBeenCalledTimes(1);
+
+    // Selecting a menu item must not also trigger the row click behind it:
+    // the menu renders in a document-body portal, so React bubbles its
+    // click event through the component tree (not the DOM tree) straight
+    // into the row's onClick unless the item itself stops propagation.
+    await user.click(screen.getByText("Manage user"));
+    expect(onMenu).toHaveBeenCalledTimes(1);
+    expect(onRowClick).toHaveBeenCalledTimes(1);
   });
 });
