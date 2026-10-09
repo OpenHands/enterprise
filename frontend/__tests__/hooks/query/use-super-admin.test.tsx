@@ -7,14 +7,12 @@ import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import {
   superAdminService,
-  type ProvisionUserResponse,
   type SetupState,
   type SuperAdminApiAdmin,
   type SuperAdminApiOrg,
   type SuperAdminApiUser,
 } from "#/api/super-admin-service/super-admin-service.api";
 import {
-  useProvisionUserToGroups,
   useRemoveSuperAdminUser,
   useUpdateSetupState,
   useUpdateSuperAdminUserGroups,
@@ -258,94 +256,6 @@ describe("useUpdateSuperAdminUserStatus", () => {
       status: "inactive",
     });
     await waitFor(() => expect(result.current.users.data).toEqual([suspended]));
-  });
-});
-
-describe("useProvisionUserToGroups", () => {
-  const PROVISIONED: ProvisionUserResponse = {
-    email: "ada@acme.org",
-    password: null,
-    api_key: "sk-ada",
-    user_id: "8",
-    org_id: "org-1",
-    role: "admin",
-    created: true,
-    action: "created",
-  };
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("provisions the user into each chosen organization at its role, in order", async () => {
-    // Arrange
-    const provisionUser = vi
-      .spyOn(superAdminService, "provisionUser")
-      .mockResolvedValue(PROVISIONED);
-    const { result } = renderHook(() => useProvisionUserToGroups(), {
-      wrapper: createWrapper(),
-    });
-
-    // Act
-    await act(async () => {
-      await result.current.mutateAsync({
-        email: "ada@acme.org",
-        password: "s3cret-pass",
-        assignments: [
-          { orgId: "org-1", role: "admin" },
-          { orgId: "org-2", role: "member" },
-        ],
-      });
-    });
-
-    // Assert
-    expect(provisionUser.mock.calls).toEqual([
-      [
-        {
-          orgId: "org-1",
-          payload: {
-            email: "ada@acme.org",
-            role: "admin",
-            password: "s3cret-pass",
-          },
-        },
-      ],
-      [
-        {
-          orgId: "org-2",
-          payload: {
-            email: "ada@acme.org",
-            role: "member",
-            password: "s3cret-pass",
-          },
-        },
-      ],
-    ]);
-  });
-
-  it("leaves the password out so the server generates one when none is given", async () => {
-    // Arrange
-    const provisionUser = vi
-      .spyOn(superAdminService, "provisionUser")
-      .mockResolvedValue(PROVISIONED);
-    const { result } = renderHook(() => useProvisionUserToGroups(), {
-      wrapper: createWrapper(),
-    });
-
-    // Act
-    await act(async () => {
-      await result.current.mutateAsync({
-        email: "ada@acme.org",
-        password: "",
-        assignments: [{ orgId: "org-1", role: "member" }],
-      });
-    });
-
-    // Assert
-    expect(provisionUser).toHaveBeenCalledWith({
-      orgId: "org-1",
-      payload: { email: "ada@acme.org", role: "member" },
-    });
   });
 });
 

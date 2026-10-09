@@ -5,13 +5,11 @@ import { CreateOrganizationModal } from "#/components/features/org/create-organi
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { OrgModal } from "#/components/shared/modals/org-modal";
-import type { ProvisionUserResponse } from "#/api/super-admin-service/super-admin-service.api";
 import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
-  useProvisionUserToGroups,
   useRevokeSuperAdmin,
   useUpdateSetupState,
   useUpdateSuperAdminOrganizationStatus,
@@ -24,7 +22,6 @@ import {
 } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { HelpLink } from "#/ui/help-link";
 import {
   SUPER_ADMIN_NAV_ITEMS,
@@ -43,10 +40,7 @@ import {
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import { InstanceLogoSetting } from "./instance-logo-setting";
-import {
-  SuperAdminProvisionOrgList,
-  SuperAdminUserGroupsModal,
-} from "./super-admin-user-groups-modal";
+import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
 import type {
   SuperAdminAdminRow,
@@ -364,21 +358,10 @@ export function SuperAdminUsers() {
   } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
-  const [provisionOpen, setProvisionOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [email, setEmail] = useState("");
-  const [orgRoles, setOrgRoles] = useState<
-    Record<string, "member" | "admin" | "owner">
-  >({});
-  const [password, setPassword] = useState("");
-  const [provisionResult, setProvisionResult] =
-    useState<ProvisionUserResponse | null>(null);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
-  const { data: config } = useConfig();
-  const provisioningEnabled = Boolean(config?.user_provisioning_enabled);
-  const provision = useProvisionUserToGroups();
 
   const users: SuperAdminUserRow[] = useMemo(
     () =>
@@ -427,83 +410,23 @@ export function SuperAdminUsers() {
     [orgs],
   );
 
-  const handleProvision = () => {
-    const trimmedEmail = email.trim();
-    const assignments = Object.entries(orgRoles).map(([orgId, role]) => ({
-      orgId,
-      role,
-    }));
-    if (!trimmedEmail || assignments.length === 0) {
-      return;
-    }
-    provision.mutate(
-      {
-        assignments,
-        email: trimmedEmail,
-        ...(password.trim() ? { password: password.trim() } : {}),
-      },
-      {
-        onSuccess: (responses) => {
-          setEmail("");
-          setOrgRoles({});
-          setPassword("");
-          setProvisionResult(
-            responses.find((response) => response.password) ?? responses[0],
-          );
-        },
-      },
-    );
-  };
-
-  const closeProvision = () => {
-    setProvisionOpen(false);
-    setProvisionResult(null);
-    setEmail("");
-    setOrgRoles({});
-    setPassword("");
-  };
-
   const managedUser = users.find((user) => user.id === managedUserId) ?? null;
-
-  const copySecret = async (value: string) => {
-    await navigator.clipboard.writeText(value);
-    displaySuccessToast(t(I18nKey.SETTINGS$API_KEY_COPIED));
-  };
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-users">
       <SuperAdminPageHeader
         title={t(copy.text)}
-        subtitle={
-          provisioningEnabled
-            ? t(copy.subtitle)
-            : t(I18nKey.SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION)
-        }
+        subtitle={t(copy.subtitle)}
         action={
-          <div className="flex gap-2">
-            <BrandButton
-              type="button"
-              variant={provisioningEnabled ? "secondary" : "primary"}
-              testId="super-admin-invite-user"
-              startContent={<Plus className="h-4 w-4" />}
-              onClick={() => setInviteOpen(true)}
-            >
-              {t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL)}
-            </BrandButton>
-            {provisioningEnabled ? (
-              <BrandButton
-                type="button"
-                variant="primary"
-                startContent={<Plus className="h-4 w-4" />}
-                onClick={() => {
-                  setProvisionResult(null);
-                  setProvisionOpen(true);
-                }}
-              >
-                {t(I18nKey.SUPER_ADMIN$PROVISION_USER)}
-              </BrandButton>
-            ) : null}
-          </div>
+          <BrandButton
+            type="button"
+            variant="primary"
+            testId="super-admin-invite-user"
+            startContent={<Plus className="h-4 w-4" />}
+            onClick={() => setInviteOpen(true)}
+          >
+            {t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL)}
+          </BrandButton>
         }
       />
       <SuperAdminSearchField
@@ -598,121 +521,6 @@ export function SuperAdminUsers() {
           },
         ]}
       />
-      {provisionOpen && (
-        <OrgModal
-          testId="super-admin-provision-form"
-          className="w-[36rem] max-w-[calc(100vw-2rem)]"
-          title={
-            provisionResult
-              ? t(I18nKey.SUPER_ADMIN$PROVISION_CREDENTIALS_TITLE)
-              : t(I18nKey.SUPER_ADMIN$PROVISION_USER)
-          }
-          description={
-            provisionResult
-              ? t(I18nKey.SUPER_ADMIN$PROVISION_CREDENTIALS_WARNING)
-              : t(I18nKey.SUPER_ADMIN$PROVISION_USER_DESCRIPTION)
-          }
-          primaryButtonText={
-            provisionResult
-              ? t(I18nKey.BUTTON$CLOSE)
-              : t(I18nKey.SUPER_ADMIN$PROVISION_USER)
-          }
-          onPrimaryClick={provisionResult ? closeProvision : handleProvision}
-          onClose={closeProvision}
-          isLoading={provision.isPending}
-          hideSecondaryButton={!!provisionResult}
-          showCloseButton
-        >
-          {provisionResult ? (
-            <div
-              className="flex w-full flex-col gap-4"
-              data-testid="super-admin-provision-credentials"
-            >
-              {provisionResult.password ? (
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm text-[var(--oh-muted)]">
-                      {t(I18nKey.SUPER_ADMIN$PROVISION_PASSWORD)}
-                    </span>
-                    <BrandButton
-                      type="button"
-                      variant="secondary"
-                      onClick={() =>
-                        copySecret(provisionResult.password as string)
-                      }
-                    >
-                      {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
-                    </BrandButton>
-                  </div>
-                  <div className="break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-3 font-mono text-sm">
-                    {provisionResult.password}
-                  </div>
-                </div>
-              ) : null}
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-[var(--oh-muted)]">
-                    {t(I18nKey.SUPER_ADMIN$PROVISION_API_KEY)}
-                  </span>
-                  <BrandButton
-                    type="button"
-                    variant="secondary"
-                    onClick={() => copySecret(provisionResult.api_key)}
-                  >
-                    {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
-                  </BrandButton>
-                </div>
-                <div className="break-all rounded-lg border border-[var(--oh-border)] bg-base-secondary p-3 font-mono text-sm">
-                  {provisionResult.api_key}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="flex w-full flex-col gap-3">
-              <SettingsInput
-                type="email"
-                label={t(I18nKey.ORG$CONTACT_EMAIL)}
-                value={email}
-                placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
-                onChange={setEmail}
-              />
-              <SettingsInput
-                type="password"
-                label={t(I18nKey.SUPER_ADMIN$PROVISION_PASSWORD_OPTIONAL)}
-                value={password}
-                placeholder={t(
-                  I18nKey.SUPER_ADMIN$PROVISION_PASSWORD_PLACEHOLDER,
-                )}
-                onChange={setPassword}
-              />
-              <div className="flex flex-col gap-1.5 text-sm">
-                <span>{t(I18nKey.SUPER_ADMIN$PROVISION_ORGS)}</span>
-                <SuperAdminProvisionOrgList
-                  items={teamOrgs.map((org) => ({
-                    id: org.id,
-                    label: org.name,
-                  }))}
-                  roles={orgRoles}
-                  onRoleChange={(id, nextRole) =>
-                    setOrgRoles((current) => {
-                      if (!nextRole) {
-                        const next = { ...current };
-                        delete next[id];
-                        return next;
-                      }
-                      return { ...current, [id]: nextRole };
-                    })
-                  }
-                  disabled={provision.isPending}
-                  emptyMessage={t(
-                    I18nKey.SUPER_ADMIN$PROVISION_ORG_PLACEHOLDER,
-                  )}
-                />
-              </div>
-            </div>
-          )}
-        </OrgModal>
-      )}
       {inviteOpen && (
         <InviteOrganizationMemberModal
           organizations={teamOrgs.map((org) => ({

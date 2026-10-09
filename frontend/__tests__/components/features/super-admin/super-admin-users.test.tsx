@@ -89,39 +89,29 @@ describe("Super Admin Users page", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers Provision User when the server has user provisioning enabled", async () => {
-    // Arrange
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ user_provisioning_enabled: true }),
-    );
+  it.each([true, false])(
+    "offers only Invite by email when user provisioning is %s",
+    async (provisioningEnabled) => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          user_provisioning_enabled: provisioningEnabled,
+        }),
+      );
 
-    // Act
-    await renderUsersPage();
+      // Act
+      await renderUsersPage();
 
-    // Assert
-    expect(
-      screen.getByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("SUPER_ADMIN$USERS_SUBLINE")).toBeInTheDocument();
-  });
-
-  it("hides Provision User when the server has user provisioning disabled", async () => {
-    // Arrange
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ user_provisioning_enabled: false }),
-    );
-
-    // Act
-    await renderUsersPage();
-
-    // Assert
-    expect(
-      screen.queryByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText("SUPER_ADMIN$USERS_SUBLINE_NO_PROVISION"),
-    ).toBeInTheDocument();
-  });
+      // Assert
+      expect(
+        screen.getByRole("button", { name: "SUPER_ADMIN$INVITE_BY_EMAIL" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("SUPER_ADMIN$USERS_SUBLINE")).toBeInTheDocument();
+    },
+  );
 
   it("does not link another user's personal workspace", async () => {
     // Arrange

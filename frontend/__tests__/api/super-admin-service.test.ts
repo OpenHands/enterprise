@@ -121,20 +121,6 @@ const REQUESTS: {
     ],
   },
   {
-    method: "provisionUser",
-    call: () =>
-      superAdminService.provisionUser({
-        orgId: "org-1",
-        payload: { email: "ada@acme.org", role: "member" },
-      }),
-    verb: "post",
-    args: [
-      "/api/organizations/provision-user",
-      { email: "ada@acme.org", role: "member" },
-      { headers: { "X-Org-Id": "org-1" } },
-    ],
-  },
-  {
     method: "getInstanceSettings",
     call: () => superAdminService.getInstanceSettings(),
     verb: "get",
