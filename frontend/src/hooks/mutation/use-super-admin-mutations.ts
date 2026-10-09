@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   superAdminService,
   type InstanceSettings,
-  type ProvisionUserRequest,
-  type ProvisionUserResponse,
   type SetupStateUpdate,
   type SuperAdminGroupAction,
 } from "#/api/super-admin-service/super-admin-service.api";
@@ -164,89 +162,6 @@ export const useRemoveSuperAdminUser = () => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||
           t(I18nKey.SUPER_ADMIN$USER_REMOVE_ERROR),
-      );
-    },
-  });
-};
-
-export const useProvisionSuperAdminUser = () => {
-  const queryClient = useQueryClient();
-  const { t } = useTranslation();
-
-  return useMutation({
-    mutationFn: ({
-      orgId,
-      payload,
-    }: {
-      orgId: string;
-      payload: ProvisionUserRequest;
-    }) => superAdminService.provisionUser({ orgId, payload }),
-    onSuccess: (data) => {
-      displaySuccessToast(
-        data.created
-          ? t(I18nKey.SUPER_ADMIN$PROVISION_USER_SUCCESS)
-          : t(I18nKey.SUPER_ADMIN$PROVISION_USER_REPROVISIONED),
-      );
-      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
-      queryClient.invalidateQueries({
-        queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
-      });
-    },
-    onError: (error) => {
-      displayErrorToast(
-        retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$PROVISION_USER_ERROR),
-      );
-    },
-  });
-};
-
-export const useProvisionUserToGroups = () => {
-  const queryClient = useQueryClient();
-  const { t } = useTranslation();
-
-  return useMutation({
-    mutationFn: ({
-      assignments,
-      email,
-      password,
-    }: {
-      assignments: { orgId: string; role: "member" | "admin" | "owner" }[];
-      email: string;
-      password?: string;
-    }) =>
-      // Provision one organization at a time. The first call creates the
-      // account; later calls attach that same user to the other groups.
-      assignments.reduce<Promise<ProvisionUserResponse[]>>(
-        (chain, assignment) =>
-          chain.then(async (results) => {
-            const next = await superAdminService.provisionUser({
-              orgId: assignment.orgId,
-              payload: {
-                email,
-                role: assignment.role,
-                ...(password ? { password } : {}),
-              },
-            });
-            return [...results, next];
-          }),
-        Promise.resolve([]),
-      ),
-    onSuccess: (results) => {
-      displaySuccessToast(
-        results.some((result) => result.created)
-          ? t(I18nKey.SUPER_ADMIN$PROVISION_USER_SUCCESS)
-          : t(I18nKey.SUPER_ADMIN$PROVISION_USER_REPROVISIONED),
-      );
-      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
-      queryClient.invalidateQueries({
-        queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
-      });
-    },
-    onError: (error) => {
-      displayErrorToast(
-        retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$PROVISION_USER_ERROR),
       );
     },
   });
