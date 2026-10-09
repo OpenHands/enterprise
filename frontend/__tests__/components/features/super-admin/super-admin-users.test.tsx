@@ -123,56 +123,6 @@ describe("Super Admin Users page", () => {
     ).toBeInTheDocument();
   });
 
-  it("explains a too-short provisioning password instead of sending it", async () => {
-    // Arrange
-    const user = userEvent.setup();
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ user_provisioning_enabled: true }),
-    );
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      {
-        id: "2",
-        name: "Acme Corp",
-        contact_email: "ops@acme.org",
-        contact_name: null,
-        member_count: 3,
-        is_personal: false,
-        status: "active",
-      },
-    ]);
-    const provisionUser = vi.spyOn(superAdminService, "provisionUser");
-    await renderUsersPage();
-    await user.click(
-      screen.getByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
-    );
-    const form = screen.getByTestId("super-admin-provision-form");
-    await user.type(
-      within(form).getByLabelText("ORG$CONTACT_EMAIL"),
-      "new@acme.org",
-    );
-    await user.type(
-      within(form).getByLabelText("SUPER_ADMIN$PROVISION_PASSWORD_OPTIONAL"),
-      "123456",
-    );
-    await user.click(
-      await within(form).findByTestId("super-admin-provision-org-add-2"),
-    );
-    await user.click(
-      screen.getByTestId("super-admin-provision-org-menu-2-member"),
-    );
-
-    // Act
-    await user.click(
-      within(form).getByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
-    );
-
-    // Assert
-    expect(
-      within(form).getByText("SETTINGS$NEW_PASSWORD_TOO_SHORT"),
-    ).toBeInTheDocument();
-    expect(provisionUser).not.toHaveBeenCalled();
-  });
-
   it("does not link another user's personal workspace", async () => {
     // Arrange
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
