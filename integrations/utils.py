@@ -167,6 +167,8 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
         >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
         >>> has_exact_mention("see @openhands.com", "@openhands")  # False
+        >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
+        >>> has_exact_mention("npmjs.org/@openhands%2fpkg", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
