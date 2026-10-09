@@ -53,10 +53,18 @@ const REQUESTS: {
     args: ["/api/admin/super-admins"],
   },
   {
-    method: "grantSuperAdmin",
+    method: "grantSuperAdmin (by email)",
     call: () => superAdminService.grantSuperAdmin({ email: "ada@acme.org" }),
     verb: "post",
     args: ["/api/admin/super-admins", { email: "ada@acme.org" }],
+  },
+  {
+    // The Users page already has the target's id, so it grants by id
+    // instead of looking the account up by email again.
+    method: "grantSuperAdmin (by userId)",
+    call: () => superAdminService.grantSuperAdmin({ userId: "7" }),
+    verb: "post",
+    args: ["/api/admin/super-admins", { user_id: "7" }],
   },
   {
     method: "revokeSuperAdmin",

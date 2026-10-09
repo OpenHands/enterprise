@@ -11,6 +11,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import {
   useDeleteSuperAdminOrganization,
+  useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useUpdateSetupState,
   useUpdateSuperAdminOrganizationStatus,
@@ -375,8 +376,18 @@ export function SuperAdminUsers() {
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const [userForPasswordReset, setUserForPasswordReset] =
     useState<SuperAdminUserRow | null>(null);
+  const [userToGrant, setUserToGrant] = useState<SuperAdminUserRow | null>(
+    null,
+  );
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
+  const { data: superAdmins } = useSuperAdmins();
+  const grant = useGrantSuperAdmin();
+
+  const superAdminIds = useMemo(
+    () => new Set((superAdmins ?? []).map((admin) => admin.user_id)),
+    [superAdmins],
+  );
 
   const users: SuperAdminUserRow[] = useMemo(
     () =>
@@ -532,6 +543,18 @@ export function SuperAdminUsers() {
                     testId: `super-admin-manage-user-${row.id}`,
                     onSelect: () => setManagedUserId(row.id),
                   },
+                  {
+                    label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
+                    testId: `super-admin-user-grant-admin-${row.id}`,
+                    // Already a Super Admin -- grant it again would be a
+                    // no-op, so disable rather than letting it silently
+                    // succeed and confuse whoever clicked it.
+                    isDisabled: superAdminIds.has(row.id),
+                    title: superAdminIds.has(row.id)
+                      ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
+                      : undefined,
+                    onSelect: () => setUserToGrant(row),
+                  },
                   ...(enableIntegratedIdp
                     ? [
                         {
@@ -568,6 +591,31 @@ export function SuperAdminUsers() {
           onClose={() => setManagedUserId(null)}
         />
       ) : null}
+      {userToGrant ? (
+        <OrgModal
+          testId="super-admin-user-grant-admin-confirm"
+          title={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
+          description={
+            <Trans
+              i18nKey={I18nKey.SUPER_ADMIN$GRANT_ADMIN_CONFIRM}
+              values={{ name: userToGrant.email || userToGrant.name }}
+              components={{ name: <span className="text-white" /> }}
+            />
+          }
+          primaryButtonText={t(I18nKey.BUTTON$CONFIRM)}
+          secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
+          primaryButtonTestId="super-admin-user-grant-admin-confirm-submit"
+          secondaryButtonTestId="super-admin-user-grant-admin-confirm-cancel"
+          onPrimaryClick={() =>
+            grant.mutate(
+              { userId: userToGrant.id },
+              { onSuccess: () => setUserToGrant(null) },
+            )
+          }
+          onClose={() => setUserToGrant(null)}
+          isLoading={grant.isPending}
+        />
+      ) : null}
       {pendingOrg ? (
         <SuperAdminGrantSelfAccessModal
           orgId={pendingOrg.orgId}
@@ -589,15 +637,8 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
-  const { data: config } = useConfig();
-  // Granting Super Admin mints a one-time sign-up link (the same mechanism
-  // as the Users page's "Create Sign-up Link") rather than promoting an
-  // existing account by email, so -- like that button -- it only makes
-  // sense when the local password IDP is on; see `MintSignupLinkModal`.
-  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
-  const [grantOpen, setGrantOpen] = useState(false);
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
     null,
   );
@@ -616,22 +657,7 @@ export function SuperAdminAdmins() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
-      <SuperAdminPageHeader
-        title={t(copy.text)}
-        subtitle={t(copy.subtitle)}
-        action={
-          enableIntegratedIdp ? (
-            <BrandButton
-              type="button"
-              variant="primary"
-              startContent={<Plus className="h-4 w-4" />}
-              onClick={() => setGrantOpen(true)}
-            >
-              {t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-            </BrandButton>
-          ) : undefined
-        }
-      />
+      <SuperAdminPageHeader title={t(copy.text)} subtitle={t(copy.subtitle)} />
       <p className="text-sm text-[var(--oh-muted)]">
         {t(I18nKey.SUPER_ADMIN$ADMINS_HINT)}
       </p>
@@ -692,15 +718,6 @@ export function SuperAdminAdmins() {
           },
         ]}
       />
-      {grantOpen && (
-        <MintSignupLinkModal
-          orgId={null}
-          lockedRole="superadmin"
-          title={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-          description={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_DESCRIPTION)}
-          onClose={() => setGrantOpen(false)}
-        />
-      )}
       {adminToRevoke ? (
         <OrgModal
           testId="super-admin-revoke-confirm"

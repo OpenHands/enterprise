@@ -14,6 +14,28 @@ import {
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 
+export const useGrantSuperAdmin = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: (params: { email: string } | { userId: string }) =>
+      superAdminService.grantSuperAdmin(params),
+    onSuccess: () => {
+      displaySuccessToast(t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_SUCCESS));
+      queryClient.invalidateQueries({
+        queryKey: SUPER_ADMIN_QUERY_KEYS.admins,
+      });
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_ERROR),
+      );
+    },
+  });
+};
+
 export const useRevokeSuperAdmin = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();

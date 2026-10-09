@@ -31,18 +31,6 @@ interface MintSignupLinkModalProps {
    * page, which has no single org in context. Omit to keep `orgId` fixed.
    */
   organizations?: { id: string; name: string }[];
-  /**
-   * Fixes the minted link's role and hides the role picker entirely, for
-   * callers whose whole purpose is a single, specific role -- e.g. the
-   * Super Admin Admins page's "Grant Super Admin" action -- rather than
-   * letting the caller choose among them like the Users page's general
-   * "Create Sign-up Link" does.
-   */
-  lockedRole?: SignupLinkRole;
-  /** Overrides the default sign-up-link title/description for callers
-   * minting a link for a more specific purpose than a generic invite. */
-  title?: string;
-  description?: string;
 }
 
 /**
@@ -56,16 +44,11 @@ export function MintSignupLinkModal({
   orgId,
   onClose,
   organizations,
-  lockedRole,
-  title,
-  description,
 }: MintSignupLinkModalProps) {
   const { t } = useTranslation();
   const { mutate: createSignupLink, isPending } = useCreateSignupLink();
   const [email, setEmail] = React.useState("");
-  const [role, setRole] = React.useState<SignupLinkRole>(
-    lockedRole ?? "member",
-  );
+  const [role, setRole] = React.useState<SignupLinkRole>("member");
   const [selectedOrgId, setSelectedOrgId] = React.useState(orgId);
   const [link, setLink] = React.useState<{
     email: string;
@@ -111,13 +94,10 @@ export function MintSignupLinkModal({
 
   // The role options (and which ones are valid) depend on whether an org is
   // selected -- reset to the new list's default instead of keeping a role
-  // (e.g. "superadmin") that no longer applies once an org is picked. Not
-  // relevant when the role is locked -- there's no picker to react to.
+  // (e.g. "superadmin") that no longer applies once an org is picked.
   React.useEffect(() => {
-    if (!lockedRole) {
-      setRole("member");
-    }
-  }, [hasOrg, lockedRole]);
+    setRole("member");
+  }, [hasOrg]);
 
   const handleSubmit = () => {
     const trimmedEmail = email.trim();
@@ -164,8 +144,8 @@ export function MintSignupLinkModal({
   return (
     <OrgModal
       testId="mint-signup-link-modal"
-      title={title ?? t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
-      description={description ?? t(I18nKey.ORG$MINT_SIGNUP_LINK_DESCRIPTION)}
+      title={t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
+      description={t(I18nKey.ORG$MINT_SIGNUP_LINK_DESCRIPTION)}
       primaryButtonText={t(I18nKey.BUTTON$CREATE)}
       onPrimaryClick={handleSubmit}
       onClose={onClose}
@@ -198,24 +178,22 @@ export function MintSignupLinkModal({
           />
         </label>
       )}
-      {!lockedRole && (
-        <label className="flex flex-col gap-1 text-sm">
-          {t(I18nKey.ORG$INVITE_ROLE_LABEL)}
-          <Dropdown
-            // Remount when the role list itself changes (org vs no-org) so
-            // the displayed selection resets to the new `defaultValue`
-            // instead of keeping a stale, now-invalid one (e.g. "superadmin"
-            // after an org is picked).
-            key={hasOrg ? "org-role" : "no-org-role"}
-            testId="signup-link-role-dropdown"
-            options={roleOptions}
-            defaultValue={roleOptions[0]}
-            onChange={(option) =>
-              setRole((option?.value as SignupLinkRole) ?? "member")
-            }
-          />
-        </label>
-      )}
+      <label className="flex flex-col gap-1 text-sm">
+        {t(I18nKey.ORG$INVITE_ROLE_LABEL)}
+        <Dropdown
+          // Remount when the role list itself changes (org vs no-org) so
+          // the displayed selection resets to the new `defaultValue`
+          // instead of keeping a stale, now-invalid one (e.g. "superadmin"
+          // after an org is picked).
+          key={hasOrg ? "org-role" : "no-org-role"}
+          testId="signup-link-role-dropdown"
+          options={roleOptions}
+          defaultValue={roleOptions[0]}
+          onChange={(option) =>
+            setRole((option?.value as SignupLinkRole) ?? "member")
+          }
+        />
+      </label>
     </OrgModal>
   );
 }
