@@ -173,6 +173,8 @@ export interface SuperAdminRowMenuItem {
   onSelect: () => void;
   destructive?: boolean;
   testId?: string;
+  isDisabled?: boolean;
+  title?: string;
 }
 
 interface SuperAdminRowMenuProps {
@@ -273,6 +275,8 @@ export function SuperAdminRowMenu({
                 <ContextMenuListItem
                   key={item.label}
                   testId={item.testId}
+                  isDisabled={item.isDisabled}
+                  title={item.title}
                   onClick={() => {
                     item.onSelect();
                     setOpen(false);

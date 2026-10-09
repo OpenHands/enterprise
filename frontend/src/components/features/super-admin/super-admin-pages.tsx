@@ -567,6 +567,7 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [grantOpen, setGrantOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -652,20 +653,30 @@ export function SuperAdminAdmins() {
             key: "actions",
             header: "",
             className: "w-12 min-w-12 text-right",
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-admin-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$REVOKE),
-                    testId: `super-admin-admin-revoke-${row.id}`,
-                    destructive: true,
-                    onSelect: () => setAdminToRevoke(row),
-                  },
-                ]}
-              />
-            ),
+            render: (row) => {
+              const isSelf = row.id === userId;
+              return (
+                <SuperAdminRowMenu
+                  testId={`super-admin-admin-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$REVOKE),
+                      testId: `super-admin-admin-revoke-${row.id}`,
+                      destructive: true,
+                      // Nobody may revoke their own Super Admin access --
+                      // not even when other Super Admins exist -- so they
+                      // can never accidentally lock themselves out.
+                      isDisabled: isSelf,
+                      title: isSelf
+                        ? t(I18nKey.SUPER_ADMIN$CANNOT_REVOKE_SELF)
+                        : undefined,
+                      onSelect: () => setAdminToRevoke(row),
+                    },
+                  ]}
+                />
+              );
+            },
           },
         ]}
       />

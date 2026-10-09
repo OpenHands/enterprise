@@ -157,8 +157,13 @@ async def test_revoke_success(mock_app, grant_manage_super_admins):
 
 
 @pytest.mark.asyncio
-async def test_revoke_self_success(mock_app, grant_manage_super_admins):
-    """Caller revoking their own id succeeds when another super admin exists."""
+async def test_revoke_self_forbidden(mock_app, grant_manage_super_admins):
+    """Self-revocation is always refused, even when other super admins exist.
+
+    The store is never even called: the route short-circuits on a plain
+    user-id comparison, so this also proves the guard does not depend on
+    (or wait on) the "last remaining super admin" check.
+    """
     with patch(
         'server.routes.super_admins.UserStore.revoke_super_admin',
         AsyncMock(return_value=SuperAdminRevokeResult.REVOKED),
@@ -166,8 +171,8 @@ async def test_revoke_self_success(mock_app, grant_manage_super_admins):
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/super-admins/{CALLER_USER_ID}')
 
-    assert resp.status_code == 200
-    revoke_mock.assert_awaited_once_with(CALLER_USER_ID)
+    assert resp.status_code == 403
+    revoke_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

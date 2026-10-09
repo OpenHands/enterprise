@@ -1195,9 +1195,11 @@ class UserStore:
 
         Clears ``user.role_id``. Refuses to remove the **last** enabled
         super admin so an installation can never be left with no instance
-        administrator who can sign in (this also covers self-removal: a super
-        admin may demote themselves as long as another enabled super admin
-        still exists).
+        administrator who can sign in. This store method does not know
+        which caller is asking, so it does not itself forbid self-removal --
+        that additional guard (nobody may revoke their *own* super-admin
+        access, even when another super admin exists) is enforced one layer
+        up, in ``server.routes.super_admins.revoke_super_admin``.
 
         Concurrency: the whole set of current super admins is selected
         ``FOR UPDATE`` before the count/clear, so simultaneous revokes
