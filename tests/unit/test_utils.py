@@ -36,12 +36,51 @@ def test_has_exact_mention():
     # Test multiple mentions
     assert has_exact_mention('@openhands and @openhands again', '@openhands') is True
     assert has_exact_mention('@openhands-agent and @openhands', '@openhands') is True
+    assert (
+        has_exact_mention('@openhands/agent-canvas and @openhands', '@openhands')
+        is True
+    )
 
     # Test with surrounding punctuation
     assert has_exact_mention('Hey, @openhands!', '@openhands') is True
     assert has_exact_mention('(@openhands)', '@openhands') is True
     assert has_exact_mention('@openhands: hello', '@openhands') is True
     assert has_exact_mention('@openhands? yes', '@openhands') is True
+    assert has_exact_mention('Thanks @openhands.', '@openhands') is True
+    assert has_exact_mention('Thanks @openhands. Next line', '@openhands') is True
+    assert has_exact_mention('Wait @openhands...', '@openhands') is True
+    assert has_exact_mention('@openhands\nplease fix', '@openhands') is True
+
+    # Test scoped package names and domains (should be False), see
+    # OpenHands/enterprise#660
+    assert (
+        has_exact_mention('`@openhands/typescript-client@1.53.0`', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention('"@openhands/typescript-client": "1.53.0"', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention(
+            'import { X } from "@openhands/typescript-client"', '@openhands'
+        )
+        is False
+    )
+    assert has_exact_mention('see @openhands.com', '@openhands') is False
+    assert has_exact_mention('Bump @openhands/agent-canvas', '@openhands') is False
+    assert (
+        has_exact_mention('"matchPackagePatterns": ["@openhands/*"]', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention(
+            'GET https://registry.npmjs.org/@openhands%2ftypescript-client',
+            '@openhands',
+        )
+        is False
+    )
+    assert has_exact_mention('@openhands%2Ftypescript-client', '@openhands') is False
 
 
 def test_markdown_to_jira_markup():

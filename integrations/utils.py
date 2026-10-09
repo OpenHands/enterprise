@@ -145,7 +145,11 @@ def get_summary_instruction():
 
 
 def has_exact_mention(text: str, mention: str) -> bool:
-    """Check if the text contains an exact mention (not part of a larger word).
+    """Check if the text contains an exact mention.
+
+    The mention must not be part of a larger word, a scoped package name
+    (@openhands/pkg), a package glob (@openhands/*), a URL-encoded scoped
+    package name (@openhands%2fpkg) or a domain (@openhands.com).
 
     Args:
         text: The text to check for mentions
@@ -160,14 +164,26 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("(@openhands)", "@openhands")  # True
         >>> has_exact_mention("user@openhands.com", "@openhands")  # False
         >>> has_exact_mention("Hello @OpenHands!", "@openhands")  # True (case-insensitive)
+        >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
+        >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
+        >>> has_exact_mention("see @openhands.com", "@openhands")  # False
+        >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
+        >>> has_exact_mention("npmjs.org/@openhands%2fpkg", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
     mention_lower = mention.lower()
 
     pattern = re.escape(mention_lower)
-    # Match mention that is not part of a larger word
-    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-])', text_lower))
+    # Match mention that is not part of a larger word. A '/' or '.' ends the
+    # mention only when no word character, '-' or '*' follows it, so scoped
+    # package names (@openhands/pkg), package globs (@openhands/*) and domains
+    # (@openhands.com) do not match, but a sentence end (Thanks @openhands.)
+    # does. A URL-encoded '/' (@openhands%2fpkg) does not match either; the
+    # text is lowercase, so '%2f' also covers '%2F'.
+    return bool(
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w*-]|%2f)', text_lower)
+    )
 
 
 def infer_repo_from_message(user_msg: str) -> list[str]:
