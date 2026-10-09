@@ -119,8 +119,7 @@ export function SuperAdminLayout() {
   const routeHandles = matches.map(
     (match) =>
       match.handle as
-        | { hideTitle?: boolean; wideContent?: boolean }
-        | undefined,
+        { hideTitle?: boolean; wideContent?: boolean } | undefined,
   );
   const shouldHideTitle = routeHandles.some((handle) => handle?.hideTitle);
   const wideContent = routeHandles.some((handle) => handle?.wideContent);

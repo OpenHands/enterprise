@@ -31,11 +31,7 @@ export interface SuperAdminApiUser {
 }
 
 export type SuperAdminGroupAction =
-  | "suspend"
-  | "resume"
-  | "remove"
-  | "add"
-  | "set_role";
+  "suspend" | "resume" | "remove" | "add" | "set_role";
 
 export interface ProvisionUserRequest {
   email: string;
