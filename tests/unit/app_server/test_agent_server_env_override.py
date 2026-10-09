@@ -416,7 +416,7 @@ class TestDockerSandboxSpecEnvironmentOverride:
             assert spec.initial_env['DEBUG'] == 'true'
 
             # Check that default environment variables are still present
-            assert 'OPENVSCODE_SERVER_ROOT' in spec.initial_env
+            assert 'OPENVSCODE_SERVER_ROOT' not in spec.initial_env
             assert 'OH_ENABLE_VNC' in spec.initial_env
             assert 'LOG_JSON' in spec.initial_env
 
@@ -446,7 +446,6 @@ class TestDockerSandboxSpecEnvironmentOverride:
 
             # Should only have the default environment variables
             expected_defaults = {
-                'OPENVSCODE_SERVER_ROOT',
                 'OH_ENABLE_VNC',
                 'LOG_JSON',
                 'OH_CONVERSATIONS_PATH',
@@ -550,7 +549,7 @@ class TestRemoteSandboxSpecEnvironmentOverride:
             # Check that default environment variables are still present
             assert 'OH_CONVERSATIONS_PATH' in spec.initial_env
             assert 'OH_BASH_EVENTS_DIR' in spec.initial_env
-            assert 'OH_VSCODE_PORT' in spec.initial_env
+            assert 'OH_VSCODE_PORT' not in spec.initial_env
 
     def test_remote_specs_override_existing_variables(self):
         """Test that agent server env variables can override existing ones in remote specs."""
@@ -580,10 +579,8 @@ class TestRemoteSandboxSpecEnvironmentOverride:
             expected_defaults = {
                 'OH_CONVERSATIONS_PATH',
                 'OH_BASH_EVENTS_DIR',
-                'OH_VSCODE_PORT',
                 'LOG_JSON',
                 'OH_ENABLE_VNC',
-                'OPENVSCODE_SERVER_ROOT',
             }
 
             # All defaults should be present
@@ -651,7 +648,7 @@ class TestEnvironmentOverrideIntegration:
             assert 'OH_OTHER_PREFIX_VAR' not in spec.initial_env
 
             # Original defaults that weren't overridden should still be present
-            assert 'OPENVSCODE_SERVER_ROOT' in spec.initial_env
+            assert 'OPENVSCODE_SERVER_ROOT' not in spec.initial_env
             assert 'OH_ENABLE_VNC' in spec.initial_env
 
     def test_environment_isolation(self):
@@ -865,7 +862,7 @@ class TestDockerSandboxServiceEnvIntegration:
             assert container_env['LLM_NUM_RETRIES'] == '10'
 
             # Default variables should also be present
-            assert 'OPENVSCODE_SERVER_ROOT' in container_env
+            assert 'OPENVSCODE_SERVER_ROOT' not in container_env
             assert 'LOG_JSON' in container_env
 
     def test_host_network_mode_with_env_var(self):
