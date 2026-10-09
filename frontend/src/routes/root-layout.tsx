@@ -35,6 +35,10 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
+import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { useSuspendedOrganizationStore } from "#/stores/suspended-organization-store";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -90,6 +94,11 @@ export default function MainApp() {
     isLoading: isAuthLoading,
     isError: isAuthError,
   } = useIsAuthed();
+
+  const selectedOrganizationId = useSelectedOrganizationStore(
+    (state) => state.organizationId,
+  );
+  const suspension = useSuspendedOrganizationStore((state) => state.suspension);
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
@@ -294,16 +303,31 @@ export default function MainApp() {
     );
   }
 
-  // Settings owns its own gutters (aside pl-8 + main pr-[14px]), matching
+  // The server refused the selected organization (suspended org or
+  // membership). Unmount the app tree for the same reason as above; switching
+  // to another organization changes the selection and lifts the block.
+  if (suspension && suspension.orgId === selectedOrganizationId) {
+    return (
+      <div className="min-h-screen bg-base">
+        <SuspendedOrganizationModal
+          organizationId={suspension.orgId}
+          reason={suspension.reason}
+        />
+      </div>
+    );
+  }
+
+  // Settings and Super Admin own their own gutters (aside + main), matching
   // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
-  const isSettingsRoute = pathname.startsWith("/settings");
+  const isFlushChromeRoute =
+    pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
 
   return (
     <div
       data-testid="root-layout"
       className={cn(
         "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
-        pathname === "/" || isSettingsRoute ? "p-0" : "p-0 md:p-3",
+        pathname === "/" || isFlushChromeRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>
@@ -328,6 +352,12 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
+              {/* The guide reads the API, which signs out a session that has
+                  not accepted the TOS yet, so wait until the user is signed
+                  in and past the intermediate pages. */}
+              {config.data?.app_mode === "saas" &&
+                isAuthed === true &&
+                !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>

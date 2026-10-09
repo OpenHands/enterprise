@@ -6,11 +6,17 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 
+from server.logger import logger
 from server.services.user_lifecycle_remote import UserLifecycleRemote
 from storage.database import a_session_maker
 from storage.role import Role
 from storage.user import User
-from storage.user_data_cleanup import check_user_data_cleanup, delete_user_data
+from storage.user_data_cleanup import (
+    UserCleanupConflict,
+    check_user_data_cleanup,
+    delete_user_data,
+)
+from storage.user_store import USER_LIFECYCLE_LOCK_NAMESPACE
 
 
 class LastSuperAdminError(RuntimeError):
@@ -47,18 +53,21 @@ class AdminUserLifecycleService:
         # row locks across the independently committed local revocation phase.
         async with self.session_factory() as lock_session:
             await lock_session.execute(
-                text('SELECT pg_advisory_xact_lock(176, hashtext(:uid))'),
-                {'uid': str(uid)},
+                text('SELECT pg_advisory_xact_lock(:namespace, hashtext(:uid))'),
+                {'uid': str(uid), 'namespace': USER_LIFECYCLE_LOCK_NAMESPACE},
             )
             async with self.session_factory() as session:
-                await session.execute(text('SELECT pg_advisory_xact_lock(176, 0)'))
+                await session.execute(
+                    text('SELECT pg_advisory_xact_lock(:namespace, 0)'),
+                    {'namespace': USER_LIFECYCLE_LOCK_NAMESPACE},
+                )
                 user = await session.get(User, uid, with_for_update=True)
                 if user is None:
                     return None
                 result = UserLifecycleResult(str(uid), user.email)
                 if operation == 'enable':
                     if user.deletion_pending:
-                        raise LifecycleCleanupError(
+                        raise UserCleanupConflict(
                             'Deletion is pending; retry DELETE, not enable'
                         )
                 else:
@@ -82,6 +91,8 @@ class AdminUserLifecycleService:
                             raise LastSuperAdminError(
                                 'Cannot disable or delete the last active superadmin'
                             )
+                    if operation == 'delete':
+                        await check_user_data_cleanup(session, uid)
                     user.is_disabled = True
                     user.deletion_pending = (
                         user.deletion_pending or operation == 'delete'
@@ -100,9 +111,6 @@ class AdminUserLifecycleService:
                         )
                 await session.commit()
             try:
-                if operation == 'delete':
-                    async with self.session_factory() as session:
-                        await check_user_data_cleanup(session, uid)
                 if operation == 'enable':
                     await self.remote.enable(str(uid))
                 else:
@@ -116,9 +124,13 @@ class AdminUserLifecycleService:
                     elif operation == 'delete':
                         await delete_user_data(session, uid)
                     await session.commit()
-            except ValueError as exc:
-                raise LifecycleCleanupError(str(exc)) from exc
+            except UserCleanupConflict:
+                raise
             except Exception as exc:
+                logger.exception(
+                    'User lifecycle cleanup failed',
+                    extra={'user_id': user_id, 'operation': operation},
+                )
                 raise LifecycleCleanupError(
                     'Lifecycle cleanup incomplete; user remains disabled. Retry the same operation.'
                 ) from exc

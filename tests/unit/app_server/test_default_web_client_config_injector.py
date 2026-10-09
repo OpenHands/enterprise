@@ -431,6 +431,52 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_agent_canvas_banner is True
 
+    def test_enable_super_admin_false_by_default(self):
+        """When ENABLE_SUPER_ADMIN is unset, the Super Admin flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is False
+
+    def test_enable_super_admin_true_when_env_var_true(self):
+        """When ENABLE_SUPER_ADMIN is 'true', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
+    def test_enable_super_admin_true_when_env_var_one(self):
+        """When ENABLE_SUPER_ADMIN is '1', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
+    def test_enable_super_admin_true_from_structured_env(self):
+        """Structured web-client env can enable the Super Admin flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_super_admin is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""
@@ -939,6 +985,51 @@ class TestEmailChangeEnabled:
         assert config.email_change_enabled is False
 
 
+class TestUserProvisioningEnabled:
+    """Tests for user_provisioning_enabled in the web client config."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('route_registered', [True, False])
+    async def test_reports_whether_provision_user_route_is_registered(
+        self, route_registered
+    ):
+        """The config mirrors the switch that registers provision-user."""
+        # Arrange
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeFeatureFlagService:
+            async def resolve(self, key):
+                return False
+
+            async def get_global_flags(self):
+                return {}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'server.services.feature_flag_service.feature_flag_service',
+                _FakeFeatureFlagService(),
+            ),
+            patch('server.constants.USER_PROVISIONING_ENABLED', route_registered),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+
+            # Act
+            config = await injector.get_web_client_config()
+
+        # Assert
+        assert config.user_provisioning_enabled is route_registered
+
+
 class TestGetJiraOauthEnabled:
     """Tests for _get_jira_oauth_enabled."""
 
@@ -1252,3 +1343,31 @@ class TestSurfacedACPProviders:
         from openhands.sdk.settings import ACP_PROVIDERS
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+
+
+class TestGetProviderDefaultHosts:
+    """Test cases for _get_provider_default_hosts helper function."""
+
+    def test_includes_bitbucket_data_center_host_when_env_var_set(self):
+        """The Bitbucket Data Center host comes from BITBUCKET_DATA_CENTER_HOST."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(
+            os.environ, {'BITBUCKET_DATA_CENTER_HOST': ' bitbucket.acme.dev '}
+        ):
+            result = _get_provider_default_hosts()
+
+        assert result['bitbucket_data_center'] == 'bitbucket.acme.dev'
+
+    def test_omits_bitbucket_data_center_when_env_var_unset(self):
+        """Without BITBUCKET_DATA_CENTER_HOST there is no Bitbucket Data Center host."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_provider_default_hosts()
+
+        assert 'bitbucket_data_center' not in result

@@ -25,7 +25,8 @@ token_manager = TokenManager()
 class DefaultUserAuthorizer(UserAuthorizer):
     """Class determining whether a user may be authorized.
 
-    Uses the user_authorizations database table to check whitelist/blacklist rules.
+    Refuses users a Super Admin has disabled, then uses the user_authorizations
+    database table to check whitelist/blacklist rules.
     """
 
     prevent_duplicates: bool
@@ -38,7 +39,7 @@ class DefaultUserAuthorizer(UserAuthorizer):
         provider_type = user_info.identity_provider
         try:
             user = await UserStore.get_user_by_id(user_id)
-            if user and user.is_disabled:
+            if user and (user.is_disabled or user.deletion_pending):
                 return UserAuthorizationResponse(success=False, error_detail='disabled')
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')

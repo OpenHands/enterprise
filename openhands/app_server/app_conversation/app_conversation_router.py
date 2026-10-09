@@ -602,9 +602,14 @@ async def update_app_conversation(
         app_conversation_service_dependency
     ),
 ) -> AppConversation:
-    info = await app_conversation_service.update_app_conversation(
-        UUID(conversation_id), update_request
-    )
+    try:
+        info = await app_conversation_service.update_app_conversation(
+            UUID(conversation_id), update_request
+        )
+    except ValueError as e:
+        # Invalid repository or branch values are a client error, not a 500.
+        logger.warning(f'Rejected conversation update {conversation_id}: {e}')
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if info is None:
         raise HTTPException(404, 'unknown_app_conversation')
     return info

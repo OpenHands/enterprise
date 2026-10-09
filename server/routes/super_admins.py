@@ -19,6 +19,7 @@ admin may demote themselves as long as another super admin still exists.
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
@@ -33,8 +34,9 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.constants import USER_PROVISIONING_ENABLED
+from server.routes.admin_users import _operate
 from storage.user import User
-from storage.user_store import SuperAdminRevokeResult, UserDeleteResult, UserStore
+from storage.user_store import SuperAdminRevokeResult, UserStore
 
 super_admin_router = APIRouter(prefix='/api/admin/super-admins', tags=['Admin'])
 
@@ -395,33 +397,8 @@ async def count_all_users(
 
 @admin_users_router.delete('/{user_id}', status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
-    user_id: str,
+    user_id: UUID,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> None:
-    """Permanently delete a user account, in every organization it belongs to.
-
-    This is the instance-wide "Remove" action in the "All Users" view (see
-    ``UserStore.delete_user`` for exactly what gets cleaned up). Requires
-    ``MANAGE_SUPER_ADMINS`` (super-admin only) -- same gate as every other
-    endpoint in this file.
-
-    Refuses with ``409 Conflict`` if the target is the only remaining super
-    admin, for the same reason ``revoke_super_admin`` does: deleting that
-    row would remove the super-admin role from the instance entirely.
-    """
-    result = await UserStore.delete_user(user_id)
-
-    if result is UserDeleteResult.NOT_FOUND:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
-        )
-    if result is UserDeleteResult.LAST_SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='Cannot remove the last remaining super admin',
-        )
-
-    logger.info(
-        'admin_users:delete',
-        extra={'caller_user_id': caller_user_id, 'target_user_id': user_id},
-    )
+    """Delete an account after transferring shared resources and removing its personal workspace."""
+    await _operate(user_id, 'delete_user', caller_user_id)

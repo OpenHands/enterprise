@@ -99,7 +99,15 @@ def test_state_roundtrip(jwt_svc):
 
 
 def test_decrypt_bad_state_raises(jwt_svc, client):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         # Garbage base64/state → 400.
         response = client.get(
             '/oauth/1/callback',
@@ -354,6 +362,11 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
             new=AsyncMock(return_value=fake_user),
         ),
         patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
             oauth_v2.OAuthTokenStore,
             'store_tokens',
             new=AsyncMock(),
@@ -425,6 +438,11 @@ def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
             new=AsyncMock(return_value=fake_user),
         ),
         patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
             oauth_v2.OAuthTokenStore,
             'store_tokens',
             new=AsyncMock(),
@@ -445,6 +463,71 @@ def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
     assert 'redirect_url=%2Fdone' in location
     # Cookie is still set (with accepted_tos=False) so the TOS page can accept.
     assert 'openhands_auth' in response.cookies
+
+
+def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
+    """A disabled user is sent to the login page: no tokens stored, no cookie."""
+    # Arrange
+    provider = _fake_provider()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.OAuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.OAuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=True),
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ) as store_tokens,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+
+        # Act
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    # Assert
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?account_disabled=true')
+    assert 'openhands_auth' not in response.cookies
+    store_tokens.assert_not_awaited()
 
 
 def test_callback_link_flow_no_cookie(client, jwt_svc):
@@ -493,7 +576,15 @@ def test_callback_link_flow_no_cookie(client, jwt_svc):
 
 
 def test_callback_missing_code_400(client, jwt_svc):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         response = client.get(
             '/oauth/1/callback', params={'state': 'x'}, follow_redirects=False
         )
@@ -501,7 +592,15 @@ def test_callback_missing_code_400(client, jwt_svc):
 
 
 def test_callback_error_param_400(client, jwt_svc):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         response = client.get(
             '/oauth/1/callback',
             params={'error': 'access_denied'},

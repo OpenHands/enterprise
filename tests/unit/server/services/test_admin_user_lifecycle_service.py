@@ -11,6 +11,7 @@ from server.services.admin_user_lifecycle_service import (
 )
 from storage.role import Role
 from storage.user import User
+from storage.user_data_cleanup import UserCleanupConflict
 
 
 @pytest.fixture
@@ -50,7 +51,7 @@ async def test_remote_failure_is_disabled_and_retryable(
     async with async_session_maker() as session:
         stored = await session.get(User, user.id)
         assert stored.is_disabled and stored.deletion_pending
-    with pytest.raises(LifecycleCleanupError):
+    with pytest.raises(UserCleanupConflict):
         await service.enable_user(str(user.id))
     service.remote.disable.side_effect = None
     await service.delete_user(str(user.id))
@@ -137,7 +138,7 @@ async def test_delete_requires_shared_workspace_transfer(
         await session.commit()
 
     with pytest.raises(
-        LifecycleCleanupError,
+        UserCleanupConflict,
         match='Transfer integration workspace administration',
     ):
         await service.delete_user(str(user.id))
@@ -145,7 +146,8 @@ async def test_delete_requires_shared_workspace_transfer(
     service.remote.disable.assert_not_awaited()
     async with async_session_maker() as session:
         stored = await session.get(User, user.id)
-        assert stored.is_disabled and stored.deletion_pending
+        assert not stored.is_disabled and not stored.deletion_pending
+        assert stored.credentials_revoked_at is None
         await session.execute(
             text('DELETE FROM jira_workspaces WHERE admin_user_id = :uid'),
             {'uid': str(user.id)},
@@ -174,9 +176,9 @@ def test_only_superadmin_has_lifecycle_permission():
         RoleName,
     )
 
-    assert Permission.MANAGE_USERS in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
+    assert Permission.MANAGE_SUPER_ADMINS in SUPER_ROLE_PERMISSIONS[RoleName.ADMIN]
     assert all(
-        Permission.MANAGE_USERS not in permissions
+        Permission.MANAGE_SUPER_ADMINS not in permissions
         for permissions in ROLE_PERMISSIONS.values()
     )
 
@@ -208,3 +210,57 @@ async def test_role_revoke_and_disable_share_last_admin_lock(
         assert await session.scalar(
             select(User.id).where(User.role_id == role.id, User.is_disabled.is_(False))
         )
+
+
+@pytest.mark.asyncio
+async def test_delete_preserves_team_history(
+    create_org, create_user, service, async_session_maker
+):
+    from sqlalchemy import text
+
+    from storage.org_member import OrgMember
+    from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
+
+    org = create_org()
+    target = create_user(current_org_id=org.id)
+    other = create_user(current_org_id=org.id)
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=1)
+        session.add(role)
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=org.id, user_id=other.id, role_id=role.id, llm_api_key='key'
+            )
+        )
+        session.add(
+            StoredConversationMetadataSaas(
+                conversation_id='retained', user_id=target.id, org_id=org.id
+            )
+        )
+        await session.commit()
+    await service.delete_user(str(target.id))
+    async with async_session_maker() as session:
+        conversation = await session.get(StoredConversationMetadataSaas, 'retained')
+        assert conversation.user_id == other.id
+        assert conversation.org_id == org.id
+        assert (
+            await session.scalar(
+                text('SELECT count(*) FROM conversation_metadata_saas')
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_personal_workspace_blocks_before_mutation(
+    create_org, create_user, service, async_session_maker
+):
+    org = create_org()
+    target = create_user(id=org.id, current_org_id=org.id)
+    with pytest.raises(UserCleanupConflict, match='personal workspace'):
+        await service.delete_user(str(target.id))
+    async with async_session_maker() as session:
+        user = await session.get(User, target.id)
+        assert not user.is_disabled and not user.deletion_pending
+    service.remote.disable.assert_not_awaited()

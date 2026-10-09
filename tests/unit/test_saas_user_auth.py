@@ -30,6 +30,34 @@ from storage.api_key_store import ApiKeyValidationResult
 from storage.user_authorization import UserAuthorizationType
 
 
+@pytest.fixture(autouse=True)
+def _org_usable_for_product():
+    """No-op the org lifecycle gate run by ``get_effective_org_id``.
+
+    The gate itself needs the database and is covered by
+    ``tests/unit/server/auth/test_saas_user_auth_effective_org.py``.
+    """
+    with patch(
+        'server.auth.org_access.assert_org_usable_for_product',
+        AsyncMock(return_value=None),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _user_not_disabled():
+    """Report every user as enabled to the check run by ``get_instance``.
+
+    The lookup itself needs the database and is covered by
+    ``tests/unit/test_user_store.py``.
+    """
+    with patch(
+        'storage.user_store.UserStore.is_user_disabled',
+        AsyncMock(return_value=False),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_request():
     request = MagicMock(spec=Request)

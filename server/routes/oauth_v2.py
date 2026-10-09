@@ -287,13 +287,15 @@ def _set_oauth_v2_cookie(
     user_id: str,
     access_token_expires_at: datetime | None,
     accepted_tos: bool,
+    idp_provider_id: int | None,
     refresh_token_expires_at: datetime | None = None,
 ) -> None:
     """Set the small JWT cookie for the OAuth v2 path.
 
-    The cookie carries only ``user_id``, ``access_token_expires_at``, and
-    ``accepted_tos`` — not the tokens themselves. ``Max-Age`` is the IDP
-    refresh-token expiry (or a 30-day cap if ``None``), per the Phase 2 spec.
+    The cookie carries only ``user_id``, ``access_token_expires_at``,
+    ``accepted_tos``, and ``idp_provider_id`` — not the tokens themselves.
+    ``Max-Age`` is the IDP refresh-token expiry (or a 30-day cap if
+    ``None``), per the Phase 2 spec.
     """
     from server.auth.oauth_v2_refresh import (
         compute_cookie_max_age,
@@ -303,7 +305,7 @@ def _set_oauth_v2_cookie(
 
     max_age_seconds = compute_cookie_max_age(refresh_token_expires_at)
     payload = create_oauth_v2_cookie_payload(
-        user_id, access_token_expires_at, accepted_tos
+        user_id, access_token_expires_at, accepted_tos, idp_provider_id
     )
     signed = sign_oauth_v2_cookie(payload, max_age_seconds)
     web_url = get_web_url(request)
@@ -399,21 +401,16 @@ async def oauth_v2_login(
     Encodes an encrypted state blob (redirect URL, mode, nonce) and redirects
     the browser to the provider's authorization URL.
     """
-    # Integrated IDP is handled by its own routes (registered before this router).
-    # The sentinel provider id (-1) never matches a real DB row, so intercept
-    # it here and redirect to the dedicated email+password login page.
-    from server.routes.idp import (
-        IDP_LOGIN_PATH,
-        IDP_PROVIDER_ID,
-        is_idp_available,
-    )
+    provider = await _get_provider(provider_id)
 
-    if provider_id == IDP_PROVIDER_ID:
-        if not await is_idp_available():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail='Password login is not available',
-            )
+    # Integrated IDP is handled by its own routes (registered before this
+    # router): intercept by category and redirect to its dedicated
+    # email+password login page instead of building an external OAuth URL.
+    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
+
+    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
+        from server.routes.idp import IDP_LOGIN_PATH
+
         web_url = get_web_url(request)
         target = f'{web_url}/oauth/{IDP_LOGIN_PATH}'
         params: dict[str, str] = {}
@@ -424,8 +421,6 @@ async def oauth_v2_login(
         if params:
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
-
-    provider = await _get_provider(provider_id)
 
     auth_url = provider.authorization_url
     if not auth_url:
@@ -471,10 +466,14 @@ async def oauth_v2_callback(
     Exchanges the code, persists tokens, and either links the provider to the
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
-    # Integrated IDP callbacks are handled by dedicated routes.
-    from server.routes.idp import IDP_PROVIDER_ID
+    provider = await _get_provider(provider_id)
 
-    if provider_id == IDP_PROVIDER_ID:
+    # Integrated IDP callbacks are handled by dedicated routes -- checked
+    # first, unconditionally, so this 404s on provider category alone
+    # regardless of whatever ``code``/``state`` a caller happens to send.
+    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
+
+    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login callback must use POST with email field',
@@ -498,8 +497,6 @@ async def oauth_v2_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Invalid or tampered OAuth state',
         ) from exc
-
-    provider = await _get_provider(provider_id)
 
     web_url = get_web_url(request)
     redirect_uri = f'{web_url}/oauth/{provider_id}/callback'
@@ -530,6 +527,10 @@ async def oauth_v2_callback(
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
+        if await UserStore.is_user_disabled(user_id):
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),
@@ -560,6 +561,7 @@ async def oauth_v2_callback(
             user_id=user_id,
             access_token_expires_at=access_exp,
             accepted_tos=has_accepted_tos,
+            idp_provider_id=provider.id,
             refresh_token_expires_at=refresh_exp,
         )
     else:

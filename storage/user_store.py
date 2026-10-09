@@ -8,12 +8,14 @@ from typing import Optional
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from server.auth.constants import ENABLE_SUPER_ADMIN
 from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -24,20 +26,16 @@ from server.constants import (
     get_default_llm_model,
 )
 from server.logger import logger
-from storage.daily_conversation_usage import DailyConversationUsage
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
     decrypt_legacy_model,
     decrypt_legacy_value,
     encrypt_legacy_value,
 )
+from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
-from storage.org_git_claim import OrgGitClaim
-from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
-from storage.org_user_budget_override import OrgUserBudgetOverride
-from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
@@ -56,6 +54,9 @@ _REDIS_USER_CREATION_KEY_PREFIX = 'create_user:'
 # ``superadmin`` (see ``server.auth.authorization`` for the super-role model).
 _SUPER_ADMIN_ROLE_NAME = 'admin'
 
+# Stable lock namespace, independent of migration revision numbering.
+USER_LIFECYCLE_LOCK_NAMESPACE = 176
+
 
 class SuperAdminRevokeResult(str, Enum):
     """Outcome of an attempt to revoke a user's super-admin role.
@@ -67,18 +68,6 @@ class SuperAdminRevokeResult(str, Enum):
     REVOKED = 'revoked'
     NOT_FOUND = 'not_found'
     NOT_SUPER_ADMIN = 'not_super_admin'
-    LAST_SUPER_ADMIN = 'last_super_admin'
-
-
-class UserDeleteResult(str, Enum):
-    """Outcome of an attempt to permanently delete a user account.
-
-    Returned (rather than raising) so the calling route can map each case
-    to an appropriate HTTP status without sniffing exception types.
-    """
-
-    DELETED = 'deleted'
-    NOT_FOUND = 'not_found'
     LAST_SUPER_ADMIN = 'last_super_admin'
 
 
@@ -139,6 +128,13 @@ class UserStore:
                             'user_store:create_user:first_user_designated_superadmin',
                             extra={'user_id': user_id},
                         )
+                        # This Super Admin runs the first-install wizard.
+                        if ENABLE_SUPER_ADMIN:
+                            await session.execute(
+                                insert(InstanceSettings)
+                                .values(id=1, setup_user_id=user_uuid)
+                                .on_conflict_do_nothing(index_elements=['id'])
+                            )
 
             org = await session.get(Org, user_uuid)
             org_created = False
@@ -759,6 +755,24 @@ class UserStore:
             return user_settings
 
     @staticmethod
+    async def get_user_auth_state(user_id: str) -> Optional[User]:
+        async with a_session_maker() as session:
+            return await session.scalar(
+                select(User)
+                .options(
+                    load_only(
+                        User.id,
+                        User.is_disabled,
+                        User.deletion_pending,
+                        User.credentials_revoked_at,
+                        User.email,
+                        User.email_verified,
+                    )
+                )
+                .where(User.id == uuid.UUID(user_id))
+            )
+
+    @staticmethod
     async def get_user_by_id(user_id: str) -> Optional[User]:
         """Get user by Keycloak user ID."""
         async with a_session_maker() as session:
@@ -1183,10 +1197,11 @@ class UserStore:
     async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
         """Revoke the instance-level super-admin role from a user.
 
-        Clears ``user.role_id``. Refuses to remove the **last** remaining
+        Clears ``user.role_id``. Refuses to remove the **last** enabled
         super admin so an installation can never be left with no instance
-        administrator (this also covers self-removal: a super admin may
-        demote themselves as long as another super admin still exists).
+        administrator who can sign in (this also covers self-removal: a super
+        admin may demote themselves as long as another enabled super admin
+        still exists).
 
         Concurrency: the whole set of current super admins is selected
         ``FOR UPDATE`` before the count/clear, so simultaneous revokes
@@ -1202,7 +1217,10 @@ class UserStore:
         """
         target_uuid = uuid.UUID(user_id)
         async with a_session_maker() as session:
-            await session.execute(text('SELECT pg_advisory_xact_lock(176, 0)'))
+            await session.execute(
+                text('SELECT pg_advisory_xact_lock(:namespace, 0)'),
+                {'namespace': USER_LIFECYCLE_LOCK_NAMESPACE},
+            )
             admin_role_id = await UserStore._get_super_admin_role_id(session)
             result = await session.execute(
                 select(User).filter(User.role_id == admin_role_id).with_for_update()
@@ -1239,142 +1257,132 @@ class UserStore:
             return SuperAdminRevokeResult.REVOKED
 
     @staticmethod
-    async def delete_user(user_id: str) -> UserDeleteResult:
-        """Permanently delete a user account and every row that references it.
+    async def is_user_disabled(user_id: str) -> bool:
+        """Whether a Super Admin has disabled the user.
 
-        Backs the super-admin "Remove" action in the instance-wide user
-        directory (``DELETE /api/admin/users/{user_id}``). Unlike removing a
-        member from a single org (``OrgMemberStore.remove_user_from_org``),
-        this deletes the ``User`` row itself -- including every org
-        membership, not just one -- so the account disappears entirely. Org
-        resources that are scoped by ``org_id`` rather than ``user_id``
-        (conversations, API keys, secrets, ...) are left alone, exactly as
-        they would be if the user had instead been removed from each org
-        one at a time.
-
-        Refuses (``LAST_SUPER_ADMIN``) if the target is the only remaining
-        super admin, mirroring ``revoke_super_admin``'s "never lock out
-        instance administration" guard -- deleting that row would remove
-        the super-admin role just as surely as revoking it would.
-
-        Mirrors the FK-release ordering used by the personal-org
-        self-deletion path in ``OrgStore.delete_org_cascade``: every
-        (non-cascading) FK onto ``user.id`` must be cleared before
-        ``DELETE FROM "user"``, or that statement raises a FK violation.
-        *** Adding a new table with a FK onto ``user.id`` (e.g.
-        ``user_api_key``, ``audit_log``) requires updating this method too. ***
+        A user without a row yet, such as on a first sign-in, is not disabled.
         """
-        target_uuid = uuid.UUID(user_id)
+        async with a_session_maker() as session:
+            disabled = await session.scalar(
+                select(User.is_disabled | User.deletion_pending).filter(
+                    User.id == uuid.UUID(user_id)
+                )
+            )
+            return bool(disabled)
+
+    @staticmethod
+    async def set_user_disabled(user_id: UUID, disabled: bool) -> bool:
+        """Disable or re-enable a user's sign-in, sessions and API keys.
+
+        Returns ``False``, changing nothing, when disabling the last enabled
+        super admin. The super admins are selected ``FOR UPDATE`` as in
+        :meth:`revoke_super_admin`, so two admins disabling each other
+        serialize and cannot leave the instance without one.
+        """
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
             result = await session.execute(
-                select(User).filter(User.id == target_uuid).with_for_update()
+                select(User).filter(User.role_id == admin_role_id).with_for_update()
             )
-            user = result.scalars().first()
-            if user is None:
-                return UserDeleteResult.NOT_FOUND
+            super_admins = list(result.scalars().all())
 
-            if user.role_id == admin_role_id:
-                other_super_admin_exists = await session.scalar(
-                    select(User.id)
-                    .filter(User.role_id == admin_role_id, User.id != target_uuid)
-                    .limit(1)
+            is_super_admin = any(admin.id == user_id for admin in super_admins)
+            another_enabled = any(
+                admin.id != user_id and not admin.is_disabled for admin in super_admins
+            )
+            if disabled and is_super_admin and not another_enabled:
+                logger.warning(
+                    'user_store:set_user_disabled:refused_last_super_admin',
+                    extra={'user_id': str(user_id)},
                 )
-                if other_super_admin_exists is None:
-                    logger.warning(
-                        'user_store:delete_user:refused_last_super_admin',
-                        extra={'user_id': user_id},
-                    )
-                    return UserDeleteResult.LAST_SUPER_ADMIN
+                return False
 
-            try:
-                # Preserve conversation ownership in the legacy, loosely-typed
-                # ``conversation_metadata`` table before dropping the
-                # SaaS-specific linking row -- same handoff ``downgrade_user``
-                # performs when a personal org is migrated away.
+            await session.execute(
+                sa.update(User).where(User.id == user_id).values(is_disabled=disabled)
+            )
+            await session.commit()
+            logger.info(
+                'user_store:set_user_disabled',
+                extra={'user_id': str(user_id), 'disabled': disabled},
+            )
+            return True
+
+    @staticmethod
+    async def delete_user_and_owned_data(user_id: UUID) -> None:
+        """Delete a user and the rows they own in every organization.
+
+        Backs the Super Admin dashboard's ``DELETE /api/admin/directory/users/{user_id}``.
+        Unlike administrator lifecycle deletion, this
+        deletes them.
+
+        Runs in one transaction. Their conversations, credentials, personal
+        secrets, quota and budget rows and legacy settings are deleted. Git
+        claims and invitations they made in a team org pass to another owner
+        of that org, so the team keeps them. The personal workspace
+        (``org.id == user.id``) is left without members; delete it with
+        ``OrgStore.delete_org_cascade``. LiteLLM and Keycloak are not
+        touched, and callers are responsible for the last-owner check.
+
+        A table that adds a foreign key to ``user.id`` must be cleared here,
+        or the final ``DELETE`` fails.
+        """
+        params = {'user_id': str(user_id)}
+        async with a_session_maker() as session:
+            for table, column in (
+                ('org_git_claim', 'claimed_by'),
+                ('org_invitation', 'inviter_id'),
+            ):
                 await session.execute(
-                    text("""
-                        UPDATE conversation_metadata
-                        SET user_id = :user_id
-                        WHERE conversation_id IN (
-                            SELECT conversation_id
-                            FROM conversation_metadata_saas
-                            WHERE user_id = :user_uuid
-                        )
+                    text(f"""
+                        UPDATE {table}
+                        SET {column} = other_owner.user_id
+                        FROM (
+                            SELECT DISTINCT ON (om.org_id) om.org_id, om.user_id
+                            FROM org_member om
+                            JOIN role r ON r.id = om.role_id
+                            WHERE r.name = 'owner' AND om.user_id != :user_id
+                            ORDER BY om.org_id, om.user_id
+                        ) AS other_owner
+                        WHERE {table}.org_id = other_owner.org_id
+                        AND {table}.{column} = :user_id
                     """),
-                    {'user_id': user_id, 'user_uuid': target_uuid},
+                    params,
                 )
-                await session.execute(
-                    text(
-                        'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id'
-                    ),
-                    {'user_id': target_uuid},
+            for statement in (
+                """
+                DELETE FROM conversation_metadata
+                WHERE conversation_id IN (
+                    SELECT conversation_id FROM conversation_metadata_saas
+                    WHERE user_id = :user_id
                 )
-
-                # Release every other (non-cascading) FK edge onto user.id.
-                await session.execute(
-                    delete(OrgInvitation).where(
-                        (OrgInvitation.inviter_id == target_uuid)
-                        | (OrgInvitation.accepted_by_user_id == target_uuid)
-                    )
-                )
-                await session.execute(
-                    delete(OrgGitClaim).where(OrgGitClaim.claimed_by == target_uuid)
-                )
-                await session.execute(
-                    delete(OrgUserBudgetOverride).where(
-                        OrgUserBudgetOverride.user_id == target_uuid
-                    )
-                )
-                await session.execute(
-                    delete(DailyConversationUsage).where(
-                        DailyConversationUsage.user_id == target_uuid
-                    )
-                )
-                await session.execute(
-                    delete(QuotaIncreaseRequest).where(
-                        QuotaIncreaseRequest.user_id == target_uuid
-                    )
-                )
-                # Nullable: preserve requests this user approved for someone
-                # else, just drop the now-dangling approver reference.
-                await session.execute(
-                    sa.update(QuotaIncreaseRequest)
-                    .where(QuotaIncreaseRequest.approved_by_user_id == target_uuid)
-                    .values(approved_by_user_id=None)
-                )
-
-                # Best-effort per-org LiteLLM cleanup, mirroring
-                # OrgStore._delete_litellm_user_best_effort's use at
-                # org-deletion time. Read the membership list before deleting
-                # it below.
-                member_org_ids_result = await session.execute(
-                    select(OrgMember.org_id).filter(OrgMember.user_id == target_uuid)
-                )
-                member_org_ids = [row[0] for row in member_org_ids_result.fetchall()]
-
-                await session.execute(
-                    delete(OrgMember).where(OrgMember.user_id == target_uuid)
-                )
-
-                await session.delete(user)
-
-                from storage.org_store import OrgStore
-
-                for org_id in member_org_ids:
-                    await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
-
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                logger.exception(
-                    'user_store:delete_user:failed',
-                    extra={'user_id': user_id},
-                )
-                raise
-
-        logger.info('user_store:delete_user:deleted', extra={'user_id': user_id})
-        return UserDeleteResult.DELETED
+                """,
+                'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
+                'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
+                'DELETE FROM quota_increase_request WHERE user_id = :user_id',
+                'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
+                'DELETE FROM api_keys WHERE user_id = :user_id',
+                'DELETE FROM auth_tokens WHERE keycloak_user_id = :user_id',
+                'DELETE FROM offline_tokens WHERE user_id = :user_id',
+                'DELETE FROM device_codes WHERE keycloak_user_id = :user_id',
+                'DELETE FROM custom_secrets WHERE keycloak_user_id = :user_id AND is_org_shared = false',
+                # A leftover legacy settings row re-creates the user on lookup.
+                'DELETE FROM user_settings WHERE keycloak_user_id = :user_id',
+                'UPDATE instance_settings SET setup_user_id = NULL WHERE setup_user_id = :user_id',
+                'UPDATE org_invitation SET accepted_by_user_id = NULL WHERE accepted_by_user_id = :user_id',
+                # Claims and invitations left in orgs with no other owner.
+                'DELETE FROM org_git_claim WHERE claimed_by = :user_id',
+                'DELETE FROM org_invitation WHERE inviter_id = :user_id',
+                'DELETE FROM org_member WHERE user_id = :user_id',
+                'DELETE FROM "user" WHERE id = :user_id',
+            ):
+                await session.execute(text(statement), params)
+            await session.commit()
+        logger.info(
+            'user_store:delete_user_and_owned_data:deleted',
+            extra={'user_id': str(user_id)},
+        )
 
     @staticmethod
     async def get_first_owner_in_org(org_id: UUID) -> Optional[User]:

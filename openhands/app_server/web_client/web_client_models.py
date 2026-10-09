@@ -45,12 +45,18 @@ class WebClientFeatureFlags(BaseModel):
     # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can
     # distinguish "export disabled on this deployment" from "buy credits to enable".
     enable_byor_export: bool = False
+    # When false, the web client hides Super Admin entry points and redirects
+    # /super-admin/* to Settings. Defaults to False so the unfinished
+    # Super Admin dashboard stays off in production. To turn it on, set both
+    # ENABLE_SUPER_ADMIN=true (or 1), which the server reads to mount the
+    # /api/admin directory, and OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN=true:
+    # once any OH_WEB_CLIENT_FEATURE_FLAGS_* is set, flags are built from those
+    # alone and the bare variable no longer reaches this field.
+    enable_super_admin: bool = False
     # Whether the integrated, locally-hosted IDP (email+password login) is
-    # available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
-    # takes priority over any configured real IDP for /oauth/idp-login, not
-    # merely a fallback for when none is configured. The frontend uses this
-    # to show an email+password login form instead of OAuth provider
-    # buttons.
+    # available -- mirrors whether its oauth_providers row exists (see
+    # server.routes.idp.is_idp_available). The frontend uses this to show an
+    # email+password login form instead of OAuth provider buttons.
     enable_integrated_idp: bool = False
     # Mirrors the ENABLE_OAUTH_V2_LOGIN env var. When true, the frontend
     # sends unauthenticated users to the new OAuth v2 entry point
@@ -105,6 +111,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     slack_enabled: bool = False
     email_enabled: bool = False
     email_change_enabled: bool = True
+    # True when USER_PROVISIONING_ENABLED registers the admin provision-user
+    # route; the Super Admin Users page hides "Provision User" otherwise.
+    user_provisioning_enabled: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

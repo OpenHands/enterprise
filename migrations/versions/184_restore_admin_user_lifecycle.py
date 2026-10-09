@@ -3,19 +3,13 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = '176'
-down_revision = '175'
+revision = '184'
+down_revision = '183'
 branch_labels = None
 depends_on = None
 
 
 def upgrade():
-    op.add_column(
-        'user',
-        sa.Column(
-            'is_disabled', sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
-    )
     op.add_column(
         'user',
         sa.Column(
@@ -31,4 +25,3 @@ def upgrade():
 def downgrade():
     op.drop_column('user', 'credentials_revoked_at')
     op.drop_column('user', 'deletion_pending')
-    op.drop_column('user', 'is_disabled')

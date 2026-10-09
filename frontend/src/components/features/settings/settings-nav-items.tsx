@@ -1,5 +1,8 @@
 import { OrgSelector } from "../org/org-selector";
-import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
+import {
+  filterSettingsNavForSidebar,
+  SettingsNavRenderedItem,
+} from "#/hooks/use-settings-nav-items";
 import { useShouldHideOrgSelector } from "#/hooks/use-should-hide-org-selector";
 import { SettingsNavHeader } from "./settings-nav-header";
 import { SettingsNavDivider } from "./settings-nav-divider";
@@ -19,6 +22,7 @@ export function SettingsNavItems({
   onItemClick,
 }: SettingsNavItemsProps) {
   const shouldHideSelector = useShouldHideOrgSelector();
+  const sidebarItems = filterSettingsNavForSidebar(navigationItems);
 
   return (
     <>
@@ -28,7 +32,7 @@ export function SettingsNavItems({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-0.5 custom-scrollbar-always">
-        {navigationItems.map((renderedItem, index) => {
+        {sidebarItems.map((renderedItem, index) => {
           if (renderedItem.type === "header") {
             return (
               <div key={`header-${renderedItem.text}`} className="pr-2.5">

@@ -34,14 +34,11 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
 # Accepts both 'true' and '1' (older Helm charts default to '1').
 ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
 
-# When true, the integrated IDP (email+password login without Keycloak) is
-# available on self-hosted / trial installs. Disabled by default — must be
-# explicitly opted into. Still suppressed when a real IDP is configured.
-# Accepts both 'true' and '1' (older Helm charts default to '1').
-ENABLE_INTEGRATED_IDP = os.getenv('ENABLE_INTEGRATED_IDP', 'false').lower() in (
-    'true',
-    '1',
-)
+# NOTE: the integrated IDP (email+password login without Keycloak,
+# ``server.routes.idp``) is no longer gated by an env var read here.
+# Migration 179 seeds its ``oauth_providers`` row from ``ENABLE_INTEGRATED_IDP``
+# once, at migration time; availability is whether that row exists
+# (``server.routes.idp.is_idp_available``), not a live env var read.
 
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.

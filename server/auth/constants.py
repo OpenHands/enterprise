@@ -41,6 +41,13 @@ ENABLE_JIRA = os.environ.get('ENABLE_JIRA', 'false') == 'true'
 ENABLE_JIRA_DC = os.environ.get('ENABLE_JIRA_DC', 'false') == 'true'
 ENABLE_LINEAR = os.environ.get('ENABLE_LINEAR', 'false') == 'true'
 ENABLE_AUTOMATIONS = os.environ.get('ENABLE_AUTOMATIONS', 'true') == 'true'
+# Super Admin dashboard (instance-level org/user admin UI). Defaults off until
+# ENABLE_SUPER_ADMIN=true (or 1); entry points, /super-admin routes and the
+# /api/admin directory APIs stay hidden when unset.
+ENABLE_SUPER_ADMIN = os.environ.get('ENABLE_SUPER_ADMIN', 'false').lower() in (
+    'true',
+    '1',
+)
 JIRA_CLIENT_ID = os.getenv('JIRA_CLIENT_ID', '').strip()
 JIRA_CLIENT_SECRET = os.getenv('JIRA_CLIENT_SECRET', '').strip()
 JIRA_ENABLE_OAUTH = os.getenv('JIRA_ENABLE_OAUTH', '1') in ('1', 'true')

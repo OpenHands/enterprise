@@ -220,6 +220,7 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/credits" &&
         item.to !== "/settings/usage-monitoring" &&
         item.to !== "/settings/budgets" &&
+        item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
         !personalLlmPaths.has(item.to),
     );
@@ -259,6 +260,7 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/org-members" &&
         item.to !== "/settings/org" &&
         item.to !== "/settings/credits" &&
+        item.to !== "/settings/integrations-hub" &&
         true,
     );
 
@@ -890,6 +892,73 @@ describe("UserContextMenu", () => {
     expect(onOpenCreateOrganizationModalMock).toHaveBeenCalledOnce();
     expect(onOpenPreviewModalMock).not.toHaveBeenCalled();
     expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("links Super Admin as its own destination for instance admins", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          enable_billing: false,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_onboarding: false,
+          enable_super_admin: true,
+        },
+      }),
+    );
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_ACME.id,
+    });
+    seedActiveUser({
+      role: "admin",
+      org_id: MOCK_TEAM_ORG_ACME.id,
+      permissions: ["manage_super_admins", "create_organization"],
+    });
+
+    renderUserContextMenu({
+      type: "admin",
+      onClose: vi.fn(),
+      onOpenInviteModal: vi.fn(),
+    });
+
+    const superAdmin = await screen.findByRole("link", {
+      name: "SUPER_ADMIN$TITLE",
+    });
+    expect(superAdmin).toHaveAttribute("href", "/super-admin");
+  });
+
+  it("hides Super Admin for users without instance permissions", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    seedActiveUser({
+      role: "admin",
+      permissions: [],
+    });
+
+    renderUserContextMenu({
+      type: "admin",
+      onClose: vi.fn(),
+      onOpenInviteModal: vi.fn(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("ACCOUNT_SETTINGS$LOGOUT")).toBeInTheDocument();
+    });
+
+    expect(
+      screen.queryByRole("link", { name: "SUPER_ADMIN$TITLE" }),
+    ).not.toBeInTheDocument();
   });
 
   test("the user can change orgs", async () => {

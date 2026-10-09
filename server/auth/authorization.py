@@ -1,5 +1,4 @@
-"""
-Permission-based authorization dependencies for API endpoints.
+"""Permission-based authorization dependencies for API endpoints.
 
 This module provides FastAPI dependencies for checking user permissions
 within organizations. It uses a permission-based authorization model where
@@ -39,6 +38,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import ENABLE_SUPER_ADMIN
 from server.email_validation import ADMIN_EMAIL_DOMAINS
 from storage.org_member_store import OrgMemberStore
 from storage.role import Role
@@ -116,7 +116,6 @@ class Permission(str, Enum):
     # role (``user.role_id``) on other users. This is deliberately a distinct,
     # explicit permission -- it is NOT implied by any org-scoped role and is
     # granted only to the ``superadmin`` super role.
-    MANAGE_USERS = 'manage_users'
     MANAGE_SUPER_ADMINS = 'manage_super_admins'
 
     # Instance-level feature flag administration: create/update/delete flags
@@ -281,7 +280,6 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             Permission.INVITE_USER_TO_ORGANIZATION,
             Permission.MANAGE_SUPER_ADMINS,
-            Permission.MANAGE_USERS,
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
             Permission.CREATE_SIGNUP_LINK,
@@ -290,17 +288,23 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
     RoleName.MEMBER: frozenset(),
 }
 
+# Granted to superadmin only while the Super Admin dashboard is on
+# (ENABLE_SUPER_ADMIN): its overview reads usage from every team org,
+# including orgs the Super Admin has not joined.
+SUPER_ADMIN_DASHBOARD_PERMISSIONS: frozenset[Permission] = frozenset(
+    [Permission.VIEW_ORG_CONVERSATIONS]
+)
+
 
 async def get_user_org_role(user_id: str, org_id: UUID | None) -> Role | None:
-    """
-    Get the user's role in an organization.
+    """Get the user's role in an organization.
 
     Args:
         user_id: User ID (string that will be converted to UUID)
         org_id: Organization ID, or None to use the user's current organization
 
     Returns:
-        Role object if user is a member, None otherwise
+        Role object if user is an active member, None otherwise
     """
     from uuid import UUID as parse_uuid
 
@@ -312,13 +316,15 @@ async def get_user_org_role(user_id: str, org_id: UUID | None) -> Role | None:
         org_member = await OrgMemberStore.get_org_member(org_id, parse_uuid(user_id))
     if not org_member:
         return None
+    # Suspended memberships do not grant org-scoped permissions.
+    if org_member.status == 'inactive':
+        return None
 
     return await RoleStore.get_role_by_id(org_member.role_id)
 
 
 async def get_user_super_role(user_id: str) -> Role | None:
-    """
-    Get the user's cross-organization ("super") role.
+    """Get the user's cross-organization ("super") role.
 
     Super roles live on the ``user`` table (``user.role_id``) and apply to
     the user across **every** organization, in contrast to the
@@ -338,9 +344,30 @@ async def get_user_super_role(user_id: str) -> Role | None:
     return await RoleStore.get_role_by_id(user.role_id)
 
 
+async def is_instance_super_admin(user_id: str) -> bool:
+    """True when ``user_id`` holds instance Super Admin (``manage_super_admins``)."""
+    super_role = await get_user_super_role(user_id)
+    return bool(
+        super_role
+        and has_permission(super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True)
+    )
+
+
+async def is_org_suspended(org_id: UUID | None) -> bool:
+    """True when ``org_id`` names an organization whose ``status`` is ``suspended``."""
+    if org_id is None:
+        return False
+    from storage.org_store import OrgStore
+
+    target_org = await OrgStore.get_org_by_id(org_id)
+    return (
+        target_org is not None
+        and getattr(target_org, 'status', 'active') == 'suspended'
+    )
+
+
 def get_role_permissions(role_name: str) -> frozenset[Permission]:
-    """
-    Get the org-scoped permissions for a role.
+    """Get the org-scoped permissions for a role.
 
     Args:
         role_name: Name of the role
@@ -356,13 +383,14 @@ def get_role_permissions(role_name: str) -> frozenset[Permission]:
 
 
 def get_super_role_permissions(role_name: str) -> frozenset[Permission]:
-    """
-    Get the permissions for a "super" role.
+    """Get the permissions for a "super" role.
 
     A super role is the same role row (``owner`` / ``admin`` / ``member``)
     referenced via ``user.role_id`` rather than ``org_member.role_id``;
     its effective permissions are defined explicitly and do not inherit
-    org-scoped permissions.
+    org-scoped permissions. ``superadmin`` also gets
+    :data:`SUPER_ADMIN_DASHBOARD_PERMISSIONS` while ``ENABLE_SUPER_ADMIN``
+    is on.
 
     Args:
         role_name: Name of the role (e.g. ``'admin'`` for ``superadmin``)
@@ -372,16 +400,18 @@ def get_super_role_permissions(role_name: str) -> frozenset[Permission]:
     """
     try:
         role_enum = RoleName(role_name)
-        return SUPER_ROLE_PERMISSIONS.get(role_enum, frozenset())
     except ValueError:
         return frozenset()
+    permissions = SUPER_ROLE_PERMISSIONS.get(role_enum, frozenset())
+    if role_enum == RoleName.ADMIN and ENABLE_SUPER_ADMIN:
+        permissions |= SUPER_ADMIN_DASHBOARD_PERMISSIONS
+    return permissions
 
 
 def has_permission(
     user_role: Role, permission: Permission, *, is_super: bool = False
 ) -> bool:
-    """
-    Check if a role has a specific permission.
+    """Check if a role has a specific permission.
 
     Args:
         user_role: User's Role object
@@ -415,11 +445,35 @@ async def authorize_permission(
 
     org_id = await resolve_target_org_id_for_permission_check(request)
     user_role = await get_user_org_role(user_id, org_id)
-    if user_role and has_permission(user_role, permission):
+
+    # Only the Super Admin directory suspends orgs, so skip the lookup while
+    # it is off.
+    org_suspended = ENABLE_SUPER_ADMIN and await is_org_suspended(org_id)
+    # A suspended org still admits instance super admins, so their super role
+    # is read first. Otherwise it is only the fallback below.
+    super_role = await get_user_super_role(user_id) if org_suspended else None
+    is_super_admin = bool(
+        super_role
+        and has_permission(super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True)
+    )
+
+    # Org-scoped role: suspension blocks normal members; instance super
+    # admins may still exercise their membership permissions.
+    if (
+        user_role
+        and (not org_suspended or is_super_admin)
+        and has_permission(user_role, permission)
+    ):
         return
-    super_role = await get_user_super_role(user_id)
+    if not org_suspended:
+        super_role = await get_user_super_role(user_id)
     if super_role and has_permission(super_role, permission, is_super=True):
         return
+    if org_suspended and user_role and not is_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Organization is suspended',
+        )
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=f'Missing required permission: {permission.value}',
@@ -442,8 +496,7 @@ async def get_api_key_org_id_from_request(request: Request) -> UUID | None:
 
 
 def require_permission(permission: Permission):
-    """
-    Factory function that creates a dependency to require a specific permission.
+    """Factory function that creates a dependency to require a specific permission.
 
     This creates a FastAPI dependency that:
     1. Extracts org_id from the path parameter
@@ -528,8 +581,26 @@ def require_permission(permission: Permission):
 
         user_role = await get_user_org_role(user_id, org_id)
 
-        # 1. Org-scoped role check (existing behavior).
-        if user_role and has_permission(user_role, permission):
+        # Only the Super Admin directory suspends orgs, so skip the lookup
+        # while it is off.
+        org_suspended = ENABLE_SUPER_ADMIN and await is_org_suspended(org_id)
+        # A suspended org still admits instance super admins, so their super
+        # role is read first. Otherwise it is only the fallback in step 2.
+        super_role = await get_user_super_role(user_id) if org_suspended else None
+        is_super_admin = bool(
+            super_role
+            and has_permission(
+                super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+            )
+        )
+
+        # 1. Org-scoped role check. Suspended orgs deny normal membership
+        #    access; instance super admins may still use their org role.
+        if (
+            user_role
+            and (not org_suspended or is_super_admin)
+            and has_permission(user_role, permission)
+        ):
             return user_id
 
         # 2. Fall back to the user's "super" role. The role row is the
@@ -537,7 +608,8 @@ def require_permission(permission: Permission):
         #    ``user.role_id`` it grants the super-role permission set
         #    (parallel role perms + super-only extras) across every
         #    organization the user touches.
-        super_role = await get_user_super_role(user_id)
+        if not org_suspended:
+            super_role = await get_user_super_role(user_id)
         if super_role and has_permission(super_role, permission, is_super=True):
             logger.debug(
                 'Permission granted via super role',
@@ -549,6 +621,12 @@ def require_permission(permission: Permission):
                 },
             )
             return user_id
+
+        if org_suspended and user_role and not is_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Organization is suspended',
+            )
 
         # 3. Neither path granted access -- deny.
         if not user_role:
@@ -593,8 +671,7 @@ async def require_financial_data_access(
     org_id: UUID,
     user_id: str | None = Depends(get_user_id),
 ) -> str:
-    """
-    Authorization dependency for accessing organization financial data.
+    """Authorization dependency for accessing organization financial data.
 
     Allows access if ANY of these conditions are met:
     1. User has Admin or Owner role in the organization

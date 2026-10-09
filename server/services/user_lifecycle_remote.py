@@ -22,22 +22,35 @@ class UserLifecycleRemote:
             async with httpx.AsyncClient(
                 headers={'x-goog-api-key': LITE_LLM_API_KEY}, timeout=30
             ) as client:
-                response = await client.get(
-                    f'{LITE_LLM_API_URL}/key/list', params={'user_id': user_id}
-                )
-                if response.status_code == 404:
-                    return
-                response.raise_for_status()
-                keys = response.json()['keys']
-                if keys:
+                keys = []
+                page = 1
+                while True:
+                    response = await client.get(
+                        f'{LITE_LLM_API_URL}/key/list',
+                        params={'user_id': user_id, 'page': page, 'size': 100},
+                    )
+                    if response.status_code == 404:
+                        return
+                    response.raise_for_status()
+                    data = response.json()
+                    keys.extend(data['keys'])
+                    if page >= data['total_pages']:
+                        break
+                    page += 1
+                for offset in range(0, len(keys), 100):
                     response = await client.post(
-                        f'{LITE_LLM_API_URL}/key/delete', json={'keys': keys}
+                        f'{LITE_LLM_API_URL}/key/delete',
+                        json={'keys': keys[offset : offset + 100]},
                     )
                     if response.status_code != 404:
                         response.raise_for_status()
 
     async def enable(self, user_id: str) -> None:
-        await get_keycloak_admin().a_update_user(user_id, {'enabled': True})
+        try:
+            await get_keycloak_admin().a_update_user(user_id, {'enabled': True})
+        except KeycloakError as exc:
+            if exc.response_code != 404:
+                raise
 
     async def delete(self, user_id: str) -> None:
         if LITE_LLM_API_URL and LITE_LLM_API_KEY:

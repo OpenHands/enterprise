@@ -16,7 +16,11 @@ from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
 from server.routes.super_admins import admin_users_router, super_admin_router
-from storage.user_store import SuperAdminRevokeResult, UserDeleteResult
+from server.services.admin_user_lifecycle_service import (
+    LastSuperAdminError,
+    UserLifecycleResult,
+)
+from storage.user_store import SuperAdminRevokeResult
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -415,8 +419,8 @@ async def test_count_all_users(mock_app, grant_manage_super_admins):
 async def test_delete_user_success(mock_app, grant_manage_super_admins):
     target = str(uuid.uuid4())
     with patch(
-        'server.routes.super_admins.UserStore.delete_user',
-        AsyncMock(return_value=UserDeleteResult.DELETED),
+        'server.routes.admin_users.AdminUserLifecycleService.delete_user',
+        AsyncMock(return_value=UserLifecycleResult(target, None)),
     ) as delete_mock:
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{target}')
@@ -429,8 +433,8 @@ async def test_delete_user_success(mock_app, grant_manage_super_admins):
 @pytest.mark.asyncio
 async def test_delete_user_not_found(mock_app, grant_manage_super_admins):
     with patch(
-        'server.routes.super_admins.UserStore.delete_user',
-        AsyncMock(return_value=UserDeleteResult.NOT_FOUND),
+        'server.routes.admin_users.AdminUserLifecycleService.delete_user',
+        AsyncMock(return_value=None),
     ):
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
@@ -443,8 +447,8 @@ async def test_delete_user_last_super_admin_conflict(
     mock_app, grant_manage_super_admins
 ):
     with patch(
-        'server.routes.super_admins.UserStore.delete_user',
-        AsyncMock(return_value=UserDeleteResult.LAST_SUPER_ADMIN),
+        'server.routes.admin_users.AdminUserLifecycleService.delete_user',
+        AsyncMock(side_effect=LastSuperAdminError('last admin')),
     ):
         async with _client(mock_app) as client:
             resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
@@ -462,3 +466,25 @@ async def test_delete_user_forbidden_without_permission(mock_app):
             resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
 
     assert resp.status_code == 403
+
+
+def test_single_delete_route():
+    from fastapi import FastAPI
+
+    from server.routes.admin_users import admin_user_router
+    from server.routes.super_admins import admin_users_router
+
+    app = FastAPI()
+    app.include_router(admin_users_router)
+    app.include_router(admin_user_router)
+    routes = [
+        route
+        for route in app.routes
+        if getattr(route, 'path', '') == '/api/admin/users/{user_id}'
+        and 'DELETE' in getattr(route, 'methods', set())
+    ]
+    assert len(routes) == 1
+    assert (
+        '204'
+        in app.openapi()['paths']['/api/admin/users/{user_id}']['delete']['responses']
+    )

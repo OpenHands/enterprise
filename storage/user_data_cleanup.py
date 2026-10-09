@@ -6,20 +6,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+class UserCleanupConflict(RuntimeError):
+    pass
+
+
 async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
     params = {'uid': str(user_id)}
     await check_user_data_cleanup(session, user_id)
-    for table in (
-        'conversation_feedback',
-        'conversation_cost_events',
-        'conversation_metadata',
-    ):
-        await session.execute(
-            text(
-                f'DELETE FROM {table} WHERE CAST(conversation_id AS TEXT) IN (SELECT conversation_id FROM conversation_metadata_saas WHERE user_id = :uid)'
-            ),
-            params,
-        )
+    await session.execute(
+        text(
+            'UPDATE conversation_metadata_saas c SET user_id = (SELECT m.user_id FROM org_member m WHERE m.org_id = c.org_id AND m.user_id != :uid ORDER BY m.user_id LIMIT 1) WHERE c.user_id = :uid'
+        ),
+        params,
+    )
     statements = (
         'DELETE FROM jira_conversations WHERE jira_user_id IN (SELECT id FROM jira_users WHERE keycloak_user_id = :uid)',
         'DELETE FROM jira_dc_conversations WHERE jira_dc_user_id IN (SELECT id FROM jira_dc_users WHERE keycloak_user_id = :uid)',
@@ -57,23 +56,43 @@ async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
     )
     for statement in statements:
         await session.execute(text(statement), params)
-    await session.execute(
-        text('DELETE FROM v1_remote_sandbox WHERE created_by_user_id = :uid'), params
-    )
     await session.execute(text('DELETE FROM "user" WHERE id = :uid'), params)
 
 
 async def check_user_data_cleanup(session: AsyncSession, user_id: UUID) -> None:
     params = {'uid': str(user_id)}
+    # Separate workspace deletion owns its cascade and external team cleanup.
+    if await session.scalar(text('SELECT 1 FROM org WHERE id = :uid'), params):
+        raise UserCleanupConflict(
+            'Delete or transfer the personal workspace before deleting this user'
+        )
+    if await session.scalar(
+        text('SELECT 1 FROM v1_remote_sandbox WHERE created_by_user_id = :uid LIMIT 1'),
+        params,
+    ):
+        raise UserCleanupConflict(
+            'Delete user sandboxes through the sandbox service before deleting this user'
+        )
+    if await session.scalar(
+        text(
+            'SELECT 1 FROM conversation_metadata_saas c WHERE c.user_id = :uid AND NOT EXISTS (SELECT 1 FROM org_member m WHERE m.org_id = c.org_id AND m.user_id != :uid) LIMIT 1'
+        ),
+        params,
+    ):
+        raise UserCleanupConflict(
+            'Transfer conversation ownership before deleting this user'
+        )
     # Shared integration workspaces require an explicit administrator transfer.
     for table in ('jira_workspaces', 'jira_dc_workspaces', 'linear_workspaces'):
         if await session.scalar(
             text(f'SELECT 1 FROM {table} WHERE admin_user_id = :uid LIMIT 1'), params
         ):
-            raise ValueError(
+            raise UserCleanupConflict(
                 'Transfer integration workspace administration before deleting this user'
             )
     if await session.scalar(
         text('SELECT 1 FROM org_git_claim WHERE claimed_by = :uid LIMIT 1'), params
     ):
-        raise ValueError('Transfer organization git claims before deleting this user')
+        raise UserCleanupConflict(
+            'Transfer organization git claims before deleting this user'
+        )

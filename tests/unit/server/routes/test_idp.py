@@ -1,15 +1,17 @@
-"""Tests for the dev IDP module — an in-memory sentinel IDP that plugs into
-the OAuth v2 flow as an email+password login (OHE-3381).
+"""Tests for the dev IDP module — an email+password login that plugs into
+the OAuth v2 flow as a real ``oauth_providers`` row (OHE-3381).
 
 These tests exercise:
 
 * ``derive_idp_user_id`` — deterministic, case-insensitive UUID derivation
-* ``is_idp_available`` — gating logic (``ENABLE_INTEGRATED_IDP`` env var
-  only; independent of whether a real IDP is also configured)
-* ``get_idp_if_available`` — sentinel returned when available
-* ``GET /oauth/idp-login`` — redirects to the dev IDP sentinel provider
-* ``GET /oauth/{IDP_PROVIDER_ID}/login`` — redirects to the dedicated
-  email+password pages instead of starting an OAuth flow
+* ``is_idp_available`` / ``_get_integrated_idp_provider`` — gating logic
+  (whether the integrated IDP's ``oauth_providers`` row exists; independent
+  of whether a real IDP is also configured)
+* ``GET /oauth/idp-login`` — redirects to whichever IDP ``get_first_idp``
+  (most-recently-created) resolves to
+* ``GET /oauth/{provider_id}/login`` — for the integrated IDP's row,
+  redirects to the dedicated email+password pages instead of starting an
+  OAuth flow
 * ``GET /oauth/idp/login`` / ``GET /oauth/idp/signup`` — serve the
   HTML forms
 * ``POST /oauth/idp/signup`` — creates an account, hashes the password,
@@ -40,14 +42,31 @@ from server.routes import idp
 from server.routes.idp import (
     IDP_INVITE_PATH,
     IDP_LOGIN_PATH,
-    IDP_PROVIDER_ID,
     IDP_SIGNUP_PATH,
     SIGNUP_LINK_EXPIRY_HOURS,
-    IdpProvider,
     derive_idp_user_id,
-    get_idp_if_available,
     is_idp_available,
 )
+from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
+
+# Fixed id used in route-dispatch tests (``/oauth/{id}/login`` etc.) that
+# exercise the integrated IDP through ``oauth_v2.py``'s generic
+# provider-id-keyed routes. Not a sentinel the app recognizes specially —
+# just a stand-in DB id that ``_available()`` wires ``OAuthProviderStore``
+# lookups to resolve to the fake integrated-idp row below.
+_TEST_IDP_PROVIDER_ID = 999001
+
+
+def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
+    """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
+    provider = MagicMock()
+    provider.id = provider_id
+    provider.provider_category = INTEGRATED_IDP_CATEGORY
+    provider.is_idp = True
+    provider.token_url = None
+    provider.display_name = 'Password Login'
+    return provider
+
 
 # ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -101,13 +120,25 @@ def _mock_user(
     user.email = email
     user.accepted_tos = accepted_tos
     user.user_consents_to_analytics = False
+    user.is_disabled = False
+    user.deletion_pending = False
     user.password_hash = password_hash
     return user
 
 
 @contextmanager
-def _available(has_password_super_admin: bool = True):
-    """Make the dev IDP available (``ENABLE_INTEGRATED_IDP`` env var on).
+def _available(
+    has_password_super_admin: bool = True,
+    provider_id: int = _TEST_IDP_PROVIDER_ID,
+):
+    """Make the integrated IDP available (its ``oauth_providers`` row exists).
+
+    Patches ``_get_integrated_idp_provider`` (the single source of truth for
+    availability and the row's id, used by both ``idp.py`` and, through
+    ``is_idp_available``, the web-client config) *and*
+    ``OAuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
+    ``/oauth/{id}/...`` routes) so both halves of the integrated-IDP
+    dispatch agree on the same fake row.
 
     ``has_password_super_admin`` simulates whether a super admin who can log
     in with a password already exists (default ``True``, the common case —
@@ -119,8 +150,22 @@ def _available(has_password_super_admin: bool = True):
     way. See the module docstring on ``server.routes.idp`` for the full
     state machine.
     """
+    fake_provider = _fake_integrated_idp_provider(provider_id)
     with ExitStack() as stack:
-        stack.enter_context(patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True))
+        stack.enter_context(
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new_callable=AsyncMock,
+                return_value=fake_provider,
+            )
+        )
+        stack.enter_context(
+            patch(
+                'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+                new_callable=AsyncMock,
+                return_value=fake_provider,
+            )
+        )
         stack.enter_context(
             patch(
                 'server.routes.idp.UserStore.has_super_admin_with_password',
@@ -128,6 +173,17 @@ def _available(has_password_super_admin: bool = True):
                 return_value=has_password_super_admin,
             )
         )
+        yield fake_provider
+
+
+@contextmanager
+def _unavailable():
+    """Make the integrated IDP unavailable (no ``oauth_providers`` row)."""
+    with patch(
+        'server.routes.idp._get_integrated_idp_provider',
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         yield
 
 
@@ -213,31 +269,56 @@ class TestDeriveIdpUserId:
         assert parsed.version == 5
 
 
-# ── is_idp_available ──────────────────────────────────────────────────
+# ── is_idp_available / _get_integrated_idp_provider ─────────────────────
 
 
 class TestIsIdpAvailable:
-    def test_disabled_when_env_var_off(self):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+    def test_disabled_when_no_row(self):
+        with patch(
+            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
             import asyncio
 
             result = asyncio.run(is_idp_available())
         assert result is False
 
-    def test_enabled_no_idp(self):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+    def test_enabled_when_row_exists(self):
+        with patch(
+            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            new_callable=AsyncMock,
+            return_value=_fake_integrated_idp_provider(),
+        ):
             import asyncio
 
             result = asyncio.run(is_idp_available())
         assert result is True
+
+    def test_queries_integrated_idp_category(self):
+        """``is_idp_available`` looks up the row by
+        ``INTEGRATED_IDP_CATEGORY`` specifically -- not just "any IDP"."""
+        with patch(
+            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_get:
+            import asyncio
+
+            asyncio.run(is_idp_available())
+        mock_get.assert_awaited_once_with(INTEGRATED_IDP_CATEGORY)
 
     def test_enabled_even_when_real_idp_configured(self):
-        """The flag alone governs availability: a configured real IDP does
-        not disable the dev IDP — ``get_first_idp`` uses this to prefer the
-        dev IDP over the real one for ``/oauth/idp-login`` (see
-        ``storage.oauth_provider_store``)."""
+        """Availability is governed solely by whether the integrated IDP's
+        own row exists -- a configured real IDP does not affect it (and,
+        per ``get_first_idp``'s most-recent-first priority, does not
+        necessarily take priority over it for ``/oauth/idp-login`` either;
+        see ``storage.oauth_provider_store``)."""
         with (
-            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -249,63 +330,41 @@ class TestIsIdpAvailable:
             result = asyncio.run(is_idp_available())
         assert result is True
 
-    def test_env_var_accepts_1_as_truthy(self, monkeypatch):
-        """Older Helm charts default to '1' rather than 'true'."""
-        import importlib
 
-        import server.constants
-
-        monkeypatch.setenv('ENABLE_INTEGRATED_IDP', '1')
-        importlib.reload(server.constants)
-        assert server.constants.ENABLE_INTEGRATED_IDP is True
-
-    @pytest.mark.parametrize('value', ['1', 'true', 'TRUE', 'True'])
-    def test_env_var_truthy_values(self, monkeypatch, value):
-        import importlib
-
-        import server.constants
-
-        monkeypatch.setenv('ENABLE_INTEGRATED_IDP', value)
-        importlib.reload(server.constants)
-        assert server.constants.ENABLE_INTEGRATED_IDP is True
-
-    @pytest.mark.parametrize('value', ['0', 'false', '', 'no', None])
-    def test_env_var_falsy_values(self, monkeypatch, value):
-        import importlib
-
-        import server.constants
-
-        if value is None:
-            monkeypatch.delenv('ENABLE_INTEGRATED_IDP', raising=False)
-        else:
-            monkeypatch.setenv('ENABLE_INTEGRATED_IDP', value)
-        importlib.reload(server.constants)
-        assert server.constants.ENABLE_INTEGRATED_IDP is False
+# ── _get_integrated_idp_provider ─────────────────────────────────────────
 
 
-# ── get_idp_if_available (sentinel) ────────────────────────────────────
-
-
-class TestGetIdpIfAvailable:
-    def test_returns_sentinel_when_available(self):
-        with _available():
+class TestGetIntegratedIdpProvider:
+    def test_returns_row_when_available(self):
+        fake = _fake_integrated_idp_provider()
+        with patch(
+            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            new_callable=AsyncMock,
+            return_value=fake,
+        ):
             import asyncio
 
-            result = asyncio.run(get_idp_if_available())
-        assert result is not None
-        assert isinstance(result, IdpProvider)
-        assert result.id == IDP_PROVIDER_ID
+            result = asyncio.run(idp._get_integrated_idp_provider())
+        assert result is fake
 
-    def test_returns_none_on_cloud(self):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+    def test_returns_none_without_row(self):
+        with patch(
+            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
             import asyncio
 
-            result = asyncio.run(get_idp_if_available())
+            result = asyncio.run(idp._get_integrated_idp_provider())
         assert result is None
 
-    def test_returns_sentinel_even_when_real_idp_configured(self):
+    def test_returns_row_even_when_real_idp_configured(self):
         with (
-            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+            patch(
+                'server.routes.idp.OAuthProviderStore.get_first_by_category',
+                new_callable=AsyncMock,
+                return_value=_fake_integrated_idp_provider(),
+            ),
             patch(
                 'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
@@ -314,26 +373,27 @@ class TestGetIdpIfAvailable:
         ):
             import asyncio
 
-            result = asyncio.run(get_idp_if_available())
+            result = asyncio.run(idp._get_integrated_idp_provider())
         assert result is not None
-        assert isinstance(result, IdpProvider)
 
 
 # ── GET /oauth/idp-login redirect ─────────────────────────────────────────
 
 
 class TestIdpLoginRedirect:
-    def test_redirects_to_idp_sentinel(self, client):
-        """``/oauth/idp-login`` redirects to ``/oauth/{IDP_PROVIDER_ID}/login``
-        when the dev IDP sentinel is the only IDP available."""
+    def test_redirects_to_idp_provider(self, client):
+        """``/oauth/idp-login`` redirects to ``/oauth/{id}/login`` for
+        whichever provider ``get_first_idp`` resolves to -- here, the
+        integrated IDP's row."""
+        fake = _fake_integrated_idp_provider()
         with patch(
             'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
-            return_value=IdpProvider(),
+            return_value=fake,
         ):
             response = client.get('/oauth/idp-login', follow_redirects=False)
         assert response.status_code == 302
-        assert f'/oauth/{IDP_PROVIDER_ID}/login' in response.headers['location']
+        assert f'/oauth/{fake.id}/login' in response.headers['location']
 
     def test_returns_404_when_no_idp_configured(self, client):
         with patch(
@@ -345,14 +405,15 @@ class TestIdpLoginRedirect:
         assert response.status_code == 404
 
 
-# ── GET /oauth/{IDP_PROVIDER_ID}/login redirects to the dedicated pages ──
+# ── GET /oauth/{id}/login redirects to the dedicated pages for the ──────
+# ── integrated IDP's row ─────────────────────────────────────────────────
 
 
 class TestOAuthV2LoginRedirectsIdp:
     def test_redirects_to_idp_login_page(self, client):
         with _available():
             response = client.get(
-                f'/oauth/{IDP_PROVIDER_ID}/login', follow_redirects=False
+                f'/oauth/{_TEST_IDP_PROVIDER_ID}/login', follow_redirects=False
             )
         assert response.status_code == 302
         assert f'/oauth/{IDP_LOGIN_PATH}' in response.headers['location']
@@ -360,31 +421,41 @@ class TestOAuthV2LoginRedirectsIdp:
     def test_forwards_redirect_url(self, client):
         with _available():
             response = client.get(
-                f'/oauth/{IDP_PROVIDER_ID}/login',
+                f'/oauth/{_TEST_IDP_PROVIDER_ID}/login',
                 params={'redirect_url': '/dashboard'},
                 follow_redirects=False,
             )
         location = response.headers['location']
         assert 'redirect_url=%2Fdashboard' in location
 
-    def test_404_when_unavailable(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+    def test_404_when_no_such_provider(self, client):
+        """Not an "integrated IDP disabled" case anymore -- just the
+        standard ``_get_provider`` 404 for an id with no row at all."""
+        with patch(
+            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
             response = client.get(
-                f'/oauth/{IDP_PROVIDER_ID}/login', follow_redirects=False
+                f'/oauth/{_TEST_IDP_PROVIDER_ID}/login', follow_redirects=False
             )
         assert response.status_code == 404
 
 
-# ── GET /oauth/{IDP_PROVIDER_ID}/callback 404s ────────────────────────
+# ── GET /oauth/{id}/callback 404s for the integrated IDP's row ──────────
 
 
 class TestOAuthV2CallbackRejectsIdp:
     def test_404_for_idp_provider(self, client):
-        response = client.get(
-            f'/oauth/{IDP_PROVIDER_ID}/callback',
-            params={'code': 'x', 'state': 'y'},
-            follow_redirects=False,
-        )
+        """404s on provider category alone, before any ``code``/``state``
+        validation -- a GET callback for the integrated/password IDP is
+        always wrong, regardless of what query params a caller sends."""
+        with _available():
+            response = client.get(
+                f'/oauth/{_TEST_IDP_PROVIDER_ID}/callback',
+                params={'code': 'x', 'state': 'y'},
+                follow_redirects=False,
+            )
         assert response.status_code == 404
 
 
@@ -404,7 +475,10 @@ class TestIdpLoginForm:
         assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.get(f'/oauth/{IDP_LOGIN_PATH}')
         assert response.status_code == 404
 
@@ -458,7 +532,10 @@ class TestIdpSignupForm:
         assert 'Development' not in response.text
 
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.get(f'/oauth/{IDP_SIGNUP_PATH}')
         assert response.status_code == 404
 
@@ -491,7 +568,10 @@ class TestIdpSignupForm:
 
 class TestIdpSignup:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.post(
                 f'/oauth/{IDP_SIGNUP_PATH}',
                 data={
@@ -792,7 +872,10 @@ class TestIdpSignup:
 
 class TestIdpLogin:
     def test_404_when_unavailable(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.post(
                 f'/oauth/{IDP_LOGIN_PATH}',
                 data={'email': 'dev@example.com', 'password': 'password123'},
@@ -961,6 +1044,10 @@ class TestCompleteIdpLogin:
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
             ),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
         ):
             response = await idp._complete_idp_login(
                 request=request,
@@ -1003,6 +1090,10 @@ class TestCompleteIdpLogin:
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
             ),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
         ):
             await idp._complete_idp_login(
                 request=request,
@@ -1025,7 +1116,10 @@ class TestIdpStatus:
         assert response.json()['enabled'] is True
 
     def test_returns_enabled_false_on_cloud(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.get('/api/idp/status')
         assert response.status_code == 200
         assert response.json()['enabled'] is False
@@ -1037,7 +1131,10 @@ class TestIdpStatus:
 class TestIdpHasPassword:
     def test_404_when_idp_disabled(self, app, client):
         with (
-            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=None),
+            ),
             _authenticated_as(app, 'user-1'),
         ):
             response = client.get('/api/idp/password')
@@ -1108,7 +1205,10 @@ class TestIdpSetPassword:
 
     def test_404_when_idp_disabled(self, app, client):
         with (
-            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=None),
+            ),
             _authenticated_as(app, 'user-1'),
         ):
             response = self._post(client)
@@ -1399,14 +1499,20 @@ class TestIdpInviteForm:
     def test_404_when_unavailable(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.get(f'/oauth/{IDP_INVITE_PATH}', params={'token': token})
         assert response.status_code == 404
 
     def test_renders_form_with_valid_token(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            with patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ):
                 response = client.get(
                     f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
                 )
@@ -1420,7 +1526,10 @@ class TestIdpInviteForm:
         assert '<p class="value-display">invitee@example.com</p>' in response.text
 
     def test_400_on_invalid_token(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+        ):
             response = client.get(
                 f'/oauth/{IDP_INVITE_PATH}', params={'token': 'garbage'}
             )
@@ -1440,7 +1549,10 @@ class TestIdpInviteForm:
                     role='member',
                 ),
             ):
-                with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+                with patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ):
                     response = client.get(
                         f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
                     )
@@ -1459,7 +1571,10 @@ class TestIdpInviteForm:
                 token = idp._create_signup_link_token('invitee@example.com')
 
             frozen.move_to(start + timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS, seconds=1))
-            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            with patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ):
                 response = client.get(
                     f'/oauth/{IDP_INVITE_PATH}', params={'token': token}
                 )
@@ -1473,7 +1588,10 @@ class TestIdpInviteAccept:
     def test_404_when_unavailable(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=None),
+        ):
             response = client.post(
                 f'/oauth/{IDP_INVITE_PATH}',
                 data={
@@ -1485,7 +1603,10 @@ class TestIdpInviteAccept:
         assert response.status_code == 404
 
     def test_400_on_invalid_token(self, client):
-        with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+        with patch(
+            'server.routes.idp._get_integrated_idp_provider',
+            new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+        ):
             response = client.post(
                 f'/oauth/{IDP_INVITE_PATH}',
                 data={
@@ -1499,7 +1620,10 @@ class TestIdpInviteAccept:
     def test_password_mismatch_redirects_with_error(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            with patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ):
                 response = client.post(
                     f'/oauth/{IDP_INVITE_PATH}',
                     data={
@@ -1517,7 +1641,10 @@ class TestIdpInviteAccept:
     def test_password_too_short_redirects_with_error(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
-            with patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True):
+            with patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ):
                 response = client.post(
                     f'/oauth/{IDP_INVITE_PATH}',
                     data={
@@ -1542,7 +1669,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1584,7 +1714,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1624,7 +1757,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1688,7 +1824,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     side_effect=fake_get_user_by_id,
@@ -1750,7 +1889,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1792,7 +1934,10 @@ class TestIdpInviteAccept:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1839,7 +1984,10 @@ class TestIdpInviteAcceptOrgMembership:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com', org_id=org_id)
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1907,7 +2055,10 @@ class TestIdpInviteAcceptOrgMembership:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com', org_id=org_id)
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -1956,7 +2107,10 @@ class TestIdpInviteAcceptOrgMembership:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com')
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -2003,7 +2157,10 @@ class TestIdpInviteAcceptOrgMembership:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com', org_id=org_id)
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -2058,7 +2215,10 @@ class TestIdpInviteAcceptOrgMembership:
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('invitee@example.com', org_id=org_id)
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -2116,7 +2276,10 @@ class TestIdpInviteAcceptOrgMembership:
 class TestCreateSignupLink:
     def test_404_when_idp_disabled(self, app, client):
         with (
-            patch('server.routes.idp.ENABLE_INTEGRATED_IDP', False),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=None),
+            ),
             _authenticated_as(app, 'admin-1'),
             _superadmin(),
         ):
@@ -2334,7 +2497,10 @@ class TestInviteAcceptRole:
                 'invitee@example.com', role='superadmin'
             )
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,
@@ -2390,7 +2556,10 @@ class TestInviteAcceptRole:
                 'invitee@example.com', org_id=org_id, role='owner'
             )
             with (
-                patch('server.routes.idp.ENABLE_INTEGRATED_IDP', True),
+                patch(
+                    'server.routes.idp._get_integrated_idp_provider',
+                    new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+                ),
                 patch(
                     'server.routes.idp.UserStore.get_user_by_id',
                     new_callable=AsyncMock,

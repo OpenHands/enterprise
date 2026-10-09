@@ -68,3 +68,51 @@ async def test_background_rejects_disabled_and_missing(
     for uid in (str(user.id), str(uuid4()), 'not-a-uuid'):
         with pytest.raises(AuthError):
             await SaasUserAuth.get_for_user(uid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
+async def test_integration_resolver_rejects_inactive(
+    create_user, async_session_maker, monkeypatch, field
+):
+    from unittest.mock import AsyncMock
+
+    from integrations.v1_utils import get_saas_user_auth
+
+    monkeypatch.setattr('storage.user_store.a_session_maker', async_session_maker)
+    user = create_user(**{field: True})
+    tokens = AsyncMock()
+    with pytest.raises(AuthError):
+        await get_saas_user_auth(str(user.id), tokens)
+    tokens.load_offline_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
+async def test_idp_completion_rejects_inactive(create_user, field):
+    from fastapi import HTTPException
+
+    from server.routes.idp import _complete_idp_login
+
+    user = create_user(**{field: True})
+    with pytest.raises(HTTPException) as exc:
+        await _complete_idp_login(
+            request=None,
+            user=user,
+            is_new_user=False,
+            email='test@example.com',
+            redirect_url='/',
+        )
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
+async def test_oauth_login_guard_checks_lifecycle(
+    create_user, async_session_maker, monkeypatch, field
+):
+    from storage.user_store import UserStore
+
+    monkeypatch.setattr('storage.user_store.a_session_maker', async_session_maker)
+    user = create_user(**{field: True})
+    assert await UserStore.is_user_disabled(str(user.id))
