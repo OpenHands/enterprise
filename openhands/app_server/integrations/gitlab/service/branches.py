@@ -68,10 +68,10 @@ class GitLabBranchesMixin(GitLabMixinBase):
             )
             branches.append(branch)
 
-        has_next_page = False
+        # GitLab sends a Link header on every page, with rel="next" only when
+        # a next page exists.
+        has_next_page = 'rel="next"' in headers.get('Link', '')
         total_count = None
-        if headers.get('Link', ''):
-            has_next_page = True
 
         if 'X-Total' in headers:
             try:

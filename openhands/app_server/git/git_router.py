@@ -128,8 +128,9 @@ async def search_repositories(
 ) -> RepositoryPage:
     """Get or search repositories.
 
-    If query is provided, searches repositories across the git provider.
-    If query is not provided, returns a paginated list of the authenticated user's repositories.
+    If query is empty, returns a paginated list of the authenticated user's repositories.
+    If query is provided, returns one page of matching repositories with no next page.
+    With a query, a page after the first returns 400.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -154,6 +155,14 @@ async def search_repositories(
 
     # If query is provided, use search; otherwise get user's repositories
     if query:
+        if page != 1:
+            # TODO: Support pagination for repository search after refactoring.
+            # search_repositories takes no page number, so a later page would
+            # only repeat the first page.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Pagination not yet supported for repository search queries. Use empty query to list repositories with pagination.',
+            )
         # Parse sort_order into sort and order components (if provided)
         if sort_order:
             search_sort, order = sort_order.value.rsplit('-', 1)
@@ -164,11 +173,13 @@ async def search_repositories(
         repos: list[Repository] = await client.search_repositories(
             selected_provider=provider,
             query=query,
-            per_page=limit + 1,
+            per_page=limit,
             sort=search_sort,
             order=order,
             app_mode=get_global_config().app_mode,
         )
+        # Search results are a single page, so there is no next page.
+        return RepositoryPage(items=repos[:limit], next_page_id=None)
     else:
         if sort_order:
             # TODO: This is a temporary state until we refactor the underlying API.
@@ -180,21 +191,22 @@ async def search_repositories(
                 detail='sort_order is not supported when listing user repositories. It will be supported after API refactoring.',
             )
         # TODO: The underlying API needs refactoring.
+        # The providers use page-number pagination, so per_page must be equal
+        # to limit. A larger per_page moves each page window and skips items.
         repos = await client.get_repositories(
             sort='pushed',
             app_mode=get_global_config().app_mode,
             selected_provider=provider,
             page=page,
-            per_page=limit + 1,
+            per_page=limit,
             installation_id=installation_id,
         )
 
-    next_page_id = None
-    if len(repos) > limit:
-        repos = repos[:-1]
-        next_page_id = encode_page_id(page + 1)
+    # A full page can have more results after it. When the total is a multiple
+    # of limit, the client gets one empty last page.
+    next_page_id = encode_page_id(page + 1) if len(repos) >= limit else None
 
-    return RepositoryPage(items=repos, next_page_id=next_page_id)
+    return RepositoryPage(items=repos[:limit], next_page_id=next_page_id)
 
 
 @router.get('/branches/search')
@@ -220,7 +232,8 @@ async def search_branches(
 ) -> BranchPage:
     """Search branches in a repository.
 
-    Returns a paginated list of branches matching the search query.
+    If query is empty, returns a paginated list of all branches.
+    If query is provided, returns one page of matching branches with no next page.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -252,28 +265,26 @@ async def search_branches(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Pagination not yet supported for branch search queries. Use empty query to list all branches with pagination.',
             )
-        # Get search results - we'll handle pagination ourselves
         branches: list[Branch] = await client.search_branches(
             selected_provider=provider,
             repository=repository,
             query=query,
-            per_page=limit + 1,
+            per_page=limit,
         )
-    else:
-        current_page = await client.get_branches(
-            repository=repository,
-            specified_provider=provider,
-            page=page,
-            per_page=limit + 1,
-        )
-        branches = current_page.branches
+        # Search results are a single page, so there is no next page.
+        return BranchPage(items=branches[:limit], next_page_id=None)
 
-    next_page_id = None
-    if len(branches) > limit:
-        branches = branches[:-1]
-        next_page_id = encode_page_id(page + 1)
+    # The providers use page-number pagination, so per_page must be equal to
+    # limit. A larger per_page moves each page window and skips items.
+    current_page = await client.get_branches(
+        repository=repository,
+        specified_provider=provider,
+        page=page,
+        per_page=limit,
+    )
+    next_page_id = encode_page_id(page + 1) if current_page.has_next_page else None
 
-    return BranchPage(items=branches, next_page_id=next_page_id)
+    return BranchPage(items=current_page.branches[:limit], next_page_id=next_page_id)
 
 
 @router.get('/suggested-tasks/search')

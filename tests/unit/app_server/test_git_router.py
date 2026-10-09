@@ -7,7 +7,7 @@ focusing on pagination and error handling.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
 from openhands.app_server.git.git_models import SortOrder
@@ -21,6 +21,7 @@ from openhands.app_server.git.git_router import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import (
     Branch,
+    PaginatedBranchesResponse,
     ProviderType,
     Repository,
     SuggestedTask,
@@ -330,8 +331,8 @@ class TestSearchRepositories:
         assert call_kwargs.get('sort') == 'stars'
         assert call_kwargs.get('order') == 'desc'
 
-        # Verify per_page is limit + 1
-        assert call_kwargs.get('per_page') == 11
+        # Verify per_page is the page size
+        assert call_kwargs.get('per_page') == 10
 
         # Verify results are returned
         assert len(result.items) == 2
@@ -405,52 +406,27 @@ class TestSearchRepositories:
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
     async def test_pagination_works_across_pages(self, mock_handler_cls):
-        """Test that pagination works correctly across multiple pages.
+        """Following next_page_id must show every repository exactly once.
 
-        Note: This endpoint uses page-based pagination (passing page number to provider),
-        not offset-based pagination like installations. The provider returns limit+1 items,
-        and we check if there are more to determine next_page_id.
+        The providers use page-number pagination: page N returns items
+        (N-1)*per_page+1 .. N*per_page. The mock behaves the same way.
         """
         # Arrange
-        mock_handler = MagicMock()
+        all_repos = [
+            Repository(
+                id=str(i),
+                full_name=f'user/repo{i}',
+                git_provider=ProviderType.GITHUB,
+                is_public=True,
+            )
+            for i in range(1, 101)
+        ]
 
-        # We'll set up the mock to return different data based on the page parameter
-        # First call (page=1): return 3 items (limit+1), meaning there's a next page
-        # Second call (page=2): return 3 items, meaning there's a next page
-        # Third call (page=3): return 2 items, meaning it's the last page
         def mock_get_repositories(**kwargs):
-            page = kwargs.get('page', 1)
-            if page == 1:
-                return [
-                    Repository(
-                        id=str(i),
-                        full_name=f'user/repo{i}',
-                        git_provider=ProviderType.GITHUB,
-                        is_public=True,
-                    )
-                    for i in range(1, 4)  # 3 items = limit+1
-                ]
-            elif page == 2:
-                return [
-                    Repository(
-                        id=str(i),
-                        full_name=f'user/repo{i}',
-                        git_provider=ProviderType.GITHUB,
-                        is_public=True,
-                    )
-                    for i in range(4, 7)  # 3 items = limit+1
-                ]
-            else:
-                return [
-                    Repository(
-                        id=str(i),
-                        full_name=f'user/repo{i}',
-                        git_provider=ProviderType.GITHUB,
-                        is_public=True,
-                    )
-                    for i in range(7, 9)  # 2 items < limit+1 = last page
-                ]
+            start = (kwargs['page'] - 1) * kwargs['per_page']
+            return all_repos[start : start + kwargs['per_page']]
 
+        mock_handler = MagicMock()
         mock_handler.get_repositories = AsyncMock(side_effect=mock_get_repositories)
         mock_handler_cls.return_value = mock_handler
 
@@ -461,40 +437,91 @@ class TestSearchRepositories:
             user_id='user-123',
         )
 
-        # Act - First page (page=1)
-        result_page1 = await search_repositories(
-            provider=ProviderType.GITHUB,
-            query=None,
-            installation_id=None,
-            page_id=None,  # This means page 1
-            limit=2,
-            sort_order=None,
-            user_context=mock_context,
+        # Act - follow next_page_id until the last page
+        seen_ids: list[str] = []
+        page_sizes: list[int] = []
+        page_id = None
+        for _ in range(10):
+            result = await search_repositories(
+                provider=ProviderType.GITHUB,
+                query=None,
+                installation_id=None,
+                page_id=page_id,
+                limit=30,
+                sort_order=None,
+                user_context=mock_context,
+            )
+            seen_ids.extend(repo.id for repo in result.items)
+            page_sizes.append(len(result.items))
+            page_id = result.next_page_id
+            if page_id is None:
+                break
+
+        # Assert
+        assert seen_ids == [str(i) for i in range(1, 101)]
+        assert page_sizes == [30, 30, 30, 10]
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_full_last_page_gives_next_page_id_then_empty_page(
+        self, mock_handler_cls
+    ):
+        """A full page gives a next_page_id, because the router cannot know it is the last.
+
+        When the total is a multiple of limit, the client gets one empty page
+        with no next_page_id.
+        """
+        # Arrange
+        all_repos = [
+            Repository(
+                id=str(i),
+                full_name=f'user/repo{i}',
+                git_provider=ProviderType.GITHUB,
+                is_public=True,
+            )
+            for i in range(1, 5)
+        ]
+
+        def mock_get_repositories(**kwargs):
+            start = (kwargs['page'] - 1) * kwargs['per_page']
+            return all_repos[start : start + kwargs['per_page']]
+
+        mock_handler = MagicMock()
+        mock_handler.get_repositories = AsyncMock(side_effect=mock_get_repositories)
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
         )
 
-        # Assert - First page returns 2 items (truncated from limit+1=3), with next_page_id
-        assert len(result_page1.items) == 2
-        assert result_page1.items[0].id == '1'
-        assert result_page1.items[1].id == '2'
-        assert result_page1.next_page_id == encode_page_id(2)
-
-        # Act - Second page (page=2)
+        # Act
         result_page2 = await search_repositories(
             provider=ProviderType.GITHUB,
             query=None,
             installation_id=None,
-            page_id=encode_page_id(2),  # This means page 2
+            page_id=encode_page_id(2),
+            limit=2,
+            sort_order=None,
+            user_context=mock_context,
+        )
+        result_page3 = await search_repositories(
+            provider=ProviderType.GITHUB,
+            query=None,
+            installation_id=None,
+            page_id=result_page2.next_page_id,
             limit=2,
             sort_order=None,
             user_context=mock_context,
         )
 
-        # Assert - Second page returns next 2 items
-        assert len(result_page2.items) == 2
-        assert result_page2.items[0].id == '4'
-        assert result_page2.items[1].id == '5'
-        # next_page_id = page + 1 = 2 + 1 = 3, encoded as base64 = 'Mw'
+        # Assert
+        assert [repo.id for repo in result_page2.items] == ['3', '4']
         assert result_page2.next_page_id == encode_page_id(3)
+        assert result_page3.items == []
+        assert result_page3.next_page_id is None
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
@@ -561,8 +588,12 @@ class TestSearchRepositories:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_returns_paginated_search_results(self, mock_handler_cls):
-        """Test that search repositories are returned with pagination when query is provided."""
+    async def test_search_results_are_a_single_page(self, mock_handler_cls):
+        """Search with a query returns at most limit items and no next_page_id.
+
+        search_repositories takes no page number, so a next page would only
+        repeat the first page.
+        """
         # Arrange
         mock_handler = MagicMock()
         mock_handler.search_repositories = AsyncMock(
@@ -621,7 +652,42 @@ class TestSearchRepositories:
                 is_public=True,
             ),
         ]
-        assert result.next_page_id == encode_page_id(2)
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_search_with_query_rejects_non_first_page(self, mock_handler_cls):
+        """Search with a query returns 400 for a page after the first.
+
+        search_repositories takes no page number, so it cannot return a later page.
+        """
+        # Arrange
+        mock_handler = MagicMock()
+        mock_handler.search_repositories = AsyncMock(return_value=[])
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await search_repositories(
+                provider=ProviderType.GITHUB,
+                query='test',
+                installation_id=None,
+                page_id=encode_page_id(2),
+                limit=2,
+                sort_order=None,
+                user_context=mock_context,
+            )
+
+        # Assert
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        mock_handler.search_repositories.assert_not_called()
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
@@ -704,8 +770,12 @@ class TestSearchBranches:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_returns_paginated_branches(self, mock_handler_cls):
-        """Test that search branches are returned with pagination."""
+    async def test_search_results_are_a_single_page(self, mock_handler_cls):
+        """Branch search with a query returns at most limit items and no next_page_id.
+
+        Branch search returns 400 for a page after the first, so a next page
+        must not be advertised.
+        """
         # Arrange
         mock_handler = MagicMock()
         mock_handler.search_branches = AsyncMock(
@@ -738,7 +808,7 @@ class TestSearchBranches:
         assert len(result.items) == 2
         assert result.items[0].name == 'main'
         assert result.items[1].name == 'develop'
-        assert result.next_page_id == encode_page_id(2)
+        assert result.next_page_id is None
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
@@ -772,7 +842,64 @@ class TestSearchBranches:
         assert call_kwargs.get('selected_provider') == ProviderType.GITHUB
         assert call_kwargs.get('repository') == 'user/repo'
         assert call_kwargs.get('query') == 'feature'
-        assert call_kwargs.get('per_page') == 11  # limit + 1
+        assert call_kwargs.get('per_page') == 10  # the page size
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_listing_pagination_works_across_pages(self, mock_handler_cls):
+        """Following next_page_id with an empty query must show every branch once.
+
+        The providers use page-number pagination and report has_next_page. The
+        mock behaves the same way.
+        """
+        # Arrange
+        all_branches = [
+            Branch(name=f'branch{i}', commit_sha=f'sha{i}', protected=False)
+            for i in range(1, 101)
+        ]
+
+        def mock_get_branches(**kwargs):
+            page = kwargs['page']
+            per_page = kwargs['per_page']
+            start = (page - 1) * per_page
+            return PaginatedBranchesResponse(
+                branches=all_branches[start : start + per_page],
+                has_next_page=start + per_page < len(all_branches),
+                current_page=page,
+                per_page=per_page,
+                total_count=len(all_branches),
+            )
+
+        mock_handler = MagicMock()
+        mock_handler.get_branches = AsyncMock(side_effect=mock_get_branches)
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+
+        # Act - follow next_page_id until the last page
+        seen_names: list[str] = []
+        page_id = None
+        for _ in range(10):
+            result = await search_branches(
+                provider=ProviderType.GITHUB,
+                repository='user/repo',
+                query='',
+                page_id=page_id,
+                limit=30,
+                user_context=mock_context,
+            )
+            seen_names.extend(branch.name for branch in result.items)
+            page_id = result.next_page_id
+            if page_id is None:
+                break
+
+        # Assert
+        assert seen_names == [f'branch{i}' for i in range(1, 101)]
 
     def test_returns_403_when_no_provider_tokens(self, test_client):
         """Test that 403 is returned when no provider tokens."""

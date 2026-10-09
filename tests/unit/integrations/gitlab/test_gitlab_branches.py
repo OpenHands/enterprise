@@ -78,6 +78,33 @@ async def test_get_paginated_branches_gitlab_no_next_or_total():
 
 
 @pytest.mark.asyncio
+async def test_get_paginated_branches_gitlab_last_page_has_no_next():
+    """GitLab sends a Link header on the last page too, with no rel="next"."""
+    service = GitLabService(token=SecretStr('t'))
+
+    mock_response = [
+        {
+            'name': 'last',
+            'commit': {'id': 'yyy', 'committed_date': '2024-01-03T00:00:00Z'},
+            'protected': False,
+        }
+    ]
+
+    base = 'https://gitlab.example.com/api/v4/projects/group%2Frepo/repository/branches'
+    headers = {
+        'Link': (
+            f'<{base}?page=1&per_page=2>; rel="prev", '
+            f'<{base}?page=1&per_page=2>; rel="first", '
+            f'<{base}?page=2&per_page=2>; rel="last"'
+        ),
+    }
+
+    with patch.object(service, '_make_request', return_value=(mock_response, headers)):
+        res = await service.get_paginated_branches('group/repo', page=2, per_page=2)
+        assert res.has_next_page is False
+
+
+@pytest.mark.asyncio
 async def test_search_branches_gitlab_uses_search_param():
     service = GitLabService(token=SecretStr('t'))
 
