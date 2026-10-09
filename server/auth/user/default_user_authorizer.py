@@ -38,9 +38,10 @@ class DefaultUserAuthorizer(UserAuthorizer):
         email = user_info.email
         provider_type = user_info.identity_provider
         try:
-            user = await UserStore.get_user_by_id(user_id)
-            if user and (user.is_disabled or user.deletion_pending):
-                return UserAuthorizationResponse(success=False, error_detail='disabled')
+            if await UserStore.is_user_disabled(user_id):
+                return UserAuthorizationResponse(
+                    success=False, error_detail='account_disabled'
+                )
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')
                 return UserAuthorizationResponse(
