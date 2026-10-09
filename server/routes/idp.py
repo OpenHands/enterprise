@@ -1087,6 +1087,8 @@ async def _complete_idp_login(
     Shared by ``idp_login`` (existing account) and ``idp_signup``
     (brand-new account) so both end up with identical post-auth behavior.
     """
+    if user.is_disabled or user.deletion_pending:
+        raise HTTPException(status_code=403, detail='User account is disabled')
     provider = await _get_integrated_idp_provider()
     if provider is None:
         # Should not happen -- every route reaching here already passed

@@ -34,6 +34,15 @@ class User(Base):
     # Instance-level super role; org membership roles live on OrgMember.role_id.
     # Effective permissions are defined by SUPER_ROLE_PERMISSIONS.
     role_id: Mapped[int | None] = mapped_column(ForeignKey('role.id'), nullable=True)
+    is_disabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    deletion_pending: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     accepted_tos: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -79,11 +88,6 @@ class User(Base):
     # is exactly one login wide per user. Off by default; bulk-set by an
     # operator at the swap-over moment.
     allow_match_by_email: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default='false'
-    )
-    # Set by a Super Admin to block sign-in, sessions and API keys, whatever
-    # organizations the user belongs to. Clearing it restores access.
-    is_disabled: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default='false'
     )
     # Argon2id hash of the user's dev-IDP password (``server.auth.password_hashing``).

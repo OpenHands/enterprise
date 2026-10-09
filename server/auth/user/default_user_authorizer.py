@@ -39,13 +39,9 @@ class DefaultUserAuthorizer(UserAuthorizer):
         provider_type = user_info.identity_provider
         try:
             if await UserStore.is_user_disabled(user_id):
-                logger.warning(
-                    'Blocked sign-in for disabled user', extra={'user_id': user_id}
-                )
                 return UserAuthorizationResponse(
                     success=False, error_detail='account_disabled'
                 )
-
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')
                 return UserAuthorizationResponse(

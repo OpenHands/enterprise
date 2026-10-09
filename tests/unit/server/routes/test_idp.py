@@ -120,6 +120,8 @@ def _mock_user(
     user.email = email
     user.accepted_tos = accepted_tos
     user.user_consents_to_analytics = False
+    user.is_disabled = False
+    user.deletion_pending = False
     user.password_hash = password_hash
     return user
 

@@ -39,7 +39,6 @@ from server.auth.authorization import (
 from server.auth.constants import (
     AZURE_DEVOPS_ORGANIZATION,
     BITBUCKET_DATA_CENTER_HOST,
-    ENABLE_SUPER_ADMIN,
 )
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
@@ -52,6 +51,7 @@ from storage.database import a_session_maker
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
+from storage.user import User
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 from storage.user_store import UserStore
@@ -87,6 +87,7 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    _active_user_validated: bool = field(default=False, repr=False)
     # OAuth v2 (Phase 2) cookie session. When True, the instance was minted
     # from the small ``openhands_auth`` JWT cookie and resolves tokens via the
     # new ``oauth_tokens`` table / ``OAuthTokenStore`` instead of the legacy
@@ -1082,22 +1083,19 @@ class SaasUserAuth(UserAuth):
         if instance is None:
             logger.debug('saas_user_auth_get_instance:no_credentials')
             raise NoCredentialsError('failed to authenticate')
-        # Checked here rather than per credential type, so a disabled user is
-        # refused with an API key, a legacy cookie or an OAuth v2 cookie alike.
-        # Only the Super Admin directory disables users, so the lookup is
-        # skipped while it is off.
-        if (
-            ENABLE_SUPER_ADMIN
-            and instance.user_id
-            and await UserStore.is_user_disabled(instance.user_id)
-        ):
-            raise AuthError('User account is disabled')
+
+        user_id = await instance.get_user_id()
+        if user_id is None:
+            raise AuthError('Missing user identity')
+        if getattr(instance, '_active_user_validated', False) is not True:
+            await _require_active_user(user_id)
+            instance._active_user_validated = True
+
         # Capture the raw X-Org-Id header (if any) so it can be validated
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.
         instance._x_org_id_header = request.headers.get('X-Org-Id')
         if not getattr(request.state, 'user_rate_limit_processed', False):
-            user_id = await instance.get_user_id()
             if user_id:
                 # Ensure requests are only counted once
                 request.state.user_rate_limit_processed = True
@@ -1112,11 +1110,35 @@ class SaasUserAuth(UserAuth):
         # user's Keycloak offline session either. The offline token (if any) is
         # loaded lazily by refresh() only when a Keycloak access token is
         # actually required; provider tokens resolve by user_id directly.
+        await _require_active_user(user_id)
         return SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            _active_user_validated=True,
         )
+
+
+async def _require_active_user(
+    user_id: str,
+    issued_at: object = None,
+    *,
+    cookie: bool = False,
+) -> User:
+    try:
+        UUID(user_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise AuthError('Invalid user identity') from exc
+    user = await UserStore.get_user_auth_state(user_id)
+    if user is None or user.is_disabled or user.deletion_pending:
+        raise AuthError('User is disabled or no longer exists')
+    if cookie and user.credentials_revoked_at is not None:
+        if (
+            not isinstance(issued_at, (int, float))
+            or issued_at <= user.credentials_revoked_at.timestamp()
+        ):
+            raise AuthError('Session has been revoked; sign in again')
+    return user
 
 
 def get_api_key_from_header(request: Request):
@@ -1152,6 +1174,7 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
             return None
+        await _require_active_user(validation_result.user_id)
         # API-key auth is intentionally decoupled from the Keycloak offline
         # session: we do NOT load an offline token or refresh here. A valid API
         # key alone authenticates the request. Any provider/access token needed
@@ -1165,6 +1188,7 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
             api_key_org_id=validation_result.org_id,
             api_key_id=validation_result.key_id,
             api_key_name=validation_result.key_name,
+            _active_user_validated=True,
         )
     except Exception as exc:
         raise BearerTokenError from exc
@@ -1224,7 +1248,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
     # Email is sourced from the local User row (set lazily by get_user_email),
     # so we do not need it in the cookie payload.
-    user = await UserStore.get_user_by_id(user_id)
+    user = await _require_active_user(user_id, decoded.get('iat'), cookie=True)
     email = user.email if user else None
     email_verified = user.email_verified if user else None
 
@@ -1247,6 +1271,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
         auth_type=AuthType.COOKIE,
         oauth_v2_cookie=True,
         access_token_expires_at=access_token_expires_at,
+        _active_user_validated=True,
         idp_provider_id=idp_provider_id,
         legacy_oauth_v2_cookie=legacy_oauth_v2_cookie,
     )
@@ -1273,6 +1298,7 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     # created by us. So we can grab the user_id and expiration from it without going back to keycloak.
     access_token_payload = jwt.decode(access_token, options={'verify_signature': False})
     user_id = access_token_payload['sub']
+    await _require_active_user(user_id, decoded.get('iat'), cookie=True)
     email = access_token_payload['email']
     email_verified = access_token_payload['email_verified']
 
@@ -1297,10 +1323,12 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
         email_verified=email_verified,
         accepted_tos=accepted_tos,
         auth_type=AuthType.COOKIE,
+        _active_user_validated=True,
     )
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
+    await _require_active_user(keycloak_user_id)
     # Like get_for_user, this is a background / integration entry point that must
     # not require the offline session. Mark it BEARER so get_access_token()
     # degrades gracefully and refresh() lazily loads the offline token only if a
@@ -1309,4 +1337,5 @@ async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
         user_id=keycloak_user_id,
         refresh_token=SecretStr(''),
         auth_type=AuthType.BEARER,
+        _active_user_validated=True,
     )
