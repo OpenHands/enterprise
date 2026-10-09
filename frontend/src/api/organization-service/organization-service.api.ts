@@ -706,12 +706,7 @@ interface OrgBudgetUser {
   is_disabled: boolean;
   is_override: boolean;
   reconciliation_state?:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed"
-    | null;
+    "inactive" | "pending" | "healthy" | "degraded" | "failed" | null;
   reconciliation_error?: string | null;
   applied_at?: string | null;
 }
@@ -726,11 +721,7 @@ interface OrgBudgetSettings {
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;
   reconciliation_state:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliation_error: string | null;
   desired_team_max_budget: number | null;
   applied_team_max_budget: number | null;

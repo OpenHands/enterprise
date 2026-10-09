@@ -27,7 +27,15 @@ import { useEventStore } from "#/stores/use-event-store";
 import { useAgentState } from "#/hooks/use-agent-state";
 import { AgentState } from "#/types/agent-state";
 
-vi.mock("#/context/ws-client-provider");
+const { sendMock, useWsClientMock } = vi.hoisted(() => ({
+  sendMock: vi.fn(),
+  useWsClientMock: vi.fn(),
+}));
+
+vi.mock("#/context/ws-client-provider", () => ({
+  useWsClient: () => useWsClientMock(),
+}));
+
 vi.mock("#/hooks/query/use-config");
 vi.mock("#/hooks/mutation/use-get-trajectory");
 vi.mock("#/hooks/mutation/use-unified-upload-files");
@@ -52,7 +60,8 @@ vi.mock("#/hooks/use-conversation-name-context-menu", () => ({
 
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(() => ({
-    curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+    curAgentState: AgentState.AWAITING_USER_INPUT,
+    isArchived: false,
   })),
 }));
 
@@ -175,19 +184,6 @@ describe("ChatInterface - Chat Suggestions", () => {
 });
 
 describe("ChatInterface - Empty state", () => {
-  const { send: sendMock } = vi.hoisted(() => ({
-    send: vi.fn(),
-  }));
-
-  const { useWsClient: useWsClientMock } = vi.hoisted(() => ({
-    useWsClient: vi.fn(() => ({
-      send: sendMock,
-      status: "CONNECTED",
-      isLoadingMessages: false,
-      parsedEvents: [],
-    })),
-  }));
-
   afterEach(() => {
     vi.clearAllMocks();
   });
@@ -272,10 +268,11 @@ describe("ChatInterface - Empty state", () => {
   );
 });
 
-describe('ChatInterface - Status Indicator', () => {
+describe("ChatInterface - Status Indicator", () => {
   it("should render ChatStatusIndicator when agent is not awaiting user input / conversation is NOT ready", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.LOADING, isArchived: false,
+      curAgentState: AgentState.LOADING,
+      isArchived: false,
     });
 
     renderChatInterfaceWithRouter();
@@ -285,27 +282,19 @@ describe('ChatInterface - Status Indicator', () => {
 
   it("should NOT render ChatStatusIndicator when agent is awaiting user input / conversation is ready", () => {
     vi.mocked(useAgentState).mockReturnValue({
-      curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
+      curAgentState: AgentState.AWAITING_USER_INPUT,
+      isArchived: false,
     });
 
     renderChatInterfaceWithRouter();
 
-    expect(screen.queryByTestId("chat-status-indicator")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("chat-status-indicator"),
+    ).not.toBeInTheDocument();
   });
 });
 
 describe.skip("ChatInterface - General functionality", () => {
-  beforeAll(() => {
-    // mock useScrollToBottom hook
-    vi.mock("#/hooks/useScrollToBottom", () => ({
-      useScrollToBottom: vi.fn(() => ({
-        scrollDomToBottom: vi.fn(),
-        onChatBodyScroll: vi.fn(),
-        hitBottom: vi.fn(),
-      })),
-    }));
-  });
-
   afterEach(() => {
     vi.clearAllMocks();
   });

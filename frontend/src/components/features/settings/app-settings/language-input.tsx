@@ -34,6 +34,7 @@ export function LanguageInput({
         label: l.label,
       }))}
       defaultSelectedKey={defaultKey}
+      formValue="text"
       isClearable={false}
       wrapperClassName="w-full min-w-0"
     />

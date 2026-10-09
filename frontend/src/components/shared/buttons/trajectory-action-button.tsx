@@ -26,12 +26,11 @@ export function TrajectoryActionButton({
 
   if (tooltip) {
     return (
-      <Tooltip
-        content={tooltip}
-        closeDelay={100}
-        className="bg-white text-black hover:bg-transparent"
-      >
-        {button}
+      <Tooltip delay={0} closeDelay={100}>
+        <Tooltip.Trigger>{button}</Tooltip.Trigger>
+        <Tooltip.Content className="bg-white text-black">
+          {tooltip}
+        </Tooltip.Content>
       </Tooltip>
     );
   }
