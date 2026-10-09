@@ -41,6 +41,7 @@ import {
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import { InstanceLogoSetting } from "./instance-logo-setting";
+import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
 import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
 import type {
@@ -743,6 +744,7 @@ export function SuperAdminInstance() {
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
       <InstanceLogoSetting />
+      <InstanceCompanyNameSetting />
       <div className="flex flex-col gap-1">
         <SettingsSwitch
           isToggled={emailEnabled}

@@ -635,17 +635,7 @@ export function SuperAdminSetupGuide() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-setup">
-      <div className="flex flex-col items-start gap-2 sm:items-end">
-        <p
-          className="text-sm text-[var(--oh-muted)]"
-          data-testid="super-admin-setup-next"
-        >
-          {nextStep
-            ? t(I18nKey.SUPER_ADMIN$SETUP_NEXT, {
-                step: t(nextStep.title as I18nKey),
-              })
-            : t(I18nKey.SUPER_ADMIN$SETUP_COMPLETE)}
-        </p>
+      <div className="flex items-center gap-3">
         <BrandButton
           type="button"
           variant="primary"
@@ -666,6 +656,16 @@ export function SuperAdminSetupGuide() {
         >
           {t(I18nKey.SUPER_ADMIN$SETUP_START_GUIDE)}
         </BrandButton>
+        <p
+          className="min-w-0 text-sm text-[var(--oh-muted)]"
+          data-testid="super-admin-setup-next"
+        >
+          {nextStep
+            ? t(I18nKey.SUPER_ADMIN$SETUP_NEXT, {
+                step: t(nextStep.title as I18nKey),
+              })
+            : t(I18nKey.SUPER_ADMIN$SETUP_COMPLETE)}
+        </p>
       </div>
       <div className="flex items-center gap-3">
         <SetupProgressBar progress={progress} />
