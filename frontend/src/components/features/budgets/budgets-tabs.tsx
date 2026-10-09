@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
   EmailIcon,
-  HashIcon,
   SearchIcon,
   SlackIcon,
 } from "#/components/shared/icons/inline-icons";
@@ -476,9 +475,6 @@ export function OrganizationBudgetTab({
                 Slack channel
               </label>
               <div className={cn(formControlShellClassName, "w-full")}>
-                <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
-                  <HashIcon />
-                </span>
                 <input
                   id="slack-channel"
                   type="text"
