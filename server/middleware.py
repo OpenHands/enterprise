@@ -156,6 +156,7 @@ class SetAuthCookieMiddleware:
             user_id=user_id,
             access_token_expires_at=user_auth.access_token_expires_at,
             accepted_tos=bool(user_auth.accepted_tos),
+            idp_provider_id=user_auth.idp_provider_id,
             refresh_token_expires_at=user_auth.idp_refresh_token_expires_at,
         )
 

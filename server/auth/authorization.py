@@ -446,9 +446,12 @@ async def authorize_permission(
     org_id = await resolve_target_org_id_for_permission_check(request)
     user_role = await get_user_org_role(user_id, org_id)
 
-    org_suspended = await is_org_suspended(org_id)
-
-    super_role = await get_user_super_role(user_id)
+    # Only the Super Admin directory suspends orgs, so skip the lookup while
+    # it is off.
+    org_suspended = ENABLE_SUPER_ADMIN and await is_org_suspended(org_id)
+    # A suspended org still admits instance super admins, so their super role
+    # is read first. Otherwise it is only the fallback below.
+    super_role = await get_user_super_role(user_id) if org_suspended else None
     is_super_admin = bool(
         super_role
         and has_permission(super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True)
@@ -462,6 +465,8 @@ async def authorize_permission(
         and has_permission(user_role, permission)
     ):
         return
+    if not org_suspended:
+        super_role = await get_user_super_role(user_id)
     if super_role and has_permission(super_role, permission, is_super=True):
         return
     if org_suspended and user_role and not is_super_admin:
@@ -576,9 +581,12 @@ def require_permission(permission: Permission):
 
         user_role = await get_user_org_role(user_id, org_id)
 
-        org_suspended = await is_org_suspended(org_id)
-
-        super_role = await get_user_super_role(user_id)
+        # Only the Super Admin directory suspends orgs, so skip the lookup
+        # while it is off.
+        org_suspended = ENABLE_SUPER_ADMIN and await is_org_suspended(org_id)
+        # A suspended org still admits instance super admins, so their super
+        # role is read first. Otherwise it is only the fallback in step 2.
+        super_role = await get_user_super_role(user_id) if org_suspended else None
         is_super_admin = bool(
             super_role
             and has_permission(
@@ -600,6 +608,8 @@ def require_permission(permission: Permission):
         #    ``user.role_id`` it grants the super-role permission set
         #    (parallel role perms + super-only extras) across every
         #    organization the user touches.
+        if not org_suspended:
+            super_role = await get_user_super_role(user_id)
         if super_role and has_permission(super_role, permission, is_super=True):
             logger.debug(
                 'Permission granted via super role',

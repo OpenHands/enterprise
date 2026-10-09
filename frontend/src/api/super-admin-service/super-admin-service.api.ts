@@ -134,7 +134,7 @@ export const superAdminService = {
 
   listUsers: async () => {
     const { data } = await openHands.get<{ users: SuperAdminApiUser[] }>(
-      "/api/admin/users",
+      "/api/admin/directory/users",
     );
     return data.users;
   },
@@ -147,7 +147,7 @@ export const superAdminService = {
     status: "active" | "inactive";
   }) => {
     const { data } = await openHands.patch<SuperAdminApiUser>(
-      `/api/admin/users/${userId}`,
+      `/api/admin/directory/users/${userId}`,
       { status },
     );
     return data;
@@ -157,7 +157,7 @@ export const superAdminService = {
     const { data } = await openHands.delete<{
       message: string;
       user_id: string;
-    }>(`/api/admin/users/${userId}`);
+    }>(`/api/admin/directory/users/${userId}`);
     return data;
   },
 
@@ -173,7 +173,7 @@ export const superAdminService = {
     role?: "member" | "admin" | "owner";
   }) => {
     const { data } = await openHands.post<SuperAdminApiUser>(
-      `/api/admin/users/${userId}/groups`,
+      `/api/admin/directory/users/${userId}/groups`,
       { action, org_ids: orgIds, role },
     );
     return data;

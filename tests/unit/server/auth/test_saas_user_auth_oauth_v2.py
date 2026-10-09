@@ -48,7 +48,15 @@ def _make_v2_cookie(
     user_id: str,
     access_token_expires_at: datetime | None = None,
     accepted_tos: bool = True,
+    idp_provider_id: int | None = None,
+    omit_idp_provider_id_claim: bool = False,
 ) -> str:
+    """Build a v2 cookie payload.
+
+    ``omit_idp_provider_id_claim`` simulates a cookie minted before the
+    ``idp_provider_id`` field existed (the claim key itself absent, not just
+    ``None`` valued) — see ``legacy_oauth_v2_cookie`` in ``saas_user_auth.py``.
+    """
     import time
 
     payload = {
@@ -61,6 +69,8 @@ def _make_v2_cookie(
         'accepted_tos': accepted_tos,
         'iat': int(time.time()),
     }
+    if not omit_idp_provider_id_claim:
+        payload['idp_provider_id'] = idp_provider_id
     return jwt_svc.create_jws_token(payload, expires_in=timedelta(days=30))
 
 
@@ -70,7 +80,9 @@ def _make_v2_cookie(
 @pytest.mark.asyncio
 async def test_v2_cookie_decode_builds_auth(jwt_svc):
     user_id = str(uuid4())
-    cookie = _make_v2_cookie(jwt_svc, user_id=user_id, accepted_tos=True)
+    cookie = _make_v2_cookie(
+        jwt_svc, user_id=user_id, accepted_tos=True, idp_provider_id=7
+    )
     mock_user = MagicMock()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
@@ -94,6 +106,37 @@ async def test_v2_cookie_decode_builds_auth(jwt_svc):
     assert auth.accepted_tos is True
     assert auth.email == 'a@b.com'
     assert auth.access_token is None  # not carried in cookie
+    assert auth.idp_provider_id == 7
+    assert auth.legacy_oauth_v2_cookie is False
+
+
+@pytest.mark.asyncio
+async def test_v2_cookie_decode_marks_legacy_cookie_without_idp_provider_id(jwt_svc):
+    """A cookie minted before ``idp_provider_id`` existed (the claim key
+    itself absent) decodes with ``legacy_oauth_v2_cookie=True`` and
+    ``idp_provider_id=None`` so refresh falls back to the pre-id probing
+    behavior instead of assuming "no IDP token to refresh"."""
+    user_id = str(uuid4())
+    cookie = _make_v2_cookie(jwt_svc, user_id=user_id, omit_idp_provider_id_claim=True)
+    mock_user = MagicMock()
+    mock_user.email = 'a@b.com'
+    mock_user.email_verified = True
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            new=AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.auth.saas_user_auth.UserAuthorizationStore.get_authorization_type',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        auth = await saas_user_auth_from_oauth_v2_cookie(cookie)
+
+    assert auth.idp_provider_id is None
+    assert auth.legacy_oauth_v2_cookie is True
 
 
 @pytest.mark.asyncio
@@ -235,19 +278,25 @@ async def test_from_cookie_no_cookie_returns_none(jwt_svc):
 
 @pytest.mark.asyncio
 async def test_v2_get_access_token_refreshes_and_sets_flag(jwt_svc):
-    """When the IDP token is expired, get_access_token refreshes and sets refreshed=True."""
+    """When the IDP token is expired, get_access_token refreshes and sets refreshed=True.
+
+    The session's provider is resolved directly from ``idp_provider_id``
+    (carried in the cookie) rather than by probing every configured IDP.
+    """
     user_id = str(uuid4())
     auth = SaasUserAuth(
         user_id=user_id,
         refresh_token=SecretStr(''),
         auth_type=AuthType.COOKIE,
         oauth_v2_cookie=True,
+        idp_provider_id=1,
         # Expired → triggers refresh.
         access_token_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
 
     provider = MagicMock()
     provider.id = 1
+    provider.token_url = 'https://idp.example.com/token'
     provider.permitted_drift_seconds = 60
 
     raw_row = MagicMock()
@@ -267,8 +316,8 @@ async def test_v2_get_access_token_refreshes_and_sets_flag(jwt_svc):
 
     with (
         patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
-            new=AsyncMock(return_value=[provider]),
+            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            new=AsyncMock(return_value=provider),
         ),
         patch(
             'storage.oauth_token_store.OAuthTokenStore',
@@ -298,12 +347,14 @@ async def test_v2_get_access_token_no_refresh_when_valid(jwt_svc):
         refresh_token=SecretStr(''),
         auth_type=AuthType.COOKIE,
         oauth_v2_cookie=True,
+        idp_provider_id=1,
         # Still valid (expires in the future).
         access_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
     provider = MagicMock()
     provider.id = 1
+    provider.token_url = 'https://idp.example.com/token'
     provider.permitted_drift_seconds = 60
 
     raw_row = MagicMock()
@@ -313,6 +364,132 @@ async def test_v2_get_access_token_no_refresh_when_valid(jwt_svc):
     token_store = MagicMock()
     token_store.get_raw = AsyncMock(return_value=raw_row)
     token_store.get_valid_access_token = AsyncMock(return_value='valid-at')
+
+    with (
+        patch(
+            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(
+            'storage.oauth_token_store.OAuthTokenStore',
+            return_value=token_store,
+        ),
+    ):
+        token = await auth.get_access_token()
+
+    assert token.get_secret_value() == 'valid-at'
+    assert auth.refreshed is False
+
+
+@pytest.mark.asyncio
+async def test_v2_get_access_token_integrated_idp_returns_none_without_probing(
+    jwt_svc,
+):
+    """A session whose ``idp_provider_id`` points at the integrated/password
+    IDP (no ``token_url``) has no external token to refresh — resolved
+    directly from that one row, not by iterating every configured IDP."""
+    user_id = str(uuid4())
+    auth = SaasUserAuth(
+        user_id=user_id,
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+        idp_provider_id=9,
+        access_token_expires_at=None,
+    )
+
+    integrated_provider = MagicMock()
+    integrated_provider.id = 9
+    integrated_provider.token_url = None
+
+    with patch(
+        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+        new=AsyncMock(return_value=integrated_provider),
+    ) as mock_get_by_id:
+        token = await auth.get_access_token()
+
+    assert token is None
+    assert auth.refreshed is False
+    mock_get_by_id.assert_awaited_once_with(9)
+
+
+@pytest.mark.asyncio
+async def test_v2_get_access_token_no_idp_provider_id_returns_none(jwt_svc):
+    """A non-legacy session with no ``idp_provider_id`` at all (should not
+    normally happen post-migration-179, but is not a stale-cookie error
+    either) resolves to no token without touching the DB."""
+    user_id = str(uuid4())
+    auth = SaasUserAuth(
+        user_id=user_id,
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+        idp_provider_id=None,
+        legacy_oauth_v2_cookie=False,
+        access_token_expires_at=None,
+    )
+
+    with patch(
+        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+    ) as mock_get_by_id:
+        token = await auth.get_access_token()
+
+    assert token is None
+    mock_get_by_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_v2_get_access_token_unknown_provider_id_raises_expired(jwt_svc):
+    """If the provider the cookie points at no longer exists (deleted /
+    reconfigured since the cookie was minted), the cookie is stale."""
+    from server.auth.auth_error import ExpiredError
+
+    user_id = str(uuid4())
+    auth = SaasUserAuth(
+        user_id=user_id,
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+        idp_provider_id=404,
+        access_token_expires_at=None,
+    )
+
+    with patch(
+        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+        new=AsyncMock(return_value=None),
+    ):
+        with pytest.raises(ExpiredError):
+            await auth._v2_get_idp_access_token()
+
+
+@pytest.mark.asyncio
+async def test_v2_get_access_token_legacy_cookie_falls_back_to_probing(jwt_svc):
+    """A legacy cookie (minted before ``idp_provider_id`` existed) still
+    resolves via the old probe-every-IDP behavior, and upgrades
+    ``idp_provider_id`` on the in-memory auth object once it finds a match
+    (so a subsequent cookie re-mint carries the real id going forward)."""
+    user_id = str(uuid4())
+    auth = SaasUserAuth(
+        user_id=user_id,
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+        legacy_oauth_v2_cookie=True,
+        idp_provider_id=None,
+        access_token_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+
+    provider = MagicMock()
+    provider.id = 5
+    provider.permitted_drift_seconds = 60
+
+    raw_row = MagicMock()
+    raw_row.access_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    raw_row.refresh_token_expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+
+    token_store = MagicMock()
+    token_store.get_raw = AsyncMock(return_value=raw_row)
+    token_store.get_valid_access_token = AsyncMock(return_value='legacy-at')
 
     with (
         patch(
@@ -326,8 +503,9 @@ async def test_v2_get_access_token_no_refresh_when_valid(jwt_svc):
     ):
         token = await auth.get_access_token()
 
-    assert token.get_secret_value() == 'valid-at'
-    assert auth.refreshed is False
+    assert token is not None
+    assert token.get_secret_value() == 'legacy-at'
+    assert auth.idp_provider_id == 5
 
 
 # ── get_provider_tokens v2 path ──────────────────────────────────────────

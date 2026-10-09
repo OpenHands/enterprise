@@ -321,9 +321,9 @@ describe("SuperAdminUserGroupsModal", () => {
     ).not.toBeInTheDocument();
 
     await events.click(
-      screen.getByTestId("super-admin-group-current-role-2").querySelector(
-        "input",
-      ) as HTMLInputElement,
+      screen
+        .getByTestId("super-admin-group-current-role-2")
+        .querySelector("input") as HTMLInputElement,
     );
     await events.click(
       screen.getByTestId("super-admin-group-current-role-2-status"),
@@ -338,9 +338,9 @@ describe("SuperAdminUserGroupsModal", () => {
     );
 
     await events.click(
-      screen.getByTestId("super-admin-group-current-role-4").querySelector(
-        "input",
-      ) as HTMLInputElement,
+      screen
+        .getByTestId("super-admin-group-current-role-4")
+        .querySelector("input") as HTMLInputElement,
     );
     await events.click(
       screen.getByTestId("super-admin-group-current-role-4-status"),
@@ -355,9 +355,9 @@ describe("SuperAdminUserGroupsModal", () => {
     );
 
     await events.click(
-      screen.getByTestId("super-admin-group-current-role-2").querySelector(
-        "input",
-      ) as HTMLInputElement,
+      screen
+        .getByTestId("super-admin-group-current-role-2")
+        .querySelector("input") as HTMLInputElement,
     );
     await events.click(
       screen.getByTestId("super-admin-group-current-role-2-remove"),
@@ -410,7 +410,9 @@ describe("SuperAdminUserGroupsModal", () => {
 
     await events.click(screen.getByTestId("super-admin-group-add-3"));
     expect(screen.getByTestId("super-admin-group-add-3")).toBeInTheDocument();
-    await events.click(screen.getByTestId("super-admin-group-add-role-3-admin"));
+    await events.click(
+      screen.getByTestId("super-admin-group-add-role-3-admin"),
+    );
 
     expect(mutate).toHaveBeenLastCalledWith(
       {
@@ -427,7 +429,7 @@ describe("SuperAdminUserGroupsModal", () => {
     resetSuperAdminMockState();
 
     const suspend = await fetch(
-      "http://localhost:3000/api/admin/users/99/groups",
+      "http://localhost:3000/api/admin/directory/users/99/groups",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -448,7 +450,7 @@ describe("SuperAdminUserGroupsModal", () => {
     ).toBe("active");
 
     const removed = await fetch(
-      "http://localhost:3000/api/admin/users/99/groups",
+      "http://localhost:3000/api/admin/directory/users/99/groups",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -467,7 +469,7 @@ describe("SuperAdminUserGroupsModal", () => {
     ).toBe(true);
 
     const blocked = await fetch(
-      "http://localhost:3000/api/admin/users/99/groups",
+      "http://localhost:3000/api/admin/directory/users/99/groups",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
