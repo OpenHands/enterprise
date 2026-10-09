@@ -1,14 +1,18 @@
 import { useTranslation } from "react-i18next";
+import {
+  PRIVACY_POLICY_URL,
+  TERMS_OF_SERVICE_URL,
+} from "#/constants/legal-links";
 import { I18nKey } from "#/i18n/declaration";
 
 const FOOTER_LINKS = [
   {
     label: I18nKey.SA_NUX$FOOTER_TERMS,
-    href: "https://www.all-hands.dev/tos",
+    href: TERMS_OF_SERVICE_URL,
   },
   {
     label: I18nKey.SA_NUX$FOOTER_PRIVACY,
-    href: "https://www.all-hands.dev/privacy",
+    href: PRIVACY_POLICY_URL,
   },
   {
     label: I18nKey.SA_NUX$FOOTER_DOCS,
