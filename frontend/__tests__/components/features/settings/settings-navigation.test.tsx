@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SettingsNavigation } from "#/components/features/settings/settings-navigation";
@@ -118,7 +118,7 @@ describe("SettingsNavigation", () => {
       );
     });
 
-    it("should show the instance logo saved by a Super Admin", async () => {
+    it("should show the instance logo and company name in place of the mark and Account", async () => {
       // Arrange
       const savedLogo = "data:image/jpeg;base64,c2F2ZWQ=";
       vi.spyOn(OptionService, "getConfig").mockResolvedValue({
@@ -136,6 +136,38 @@ describe("SettingsNavigation", () => {
       // Assert
       const logos = await screen.findAllByTestId("instance-logo-mark");
       expect(logos[0]).toHaveAttribute("src", savedLogo);
+      expect(
+        screen.queryByTestId("openhands-brand-mark"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("Acme");
+    });
+
+    it("should keep the OpenHands mark and Account when no logo or company name is saved", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      const getInstanceSettings = vi
+        .spyOn(superAdminService, "getInstanceSettings")
+        .mockResolvedValue({ company_name: null, logo: null });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      await waitFor(() => expect(getInstanceSettings).toHaveBeenCalled());
+      expect(
+        (await screen.findAllByTestId("openhands-brand-mark")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("ORG$ACCOUNT");
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
     });
 
     it("should not request the instance logo when the Super Admin feature is off", async () => {

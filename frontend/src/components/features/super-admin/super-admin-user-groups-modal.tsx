@@ -564,6 +564,13 @@ export function SuperAdminUserGroupsModal({
                         placeholder={optionLabel(
                           t(I18nKey.SUPER_ADMIN$BULK_ACTIONS),
                         )}
+                        // The label is a placeholder, so it stays muted unless
+                        // checked organizations make the menu usable.
+                        inputClassName={
+                          selectedCurrent.length > 0
+                            ? "placeholder:text-white"
+                            : undefined
+                        }
                         options={[
                           {
                             value: "suspend",
