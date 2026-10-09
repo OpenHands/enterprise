@@ -2079,6 +2079,72 @@ class TestListConversationFiles:
         call = client.post.await_args
         assert call.kwargs['json']['cwd'] == '/workspace/project'
 
+    async def _list_cwd_and_command(self, ctx, path):
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=ctx.conversation.id,
+                path=path,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+        body = client.post.await_args.kwargs['json']
+        return body['cwd'], body['command']
+
+    async def test_lists_workspace_root_so_files_outside_project_dir_show_up(self):
+        """Agents often write straight into ``/workspace`` rather than
+        ``/workspace/project``; the root is listed when explicitly requested,
+        and the agent-server's own state dirs are pruned."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/workspace/project', selected_repository=None
+        )
+
+        cwd, command = await self._list_cwd_and_command(ctx, '/workspace')
+
+        assert cwd == '/workspace'
+        for state_dir in ('conversations', 'bash_events', 'worktrees'):
+            assert f"-path './{state_dir}' -prune" in command
+
+    async def test_project_dir_listing_does_not_prune_state_dir_names(self):
+        """Top-level pruning applies only to the workspace root, so a project
+        that legitimately has a ``conversations/`` directory still lists it."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/workspace/project', selected_repository=None
+        )
+
+        cwd, command = await self._list_cwd_and_command(ctx, '/workspace/project')
+
+        assert cwd == '/workspace/project'
+        assert "-path './conversations'" not in command
+
+    async def test_workspace_root_is_not_accepted_for_specs_outside_it(self):
+        """The root exception only applies when the project dir really lives
+        under ``/workspace``; otherwise we never list outside the project."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/home/openhands/workspace', selected_repository=None
+        )
+
+        cwd, _ = await self._list_cwd_and_command(ctx, '/workspace')
+
+        assert cwd == '/home/openhands/workspace'
+
+    async def test_arbitrary_sibling_of_project_dir_is_still_rejected(self):
+        """Only the exact workspace root is widened, not other ancestors or
+        siblings such as ``/workspace/other`` or ``/``."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/workspace/project', selected_repository=None
+        )
+
+        for bad in ('/workspace/other', '/', '/workspace/../etc'):
+            cwd, _ = await self._list_cwd_and_command(ctx, bad)
+            assert cwd == '/workspace/project', bad
+
 
 @pytest.mark.asyncio
 class TestReadConversationFile:
@@ -2301,6 +2367,29 @@ class TestReadConversationFile:
             selected_repository='OpenHands/enterprise',
         )
         assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+
+    def test_resolve_file_path_keeps_files_outside_project_dir_under_workspace(self):
+        """A file listed from the workspace root (``/workspace/foo/a.py``)
+        must be read where it is, not re-anchored under ``/workspace/project``."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/workspace/project', selected_repository=None
+        )
+        assert _resolve_file_path('/workspace/foo/a.py', ctx) == '/workspace/foo/a.py'
+        assert (
+            _resolve_file_path('/workspace/project/b.py', ctx)
+            == '/workspace/project/b.py'
+        )
+
+    def test_resolve_file_path_workspace_root_is_stale_for_specs_outside_it(self):
+        """When the spec's project dir is not under ``/workspace``, the UI's
+        ``/workspace`` root is a stale convention and is re-anchored."""
+        ctx = _make_agent_server_context(
+            uuid4(), working_dir='/home/openhands/workspace', selected_repository=None
+        )
+        assert (
+            _resolve_file_path('/workspace/a.py', ctx)
+            == '/home/openhands/workspace/a.py'
+        )
 
 
 class TestFinalizeSandboxDelete:

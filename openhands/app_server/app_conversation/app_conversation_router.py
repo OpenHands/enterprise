@@ -1610,13 +1610,30 @@ _WORKSPACE_LIST_EXCLUDED_DIRS = (
 # Cap the number of files returned so a giant repo doesn't overwhelm the UI.
 _WORKSPACE_LIST_MAX_FILES = 2000
 
+# The sandbox-wide workspace root. Sandbox specs place the project checkout
+# beneath it (``/workspace/project``), but agents routinely write or clone
+# directly into ``/workspace`` too, so the Files tab may ask to list it whole.
+_WORKSPACE_ROOT = '/workspace'
 
-def _build_workspace_list_command() -> str:
+# Agent-server bookkeeping that lives beside the project dir (see the sandbox
+# ``/api/init`` bodies). It is runtime state, not user files, so it is pruned
+# when the whole workspace root is listed.
+_WORKSPACE_ROOT_STATE_DIRS = ('conversations', 'bash_events', 'worktrees')
+
+
+def _is_within(path: str, base: str) -> bool:
+    path, base = path.rstrip('/'), base.rstrip('/')
+    return path == base or path.startswith(base + '/')
+
+
+def _build_workspace_list_command(top_level_excluded: tuple[str, ...] = ()) -> str:
     """`find` invocation that lists regular files relative to the cwd,
-    pruning heavy/build directories and bounding the result."""
-    prune_expr = ' -o '.join(
+    pruning heavy/build directories (and any ``top_level_excluded`` directories
+    directly under the cwd) and bounding the result."""
+    prune_terms = [
         f"-name '{name}' -prune" for name in _WORKSPACE_LIST_EXCLUDED_DIRS
-    )
+    ] + [f"-path './{name}' -prune" for name in top_level_excluded]
+    prune_expr = ' -o '.join(prune_terms)
     return (
         f'find . \\( {prune_expr} \\) -o -type f -print 2>/dev/null '
         f'| sort | head -n {_WORKSPACE_LIST_MAX_FILES}'
@@ -1650,10 +1667,14 @@ def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
     # selected: it is a *parent* of the clone, so treating it as an anchor
     # would accept any sibling path (e.g. ``/workspace/project`` under
     # ``/workspace``) and list the wrong — often nonexistent — directory.
-    base = project_dir.rstrip('/')
-    normalized = path.rstrip('/')
-    if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
+    if _is_within(path, project_dir):
         return path
+    # The sandbox workspace root is the one deliberate exception: it is an
+    # ancestor of the project dir, so agents that write outside the project dir
+    # (e.g. clone straight into ``/workspace``) still show up. Only the root
+    # itself is accepted, never an arbitrary sibling.
+    if path.rstrip('/') == _WORKSPACE_ROOT and _is_within(project_dir, _WORKSPACE_ROOT):
+        return _WORKSPACE_ROOT
     return project_dir
 
 
@@ -1717,6 +1738,8 @@ def _resolve_file_path(file_path: str, ctx: AgentServerContext) -> str:
         stale_roots.append(f'{working_dir}/project/{repo_name}')
     stale_roots.append(f'{working_dir}/project')
     stale_roots.append(working_dir)
+    if not _is_within(project_dir, _WORKSPACE_ROOT):
+        stale_roots.append(_WORKSPACE_ROOT)
     for root in sorted({r.rstrip('/') for r in stale_roots}, key=len, reverse=True):
         if normalized == root or normalized.startswith(root + '/'):
             remainder = normalized[len(root) :].lstrip('/')
@@ -1780,7 +1803,11 @@ async def list_conversation_files(
         upstream = await httpx_client.post(
             f'{ctx.agent_server_url}/api/bash/execute_bash_command',
             json={
-                'command': _build_workspace_list_command(),
+                'command': _build_workspace_list_command(
+                    _WORKSPACE_ROOT_STATE_DIRS
+                    if cwd.rstrip('/') == _WORKSPACE_ROOT
+                    else ()
+                ),
                 'cwd': cwd,
                 'timeout': 30,
             },
