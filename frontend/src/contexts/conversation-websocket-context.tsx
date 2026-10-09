@@ -58,10 +58,7 @@ import { setConversationState } from "#/utils/conversation-local-storage";
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export type V1_WebSocketConnectionState =
-  | "CONNECTING"
-  | "OPEN"
-  | "CLOSED"
-  | "CLOSING";
+  "CONNECTING" | "OPEN" | "CLOSED" | "CLOSING";
 
 interface SendMessageResult {
   queued: boolean; // true if message was queued for later delivery, false if sent immediately
@@ -423,8 +420,7 @@ export function ConversationWebSocketProvider({
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
           if (isDisplayableErrorEvent(event)) {
             const errorEvent = event as
-              | ConversationErrorEvent
-              | ServerErrorEvent;
+              ConversationErrorEvent | ServerErrorEvent;
             trackError({
               message: errorEvent.detail,
               source: "conversation",
@@ -619,8 +615,7 @@ export function ConversationWebSocketProvider({
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
           if (isDisplayableErrorEvent(event)) {
             const errorEvent = event as
-              | ConversationErrorEvent
-              | ServerErrorEvent;
+              ConversationErrorEvent | ServerErrorEvent;
             trackError({
               message: errorEvent.detail,
               source: "planning_conversation",

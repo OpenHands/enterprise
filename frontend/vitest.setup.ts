@@ -16,6 +16,39 @@ class MockResizeObserver {
   disconnect = vi.fn();
 }
 
+// jsdom does not implement Screen.orientation, but react-aria reads
+// window.screen.orientation.angle on focus and throws when it is missing.
+if (!window.screen.orientation) {
+  Object.defineProperty(window.screen, "orientation", {
+    configurable: true,
+    value: {
+      angle: 0,
+      type: "landscape-primary",
+      lock: vi.fn(),
+      unlock: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    },
+  });
+}
+
+// Some jsdom worker contexts lack ProgressEvent, which msw's XHR interceptor
+// references when dispatching progress events (causing unhandled rejections).
+if (typeof globalThis.ProgressEvent === "undefined") {
+  class ProgressEventPolyfill extends Event {
+    lengthComputable = false;
+
+    loaded = 0;
+
+    total = 0;
+  }
+
+  globalThis.ProgressEvent =
+    ProgressEventPolyfill as unknown as typeof ProgressEvent;
+  window.ProgressEvent =
+    ProgressEventPolyfill as unknown as typeof ProgressEvent;
+}
+
 // Mock the i18n provider
 vi.mock("react-i18next", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-i18next")>()),

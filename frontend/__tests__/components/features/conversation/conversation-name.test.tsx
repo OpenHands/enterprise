@@ -99,14 +99,19 @@ const renderConversationNameWithRouter = () => {
 
 describe("ConversationName", () => {
   beforeAll(() => {
-    vi.stubGlobal("window", {
-      open: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      location: {
-        origin: "http://localhost:3000",
-      },
-    });
+    // Keep the real window in the prototype chain so globals like
+    // window.screen (read by react-aria on focus) still resolve.
+    vi.stubGlobal(
+      "window",
+      Object.assign(Object.create(window), {
+        open: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        location: {
+          origin: "http://localhost:3000",
+        },
+      }),
+    );
   });
 
   afterEach(() => {
@@ -349,7 +354,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
           },
         ],
       },
@@ -379,7 +388,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
             available_models: [
               { id: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
             ],
@@ -416,7 +429,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
           },
         ],
       },
@@ -704,12 +721,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
     onCopyShareLink: mockOnCopyShareLink,
     shareUrl: "https://example.com/shared/conversations/test-id",
   };
-
-  vi.mock("#/hooks/mutation/use-update-conversation-public-flag", () => ({
-    useUpdateConversationPublicFlag: () => ({
-      mutate: vi.fn(),
-    }),
-  }));
 
   beforeAll(() => {
     // Mock navigator.clipboard

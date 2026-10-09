@@ -242,6 +242,9 @@ describe("Form submission", () => {
     await userEvent.click(norsk);
     expect(submit).not.toBeDisabled();
 
+    // HeroUI v3 ComboBox keeps the input focused after a selection and only
+    // reopens on a fresh focus, so blur before reopening the list.
+    await userEvent.click(document.body);
     await userEvent.click(language);
     const english = screen.getByText("English");
     await userEvent.click(english);

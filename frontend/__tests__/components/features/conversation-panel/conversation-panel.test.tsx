@@ -18,9 +18,10 @@ vi.mock("#/hooks/mutation/use-unified-stop-conversation", () => ({
   }),
 }));
 
-
 // Helper to create complete V1AppConversation mock data
-const createMockConversation = (overrides: Partial<V1AppConversation> = {}): V1AppConversation => ({
+const createMockConversation = (
+  overrides: Partial<V1AppConversation> = {},
+): V1AppConversation => ({
   id: "test-id",
   title: "Test Conversation",
   selected_repository: null,
@@ -49,6 +50,14 @@ vi.mock("#/utils/custom-toast-handlers", () => ({
   TOAST_OPTIONS: {},
 }));
 
+vi.mock("react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-router")>()),
+  Link: ({ children }: React.PropsWithChildren) => children,
+  useNavigate: vi.fn(() => vi.fn()),
+  useLocation: vi.fn(() => ({ pathname: "/conversation" })),
+  useParams: vi.fn(() => ({ conversationId: "2" })),
+}));
+
 describe("ConversationPanel", () => {
   const onCloseMock = vi.fn();
   const RouterStub = createRoutesStub([
@@ -65,20 +74,25 @@ describe("ConversationPanel", () => {
 
   const renderConversationPanel = () => renderWithProviders(<RouterStub />);
 
-  beforeAll(() => {
-    vi.mock("react-router", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("react-router")>()),
-      Link: ({ children }: React.PropsWithChildren) => children,
-      useNavigate: vi.fn(() => vi.fn()),
-      useLocation: vi.fn(() => ({ pathname: "/conversation" })),
-      useParams: vi.fn(() => ({ conversationId: "2" })),
-    }));
-  });
-
   const mockConversations: V1AppConversation[] = [
-    createMockConversation({ id: "1", title: "Conversation 1", updated_at: "2021-10-01T12:00:00Z", sandbox_id: "sandbox1" }),
-    createMockConversation({ id: "2", title: "Conversation 2", updated_at: "2021-10-02T12:00:00Z", sandbox_id: "sandbox2" }),
-    createMockConversation({ id: "3", title: "Conversation 3", updated_at: "2021-10-03T12:00:00Z", sandbox_id: "sandbox3" }),
+    createMockConversation({
+      id: "1",
+      title: "Conversation 1",
+      updated_at: "2021-10-01T12:00:00Z",
+      sandbox_id: "sandbox1",
+    }),
+    createMockConversation({
+      id: "2",
+      title: "Conversation 2",
+      updated_at: "2021-10-02T12:00:00Z",
+      sandbox_id: "sandbox2",
+    }),
+    createMockConversation({
+      id: "3",
+      title: "Conversation 3",
+      updated_at: "2021-10-03T12:00:00Z",
+      sandbox_id: "sandbox3",
+    }),
   ];
 
   beforeEach(() => {
@@ -168,9 +182,24 @@ describe("ConversationPanel", () => {
   it("should delete a conversation", async () => {
     const user = userEvent.setup();
     const mockData: V1AppConversation[] = [
-      createMockConversation({ id: "1", title: "Conversation 1", updated_at: "2021-10-01T12:00:00Z", sandbox_id: "sandbox1" }),
-      createMockConversation({ id: "2", title: "Conversation 2", updated_at: "2021-10-02T12:00:00Z", sandbox_id: "sandbox2" }),
-      createMockConversation({ id: "3", title: "Conversation 3", updated_at: "2021-10-03T12:00:00Z", sandbox_id: "sandbox3" }),
+      createMockConversation({
+        id: "1",
+        title: "Conversation 1",
+        updated_at: "2021-10-01T12:00:00Z",
+        sandbox_id: "sandbox1",
+      }),
+      createMockConversation({
+        id: "2",
+        title: "Conversation 2",
+        updated_at: "2021-10-02T12:00:00Z",
+        sandbox_id: "sandbox2",
+      }),
+      createMockConversation({
+        id: "3",
+        title: "Conversation 3",
+        updated_at: "2021-10-03T12:00:00Z",
+        sandbox_id: "sandbox3",
+      }),
     ];
 
     const searchConversationsSpy = vi.spyOn(
@@ -280,9 +309,27 @@ describe("ConversationPanel", () => {
 
     // Create mock data with a RUNNING conversation
     const mockRunningConversations: V1AppConversation[] = [
-      createMockConversation({ id: "1", title: "Running Conversation", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
-      createMockConversation({ id: "2", title: "Starting Conversation", sandbox_status: "STARTING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox2" }),
-      createMockConversation({ id: "3", title: "Stopped Conversation", sandbox_status: "MISSING", execution_status: V1ExecutionStatus.FINISHED, sandbox_id: "sandbox3" }),
+      createMockConversation({
+        id: "1",
+        title: "Running Conversation",
+        sandbox_status: "RUNNING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox1",
+      }),
+      createMockConversation({
+        id: "2",
+        title: "Starting Conversation",
+        sandbox_status: "STARTING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox2",
+      }),
+      createMockConversation({
+        id: "3",
+        title: "Stopped Conversation",
+        sandbox_status: "MISSING",
+        execution_status: V1ExecutionStatus.FINISHED,
+        sandbox_id: "sandbox3",
+      }),
     ];
 
     const searchConversationsSpy = vi.spyOn(
@@ -327,9 +374,27 @@ describe("ConversationPanel", () => {
     const user = userEvent.setup();
 
     const mockData: V1AppConversation[] = [
-      createMockConversation({ id: "1", title: "Conversation 1", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
-      createMockConversation({ id: "2", title: "Conversation 2", sandbox_status: "MISSING", execution_status: V1ExecutionStatus.FINISHED, sandbox_id: "sandbox2" }),
-      createMockConversation({ id: "3", title: "Conversation 3", sandbox_status: "MISSING", execution_status: V1ExecutionStatus.FINISHED, sandbox_id: "sandbox3" }),
+      createMockConversation({
+        id: "1",
+        title: "Conversation 1",
+        sandbox_status: "RUNNING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox1",
+      }),
+      createMockConversation({
+        id: "2",
+        title: "Conversation 2",
+        sandbox_status: "MISSING",
+        execution_status: V1ExecutionStatus.FINISHED,
+        sandbox_id: "sandbox2",
+      }),
+      createMockConversation({
+        id: "3",
+        title: "Conversation 3",
+        sandbox_status: "MISSING",
+        execution_status: V1ExecutionStatus.FINISHED,
+        sandbox_id: "sandbox3",
+      }),
     ];
 
     const searchConversationsSpy = vi.spyOn(
@@ -375,9 +440,27 @@ describe("ConversationPanel", () => {
     const user = userEvent.setup();
 
     const mockMixedStatusConversations: V1AppConversation[] = [
-      createMockConversation({ id: "1", title: "Running Conversation", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
-      createMockConversation({ id: "2", title: "Starting Conversation", sandbox_status: "STARTING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox2" }),
-      createMockConversation({ id: "3", title: "Stopped Conversation", sandbox_status: "MISSING", execution_status: V1ExecutionStatus.FINISHED, sandbox_id: "sandbox3" }),
+      createMockConversation({
+        id: "1",
+        title: "Running Conversation",
+        sandbox_status: "RUNNING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox1",
+      }),
+      createMockConversation({
+        id: "2",
+        title: "Starting Conversation",
+        sandbox_status: "STARTING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox2",
+      }),
+      createMockConversation({
+        id: "3",
+        title: "Stopped Conversation",
+        sandbox_status: "MISSING",
+        execution_status: V1ExecutionStatus.FINISHED,
+        sandbox_id: "sandbox3",
+      }),
     ];
 
     const searchConversationsSpy = vi.spyOn(
@@ -494,7 +577,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -516,7 +601,10 @@ describe("ConversationPanel", () => {
     await user.tab();
 
     // Verify API call was made with correct parameters
-    expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Updated Title");
+    expect(updateConversationTitleSpy).toHaveBeenCalledWith(
+      "1",
+      "Updated Title",
+    );
   });
 
   it("should save title when Enter key is pressed", async () => {
@@ -526,7 +614,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -546,7 +636,10 @@ describe("ConversationPanel", () => {
     await user.keyboard("{Enter}");
 
     // Verify API call was made
-    expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Title Updated via Enter");
+    expect(updateConversationTitleSpy).toHaveBeenCalledWith(
+      "1",
+      "Title Updated via Enter",
+    );
   });
 
   it("should trim whitespace from title", async () => {
@@ -556,7 +649,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -576,7 +671,10 @@ describe("ConversationPanel", () => {
     await user.tab();
 
     // Verify API call was made with trimmed title
-    expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Trimmed Title");
+    expect(updateConversationTitleSpy).toHaveBeenCalledWith(
+      "1",
+      "Trimmed Title",
+    );
   });
 
   it("should revert to original title when empty", async () => {
@@ -586,7 +684,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -616,7 +716,7 @@ describe("ConversationPanel", () => {
       "updateConversationTitle",
     );
     updateConversationTitleSpy.mockRejectedValue(new Error("API Error"));
-      // Provide return type for mock
+    // Provide return type for mock
 
     renderConversationPanel();
 
@@ -636,7 +736,10 @@ describe("ConversationPanel", () => {
     await user.tab();
 
     // Verify API call was made
-    expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Failed Update");
+    expect(updateConversationTitleSpy).toHaveBeenCalledWith(
+      "1",
+      "Failed Update",
+    );
 
     // Wait for error handling
     await waitFor(() => {
@@ -680,7 +783,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -709,7 +814,9 @@ describe("ConversationPanel", () => {
       V1ConversationService,
       "updateConversationTitle",
     );
-    updateConversationTitleSpy.mockResolvedValue(createMockConversation({ id: "1", title: "Updated Title" }));
+    updateConversationTitleSpy.mockResolvedValue(
+      createMockConversation({ id: "1", title: "Updated Title" }),
+    );
 
     renderConversationPanel();
 
@@ -729,7 +836,10 @@ describe("ConversationPanel", () => {
     await user.tab();
 
     // Verify API call was made with special characters
-    expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Special @#$%^&*()_+ Characters");
+    expect(updateConversationTitleSpy).toHaveBeenCalledWith(
+      "1",
+      "Special @#$%^&*()_+ Characters",
+    );
   });
 
   it("should close delete modal when clicking backdrop", async () => {
@@ -765,9 +875,27 @@ describe("ConversationPanel", () => {
 
     // Create mock data with a RUNNING conversation
     const mockRunningConversations: V1AppConversation[] = [
-      createMockConversation({ id: "1", title: "Running Conversation", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
-      createMockConversation({ id: "2", title: "Starting Conversation", sandbox_status: "STARTING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox2" }),
-      createMockConversation({ id: "3", title: "Stopped Conversation", sandbox_status: "MISSING", execution_status: V1ExecutionStatus.FINISHED, sandbox_id: "sandbox3" }),
+      createMockConversation({
+        id: "1",
+        title: "Running Conversation",
+        sandbox_status: "RUNNING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox1",
+      }),
+      createMockConversation({
+        id: "2",
+        title: "Starting Conversation",
+        sandbox_status: "STARTING",
+        execution_status: V1ExecutionStatus.RUNNING,
+        sandbox_id: "sandbox2",
+      }),
+      createMockConversation({
+        id: "3",
+        title: "Stopped Conversation",
+        sandbox_status: "MISSING",
+        execution_status: V1ExecutionStatus.FINISHED,
+        sandbox_id: "sandbox3",
+      }),
     ];
 
     vi.spyOn(V1ConversationService, "searchConversations").mockResolvedValue({

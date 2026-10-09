@@ -46,11 +46,16 @@ describe("ConversationCard", () => {
   const onChangeTitle = vi.fn();
 
   beforeAll(() => {
-    vi.stubGlobal("window", {
-      open: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
+    // Keep the real window in the prototype chain so globals like
+    // window.screen (read by react-aria on focus) still resolve.
+    vi.stubGlobal(
+      "window",
+      Object.assign(Object.create(window), {
+        open: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
   });
 
   afterEach(() => {
