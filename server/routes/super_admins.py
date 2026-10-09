@@ -10,10 +10,15 @@ Every endpoint here is gated by the dedicated
 the ``superadmin`` super role — no org-scoped role can reach these routes.
 In other words: only a super admin can create or remove other super admins.
 
-Safety invariant: the API refuses to remove the **last** remaining super
-admin (enforced atomically in ``UserStore.revoke_super_admin``), so an
-installation can never be locked out of instance administration. A super
-admin may demote themselves as long as another super admin still exists.
+Safety invariants:
+  * The API refuses to remove the **last** remaining super admin (enforced
+    atomically in ``UserStore.revoke_super_admin``), so an installation can
+    never be locked out of instance administration.
+  * The API also refuses to let a super admin revoke *their own* access via
+    ``DELETE /api/admin/super-admins/{user_id}`` -- even when other super
+    admins exist -- so nobody can accidentally lock themselves out and file
+    a support ticket to get back in. Another super admin must perform the
+    revocation.
 """
 
 from __future__ import annotations
@@ -213,11 +218,22 @@ async def revoke_super_admin(
     user_id: str,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> SuperAdminResponse:
-    """Revoke the super-admin role from a user (including oneself).
+    """Revoke the super-admin role from another user.
+
+    Refuses with ``403 Forbidden`` if the caller targets their own user id --
+    self-revocation is never allowed, regardless of how many other super
+    admins exist, so a super admin can never accidentally lock themselves
+    out (and then need a support call to get back in). Ask another super
+    admin to revoke your access instead.
 
     Refuses with ``409 Conflict`` if the target is the only remaining super
     admin. Requires ``MANAGE_SUPER_ADMINS``.
     """
+    if user_id == caller_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot revoke your own super admin access',
+        )
     try:
         result = await UserStore.revoke_super_admin(user_id)
     except ValueError as exc:
