@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
+import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
 import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
@@ -354,7 +355,12 @@ export function SuperAdminUsers() {
   // for the local password IDP (see ``MintSignupLinkModal``) -- with no
   // integrated IDP there is no password-based account for the recipient to
   // set up, so the affordance is hidden rather than offering a link that
-  // can never be used.
+  // can never be used. The same flag gates the per-row "Reset Password"
+  // action below, mirroring the visibility rule for the org-members
+  // "Reset Password" action (see ``ManageOrganizationMembers``): every row
+  // on this page already belongs to an instance Super Admin (the page
+  // itself is gated on that), so unlike the org-members view there's no
+  // extra permission check needed here.
   const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const {
     viewOrg,
@@ -368,6 +374,8 @@ export function SuperAdminUsers() {
   const [query, setQuery] = useState("");
   const [mintLinkOpen, setMintLinkOpen] = useState(false);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
+  const [userForPasswordReset, setUserForPasswordReset] =
+    useState<SuperAdminUserRow | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
 
@@ -525,6 +533,15 @@ export function SuperAdminUsers() {
                     testId: `super-admin-manage-user-${row.id}`,
                     onSelect: () => setManagedUserId(row.id),
                   },
+                  ...(enableIntegratedIdp
+                    ? [
+                        {
+                          label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
+                          testId: `super-admin-reset-password-${row.id}`,
+                          onSelect: () => setUserForPasswordReset(row),
+                        },
+                      ]
+                    : []),
                 ]}
               />
             ),
@@ -559,6 +576,12 @@ export function SuperAdminUsers() {
           userId={userId}
           onClose={dismissGrant}
           onGranted={confirmGrant}
+        />
+      ) : null}
+      {userForPasswordReset ? (
+        <CreatePasswordResetLinkModal
+          email={userForPasswordReset.email}
+          onClose={() => setUserForPasswordReset(null)}
         />
       ) : null}
     </div>
