@@ -6,6 +6,7 @@ import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { SearchIcon } from "#/components/shared/icons/inline-icons";
 import { I18nKey } from "#/i18n/declaration";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
 import {
   formControlInlineInputClassName,
@@ -14,6 +15,7 @@ import {
 import {
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 
 interface SkillsTableProps {
@@ -108,8 +110,11 @@ export function SkillsTable({
 
       {/* Table */}
       <div className="overflow-hidden rounded-xl border border-[var(--oh-border)] bg-base-secondary/20 table-box-shadow">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] table-fixed border-collapse text-sm">
+        <HorizontalScrollFade>
+          <table
+            className="w-full table-fixed border-collapse text-sm"
+            style={settingsListTableMinWidthStyle(5)}
+          >
             <colgroup>
               <col className="w-[28%]" />
               <col className="w-[30%]" />
@@ -194,7 +199,7 @@ export function SkillsTable({
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

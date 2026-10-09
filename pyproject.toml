@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.68.1"
+version = "1.70.1"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -14,6 +14,7 @@ dependencies = [
   "alembic==1.18.4",
   "anthropic[vertex]",
   "anyio==4.14.2",
+  "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.30.0",
   "authlib==1.6.12",                                # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
@@ -30,7 +31,7 @@ dependencies = [
   "e2b==2.46.0",
   "fastapi",
   "fastmcp>=3.2,<4",
-  "gitpython==3.1.59",
+  "gitpython==3.1.62",
   "google-api-python-client>=2.164",                # For Google Sheets API
   "google-auth-httplib2==0.3.1",                    # For Google Sheets authentication
   "google-auth-oauthlib==1.3.1",                    # For Google Sheets OAuth
@@ -79,9 +80,9 @@ dependencies = [
   "psycopg2-binary==2.9.11",
   "pybase62==1.0.0",
   "pygithub>=2.5",
-  "pyjwt==2.13.0",
+  "pyjwt==2.15.0",
   "pylatexenc==2.10",
-  "pypdf==6.16.1",
+  "pypdf==6.19.0",
   "python-docx==1.2.0",
   "python-dotenv==1.2.2",
   "python-frontmatter==1.1.0",
@@ -109,10 +110,10 @@ dependencies = [
   "tenacity==9.1.4",
   "termcolor==3.3.0",
   "toml==0.10.2",
-  "tornado==6.5.8",
+  "tornado==6.5.9",
   "tree-sitter-language-pack>=0.7.3",
   "types-toml",
-  "urllib3==2.7.0",
+  "urllib3==2.8.0",
   "uvicorn",
   "whatthepatch==1.0.7",
   "zope-interface==7.2",
@@ -184,7 +185,9 @@ lint.flake8-bugbear.extend-immutable-calls = [
   "Depends",
   "fastapi.Body",
   "fastapi.Depends",
+  "fastapi.Form",
   "fastapi.params.Depends",
+  "Form",
   "openhands.app_server.services.db_session.depends_db_session",
   "server.auth.user.user_authorizer.depends_user_authorizer",
 ]

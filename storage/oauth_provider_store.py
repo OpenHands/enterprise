@@ -1,6 +1,7 @@
 """Store for ``oauth_providers`` — CRUD + IDP/git provider lookups.
 
-The provider table is seeded by migration 168 from environment variables, but
+The provider table is seeded by migration 168 (real IDP + git providers) and
+migration 179 (integrated/password IDP) from environment variables, but
 runtime reads and (future) config mutations go through this store.
 """
 
@@ -38,7 +39,28 @@ class OAuthProviderStore:
             )
             return list(result.scalars().all())
 
+    async def _has_real_idp(self) -> bool:
+        """Whether any real IDP provider exists in ``oauth_providers``.
+
+        Queries the DB directly without the dev IDP sentinel fallback. Used
+        by ``_v2_get_idp_access_token`` to tell a dev-IDP-only session (no
+        IDP token to refresh, by design) apart from a real-IDP session with
+        a stale/missing token row (should raise ``ExpiredError``).
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider.id).where(OAuthProvider.is_idp.is_(True)).limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
     async def get_idp_providers(self) -> list[OAuthProvider]:
+        """Return all IDP providers, including the integrated/password IDP.
+
+        The integrated IDP (``server.routes.idp``) is a real row like any
+        other (``provider_category=INTEGRATED_IDP_CATEGORY``, seeded by
+        migration 179 from ``ENABLE_INTEGRATED_IDP``), so no special-casing
+        is needed here.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
@@ -48,12 +70,19 @@ class OAuthProviderStore:
             return list(result.scalars().all())
 
     async def get_first_idp(self) -> OAuthProvider | None:
-        """Return the first IDP provider (lowest ``id``), or ``None``."""
+        """Return the IDP that ``/oauth/idp-login`` should use.
+
+        Priority is whichever ``is_idp`` row was created most recently
+        (``created_at`` descending, ``id`` descending as a tiebreaker for
+        same-timestamp inserts) -- there is no special-casing of the
+        integrated/password IDP vs. a configured real IDP: whichever was
+        configured last wins. Returns ``None`` when no IDP is configured.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OAuthProvider)
                 .where(OAuthProvider.is_idp.is_(True))
-                .order_by(OAuthProvider.id)
+                .order_by(OAuthProvider.created_at.desc(), OAuthProvider.id.desc())
                 .limit(1)
             )
             return result.scalars().one_or_none()
@@ -163,7 +192,7 @@ class _ScopedProviderStore:
         result = await self._session.execute(
             select(OAuthProvider)
             .where(OAuthProvider.is_idp.is_(True))
-            .order_by(OAuthProvider.id)
+            .order_by(OAuthProvider.created_at.desc(), OAuthProvider.id.desc())
             .limit(1)
         )
         return result.scalars().one_or_none()

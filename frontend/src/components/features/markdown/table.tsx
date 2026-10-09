@@ -1,5 +1,6 @@
 import React from "react";
 import { ExtraProps } from "react-markdown";
+import { MarkdownTableScroll } from "./markdown-table-scroll";
 
 // Custom component to render <table> in markdown
 export function table({
@@ -8,10 +9,12 @@ export function table({
   React.TableHTMLAttributes<HTMLTableElement> &
   ExtraProps) {
   return (
-    <div className="my-4 w-full overflow-x-auto">
-      <table className="w-full border-collapse border border-neutral-600 text-sm">
-        {children}
-      </table>
+    <div className="my-4 w-full">
+      <MarkdownTableScroll>
+        <table className="w-full min-w-max border-collapse border border-neutral-600 text-sm">
+          {children}
+        </table>
+      </MarkdownTableScroll>
     </div>
   );
 }

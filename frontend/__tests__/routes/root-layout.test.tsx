@@ -1,13 +1,25 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub, useSearchParams } from "react-router";
+import { http, HttpResponse } from "msw";
 import MainApp from "#/routes/root-layout";
 import OptionService from "#/api/option-service/option-service.api";
 import AuthService from "#/api/auth-service/auth-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { onboardingService } from "#/api/onboarding-service/onboarding-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
+import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
+import {
+  MOCK_PERSONAL_ORG,
+  MOCK_TEAM_ORG_ACME,
+  MOCK_TEAM_ORG_BETA,
+} from "#/mocks/org-handlers";
+import { server } from "#/mocks/node";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
 vi.mock("#/hooks/use-github-auth-url", () => ({
   useGitHubAuthUrl: () => "https://github.com/oauth/authorize",
@@ -16,6 +28,10 @@ vi.mock("#/hooks/use-github-auth-url", () => ({
 vi.mock("#/hooks/use-is-on-tos-page", () => ({
   useIsOnTosPage: () => false,
 }));
+
+// vitest.setup.ts treats every page as a regular page; the Super Admin setup
+// guide tests need the real /accept-tos check.
+vi.unmock("#/hooks/use-is-on-intermediate-page");
 
 vi.mock("#/hooks/use-auto-login", () => ({
   useAutoLogin: () => {},
@@ -398,6 +414,55 @@ describe("MainApp", () => {
       );
     });
 
+    describe("when enable_oauth_v2_login is on", () => {
+      beforeEach(() => {
+        // /oauth/idp-login is a backend-only endpoint, so the redirect is a
+        // full page navigation (window.location.href) rather than
+        // client-side routing; jsdom doesn't implement real navigation, so
+        // stub location with a plain mutable object to observe the write.
+        vi.stubGlobal("location", { href: "" });
+
+        // @ts-expect-error - partial mock for testing
+        vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+          app_mode: "saas",
+          posthog_client_key: "test-posthog-key",
+          providers_configured: ["github"],
+          auth_url: "https://auth.example.com",
+          feature_flags: {
+            enable_billing: false,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: true,
+            enable_oauth_v2_login: true,
+          },
+        });
+      });
+
+      it("should hard-redirect to /oauth/idp-login instead of /login", async () => {
+        renderWithLoginStub(RouterStubWithLogin, ["/"]);
+
+        await waitFor(() => {
+          expect(window.location.href).toContain("/oauth/idp-login");
+        });
+
+        expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
+      });
+
+      it("should forward the current path as redirect_url", async () => {
+        renderWithLoginStub(RouterStubWithLogin, ["/settings"]);
+
+        await waitFor(() => {
+          expect(window.location.href).toContain(
+            `/oauth/idp-login?redirect_url=${encodeURIComponent("/settings")}`,
+          );
+        });
+      });
+    });
   });
 
   describe("Re-authentication with stored login method", () => {
@@ -668,6 +733,157 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
       expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Suspended organization", () => {
+    // The server refuses org-scoped requests while its current org is ACME,
+    // the way it does for a suspended org or membership.
+    let serverCurrentOrgId: string;
+
+    const refuseAcmeSettings = (detail: string) => {
+      serverCurrentOrgId = MOCK_TEAM_ORG_ACME.id;
+      vi.mocked(SettingsService.getSettings).mockRestore();
+      server.use(
+        http.get("/api/v1/settings", () =>
+          serverCurrentOrgId === MOCK_TEAM_ORG_ACME.id
+            ? HttpResponse.json({ detail }, { status: 403 })
+            : HttpResponse.json(MOCK_DEFAULT_USER_SETTINGS),
+        ),
+        http.post("/api/organizations/:orgId/switch", ({ params }) => {
+          serverCurrentOrgId = params.orgId as string;
+          return HttpResponse.json(MOCK_TEAM_ORG_BETA);
+        }),
+      );
+    };
+
+    beforeEach(() => {
+      useSelectedOrganizationStore.setState({ organizationId: null });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME, MOCK_TEAM_ORG_BETA],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+    });
+
+    it("should block a suspended organization and offer the user's other organizations", async () => {
+      // Arrange
+      refuseAcmeSettings("Organization is suspended");
+
+      // Act
+      renderMainApp();
+
+      // Assert
+      const modal = await screen.findByTestId("suspended-organization-modal");
+      expect(modal).toHaveTextContent("ORG$ORGANIZATION_SUSPENDED");
+      expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: MOCK_TEAM_ORG_BETA.name }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: MOCK_TEAM_ORG_ACME.name }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should restore the app after the user switches to another organization", async () => {
+      // Arrange
+      refuseAcmeSettings("Organization is suspended");
+      const user = userEvent.setup();
+      renderMainApp();
+      const betaButton = await screen.findByRole("button", {
+        name: MOCK_TEAM_ORG_BETA.name,
+      });
+
+      // Act
+      await user.click(betaButton);
+
+      // Assert
+      expect(await screen.findByTestId("outlet-content")).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("suspended-organization-modal"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should explain a suspended membership", async () => {
+      // Arrange
+      refuseAcmeSettings("User membership is suspended");
+
+      // Act
+      renderMainApp();
+
+      // Assert
+      const modal = await screen.findByTestId("suspended-organization-modal");
+      expect(modal).toHaveTextContent("ORG$MEMBERSHIP_SUSPENDED");
+    });
+  });
+
+  describe("Super Admin setup guide", () => {
+    const RouterStubWithAcceptTos = createRoutesStub([
+      {
+        Component: MainApp,
+        path: "/",
+        children: [
+          {
+            Component: () => <div data-testid="outlet-content" />,
+            path: "/",
+          },
+          {
+            Component: () => <div data-testid="accept-tos-page" />,
+            path: "/accept-tos",
+          },
+        ],
+      },
+    ]);
+
+    // useConfig is off on intermediate pages; the app still has the config
+    // because PostHogWrapper loads it into the shared cache on every page.
+    const renderWithCachedConfig = (initialEntries: string[]) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(QUERY_KEYS.WEB_CLIENT_CONFIG, {
+        app_mode: "saas",
+        providers_configured: ["github"],
+        feature_flags: { enable_super_admin: true },
+      });
+      return render(
+        <RouterStubWithAcceptTos initialEntries={initialEntries} />,
+        {
+          wrapper: ({ children }) => (
+            <QueryClientProvider client={queryClient}>
+              {children}
+            </QueryClientProvider>
+          ),
+        },
+      );
+    };
+
+    beforeEach(() => {
+      vi.spyOn(superAdminService, "getSetupState").mockResolvedValue({
+        wizard_pending: false,
+        guide_org_id: null,
+        guide_dismissed: false,
+        guide_steps: null,
+      });
+    });
+
+    it("should not read the setup state before the user accepts the TOS", async () => {
+      // Act
+      renderWithCachedConfig(["/accept-tos"]);
+
+      // Assert
+      expect(await screen.findByTestId("accept-tos-page")).toBeInTheDocument();
+      expect(superAdminService.getSetupState).not.toHaveBeenCalled();
+    });
+
+    it("should read the setup state once the user is signed in", async () => {
+      // Act
+      renderWithCachedConfig(["/"]);
+
+      // Assert
+      expect(await screen.findByTestId("outlet-content")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(superAdminService.getSetupState).toHaveBeenCalled(),
+      );
     });
   });
 });

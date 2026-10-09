@@ -2,6 +2,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -202,6 +203,10 @@ class OrgCreate(BaseModel):
     ]
     contact_name: str
     contact_email: EmailStr
+
+    # Optional initial owner: the caller or an existing user. When omitted,
+    # the organization is created without members.
+    owner_user_id: UUID | None = None
 
 
 class OrgResponse(BaseModel):
