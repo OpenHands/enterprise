@@ -10,6 +10,8 @@ import resend
 from resend.exceptions import ResendError
 from tenacity import RetryError
 
+from storage.resend_synced_user_store import ResendSyncedUserStore
+
 # Set required environment variables before importing the module
 # that reads them at import time
 os.environ['RESEND_API_KEY'] = 'test_api_key'
@@ -18,6 +20,7 @@ os.environ['RESEND_AUDIENCE_ID'] = 'test_audience_id'
 from sync.resend_keycloak import (  # noqa: E402
     BATCH_SIZE,
     ResendUser,
+    _backfill_existing_resend_contacts,
     _split_display_name,
     add_contact_to_resend,
     get_local_users,
@@ -521,3 +524,89 @@ class TestSyncUsersToResend:
         mock_send_welcome.assert_any_call('a@example.com', None, None, user_id='user-1')
         mock_send_welcome.assert_any_call('b@example.com', None, None, user_id='user-2')
         assert mock_add_contact.call_count == 2
+
+
+class TestOverlappingSyncRuns:
+    """Two runs can overlap; each user is added and welcomed by one of them."""
+
+    @patch('sync.resend_keycloak.time.sleep')
+    @patch('sync.resend_keycloak.send_welcome_email')
+    @patch('sync.resend_keycloak.add_contact_to_resend')
+    @patch('sync.resend_keycloak._backfill_existing_resend_contacts', return_value=0)
+    @patch('sync.resend_keycloak._get_resend_synced_user_store')
+    @patch('sync.resend_keycloak._get_session_maker')
+    def test_a_user_another_run_marked_is_left_to_that_run(
+        self,
+        mock_get_session_maker: MagicMock,
+        mock_get_store: MagicMock,
+        mock_backfill: MagicMock,
+        mock_add_contact: MagicMock,
+        mock_send_welcome: MagicMock,
+        mock_sleep: MagicMock,
+        session_maker,
+        create_user,
+    ) -> None:
+        create_user(
+            id=UUID('00000000-0000-0000-0000-000000000001'), email='taken@example.com'
+        )
+        create_user(
+            id=UUID('00000000-0000-0000-0000-000000000002'), email='fails@example.com'
+        )
+        mock_get_session_maker.return_value = session_maker
+        store = ResendSyncedUserStore(session_maker=session_maker)
+        mock_get_store.return_value = store
+        read_synced_emails = store.get_synced_emails_for_audience
+
+        def other_run_marks_a_user_after_this_run_reads(audience_id: str):
+            synced = read_synced_emails(audience_id)
+            ResendSyncedUserStore(session_maker=session_maker).mark_user_synced(
+                'taken@example.com', audience_id, 'other-run'
+            )
+            return synced
+
+        store.get_synced_emails_for_audience = (  # type: ignore[method-assign]
+            other_run_marks_a_user_after_this_run_reads
+        )
+        mock_add_contact.side_effect = RuntimeError('resend down')
+
+        with patch('sync.resend_keycloak.logger') as mock_logger:
+            sync_users_to_resend()
+
+        mock_add_contact.assert_called_once_with(
+            'test_audience_id', 'fails@example.com', None, None
+        )
+        mock_send_welcome.assert_not_called()
+        assert read_synced_emails('test_audience_id') == {'taken@example.com'}
+        mock_logger.info.assert_any_call(
+            "Sync completed: {'total_users': 2, 'backfilled_contacts': 0, "
+            "'already_synced': 1, 'added_contacts': 0, "
+            "'skipped_invalid_emails': 0, 'errors': 1}"
+        )
+
+    @patch('sync.resend_keycloak.get_resend_contacts')
+    def test_backfill_counts_only_contacts_this_run_marked(
+        self, mock_get_contacts: MagicMock, session_maker
+    ) -> None:
+        mock_get_contacts.return_value = {
+            'new@example.com': {},
+            'raced@example.com': {},
+        }
+        store = ResendSyncedUserStore(session_maker=session_maker)
+        read_synced_emails = store.get_synced_emails_for_audience
+
+        def other_run_marks_a_contact_after_this_run_reads(audience_id: str):
+            synced = read_synced_emails(audience_id)
+            ResendSyncedUserStore(session_maker=session_maker).mark_user_synced(
+                'raced@example.com', audience_id
+            )
+            return synced
+
+        store.get_synced_emails_for_audience = (  # type: ignore[method-assign]
+            other_run_marks_a_contact_after_this_run_reads
+        )
+
+        assert _backfill_existing_resend_contacts(store, 'audience') == 1
+        assert read_synced_emails('audience') == {
+            'new@example.com',
+            'raced@example.com',
+        }
