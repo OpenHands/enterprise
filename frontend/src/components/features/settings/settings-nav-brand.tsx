@@ -4,6 +4,8 @@ import { InstanceLogoMark } from "#/components/features/super-admin/instance-log
 import OpenHandsLogoSidebar from "#/assets/branding/openhands-logo-sidebar.svg?react";
 import { getAgentCanvasBannerLink } from "#/components/features/home/home-header/agent-canvas-banner";
 import { I18nKey } from "#/i18n/declaration";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { ORG_QUERY_PARAM } from "#/utils/org/org-url-param";
 import { cn } from "#/utils/utils";
 
 /** Same mark + size as agent-canvas sidebar (`SIDEBAR_LOGO_*`). */
@@ -20,7 +22,16 @@ interface SettingsNavBrandProps {
  */
 export function SettingsNavBrand({ className }: SettingsNavBrandProps) {
   const { t } = useTranslation();
-  const canvasHref = getAgentCanvasBannerLink(window.location).url;
+  const organizationId = useSelectedOrganizationStore(
+    (state) => state.organizationId,
+  );
+  // Agent Canvas keeps its own org choice, so name the one selected here.
+  // Canvas links into Settings the same way, with `?org=`.
+  const canvasUrl = new URL(getAgentCanvasBannerLink(window.location).url);
+  if (organizationId) {
+    canvasUrl.searchParams.set(ORG_QUERY_PARAM, organizationId);
+  }
+  const canvasHref = canvasUrl.toString();
 
   return (
     <div
