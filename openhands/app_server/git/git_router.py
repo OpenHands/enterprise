@@ -130,7 +130,7 @@ async def search_repositories(
 
     If query is empty, returns a paginated list of the authenticated user's repositories.
     If query is provided, returns one page of matching repositories with no next page.
-    A page after the first returns 400.
+    With a query, a page after the first returns 400.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
