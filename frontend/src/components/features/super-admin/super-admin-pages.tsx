@@ -11,7 +11,6 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import {
   useDeleteSuperAdminOrganization,
-  useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useUpdateSetupState,
   useUpdateSuperAdminOrganizationStatus,
@@ -31,7 +30,6 @@ import {
 } from "#/constants/super-admin-nav";
 import {
   BrandButton,
-  SettingsInput,
   SuperAdminPageHeader,
   SuperAdminRowMenu,
   SuperAdminSearchField,
@@ -591,15 +589,19 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
+  // Granting Super Admin mints a one-time sign-up link (the same mechanism
+  // as the Users page's "Create Sign-up Link") rather than promoting an
+  // existing account by email, so -- like that button -- it only makes
+  // sense when the local password IDP is on; see `MintSignupLinkModal`.
+  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [grantOpen, setGrantOpen] = useState(false);
-  const [email, setEmail] = useState("");
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
     null,
   );
   const { data, isLoading, isError } = useSuperAdmins();
-  const grant = useGrantSuperAdmin();
   const revoke = useRevokeSuperAdmin();
 
   const admins: SuperAdminAdminRow[] = useMemo(
@@ -612,36 +614,22 @@ export function SuperAdminAdmins() {
     [data],
   );
 
-  const handleGrant = () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      return;
-    }
-    grant.mutate(
-      { email: trimmedEmail },
-      {
-        onSuccess: () => {
-          setEmail("");
-          setGrantOpen(false);
-        },
-      },
-    );
-  };
-
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
       <SuperAdminPageHeader
         title={t(copy.text)}
         subtitle={t(copy.subtitle)}
         action={
-          <BrandButton
-            type="button"
-            variant="primary"
-            startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setGrantOpen(true)}
-          >
-            {t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-          </BrandButton>
+          enableIntegratedIdp ? (
+            <BrandButton
+              type="button"
+              variant="primary"
+              startContent={<Plus className="h-4 w-4" />}
+              onClick={() => setGrantOpen(true)}
+            >
+              {t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
+            </BrandButton>
+          ) : undefined
         }
       />
       <p className="text-sm text-[var(--oh-muted)]">
@@ -705,22 +693,13 @@ export function SuperAdminAdmins() {
         ]}
       />
       {grantOpen && (
-        <OrgModal
-          testId="super-admin-grant-form"
+        <MintSignupLinkModal
+          orgId={null}
+          lockedRole="superadmin"
           title={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
           description={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_DESCRIPTION)}
-          primaryButtonText={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-          onPrimaryClick={handleGrant}
           onClose={() => setGrantOpen(false)}
-        >
-          <SettingsInput
-            type="email"
-            label={t(I18nKey.ORG$CONTACT_EMAIL)}
-            value={email}
-            placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
-            onChange={setEmail}
-          />
-        </OrgModal>
+        />
       )}
       {adminToRevoke ? (
         <OrgModal

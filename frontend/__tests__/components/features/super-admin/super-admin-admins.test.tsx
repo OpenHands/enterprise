@@ -13,12 +13,15 @@ import {
   it,
   vi,
 } from "vitest";
+import OptionService from "#/api/option-service/option-service.api";
+import { idpService } from "#/api/idp-service/idp-service.api";
 import {
   superAdminService,
   type SuperAdminApiAdmin,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminAdmins } from "#/components/features/super-admin/super-admin-pages";
 import translations from "#/i18n/translation.json";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 const GRACE: SuperAdminApiAdmin = {
   user_id: "7",
@@ -80,6 +83,24 @@ describe("Super Admin Admins page", () => {
   beforeEach(() => {
     currentUserId.value = "not-grace";
     vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue([GRACE]);
+    // The Grant Super Admin button mints a sign-up link, same as the Users
+    // page's Create Sign-up Link button, so it needs the local password IDP.
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          enable_billing: false,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_onboarding: false,
+          enable_integrated_idp: true,
+        },
+      }),
+    );
   });
 
   afterEach(() => {
@@ -129,16 +150,18 @@ describe("Super Admin Admins page", () => {
     );
   });
 
-  it("grants Super Admin to the entered email and lists them", async () => {
-    // Arrange
+  it("mints an instance-wide, superadmin-locked sign-up link instead of granting by email directly", async () => {
+    // Arrange: this reuses the exact same mechanism as the Users page's
+    // Create Sign-up Link button (`MintSignupLinkModal`), just with the
+    // role locked to `superadmin` and no org picker.
     const user = userEvent.setup();
-    const ada: SuperAdminApiAdmin = { user_id: "8", email: "ada@acme.org" };
-    vi.spyOn(superAdminService, "listSuperAdmins")
-      .mockResolvedValueOnce([GRACE])
-      .mockResolvedValue([GRACE, ada]);
-    const grantSuperAdmin = vi
-      .spyOn(superAdminService, "grantSuperAdmin")
-      .mockResolvedValue(ada);
+    const createSignupLinkSpy = vi
+      .spyOn(idpService, "createSignupLink")
+      .mockResolvedValue({
+        url: "https://app.example.com/oauth/idp/invite?token=abc123",
+        role: "superadmin",
+        expires_at: "2026-01-08T00:00:00Z",
+      });
     renderAdminsPage();
     await screen.findByText("grace@acme.org");
 
@@ -146,22 +169,41 @@ describe("Super Admin Admins page", () => {
     await user.click(
       screen.getByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
     );
-    const dialog = screen.getByTestId("super-admin-grant-form");
-    await user.type(within(dialog).getByRole("textbox"), "ada@acme.org");
-    await user.click(
-      within(dialog).getByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
+    const modal = await screen.findByTestId("mint-signup-link-modal");
+    // The role picker is hidden -- the whole point of this button is to
+    // grant super admin, not to offer a choice.
+    expect(
+      within(modal).queryByTestId("signup-link-role-dropdown"),
+    ).not.toBeInTheDocument();
+    await user.type(
+      within(modal).getByTestId("signup-link-email-input"),
+      "ada@acme.org",
     );
+    await user.click(within(modal).getByRole("button", { name: /create/i }));
 
     // Assert
-    await waitFor(() =>
-      expect(grantSuperAdmin).toHaveBeenCalledWith({ email: "ada@acme.org" }),
+    expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+      email: "ada@acme.org",
+      role: "superadmin",
+      orgId: undefined,
+    });
+    const resultModal = await screen.findByTestId("signup-link-result");
+    expect(within(resultModal).getByText("ada@acme.org")).toBeInTheDocument();
+  });
+
+  it("hides the Grant Super Admin button when the local password IDP is off", async () => {
+    // Arrange: without the integrated IDP, the minted link could never be
+    // accepted -- same rationale as the Users page's Create Sign-up Link.
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
     );
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("super-admin-grant-form"),
-      ).not.toBeInTheDocument(),
-    );
-    expect(await screen.findByText("ada@acme.org")).toBeInTheDocument();
+    renderAdminsPage();
+
+    // Assert
+    await screen.findByText("grace@acme.org");
+    expect(
+      screen.queryByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the Super Admin when the revoke is cancelled", async () => {
