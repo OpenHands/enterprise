@@ -34,7 +34,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskPage,
     AppConversationStartTaskSortOrder,
-    AppConversationStartTaskStatus,
     AppConversationUpdateRequest,
     AppSendMessageRequest,
     AppSendMessageResponse,
@@ -556,6 +555,10 @@ async def start_app_conversation(
         quota_user_id, quota_org_id
     )
 
+    # The service consumes this flag and owns failure cleanup after the handoff.
+    if quota_reserved:
+        setattr(user_context, '_daily_quota_reserved', True)
+
     # Because we are processing after the request finishes, keep the db connection open
     set_db_session_keep_open(request.state, True)
     set_httpx_client_keep_open(request.state, True)
@@ -586,9 +589,11 @@ async def start_app_conversation(
 
         asyncio.create_task(_consume_remaining(async_iter, db_session, httpx_client))
         return result
-    except Exception:
-        if quota_reserved and quota_user_id:
-            await _release_daily_conversation_quota(quota_user_id)
+    except BaseException:
+        if quota_reserved and getattr(user_context, '_daily_quota_reserved', False):
+            setattr(user_context, '_daily_quota_reserved', False)
+            if quota_user_id:
+                await _release_daily_conversation_quota(quota_user_id)
         await db_session.close()
         await httpx_client.aclose()
         raise
@@ -1242,7 +1247,8 @@ async def stream_app_conversation_start(
     quota_reserved = await _reserve_daily_conversation_quota(
         quota_user_id, quota_org_id
     )
-    setattr(user_context, '_daily_quota_reserved', quota_reserved)
+    if quota_reserved:
+        setattr(user_context, '_daily_quota_reserved', True)
     response = StreamingResponse(
         _stream_app_conversation_start(request, user_context),
         media_type='application/json',
@@ -2168,25 +2174,11 @@ async def _consume_remaining(
     async_iter,
     db_session: AsyncSession,
     httpx_client: httpx.AsyncClient,
-    quota_user_id: str | None = None,
-    quota_reserved: bool = False,
 ):
     """Consume the remaining items from an async iterator"""
     try:
-        while True:
-            task = await anext(async_iter)
-            if quota_reserved and quota_user_id:
-                if task.status == AppConversationStartTaskStatus.ERROR:
-                    await _release_daily_conversation_quota(quota_user_id)
-                    quota_reserved = False
-                elif task.status == AppConversationStartTaskStatus.READY:
-                    quota_reserved = False
-    except StopAsyncIteration:
-        return
-    except BaseException:
-        if quota_reserved and quota_user_id:
-            await _release_daily_conversation_quota(quota_user_id)
-        raise
+        async for _ in async_iter:
+            pass
     finally:
         await db_session.close()
         await httpx_client.aclose()
@@ -2197,44 +2189,26 @@ async def _stream_app_conversation_start(
     user_context: UserContext,
 ) -> AsyncGenerator[str, None]:
     """Stream a json list, item by item."""
-    quota_user_id = await user_context.get_user_id()
-    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
-    quota_org_id_result = (
-        get_effective_org_id()
-        if quota_user_id and get_effective_org_id is not None
-        else None
-    )
-    quota_org_id = (
-        await quota_org_id_result
-        if inspect.isawaitable(quota_org_id_result)
-        else quota_org_id_result
-    )
-    quota_reserved = await _reserve_daily_conversation_quota(
-        quota_user_id, quota_org_id
-    )
-
     # Because the original dependencies are closed after the method returns, we need
     # a new dependency context which will continue until the stream finishes.
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, user_context)
-    async with get_app_conversation_service(state) as app_conversation_service:
-        yield '[\n'
-        comma = False
-        try:
+    try:
+        async with get_app_conversation_service(state) as app_conversation_service:
+            yield '[\n'
+            comma = False
             async for task in app_conversation_service.start_app_conversation(request):
-                if quota_reserved and quota_user_id:
-                    if task.status == AppConversationStartTaskStatus.ERROR:
-                        await _release_daily_conversation_quota(quota_user_id)
-                        quota_reserved = False
-                    elif task.status == AppConversationStartTaskStatus.READY:
-                        quota_reserved = False
                 chunk = task.model_dump_json()
                 if comma:
                     chunk = ',\n' + chunk
                 comma = True
                 yield chunk
             yield ']'
-        except BaseException:
-            if quota_reserved and quota_user_id:
+    except BaseException:
+        # Injection or cancellation may fail before the service takes ownership.
+        if getattr(user_context, '_daily_quota_reserved', False):
+            setattr(user_context, '_daily_quota_reserved', False)
+            quota_user_id = await user_context.get_user_id()
+            if quota_user_id:
                 await _release_daily_conversation_quota(quota_user_id)
-            raise
+        raise
