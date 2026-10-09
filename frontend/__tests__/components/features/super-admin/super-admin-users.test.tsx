@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import OptionService from "#/api/option-service/option-service.api";
 import { idpService } from "#/api/idp-service/idp-service.api";
+import OptionService from "#/api/option-service/option-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import {
   SuperAdminRowMenu,
@@ -247,6 +247,108 @@ describe("Super Admin Users page", () => {
     expect(screen.queryByText("inactive")).not.toBeInTheDocument();
   });
 
+  describe("Reset Password", () => {
+    const SAM: SuperAdminUserRow = {
+      id: "7",
+      name: "sam",
+      email: "sam@beta.llc",
+      memberships: [
+        { orgId: "3", orgName: "Beta LLC", role: "admin", status: "active" },
+      ],
+      status: "active",
+    };
+
+    beforeEach(() => {
+      vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+        {
+          user_id: SAM.id,
+          email: SAM.email,
+          name: SAM.name,
+          status: "active",
+          memberships: [
+            {
+              org_id: "3",
+              org_name: "Beta LLC",
+              role: "admin",
+              status: "active",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("does not show the Reset Password option when enable_integrated_idp is off", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig(),
+      );
+
+      // Act
+      await renderUsersPage();
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByTestId(`super-admin-user-actions-${SAM.id}`),
+      );
+
+      // Assert
+      expect(
+        screen.queryByTestId(`super-admin-reset-password-${SAM.id}`),
+      ).not.toBeInTheDocument();
+    });
+
+    it("lets a super admin create a password-reset link for a user when enable_integrated_idp is on", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          feature_flags: {
+            enable_billing: false,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
+        .mockResolvedValue({
+          url: "https://example.com/signup/abc123",
+          role: "member",
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        });
+      const user = userEvent.setup();
+
+      // Act
+      await renderUsersPage();
+      await user.click(
+        await screen.findByTestId(`super-admin-user-actions-${SAM.id}`),
+      );
+      await user.click(
+        await screen.findByTestId(`super-admin-reset-password-${SAM.id}`),
+      );
+
+      // Assert
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: SAM.email,
+        role: "member",
+      });
+      const resultModal = await screen.findByTestId(
+        "password-reset-link-result-modal",
+      );
+      expect(within(resultModal).getByText(SAM.email)).toBeInTheDocument();
+      // "invite" wording doesn't fit a password reset, unlike the sign-up
+      // link modals that reuse this same button.
+      expect(
+        within(resultModal).getByText("ORG$COPY_LINK"),
+      ).toBeInTheDocument();
+    });
+  });
+
   describe("Create Sign-up Link", () => {
     beforeEach(() => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
@@ -467,6 +569,14 @@ describe("Super Admin user memberships", () => {
 
     await user.click(screen.getByRole("button", { name: "Row actions" }));
     expect(onMenu).not.toHaveBeenCalled();
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+
+    // Selecting a menu item must not also trigger the row click behind it:
+    // the menu renders in a document-body portal, so React bubbles its
+    // click event through the component tree (not the DOM tree) straight
+    // into the row's onClick unless the item itself stops propagation.
+    await user.click(screen.getByText("Manage user"));
+    expect(onMenu).toHaveBeenCalledTimes(1);
     expect(onRowClick).toHaveBeenCalledTimes(1);
   });
 });
