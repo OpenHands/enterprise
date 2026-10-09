@@ -2302,6 +2302,13 @@ async def get_org_conversation_user_usage_stats(
         ge=0,
         description='Offset for paginated user rows',
     ),
+    time_window: Annotated[
+        str | None,
+        Query(
+            title='Time window for the conversation count',
+            description='Options: 7d, 30d, 90d. Spend columns keep their own periods.',
+        ),
+    ] = None,
     user_id: str = Depends(require_permission(Permission.VIEW_ORG_CONVERSATIONS)),
     service: OrgConversationService = org_conversation_service_dependency,
 ) -> OrgUserUsageStats:
@@ -2313,6 +2320,7 @@ async def get_org_conversation_user_usage_stats(
         org_id: The organization ID
         limit: Maximum number of user rows to return
         offset: Offset for paginated user rows
+        time_window: Time window for the conversation count (7d, 30d, 90d)
 
     Returns:
         OrgUserUsageStats: Usage statistics aggregated by user
@@ -2324,6 +2332,7 @@ async def get_org_conversation_user_usage_stats(
             'org_id': str(org_id),
             'limit': limit,
             'offset': offset,
+            'time_window': time_window,
         },
     )
 
@@ -2332,6 +2341,7 @@ async def get_org_conversation_user_usage_stats(
             org_id=org_id,
             limit=limit,
             offset=offset,
+            time_window=time_window,
         )
 
         logger.info(
