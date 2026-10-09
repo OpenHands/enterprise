@@ -28,6 +28,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTask,
     AppConversationStartTaskStatus,
+    AppConversationUpdateRequest,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
@@ -52,6 +53,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     start_app_conversation,
     stream_app_conversation_start,
     switch_conversation_profile,
+    update_app_conversation,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
     ConversationExportAlreadyRunning,
@@ -388,6 +390,23 @@ async def test_consume_remaining_releases_quota_on_failure():
     release.assert_awaited_once_with('user-id')
     db_session.close.assert_awaited_once()
     httpx_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_app_conversation_returns_400_for_an_invalid_repository():
+    service = MagicMock()
+    service.update_app_conversation = AsyncMock(
+        side_effect=ValueError("Invalid repository format: 'repo'.")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_app_conversation(
+            str(uuid4()),
+            AppConversationUpdateRequest(selected_repository='repo'),
+            app_conversation_service=service,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
 
 class _ServiceContext:

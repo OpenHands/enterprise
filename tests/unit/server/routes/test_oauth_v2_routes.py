@@ -99,7 +99,15 @@ def test_state_roundtrip(jwt_svc):
 
 
 def test_decrypt_bad_state_raises(jwt_svc, client):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         # Garbage base64/state → 400.
         response = client.get(
             '/oauth/1/callback',
@@ -568,7 +576,15 @@ def test_callback_link_flow_no_cookie(client, jwt_svc):
 
 
 def test_callback_missing_code_400(client, jwt_svc):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         response = client.get(
             '/oauth/1/callback', params={'state': 'x'}, follow_redirects=False
         )
@@ -576,7 +592,15 @@ def test_callback_missing_code_400(client, jwt_svc):
 
 
 def test_callback_error_param_400(client, jwt_svc):
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.OAuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
         response = client.get(
             '/oauth/1/callback',
             params={'error': 'access_denied'},

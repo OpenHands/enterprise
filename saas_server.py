@@ -78,7 +78,10 @@ from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
-from server.routes.super_admins import super_admin_router  # noqa: E402
+from server.routes.super_admins import (  # noqa: E402
+    admin_users_router,
+    super_admin_router,
+)
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
     user_provisioning_router,
@@ -203,6 +206,9 @@ if ENABLE_SUPER_ADMIN:
     base_app.include_router(
         instance_admin_router
     )  # Add routes for Super Admin org/user directory
+base_app.include_router(
+    admin_users_router
+)  # Add routes for the instance-wide user directory (super-admin-only)
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags

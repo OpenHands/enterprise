@@ -154,7 +154,7 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
         return_value=fake_session,
     ):
         async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/users')
+            resp = await client.get('/api/admin/directory/users')
 
     assert resp.status_code == 200
     body = resp.json()
@@ -397,7 +397,7 @@ async def test_update_user_status_success(
     ):
         async with _client(mock_app) as client:
             resp = await client.patch(
-                f'/api/admin/users/{user_id}',
+                f'/api/admin/directory/users/{user_id}',
                 json={'status': user_status},
             )
 
@@ -428,7 +428,7 @@ async def test_update_user_status_rejects_suspending_self(
     ):
         async with _client(mock_app) as client:
             resp = await client.patch(
-                f'/api/admin/users/{CALLER_USER_ID}',
+                f'/api/admin/directory/users/{CALLER_USER_ID}',
                 json={'status': 'inactive'},
             )
 
@@ -455,7 +455,7 @@ async def test_update_user_status_refuses_the_last_super_admin(
     ):
         async with _client(mock_app) as client:
             resp = await client.patch(
-                f'/api/admin/users/{user.id}',
+                f'/api/admin/directory/users/{user.id}',
                 json={'status': 'inactive'},
             )
 
@@ -483,7 +483,7 @@ def _delete_user_patches(
     token_manager.delete_keycloak_user = AsyncMock(return_value=True)
     steps = MagicMock()
     steps.attach_mock(AsyncMock(return_value=revoke_result), 'revoke_super_admin')
-    steps.attach_mock(AsyncMock(), 'delete_user')
+    steps.attach_mock(AsyncMock(), 'delete_user_and_owned_data')
     steps.attach_mock(AsyncMock(), 'delete_org_cascade')
     steps.attach_mock(AsyncMock(), 'delete_litellm_user')
     steps.attach_mock(token_manager.delete_keycloak_user, 'delete_keycloak_user')
@@ -509,7 +509,10 @@ def _delete_user_patches(
             'server.routes.instance_admin.UserStore.revoke_super_admin',
             steps.revoke_super_admin,
         ),
-        patch('server.routes.instance_admin.UserStore.delete_user', steps.delete_user),
+        patch(
+            'server.routes.instance_admin.UserStore.delete_user_and_owned_data',
+            steps.delete_user_and_owned_data,
+        ),
         patch(
             'server.routes.instance_admin.OrgStore.delete_org_cascade',
             steps.delete_org_cascade,
@@ -542,12 +545,12 @@ async def test_delete_user_blocks_last_owner(mock_app, grant_manage_super_admins
         _target_user(user_id), role_name='owner', is_last_owner=True
     ) as steps:
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{user_id}')
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
 
     assert resp.status_code == 409
     assert resp.json()['detail'] == 'Cannot delete user: last owner of Acme'
     steps.revoke_super_admin.assert_not_awaited()
-    steps.delete_user.assert_not_awaited()
+    steps.delete_user_and_owned_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -562,11 +565,11 @@ async def test_delete_user_is_not_blocked_by_owning_their_personal_workspace(
         _target_user(user_id), role_name='owner', is_last_owner=True, org_id=user_id
     ) as steps:
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{user_id}')
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
 
     # Assert
     assert resp.status_code == 200
-    steps.delete_user.assert_awaited_once_with(user_id)
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
 
 
 @pytest.mark.asyncio
@@ -575,11 +578,11 @@ async def test_delete_user_rejects_self(mock_app, grant_manage_super_admins):
 
     with _delete_user_patches(_target_user(caller_id)) as steps:
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{CALLER_USER_ID}')
+            resp = await client.delete(f'/api/admin/directory/users/{CALLER_USER_ID}')
 
     assert resp.status_code == 403
     steps.revoke_super_admin.assert_not_awaited()
-    steps.delete_user.assert_not_awaited()
+    steps.delete_user_and_owned_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -593,11 +596,11 @@ async def test_delete_user_refuses_the_last_super_admin(
         revoke_result=SuperAdminRevokeResult.LAST_SUPER_ADMIN,
     ) as steps:
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{user_id}')
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
 
     assert resp.status_code == 409
     assert resp.json()['detail'] == 'Cannot delete the last Super Admin'
-    steps.delete_user.assert_not_awaited()
+    steps.delete_user_and_owned_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -608,13 +611,13 @@ async def test_delete_user_deletes_the_account_then_its_external_records(
 
     with _delete_user_patches(_target_user(user_id)) as steps:
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{user_id}')
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
 
     assert resp.status_code == 200
     assert resp.json() == {'message': 'User deleted', 'user_id': str(user_id)}
     assert steps.mock_calls == [
         call.revoke_super_admin(str(user_id)),
-        call.delete_user(user_id),
+        call.delete_user_and_owned_data(user_id),
         call.delete_org_cascade(user_id),
         call.delete_litellm_user(str(user_id)),
         call.delete_keycloak_user(str(user_id)),
@@ -632,10 +635,10 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
         steps.delete_litellm_user.side_effect = httpx.ConnectError('litellm down')
         steps.delete_keycloak_user.side_effect = RuntimeError('keycloak down')
         async with _client(mock_app) as client:
-            resp = await client.delete(f'/api/admin/users/{user_id}')
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
 
     assert resp.status_code == 200
-    steps.delete_user.assert_awaited_once_with(user_id)
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
     steps.delete_keycloak_user.assert_awaited_once_with(str(user_id))
 
 
@@ -683,7 +686,7 @@ async def test_update_user_groups_suspends_or_resumes_selected_orgs(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': action, 'org_ids': [str(org.id)]},
             )
 
@@ -729,7 +732,7 @@ async def test_update_user_groups_remove_blocks_last_owner(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'remove', 'org_ids': [str(org.id)]},
             )
 
@@ -785,7 +788,7 @@ async def test_update_user_groups_remove_resets_current_org_and_leaves_litellm_t
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'remove', 'org_ids': [str(org.id)]},
             )
 
@@ -823,7 +826,7 @@ async def test_update_user_groups_add_rejects_another_users_personal_workspace(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{CALLER_USER_ID}/groups',
+                f'/api/admin/directory/users/{CALLER_USER_ID}/groups',
                 json={
                     'action': 'add',
                     'org_ids': [str(other_users_personal_org_id)],
@@ -886,7 +889,7 @@ async def test_update_user_groups_add_creates_membership_at_chosen_role(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'admin'},
             )
 
@@ -953,7 +956,7 @@ async def test_update_user_groups_add_reactivates_a_suspended_membership(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'admin'},
             )
 
@@ -1025,7 +1028,7 @@ async def test_update_user_groups_set_role_changes_the_existing_membership(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'set_role', 'org_ids': [str(org_id)], 'role': 'admin'},
             )
 
@@ -1047,7 +1050,7 @@ async def test_update_user_groups_set_role_refuses_to_demote_the_last_owner(
     ) as (org_id, update_role):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={
                     'action': 'set_role',
                     'org_ids': [str(org_id)],
@@ -1101,7 +1104,7 @@ async def test_update_user_groups_remove_rejects_own_personal_workspace(
     ):
         async with _client(mock_app) as client:
             resp = await client.post(
-                f'/api/admin/users/{user_id}/groups',
+                f'/api/admin/directory/users/{user_id}/groups',
                 json={'action': 'remove', 'org_ids': [str(user_id)]},
             )
 

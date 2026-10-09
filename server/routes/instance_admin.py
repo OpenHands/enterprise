@@ -342,7 +342,7 @@ async def update_admin_organization_status(
 
 
 @instance_admin_router.get(
-    '/users',
+    '/directory/users',
     response_model=AdminUserListResponse,
 )
 async def list_admin_users(
@@ -391,7 +391,7 @@ async def list_admin_users(
 
 
 @instance_admin_router.patch(
-    '/users/{user_id}',
+    '/directory/users/{user_id}',
     response_model=AdminUserResponse,
 )
 async def update_admin_user_status(
@@ -437,7 +437,7 @@ async def update_admin_user_status(
 
 
 @instance_admin_router.delete(
-    '/users/{user_id}',
+    '/directory/users/{user_id}',
     status_code=status.HTTP_200_OK,
 )
 async def delete_admin_user(
@@ -490,7 +490,7 @@ async def delete_admin_user(
             detail='Cannot delete the last Super Admin',
         )
 
-    await UserStore.delete_user(user_id)
+    await UserStore.delete_user_and_owned_data(user_id)
 
     # The account is gone. A failure below only leaves an empty personal
     # workspace, a LiteLLM user or a Keycloak account behind.
@@ -634,7 +634,7 @@ async def _add_selected_memberships(
 
 
 @instance_admin_router.post(
-    '/users/{user_id}/groups',
+    '/directory/users/{user_id}/groups',
     response_model=AdminUserResponse,
 )
 async def update_admin_user_groups(

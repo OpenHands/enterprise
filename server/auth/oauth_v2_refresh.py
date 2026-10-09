@@ -152,8 +152,21 @@ def create_oauth_v2_cookie_payload(
     user_id: str,
     access_token_expires_at: datetime | None,
     accepted_tos: bool,
+    idp_provider_id: int | None,
 ) -> dict:
-    """Build the signed JWT payload for the ``openhands_auth`` cookie."""
+    """Build the signed JWT payload for the ``openhands_auth`` cookie.
+
+    ``idp_provider_id`` identifies the ``oauth_providers`` row this session
+    authenticated against -- every IDP a session can authenticate against,
+    including the integrated/password one (a real row since migration 179),
+    has a real id here. Carrying it in the cookie lets IDP-token refresh look
+    the provider up directly instead of probing every currently-configured
+    IDP and guessing from unrelated global state -- see
+    ``SaasUserAuth._v2_get_idp_access_token``. The key is always present
+    (even when the caller passes ``None``) so decoders can tell a cookie
+    minted before this field existed (key absent entirely) apart from one
+    that explicitly carries no provider id.
+    """
     import time
 
     return {
@@ -164,6 +177,7 @@ def create_oauth_v2_cookie_payload(
             else None
         ),
         'accepted_tos': accepted_tos,
+        'idp_provider_id': idp_provider_id,
         'iat': int(time.time()),
     }
 
