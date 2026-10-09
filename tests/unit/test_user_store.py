@@ -2717,7 +2717,15 @@ async def test_revoke_super_admin_success_when_another_exists(async_session_make
 async def test_revoke_self_allowed_when_another_super_admin_exists(
     async_session_maker,
 ):
-    """A super admin may demote themselves while another still exists."""
+    """The store layer alone does not forbid self-revocation.
+
+    ``UserStore.revoke_super_admin`` has no notion of "caller" -- it only
+    enforces the "never remove the last super admin" invariant. The
+    additional "nobody may revoke their own access" guard lives one layer
+    up, in ``server.routes.super_admins.revoke_super_admin`` (see
+    ``tests/unit/server/routes/test_super_admins.py::test_revoke_self_forbidden``),
+    so it is out of scope here.
+    """
     admin_role_id = await _seed_admin_role(async_session_maker)
     org_id = await _seed_org(async_session_maker)
     me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')

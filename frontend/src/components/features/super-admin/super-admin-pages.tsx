@@ -3,6 +3,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
+import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { useConfig } from "#/hooks/query/use-config";
@@ -40,6 +41,7 @@ import {
 } from "./super-admin-chrome";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import { InstanceLogoSetting } from "./instance-logo-setting";
+import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
 import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
 import type {
@@ -348,6 +350,13 @@ export function SuperAdminOrganizations() {
 
 export function SuperAdminUsers() {
   const { t } = useTranslation();
+  const { data: config } = useConfig();
+  // The only account-creation mechanism this page offers is a sign-up link
+  // for the local password IDP (see ``MintSignupLinkModal``) -- with no
+  // integrated IDP there is no password-based account for the recipient to
+  // set up, so the affordance is hidden rather than offering a link that
+  // can never be used.
+  const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const {
     viewOrg,
     canViewOrg,
@@ -358,7 +367,7 @@ export function SuperAdminUsers() {
   } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
-  const [inviteOpen, setInviteOpen] = useState(false);
+  const [mintLinkOpen, setMintLinkOpen] = useState(false);
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
@@ -418,15 +427,17 @@ export function SuperAdminUsers() {
         title={t(copy.text)}
         subtitle={t(copy.subtitle)}
         action={
-          <BrandButton
-            type="button"
-            variant="primary"
-            testId="super-admin-invite-user"
-            startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setInviteOpen(true)}
-          >
-            {t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL)}
-          </BrandButton>
+          enableIntegratedIdp ? (
+            <BrandButton
+              type="button"
+              variant="primary"
+              testId="super-admin-create-signup-link"
+              startContent={<Plus className="h-4 w-4" />}
+              onClick={() => setMintLinkOpen(true)}
+            >
+              {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
+            </BrandButton>
+          ) : undefined
         }
       />
       <SuperAdminSearchField
@@ -521,13 +532,14 @@ export function SuperAdminUsers() {
           },
         ]}
       />
-      {inviteOpen && (
-        <InviteOrganizationMemberModal
+      {mintLinkOpen && (
+        <MintSignupLinkModal
+          orgId={null}
           organizations={teamOrgs.map((org) => ({
             id: org.id,
             name: org.name,
           }))}
-          onClose={() => setInviteOpen(false)}
+          onClose={() => setMintLinkOpen(false)}
         />
       )}
       {managedUser ? (
@@ -556,6 +568,7 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [grantOpen, setGrantOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -641,20 +654,30 @@ export function SuperAdminAdmins() {
             key: "actions",
             header: "",
             className: "w-12 min-w-12 text-right",
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-admin-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$REVOKE),
-                    testId: `super-admin-admin-revoke-${row.id}`,
-                    destructive: true,
-                    onSelect: () => setAdminToRevoke(row),
-                  },
-                ]}
-              />
-            ),
+            render: (row) => {
+              const isSelf = row.id === userId;
+              return (
+                <SuperAdminRowMenu
+                  testId={`super-admin-admin-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$REVOKE),
+                      testId: `super-admin-admin-revoke-${row.id}`,
+                      destructive: true,
+                      // Nobody may revoke their own Super Admin access --
+                      // not even when other Super Admins exist -- so they
+                      // can never accidentally lock themselves out.
+                      isDisabled: isSelf,
+                      title: isSelf
+                        ? t(I18nKey.SUPER_ADMIN$CANNOT_REVOKE_SELF)
+                        : undefined,
+                      onSelect: () => setAdminToRevoke(row),
+                    },
+                  ]}
+                />
+              );
+            },
           },
         ]}
       />
@@ -721,6 +744,7 @@ export function SuperAdminInstance() {
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
       <InstanceLogoSetting />
+      <InstanceCompanyNameSetting />
       <div className="flex flex-col gap-1">
         <SettingsSwitch
           isToggled={emailEnabled}

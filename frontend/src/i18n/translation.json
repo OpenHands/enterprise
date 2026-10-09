@@ -25023,6 +25023,23 @@
     "uk": "Створити посилання для реєстрації",
     "ca": "Crea un enllaç de registre"
   },
+  "ORG$NO_ORGANIZATION": {
+    "en": "No organization",
+    "ja": "組織なし",
+    "zh-CN": "无组织",
+    "zh-TW": "無組織",
+    "ko-KR": "조직 없음",
+    "no": "Ingen organisasjon",
+    "it": "Nessuna organizzazione",
+    "pt": "Nenhuma organização",
+    "es": "Sin organización",
+    "ar": "بدون منظمة",
+    "fr": "Aucune organisation",
+    "tr": "Organizasyon yok",
+    "de": "Keine Organisation",
+    "uk": "Без організації",
+    "ca": "Cap organització"
+  },
   "ORG$MANAGE_ORGANIZATION": {
     "en": "Manage Organization",
     "ja": "組織を管理",
@@ -31279,6 +31296,23 @@
     "uk": "Revoke",
     "ca": "Revoke"
   },
+  "SUPER_ADMIN$CANNOT_REVOKE_SELF": {
+    "en": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ja": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "zh-CN": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "zh-TW": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ko-KR": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "no": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "it": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "pt": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "es": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ar": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "fr": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "tr": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "de": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "uk": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ca": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this."
+  },
   "SUPER_ADMIN$INSTANCE_LOGO": {
     "en": "Company logo",
     "ja": "Company logo",
@@ -31297,21 +31331,21 @@
     "ca": "Company logo"
   },
   "SUPER_ADMIN$INSTANCE_LOGO_HINT": {
-    "en": "Shown beside the logo in the top left when an image is added.",
-    "ja": "Shown beside the logo in the top left when an image is added.",
-    "zh-CN": "Shown beside the logo in the top left when an image is added.",
-    "zh-TW": "Shown beside the logo in the top left when an image is added.",
-    "ko-KR": "Shown beside the logo in the top left when an image is added.",
-    "no": "Shown beside the logo in the top left when an image is added.",
-    "it": "Shown beside the logo in the top left when an image is added.",
-    "pt": "Shown beside the logo in the top left when an image is added.",
-    "es": "Shown beside the logo in the top left when an image is added.",
-    "ar": "Shown beside the logo in the top left when an image is added.",
-    "fr": "Shown beside the logo in the top left when an image is added.",
-    "tr": "Shown beside the logo in the top left when an image is added.",
-    "de": "Shown beside the logo in the top left when an image is added.",
-    "uk": "Shown beside the logo in the top left when an image is added.",
-    "ca": "Shown beside the logo in the top left when an image is added."
+    "en": "Replaces the OpenHands logo in the top left.",
+    "ja": "Replaces the OpenHands logo in the top left.",
+    "zh-CN": "Replaces the OpenHands logo in the top left.",
+    "zh-TW": "Replaces the OpenHands logo in the top left.",
+    "ko-KR": "Replaces the OpenHands logo in the top left.",
+    "no": "Replaces the OpenHands logo in the top left.",
+    "it": "Replaces the OpenHands logo in the top left.",
+    "pt": "Replaces the OpenHands logo in the top left.",
+    "es": "Replaces the OpenHands logo in the top left.",
+    "ar": "Replaces the OpenHands logo in the top left.",
+    "fr": "Replaces the OpenHands logo in the top left.",
+    "tr": "Replaces the OpenHands logo in the top left.",
+    "de": "Replaces the OpenHands logo in the top left.",
+    "uk": "Replaces the OpenHands logo in the top left.",
+    "ca": "Replaces the OpenHands logo in the top left."
   },
   "SUPER_ADMIN$INSTANCE_LOGO_REMOVE": {
     "en": "Remove image",
@@ -31346,6 +31380,23 @@
     "de": "Could not use that image. Try another file.",
     "uk": "Could not use that image. Try another file.",
     "ca": "Could not use that image. Try another file."
+  },
+  "SUPER_ADMIN$INSTANCE_COMPANY_NAME_HINT": {
+    "en": "Replaces \"Account\" in the top left.",
+    "ja": "Replaces \"Account\" in the top left.",
+    "zh-CN": "Replaces \"Account\" in the top left.",
+    "zh-TW": "Replaces \"Account\" in the top left.",
+    "ko-KR": "Replaces \"Account\" in the top left.",
+    "no": "Replaces \"Account\" in the top left.",
+    "it": "Replaces \"Account\" in the top left.",
+    "pt": "Replaces \"Account\" in the top left.",
+    "es": "Replaces \"Account\" in the top left.",
+    "ar": "Replaces \"Account\" in the top left.",
+    "fr": "Replaces \"Account\" in the top left.",
+    "tr": "Replaces \"Account\" in the top left.",
+    "de": "Replaces \"Account\" in the top left.",
+    "uk": "Replaces \"Account\" in the top left.",
+    "ca": "Replaces \"Account\" in the top left."
   },
   "SUPER_ADMIN$INSTANCE_EMAIL": {
     "en": "Email invitations and alerts",

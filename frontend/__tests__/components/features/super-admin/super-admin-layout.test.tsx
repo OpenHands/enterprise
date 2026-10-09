@@ -168,6 +168,26 @@ describe("SuperAdminLayout", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("shows the instance logo in place of the OpenHands mark", async () => {
+    // Arrange
+    const savedLogo = "data:image/jpeg;base64,c2F2ZWQ=";
+    vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+      company_name: "Acme",
+      logo: savedLogo,
+    });
+
+    // Act
+    renderSuperAdmin();
+
+    // Assert
+    const logos = await screen.findAllByTestId("instance-logo-mark");
+    expect(logos[0]).toHaveAttribute("src", savedLogo);
+    expect(
+      screen.queryByTestId("openhands-brand-mark"),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText("SUPER_ADMIN$TITLE").length).toBeGreaterThan(0);
+  });
+
   it("opens the Setup guide from the sidebar widget", async () => {
     const user = userEvent.setup();
     renderSuperAdmin();

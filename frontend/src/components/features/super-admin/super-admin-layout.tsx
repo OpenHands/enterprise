@@ -43,16 +43,21 @@ function SuperAdminNavBrand({ className }: { className?: string }) {
         className,
       )}
     >
-      <div className="mr-3 flex shrink-0 items-center gap-6">
+      {/* A company logo saved by a Super Admin takes the mark's place. */}
+      <div className="mr-3 flex shrink-0 items-center">
         <div className="flex h-9 w-[18px] items-center justify-center overflow-visible">
-          <OpenHandsLogoSidebar
-            width={SIDEBAR_LOGO_WIDTH}
-            height={SIDEBAR_LOGO_HEIGHT}
-            className="max-w-none shrink-0"
-            aria-hidden
+          <InstanceLogoMark
+            fallback={
+              <OpenHandsLogoSidebar
+                data-testid="openhands-brand-mark"
+                width={SIDEBAR_LOGO_WIDTH}
+                height={SIDEBAR_LOGO_HEIGHT}
+                className="max-w-none shrink-0"
+                aria-hidden
+              />
+            }
           />
         </div>
-        <InstanceLogoMark />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-white">
         {t(I18nKey.SUPER_ADMIN$TITLE)}

@@ -25,6 +25,19 @@ const GRACE: SuperAdminApiAdmin = {
   email: "grace@acme.org",
 };
 
+// The signed-in Super Admin's own id. Tests that need to act as someone
+// other than Grace override this before rendering.
+const { currentUserId } = vi.hoisted(() => ({
+  currentUserId: { value: "not-grace" as string | undefined },
+}));
+
+vi.mock("#/hooks/query/use-me", () => ({
+  useMe: () => ({
+    isLoading: false,
+    data: currentUserId.value ? { user_id: currentUserId.value } : undefined,
+  }),
+}));
+
 function renderAdminsPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -65,6 +78,7 @@ beforeAll(async () => {
 
 describe("Super Admin Admins page", () => {
   beforeEach(() => {
+    currentUserId.value = "not-grace";
     vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue([GRACE]);
   });
 
@@ -168,5 +182,27 @@ describe("Super Admin Admins page", () => {
     ).not.toBeInTheDocument();
     expect(revokeSuperAdmin).not.toHaveBeenCalled();
     expect(screen.getByText("grace@acme.org")).toBeInTheDocument();
+  });
+
+  it("does not let a Super Admin revoke their own access", async () => {
+    // Arrange: the signed-in Super Admin *is* Grace.
+    currentUserId.value = GRACE.user_id;
+    const user = userEvent.setup();
+    const revokeSuperAdmin = vi
+      .spyOn(superAdminService, "revokeSuperAdmin")
+      .mockResolvedValue(GRACE);
+    renderAdminsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-admin-actions-7"));
+    const revokeItem = screen.getByTestId("super-admin-admin-revoke-7");
+
+    // Assert
+    expect(revokeItem).toBeDisabled();
+    await user.click(revokeItem);
+    expect(
+      screen.queryByTestId("super-admin-revoke-confirm"),
+    ).not.toBeInTheDocument();
+    expect(revokeSuperAdmin).not.toHaveBeenCalled();
   });
 });
