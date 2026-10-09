@@ -305,6 +305,70 @@ describe("Super Admin Users page", () => {
         within(resultModal).getByTestId("copy-invite-link-button"),
       ).toBeInTheDocument();
     });
+
+    it("offers only team organizations in the optional org picker, and scopes the link when one is chosen", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+        {
+          id: "2",
+          name: "Acme Corp",
+          contact_email: "ops@acme.org",
+          contact_name: null,
+          member_count: 3,
+          is_personal: false,
+          status: "active",
+        },
+        {
+          id: "7",
+          name: "user_7_org",
+          contact_email: "sam@beta.llc",
+          contact_name: null,
+          member_count: 1,
+          is_personal: true,
+          status: "active",
+        },
+      ]);
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
+        .mockResolvedValue({
+          url: "https://app.example.com/oauth/idp/invite?token=abc123",
+          role: "member",
+          expires_at: "2026-01-08T00:00:00Z",
+        });
+      await renderUsersPage();
+
+      // Act
+      await user.click(
+        screen.getByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
+      );
+      const modal = await screen.findByTestId("mint-signup-link-modal");
+      const orgDropdown = within(modal).getByTestId("signup-link-org-dropdown");
+      await user.click(within(orgDropdown).getByTestId("dropdown-trigger"));
+
+      // Assert: personal workspaces aren't a valid invite target.
+      expect(
+        await screen.findByRole("option", { name: "Acme Corp" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("option", { name: "user_7_org" }),
+      ).not.toBeInTheDocument();
+
+      // Act: pick the org and submit.
+      await user.click(screen.getByRole("option", { name: "Acme Corp" }));
+      await user.type(
+        within(modal).getByTestId("signup-link-email-input"),
+        "new@acme.org",
+      );
+      await user.click(within(modal).getByRole("button", { name: /create/i }));
+
+      // Assert: the link is now scoped to the chosen org.
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: "new@acme.org",
+        role: "member",
+        orgId: "2",
+      });
+    });
   });
 });
 

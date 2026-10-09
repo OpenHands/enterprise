@@ -534,6 +534,10 @@ export function SuperAdminUsers() {
       {mintLinkOpen && (
         <MintSignupLinkModal
           orgId={null}
+          organizations={teamOrgs.map((org) => ({
+            id: org.id,
+            name: org.name,
+          }))}
           onClose={() => setMintLinkOpen(false)}
         />
       )}
