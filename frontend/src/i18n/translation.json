@@ -31296,6 +31296,23 @@
     "uk": "Revoke",
     "ca": "Revoke"
   },
+  "SUPER_ADMIN$CANNOT_REVOKE_SELF": {
+    "en": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ja": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "zh-CN": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "zh-TW": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ko-KR": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "no": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "it": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "pt": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "es": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ar": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "fr": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "tr": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "de": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "uk": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this.",
+    "ca": "You cannot revoke your own Super Admin access. Ask another Super Admin to do this."
+  },
   "SUPER_ADMIN$INSTANCE_LOGO": {
     "en": "Company logo",
     "ja": "Company logo",
