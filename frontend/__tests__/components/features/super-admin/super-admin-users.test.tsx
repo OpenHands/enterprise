@@ -4,11 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import OptionService from "#/api/option-service/option-service.api";
-import { organizationService } from "#/api/organization-service/organization-service.api";
-import {
-  superAdminService,
-  type SuperAdminApiOrg,
-} from "#/api/super-admin-service/super-admin-service.api";
+import { idpService } from "#/api/idp-service/idp-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import {
   SuperAdminRowMenu,
   SuperAdminTable,
@@ -90,12 +87,24 @@ describe("Super Admin Users page", () => {
   });
 
   it.each([true, false])(
-    "offers only Invite by email when user provisioning is %s",
+    "offers only Create Sign-up Link when user provisioning is %s and the local password IDP is on",
     async (provisioningEnabled) => {
       // Arrange
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
         createMockWebClientConfig({
           user_provisioning_enabled: provisioningEnabled,
+          feature_flags: {
+            enable_billing: false,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
         }),
       );
 
@@ -104,7 +113,7 @@ describe("Super Admin Users page", () => {
 
       // Assert
       expect(
-        screen.getByRole("button", { name: "SUPER_ADMIN$INVITE_BY_EMAIL" }),
+        screen.getByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: "SUPER_ADMIN$PROVISION_USER" }),
@@ -112,6 +121,23 @@ describe("Super Admin Users page", () => {
       expect(screen.getByText("SUPER_ADMIN$USERS_SUBLINE")).toBeInTheDocument();
     },
   );
+
+  it("hides the Create Sign-up Link button when the local password IDP is off", async () => {
+    // Arrange: the default mock config has no `enable_integrated_idp` flag.
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+
+    // Act
+    await renderUsersPage();
+
+    // Assert: there is no password-based account for a link recipient to
+    // set up without the local IDP, so the affordance must not be offered.
+    await screen.findByTestId("super-admin-users");
+    expect(
+      screen.queryByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
+    ).not.toBeInTheDocument();
+  });
 
   it("does not link another user's personal workspace", async () => {
     // Arrange
@@ -221,86 +247,78 @@ describe("Super Admin Users page", () => {
     expect(screen.queryByText("inactive")).not.toBeInTheDocument();
   });
 
-  describe("Invite by email", () => {
-    const ACME: SuperAdminApiOrg = {
-      id: "2",
-      name: "Acme Corp",
-      contact_email: "ops@acme.org",
-      contact_name: null,
-      member_count: 3,
-      is_personal: false,
-      status: "active",
-    };
-
+  describe("Create Sign-up Link", () => {
     beforeEach(() => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-        createMockWebClientConfig({ user_provisioning_enabled: false }),
+        createMockWebClientConfig({
+          user_provisioning_enabled: false,
+          feature_flags: {
+            enable_billing: false,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
       );
-      vi.spyOn(organizationService, "getPendingInvitations").mockResolvedValue({
-        items: [],
-        email_delivery_configured: false,
-        auto_add_enabled: false,
-      });
     });
 
-    it("invites a person into a team organization and shows the link when email delivery is off", async () => {
-      // Arrange
+    it("mints an instance-wide sign-up link and shows the copyable result, instead of sending an email invite", async () => {
+      // Arrange: this page has no single org in context, so the link is
+      // not scoped to an org -- see `MintSignupLinkModal`'s `orgId: null`.
       const user = userEvent.setup();
-      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-        ACME,
-      ]);
-      const inviteMembersSpy = vi
-        .spyOn(organizationService, "inviteMembers")
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
         .mockResolvedValue({
-          successful: [
-            {
-              id: 1,
-              email: "new@acme.org",
-              role: "member",
-              status: "pending",
-              created_at: "2026-01-01T00:00:00Z",
-              expires_at: "2026-01-08T00:00:00Z",
-              invite_url:
-                "https://app.example.com/api/organizations/members/invite/accept?token=inv-abc",
-            },
-          ],
-          failed: [],
-          email_delivery_configured: false,
+          url: "https://app.example.com/oauth/idp/invite?token=abc123",
+          role: "member",
+          expires_at: "2026-01-08T00:00:00Z",
         });
       await renderUsersPage();
 
       // Act
       await user.click(
-        screen.getByRole("button", { name: "SUPER_ADMIN$INVITE_BY_EMAIL" }),
+        screen.getByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
       );
-      const modal = await screen.findByTestId("invite-modal");
-      await within(modal).findByDisplayValue("Acme Corp");
+      const modal = await screen.findByTestId("mint-signup-link-modal");
       await user.type(
-        within(modal).getByTestId("emails-badge-input"),
-        "new@acme.org ",
+        within(modal).getByTestId("signup-link-email-input"),
+        "new@acme.org",
       );
-      await user.click(within(modal).getByRole("button", { name: /add/i }));
+      await user.click(within(modal).getByRole("button", { name: /create/i }));
 
-      // Assert
-      expect(inviteMembersSpy).toHaveBeenCalledExactlyOnceWith({
-        orgId: "2",
-        emails: ["new@acme.org"],
+      // Assert: no org-scoped email invite was ever sent -- the local
+      // password IDP's sign-up link is the only mechanism this button uses.
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: "new@acme.org",
         role: "member",
+        orgId: undefined,
       });
-      const linksModal = await screen.findByTestId("invite-links-modal");
+      const resultModal = await screen.findByTestId("signup-link-result");
+      expect(within(resultModal).getByText("new@acme.org")).toBeInTheDocument();
       expect(
-        within(linksModal).getByText("ORG$EMAIL_DELIVERY_NOT_CONFIGURED"),
-      ).toBeInTheDocument();
-      expect(
-        within(linksModal).getByTestId("copy-invite-link-button"),
+        within(resultModal).getByTestId("copy-invite-link-button"),
       ).toBeInTheDocument();
     });
 
-    it("offers only team organizations to invite into", async () => {
+    it("offers only team organizations in the optional org picker, and scopes the link when one is chosen", async () => {
       // Arrange
       const user = userEvent.setup();
       vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-        ACME,
+        {
+          id: "2",
+          name: "Acme Corp",
+          contact_email: "ops@acme.org",
+          contact_name: null,
+          member_count: 3,
+          is_personal: false,
+          status: "active",
+        },
         {
           id: "7",
           name: "user_7_org",
@@ -311,24 +329,45 @@ describe("Super Admin Users page", () => {
           status: "active",
         },
       ]);
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
+        .mockResolvedValue({
+          url: "https://app.example.com/oauth/idp/invite?token=abc123",
+          role: "member",
+          expires_at: "2026-01-08T00:00:00Z",
+        });
       await renderUsersPage();
 
       // Act
       await user.click(
-        screen.getByRole("button", { name: "SUPER_ADMIN$INVITE_BY_EMAIL" }),
+        screen.getByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
       );
-      const modal = await screen.findByTestId("invite-modal");
-      await within(modal).findByDisplayValue("Acme Corp");
-      const orgDropdown = within(modal).getByTestId("invite-org-dropdown");
+      const modal = await screen.findByTestId("mint-signup-link-modal");
+      const orgDropdown = within(modal).getByTestId("signup-link-org-dropdown");
       await user.click(within(orgDropdown).getByTestId("dropdown-trigger"));
 
-      // Assert
+      // Assert: personal workspaces aren't a valid invite target.
       expect(
         await screen.findByRole("option", { name: "Acme Corp" }),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("option", { name: "user_7_org" }),
       ).not.toBeInTheDocument();
+
+      // Act: pick the org and submit.
+      await user.click(screen.getByRole("option", { name: "Acme Corp" }));
+      await user.type(
+        within(modal).getByTestId("signup-link-email-input"),
+        "new@acme.org",
+      );
+      await user.click(within(modal).getByRole("button", { name: /create/i }));
+
+      // Assert: the link is now scoped to the chosen org.
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: "new@acme.org",
+        role: "member",
+        orgId: "2",
+      });
     });
   });
 });

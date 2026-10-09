@@ -25023,6 +25023,23 @@
     "uk": "Створити посилання для реєстрації",
     "ca": "Crea un enllaç de registre"
   },
+  "ORG$NO_ORGANIZATION": {
+    "en": "No organization",
+    "ja": "組織なし",
+    "zh-CN": "无组织",
+    "zh-TW": "無組織",
+    "ko-KR": "조직 없음",
+    "no": "Ingen organisasjon",
+    "it": "Nessuna organizzazione",
+    "pt": "Nenhuma organização",
+    "es": "Sin organización",
+    "ar": "بدون منظمة",
+    "fr": "Aucune organisation",
+    "tr": "Organizasyon yok",
+    "de": "Keine Organisation",
+    "uk": "Без організації",
+    "ca": "Cap organització"
+  },
   "ORG$MANAGE_ORGANIZATION": {
     "en": "Manage Organization",
     "ja": "組織を管理",
