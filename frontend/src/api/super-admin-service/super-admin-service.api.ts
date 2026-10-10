@@ -99,20 +99,6 @@ export const superAdminService = {
     await openHands.delete(`/api/admin/organizations/${orgId}`);
   },
 
-  updateOrganizationStatus: async ({
-    orgId,
-    status,
-  }: {
-    orgId: string;
-    status: "active" | "suspended";
-  }) => {
-    const { data } = await openHands.patch<SuperAdminApiOrg>(
-      `/api/admin/organizations/${orgId}`,
-      { status },
-    );
-    return data;
-  },
-
   listUsers: async () => {
     const { data } = await openHands.get<{ users: SuperAdminApiUser[] }>(
       "/api/admin/directory/users",

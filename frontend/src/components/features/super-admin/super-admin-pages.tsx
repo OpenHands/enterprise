@@ -14,7 +14,6 @@ import {
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useUpdateSetupState,
-  useUpdateSuperAdminOrganizationStatus,
 } from "#/hooks/mutation/use-super-admin-mutations";
 import {
   useSetupState,
@@ -104,13 +103,9 @@ export function SuperAdminOrganizations() {
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOrgId, setInviteOrgId] = useState<string | null>(null);
-  const [pendingOrgAction, setPendingOrgAction] = useState<{
-    action: "suspend" | "remove";
-    org: SuperAdminOrgRow;
-  } | null>(null);
+  const [orgToRemove, setOrgToRemove] = useState<SuperAdminOrgRow | null>(null);
   const { data, isLoading, isError } = useSuperAdminOrganizations();
   const deleteOrg = useDeleteSuperAdminOrganization();
-  const updateOrgStatus = useUpdateSuperAdminOrganizationStatus();
 
   const orgs: SuperAdminOrgRow[] = useMemo(
     () =>
@@ -137,17 +132,14 @@ export function SuperAdminOrganizations() {
     [query, orgs],
   );
 
-  const confirmOrgAction = () => {
-    if (!pendingOrgAction) {
+  const confirmRemoveOrg = () => {
+    if (!orgToRemove) {
       return;
     }
-    const orgId = pendingOrgAction.org.id;
-    const onSuccess = () => setPendingOrgAction(null);
-    if (pendingOrgAction.action === "remove") {
-      deleteOrg.mutate({ orgId }, { onSuccess });
-    } else {
-      updateOrgStatus.mutate({ orgId, status: "suspended" }, { onSuccess });
-    }
+    deleteOrg.mutate(
+      { orgId: orgToRemove.id },
+      { onSuccess: () => setOrgToRemove(null) },
+    );
   };
 
   return (
@@ -248,7 +240,7 @@ export function SuperAdminOrganizations() {
                       onSelect: () => viewOrg(row.id, row.name),
                     },
                     // Personal workspaces belong to their user; the dashboard
-                    // does not suspend or delete them.
+                    // does not delete them.
                     ...(row.isPersonal
                       ? []
                       : [
@@ -257,34 +249,11 @@ export function SuperAdminOrganizations() {
                             testId: `super-admin-org-invite-${row.id}`,
                             onSelect: () => setInviteOrgId(row.id),
                           },
-                          row.status === "active"
-                            ? {
-                                label: t(I18nKey.SUPER_ADMIN$SUSPEND),
-                                testId: `super-admin-org-suspend-${row.id}`,
-                                onSelect: () =>
-                                  setPendingOrgAction({
-                                    action: "suspend",
-                                    org: row,
-                                  }),
-                              }
-                            : {
-                                label: t(I18nKey.SUPER_ADMIN$RESUME),
-                                testId: `super-admin-org-resume-${row.id}`,
-                                onSelect: () =>
-                                  updateOrgStatus.mutate({
-                                    orgId: row.id,
-                                    status: "active",
-                                  }),
-                              },
                           {
                             label: t(I18nKey.SUPER_ADMIN$REMOVE),
                             testId: `super-admin-org-remove-${row.id}`,
                             destructive: true,
-                            onSelect: () =>
-                              setPendingOrgAction({
-                                action: "remove",
-                                org: row,
-                              }),
+                            onSelect: () => setOrgToRemove(row),
                           },
                         ]),
                   ]}
@@ -308,22 +277,14 @@ export function SuperAdminOrganizations() {
           onClose={() => setInviteOrgId(null)}
         />
       ) : null}
-      {pendingOrgAction ? (
+      {orgToRemove ? (
         <OrgModal
           testId="super-admin-org-confirm"
-          title={
-            pendingOrgAction.action === "remove"
-              ? t(I18nKey.ORG$DELETE_ORGANIZATION)
-              : t(I18nKey.SUPER_ADMIN$SUSPEND_ORG_TITLE)
-          }
+          title={t(I18nKey.ORG$DELETE_ORGANIZATION)}
           description={
             <Trans
-              i18nKey={
-                pendingOrgAction.action === "remove"
-                  ? I18nKey.ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME
-                  : I18nKey.SUPER_ADMIN$SUSPEND_ORG_CONFIRM
-              }
-              values={{ name: pendingOrgAction.org.name }}
+              i18nKey={I18nKey.ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME}
+              values={{ name: orgToRemove.name }}
               components={{ name: <span className="text-white" /> }}
             />
           }
@@ -331,9 +292,9 @@ export function SuperAdminOrganizations() {
           secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
           primaryButtonTestId="super-admin-org-confirm-submit"
           secondaryButtonTestId="super-admin-org-confirm-cancel"
-          onPrimaryClick={confirmOrgAction}
-          onClose={() => setPendingOrgAction(null)}
-          isLoading={deleteOrg.isPending || updateOrgStatus.isPending}
+          onPrimaryClick={confirmRemoveOrg}
+          onClose={() => setOrgToRemove(null)}
+          isLoading={deleteOrg.isPending}
         />
       ) : null}
       {pendingOrg ? (

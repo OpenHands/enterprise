@@ -81,37 +81,6 @@ export const useDeleteSuperAdminOrganization = () => {
   });
 };
 
-export const useUpdateSuperAdminOrganizationStatus = () => {
-  const queryClient = useQueryClient();
-  const { t } = useTranslation();
-
-  return useMutation({
-    mutationFn: ({
-      orgId,
-      status,
-    }: {
-      orgId: string;
-      status: "active" | "suspended";
-    }) => superAdminService.updateOrganizationStatus({ orgId, status }),
-    onSuccess: (_data, variables) => {
-      displaySuccessToast(
-        variables.status === "suspended"
-          ? t(I18nKey.SUPER_ADMIN$ORG_SUSPEND_SUCCESS)
-          : t(I18nKey.SUPER_ADMIN$ORG_RESUME_SUCCESS),
-      );
-      queryClient.invalidateQueries({
-        queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
-      });
-    },
-    onError: (error) => {
-      displayErrorToast(
-        retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$ORG_STATUS_ERROR),
-      );
-    },
-  });
-};
-
 export const useUpdateSuperAdminUserStatus = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
