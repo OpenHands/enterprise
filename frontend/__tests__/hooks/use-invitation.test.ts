@@ -1,5 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
+import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-mismatch-store";
 
 const INVITATION_TOKEN_KEY = "openhands_invitation_token";
 
@@ -78,9 +80,9 @@ describe("useInvitation", () => {
   });
 
   describe("completion cleanup", () => {
-    it("should clear localStorage when email_mismatch param is present", () => {
-      // Arrange
-      const storedToken = "inv-token-to-clear";
+    it("should keep the token when the sign-in used another email", () => {
+      // Arrange: the invitation is still pending after a wrong-account sign-in
+      const storedToken = "inv-token-to-keep";
       localStorage.setItem(INVITATION_TOKEN_KEY, storedToken);
       mockSearchParamsData = { email_mismatch: "true" };
 
@@ -88,7 +90,8 @@ describe("useInvitation", () => {
       const { result } = renderHook(() => useInvitation());
 
       // Assert
-      expect(localStorage.getItem(INVITATION_TOKEN_KEY)).toBeNull();
+      expect(localStorage.getItem(INVITATION_TOKEN_KEY)).toBe(storedToken);
+      expect(result.current.invitationToken).toBe(storedToken);
       expect(mockSetSearchParams).toHaveBeenCalled();
     });
 
@@ -115,6 +118,60 @@ describe("useInvitation", () => {
 
       // Assert
       expect(localStorage.getItem(INVITATION_TOKEN_KEY)).toBeNull();
+    });
+  });
+
+  describe("callback outcome", () => {
+    it.each([
+      ["invitation_success", "success", "ORG$INVITATION_ACCEPTED"],
+      ["already_member", "success", "ORG$ALREADY_MEMBER"],
+      ["invitation_expired", "error", "ORG$INVITATION_EXPIRED"],
+      ["invitation_invalid", "error", "ORG$INVITATION_INVALID"],
+      ["invitation_error", "error", "ORG$INVITATION_ACCEPT_ERROR"],
+    ] as const)(
+      "should tell the user about %s when asked to report",
+      (param, kind, message) => {
+        // Arrange
+        const successToast = vi.spyOn(ToastHandlers, "displaySuccessToast");
+        const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+        mockSearchParamsData = { [param]: "true" };
+
+        // Act
+        renderHook(() => useInvitation({ reportOutcome: true }));
+
+        // Assert
+        const shown = kind === "success" ? successToast : errorToast;
+        const other = kind === "success" ? errorToast : successToast;
+        expect(shown).toHaveBeenCalledExactlyOnceWith(message);
+        expect(other).not.toHaveBeenCalled();
+      },
+    );
+
+    it("should leave an email mismatch to the signed-in accept", () => {
+      // Arrange
+      const successToast = vi.spyOn(ToastHandlers, "displaySuccessToast");
+      const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+      mockSearchParamsData = { email_mismatch: "true" };
+
+      // Act
+      renderHook(() => useInvitation({ reportOutcome: true }));
+
+      // Assert
+      expect(successToast).not.toHaveBeenCalled();
+      expect(errorToast).not.toHaveBeenCalled();
+      expect(useInvitationEmailMismatchStore.getState().isOpen).toBe(false);
+    });
+
+    it("should not report the outcome unless asked to", () => {
+      // Arrange
+      const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+      mockSearchParamsData = { invitation_expired: "true" };
+
+      // Act
+      renderHook(() => useInvitation());
+
+      // Assert
+      expect(errorToast).not.toHaveBeenCalled();
     });
   });
 

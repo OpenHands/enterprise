@@ -39,6 +39,8 @@ import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin
 import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { useSuspendedOrganizationStore } from "#/stores/suspended-organization-store";
+import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-mismatch-store";
+import { InvitationEmailMismatchModal } from "#/components/features/org/invitation-email-mismatch-modal";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -99,6 +101,9 @@ export default function MainApp() {
     (state) => state.organizationId,
   );
   const suspension = useSuspendedOrganizationStore((state) => state.suspension);
+  const invitationEmailMismatch = useInvitationEmailMismatchStore(
+    (state) => state.isOpen,
+  );
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
@@ -376,6 +381,7 @@ export default function MainApp() {
           onClose={() => setSettingsModalIsOpen(false)}
         />
       )}
+      {invitationEmailMismatch && <InvitationEmailMismatchModal />}
     </div>
   );
 }
