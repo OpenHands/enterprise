@@ -80,7 +80,7 @@ ADD http://deb.debian.org/debian-security/dists/trixie-security/InRelease /tmp/t
 RUN rm -f /tmp/trixie-security-InRelease \
     && apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
-    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \
     && apt-get clean \
