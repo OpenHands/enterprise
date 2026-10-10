@@ -19,7 +19,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import false, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -36,9 +38,12 @@ from server.routes.org_models import (
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
+from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
 from storage.lite_llm_manager import LiteLlmManager
+from storage.oauth_provider import OAuthProvider
+from storage.oauth_token import OAuthToken
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
@@ -60,6 +65,15 @@ _LOGO_DATA_URL = re.compile(r'data:image/(?:png|jpeg|webp);base64,(?P<payload>.*
 
 # The automation check runs on a page load, so it gives up quickly.
 _AUTOMATION_CHECK_TIMEOUT_SECONDS = 5
+
+# Git providers with a built-in issue-to-PR workflow, which the setup guide
+# counts as the organization's automation.
+_AUTOMATION_GIT_PROVIDERS = (
+    ProviderType.GITHUB.value,
+    ProviderType.GITLAB.value,
+    ProviderType.BITBUCKET.value,
+    ProviderType.BITBUCKET_DATA_CENTER.value,
+)
 
 
 class AdminOrgResponse(BaseModel):
@@ -840,6 +854,38 @@ async def _org_has_automation(org_id: UUID, request: Request) -> bool:
         return False
 
 
+async def _user_has_automation_git_account(
+    session: AsyncSession, user_id: UUID
+) -> bool:
+    """Whether the user signed in with, or linked, a GitHub, GitLab or Bitbucket account.
+
+    Keycloak sign-in and linking keep the account's tokens in ``auth_tokens``;
+    OAuth v2 keeps them in ``oauth_tokens``, for the sign-in provider and for
+    linked git providers alike. Only a stored row is checked, so loading the
+    setup state never refreshes or deletes a token.
+    """
+    keycloak_token = await session.scalar(
+        select(AuthTokens.id)
+        .where(
+            AuthTokens.keycloak_user_id == str(user_id),
+            AuthTokens.identity_provider.in_(_AUTOMATION_GIT_PROVIDERS),
+        )
+        .limit(1)
+    )
+    if keycloak_token is not None:
+        return True
+    oauth_v2_token = await session.scalar(
+        select(OAuthToken.id)
+        .join(OAuthProvider, OAuthProvider.id == OAuthToken.oauth_provider_id)
+        .where(
+            OAuthToken.user_id == user_id,
+            OAuthProvider.provider_category.in_(_AUTOMATION_GIT_PROVIDERS),
+        )
+        .limit(1)
+    )
+    return oauth_v2_token is not None
+
+
 async def _guide_steps(
     org_id: UUID, setup_user_id: UUID, request: Request
 ) -> SetupGuideSteps:
@@ -868,6 +914,7 @@ async def _guide_steps(
                 OrgInvitation.expires_at > now,
             )
         )
+        has_git_account = await _user_has_automation_git_account(session, setup_user_id)
     # Every org gets a Default profile seeded from its default model, so only
     # a profile someone saved counts as configuring an LLM.
     org_llm = org is not None and any(
@@ -877,7 +924,9 @@ async def _guide_steps(
         org_llm=org_llm,
         # MCP servers belong to each member, so this is the setup user's own.
         mcp_server=member is not None and bool(member_mcp_config(member)),
-        automation=await _org_has_automation(org_id, request),
+        # A GitHub, GitLab or Bitbucket account already gives the setup user
+        # that provider's built-in issue-to-PR workflow.
+        automation=has_git_account or await _org_has_automation(org_id, request),
         invite=(member_count or 0) > 1 or (pending_invitations or 0) > 0,
     )
 
