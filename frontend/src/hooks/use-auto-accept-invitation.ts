@@ -10,10 +10,8 @@ import {
   getInvitationErrorCode,
 } from "#/hooks/mutation/use-accept-invitation";
 import { useSwitchOrganization } from "#/hooks/mutation/use-switch-organization";
-import {
-  displayErrorToast,
-  displaySuccessToast,
-} from "#/utils/custom-toast-handlers";
+import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { reportInvitationFailure } from "#/utils/report-invitation-failure";
 
 /**
  * Accept a pending invitation token automatically once the user is
@@ -23,7 +21,8 @@ import {
  * confirm/cancel dialog added no security (the token is bound to the
  * invited email) and its cancel didn't actually decline anything, so the
  * token is simply submitted as soon as a session exists and the outcome is
- * reported via a toast.
+ * reported via a toast, or a dialog when the account's email is not the
+ * invited one.
  */
 export function useAutoAcceptInvitation() {
   const { t } = useTranslation();
@@ -43,6 +42,7 @@ export function useAutoAcceptInvitation() {
       { token: invitationToken },
       {
         onSuccess: (data) => {
+          clearInvitation();
           displaySuccessToast(
             t(I18nKey.ORG$INVITATION_ACCEPTED_SUCCESS, {
               orgName: data.org_name,
@@ -58,27 +58,12 @@ export function useAutoAcceptInvitation() {
           const errorCode = getInvitationErrorCode(
             error as AxiosError<{ detail: string }>,
           );
-          switch (errorCode) {
-            case "already_member":
-              // The invitation was already applied (e.g. accepted on the
-              // user's behalf at sign-in) — success from their perspective.
-              displaySuccessToast(t(I18nKey.ORG$ALREADY_MEMBER));
-              break;
-            case "invitation_expired":
-              displayErrorToast(t(I18nKey.ORG$INVITATION_EXPIRED));
-              break;
-            case "email_mismatch":
-              displayErrorToast(t(I18nKey.ORG$INVITATION_EMAIL_MISMATCH));
-              break;
-            case "invitation_invalid":
-              displayErrorToast(t(I18nKey.ORG$INVITATION_INVALID));
-              break;
-            default:
-              displayErrorToast(t(I18nKey.ORG$INVITATION_ACCEPT_ERROR));
+          // A wrong-account sign-in leaves the invitation pending; the
+          // mismatch dialog decides whether to keep it for the next sign-in.
+          if (errorCode !== "email_mismatch") {
+            clearInvitation();
           }
-        },
-        onSettled: () => {
-          clearInvitation();
+          reportInvitationFailure(errorCode, t);
         },
       },
     );
