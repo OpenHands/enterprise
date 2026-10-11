@@ -22,12 +22,15 @@ export function useLlmApiKey() {
   const query = useQuery({
     queryKey: [LLM_API_KEY_QUERY_KEY, organizationId],
     // On SaaS the BYOR key is scoped to the selected organization, so wait
-    // for one to be selected. Otherwise fetch whenever the deployment has
-    // explicitly enabled BYOR export (e.g. self-hosted installs without
-    // billing).
+    // for one to be selected, and only ask when the deployment can export it
+    // (billing on, or ENABLE_BYOR_EXPORT set): the same gate the API keys
+    // page uses. Otherwise fetch whenever the deployment has explicitly
+    // enabled BYOR export (e.g. self-hosted installs without billing).
     enabled:
       config?.app_mode === "saas"
-        ? !!organizationId
+        ? !!organizationId &&
+          (!!config?.feature_flags?.enable_billing ||
+            !!config?.feature_flags?.enable_byor_export)
         : !!config?.feature_flags?.enable_byor_export,
     queryFn: async () => {
       const { data } =

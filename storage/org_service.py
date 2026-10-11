@@ -21,7 +21,7 @@ from server.routes.org_models import (
     OrgUpdate,
     OrphanedUserError,
 )
-from storage.lite_llm_manager import LiteLlmManager
+from storage.lite_llm_manager import LiteLlmManager, _is_billing_enabled
 from storage.org import Org
 from storage.org_default_settings import (
     apply_configured_org_condenser_default,
@@ -870,6 +870,10 @@ class OrgService:
     ) -> bool:
         """Check if BYOR export is enabled for an organization.
 
+        Export is granted by the ``ENABLE_BYOR_EXPORT`` opt-in or, only when
+        billing is enabled, by the org's persisted flag or a positive credit
+        balance.
+
         Args:
             user_id: User ID (used only as fallback to look up the user's
                 ``current_org_id`` when ``org_id`` is omitted).
@@ -881,6 +885,12 @@ class OrgService:
         """
         if ENABLE_BYOR_EXPORT:
             return True
+
+        # The org flag and the credits check are billing concepts (a completed
+        # Stripe checkout sets the flag; credits are the LiteLLM budget). Without
+        # billing, only the ENABLE_BYOR_EXPORT opt-in above can grant export.
+        if not await _is_billing_enabled():
+            return False
 
         if org_id is None:
             user = await UserStore.get_user_by_id(user_id)
