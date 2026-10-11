@@ -2244,10 +2244,37 @@ class TestUsesManagedDefaultLlm:
         # With LiteLLM off the chart no longer sets LITE_LLM_API_URL.
         org = MagicMock(spec=Org)
         org.agent_settings = {'llm': {'model': model, 'base_url': proxy_url}}
-        with patch(
-            'storage.org_store.LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
         ):
             assert OrgStore._uses_managed_default_llm(org) is True
+
+    @pytest.mark.parametrize(
+        ('model', 'llm_base_url'),
+        [
+            ('litellm_proxy/claude-sonnet-4-5', None),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://localhost:4000'),
+            ('openhands/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+        ],
+    )
+    def test_other_in_cluster_gateway_is_not_managed_with_litellm_on(
+        self, model, llm_base_url
+    ):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': model, 'base_url': llm_base_url}}
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
 
     def test_external_litellm_proxy_is_not_managed(self):
         org = MagicMock(spec=Org)

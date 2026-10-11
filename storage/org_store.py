@@ -25,6 +25,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
     apply_agent_settings_diff,
 )
+from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
@@ -411,18 +412,19 @@ class OrgStore:
 
         if normalized_base_url == managed_base_url:
             return True
+        # The bundled proxy's URL, left behind after LiteLLM was turned off.
+        gateway_off_proxy_url = not constants.ENABLE_LEGACY_LITELLM and (
+            normalized_base_url is None or is_in_cluster_url(normalized_base_url)
+        )
         # Public OpenHands provider model with no explicit (or a managed-host)
         # base_url is managed.
         if is_openhands_model(model):
             return (
                 normalized_base_url is None
                 or 'all-hands.dev' in normalized_base_url.lower()
-                or is_in_cluster_url(normalized_base_url)
+                or gateway_off_proxy_url
             )
-        # The bundled proxy's route; its URL env is gone once LiteLLM is off.
-        if model.startswith('litellm_proxy/'):
-            return normalized_base_url is None or is_in_cluster_url(normalized_base_url)
-        return False
+        return model.startswith('litellm_proxy/') and gateway_off_proxy_url
 
     @staticmethod
     def _needs_gateway_off_repair(org: Org) -> bool:
