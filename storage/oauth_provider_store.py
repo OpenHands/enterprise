@@ -114,6 +114,41 @@ class OAuthProviderStore:
             result = await session.execute(select(OAuthProvider))
             return list(result.scalars().all())
 
+    async def create(self, provider: OAuthProvider) -> OAuthProvider:
+        """Insert a new provider row, returning the persisted row.
+
+        Unlike :meth:`upsert`, this always inserts -- callers (e.g. the
+        ``oauth_providers`` admin API) construct a fresh ``OAuthProvider``
+        with no ``id`` set.
+        """
+        async with a_session_maker() as session:
+            session.add(provider)
+            await session.commit()
+            await session.refresh(provider)
+            return provider
+
+    async def update(self, provider_id: int, **fields) -> OAuthProvider | None:
+        """Patch an existing provider row with only the given fields.
+
+        Returns the updated row, or ``None`` if ``provider_id`` does not
+        exist. Unlike :meth:`upsert` (full-row replace), only the columns
+        passed in ``fields`` are modified -- callers (e.g. the
+        ``oauth_providers`` admin API) pass ``model_dump(exclude_unset=True)``
+        so omitted fields are left untouched.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OAuthProvider).where(OAuthProvider.id == provider_id)
+            )
+            existing = result.scalars().one_or_none()
+            if existing is None:
+                return None
+            for key, value in fields.items():
+                setattr(existing, key, value)
+            await session.commit()
+            await session.refresh(existing)
+            return existing
+
     async def upsert(self, provider: OAuthProvider) -> OAuthProvider:
         """Insert or update a provider row, returning the persisted row.
 

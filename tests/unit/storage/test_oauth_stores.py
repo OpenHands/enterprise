@@ -240,6 +240,44 @@ class TestOAuthProviderStore:
         assert updated.display_name == 'GitHub Inc'
 
     @pytest.mark.asyncio
+    async def test_create(self, patched_session):
+        provider = OAuthProvider(
+            provider_category=ProviderType.GITLAB.value,
+            display_name='GitLab',
+            is_idp=False,
+            client_id='cid',
+            client_secret=wrap_token('secret'),
+            permitted_drift_seconds=60,
+        )
+        created = await OAuthProviderStore().create(provider)
+        assert created.id is not None
+        fetched = await OAuthProviderStore().get_by_id(created.id)
+        assert fetched is not None
+        assert fetched.provider_category == 'gitlab'
+        assert unwrap_token(fetched.client_secret) == 'secret'
+
+    @pytest.mark.asyncio
+    async def test_update_partial_fields_only(self, patched_session, make_provider):
+        provider = await make_provider(client_secret='original')
+        updated = await OAuthProviderStore().update(provider.id, display_name='Renamed')
+        assert updated is not None
+        assert updated.display_name == 'Renamed'
+        # Fields not passed to update() are left untouched.
+        assert updated.client_id == provider.client_id
+        assert unwrap_token(updated.client_secret) == 'original'
+
+    @pytest.mark.asyncio
+    async def test_update_can_clear_secret(self, patched_session, make_provider):
+        provider = await make_provider(client_secret='original')
+        updated = await OAuthProviderStore().update(provider.id, client_secret=None)
+        assert updated is not None
+        assert updated.client_secret is None
+
+    @pytest.mark.asyncio
+    async def test_update_missing_returns_none(self, patched_session):
+        assert await OAuthProviderStore().update(99999, display_name='x') is None
+
+    @pytest.mark.asyncio
     async def test_delete(self, patched_session, make_provider):
         provider = await make_provider()
         await OAuthProviderStore().delete(provider.id)
