@@ -1060,15 +1060,21 @@ class OrgStore:
         if llm is not None:
             llm_model = llm.model
             llm_base_url = llm.base_url
+            llm_provider_connection_id = getattr(llm, 'provider_connection_id', None)
         else:
             llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
+            llm_provider_connection_id = getattr(
+                llm_settings, 'provider_connection_id', None
+            )
         openhands_type = is_openhands_model(llm_model)
         # Imported locally to avoid a storage-internal circular import.
         from storage.saas_settings_store import managed_llm_key_config_from_model
 
-        config = managed_llm_key_config_from_model(llm_model, llm_base_url)
+        config = managed_llm_key_config_from_model(
+            llm_model, llm_base_url, llm_provider_connection_id
+        )
         if config is None or not config.openhands_type:
             return None
 

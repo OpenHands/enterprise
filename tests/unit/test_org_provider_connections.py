@@ -411,3 +411,109 @@ class TestResolutionAtActivation:
                 org_id=org_id, name='dangling', user_id=str(ADMIN_USER_ID)
             )
         assert exc.value.status_code == 422
+
+
+class TestApiKeyWhitespace:
+    """``min_length=1`` alone lets a whitespace-only key through, which
+    ``api_key_value()`` then reports as unset."""
+
+    def test_create_rejects_blank_api_key(self):
+        with pytest.raises(ValueError):
+            ProviderConnectionCreateRequest(display_name='S', api_key='   ')
+
+    def test_create_strips_surrounding_whitespace(self):
+        req = ProviderConnectionCreateRequest(display_name='S', api_key='  sk-key  ')
+        assert req.api_key.get_secret_value() == 'sk-key'
+
+    def test_update_rejects_blank_api_key(self):
+        with pytest.raises(ValueError):
+            ProviderConnectionUpdateRequest(api_key='   ')
+
+    def test_update_strips_surrounding_whitespace(self):
+        req = ProviderConnectionUpdateRequest(api_key=' sk-new ')
+        assert req.api_key is not None
+        assert req.api_key.get_secret_value() == 'sk-new'
+
+
+class TestApplyProviderConnection:
+    """``apply_provider_connection`` overlays the linked connection's
+    credentials onto an LLM payload at settings-load time."""
+
+    @staticmethod
+    def _org(connections):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=uuid.uuid4(), provider_connections=connections)
+
+    def test_overlays_key_and_base_url(self):
+        from storage.agent_profile_resolution import apply_provider_connection
+
+        org = self._org(
+            {
+                'connections': {
+                    'c1': {
+                        'id': 'c1',
+                        'display_name': 'Shared',
+                        'api_key': 'sk-shared',
+                        'base_url': 'https://shared.example.com',
+                    }
+                }
+            }
+        )
+        out = apply_provider_connection(
+            org,
+            {
+                'model': 'openai/gpt-4o',
+                'api_key': 'stale',
+                'base_url': 'https://old.example.com',
+                'provider_connection_id': 'c1',
+            },
+        )
+        assert out['api_key'] == 'sk-shared'
+        assert out['base_url'] == 'https://shared.example.com'
+        assert out['model'] == 'openai/gpt-4o'
+
+    def test_unlinked_payload_is_returned_unchanged(self):
+        from storage.agent_profile_resolution import apply_provider_connection
+
+        payload = {'model': 'openai/gpt-4o', 'api_key': 'own-key'}
+        assert apply_provider_connection(self._org(None), payload) is payload
+
+    def test_dangling_link_leaves_payload_unchanged(self):
+        from storage.agent_profile_resolution import apply_provider_connection
+
+        payload = {
+            'model': 'openai/gpt-4o',
+            'api_key': 'own-key',
+            'provider_connection_id': 'missing',
+        }
+        assert (
+            apply_provider_connection(self._org({'connections': {}}), payload)
+            == payload
+        )
+
+
+class TestOrgUpdateSkipsBaseUrlInferenceForLinkedLlm:
+    def test_linked_diff_keeps_base_url_null(self):
+        from server.routes.org_models import OrgUpdate
+
+        update = OrgUpdate(
+            agent_settings_diff={
+                'llm': {
+                    'model': 'anthropic/claude-3-5-sonnet',
+                    'base_url': None,
+                    'provider_connection_id': 'c1',
+                }
+            }
+        )
+        assert update.agent_settings_diff['llm']['base_url'] is None
+
+    def test_unlinked_diff_still_infers_provider_default(self):
+        from server.routes.org_models import OrgUpdate
+
+        update = OrgUpdate(
+            agent_settings_diff={
+                'llm': {'model': 'anthropic/claude-3-5-sonnet', 'base_url': None}
+            }
+        )
+        assert update.agent_settings_diff['llm']['base_url']

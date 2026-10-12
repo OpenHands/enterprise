@@ -46,6 +46,7 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
         return managed_llm_key_config_from_model(
             llm.model,
             llm.base_url,
+            getattr(llm, 'provider_connection_id', None),
         )
 
     async def __call__(self, task: MaintenanceTask) -> dict:

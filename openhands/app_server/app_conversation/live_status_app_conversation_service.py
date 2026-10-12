@@ -1464,7 +1464,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',

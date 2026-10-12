@@ -43,6 +43,7 @@ from server.verified_models.default_profile import (
 )
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
+    apply_provider_connection,
     load_agent_profiles,
     load_llm_profiles,
 )
@@ -96,7 +97,9 @@ class ManagedLlmKeyRotation:
 
 
 def managed_llm_key_config_from_model(
-    llm_model: str | None, llm_base_url: str | None
+    llm_model: str | None,
+    llm_base_url: str | None,
+    provider_connection_id: str | None = None,
 ) -> ManagedLlmKeyConfig | None:
     """Classify an effective LLM config as managed.
 
@@ -105,7 +108,15 @@ def managed_llm_key_config_from_model(
 
     Returns ``None`` when the config is not a managed LiteLLM/OpenHands-provider
     configuration (e.g. member/org BYOK pointing at a third-party base_url).
+
+    An LLM linked to a provider connection (``provider_connection_id`` set) is
+    BYOK by construction: the connection always supplies a user-owned key, so
+    it is never classified as managed even when its ``base_url`` is the managed
+    proxy. Callers that hold an LLM pass the id through so this decision lives
+    in one place rather than at each call site.
     """
+    if provider_connection_id:
+        return None
     openhands_type = is_openhands_model(llm_model)
     normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
     normalized_managed_base_url = (
@@ -232,7 +243,14 @@ class SaasSettingsStore(SettingsStore):
     @staticmethod
     def _strip_managed_profile_api_keys(item: Settings) -> None:
         for name, llm in list(item.llm_profiles.profiles.items()):
-            if managed_llm_key_config_from_model(llm.model, llm.base_url) is not None:
+            if (
+                managed_llm_key_config_from_model(
+                    llm.model,
+                    llm.base_url,
+                    getattr(llm, 'provider_connection_id', None),
+                )
+                is not None
+            ):
                 item.llm_profiles.save(name, llm, include_secrets=False)
 
     @staticmethod
@@ -351,8 +369,13 @@ class SaasSettingsStore(SettingsStore):
             # normalize an org's pre-canonical llm_profiles identically.
             resolved_llm = resolved_dump.get('llm')
             if isinstance(resolved_llm, dict):
-                resolved_dump['llm'] = canonicalize_bundled_proxy_llm(
-                    canonicalize_openhands_llm_payload(resolved_llm)
+                # A referenced LLM profile linked to a provider connection
+                # resolves the same way as the composed path below.
+                resolved_dump['llm'] = apply_provider_connection(
+                    org,
+                    canonicalize_bundled_proxy_llm(
+                        canonicalize_openhands_llm_payload(resolved_llm)
+                    ),
                 )
         except Exception as exc:
             # Never-brick contract: catch broadly, not just the known resolver
@@ -603,6 +626,17 @@ class SaasSettingsStore(SettingsStore):
                 merged_agent_settings['llm'] = merged_llm
                 kwargs['agent_settings'] = merged_agent_settings
 
+        # A linked LLM (org default or an activated profile) takes its key and
+        # base_url from the shared provider connection at read time, so every
+        # member — not only whoever activated the profile — launches with the
+        # connection's credentials, and a rotated key applies on the next load.
+        composed_llm = merged_agent_settings.get('llm')
+        if isinstance(composed_llm, dict) and composed_llm.get(
+            'provider_connection_id'
+        ):
+            merged_agent_settings['llm'] = apply_provider_connection(org, composed_llm)
+            kwargs['agent_settings'] = merged_agent_settings
+
         # Agent Profiles: only on a resolve-requested load (conversation
         # start), resolve the active agent profile and let the result REPLACE
         # the composed agent_settings — the active Agent Profile is the sole
@@ -753,7 +787,12 @@ class SaasSettingsStore(SettingsStore):
 
             llm_model = item.agent_settings.llm.model
             llm_base_url = item.agent_settings.llm.base_url
-            managed_config = managed_llm_key_config_from_model(llm_model, llm_base_url)
+            llm_provider_connection_id = getattr(
+                item.agent_settings.llm, 'provider_connection_id', None
+            )
+            managed_config = managed_llm_key_config_from_model(
+                llm_model, llm_base_url, llm_provider_connection_id
+            )
             logger.info(
                 'saas_settings_store:store:managed_llm_config_decision',
                 extra={
@@ -1106,7 +1145,12 @@ class SaasSettingsStore(SettingsStore):
             return None
 
         llm = settings.agent_settings.llm
-        if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+        if (
+            managed_llm_key_config_from_model(
+                llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+            )
+            is None
+        ):
             return None
 
         async with a_session_maker() as session:
@@ -1190,7 +1234,12 @@ class SaasSettingsStore(SettingsStore):
             return False
 
         llm = settings.agent_settings.llm
-        if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+        if (
+            managed_llm_key_config_from_model(
+                llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+            )
+            is None
+        ):
             return False
 
         async with a_session_maker() as session:
@@ -1261,7 +1310,9 @@ class SaasSettingsStore(SettingsStore):
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
         llm = settings.agent_settings.llm
-        config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if config is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
 
