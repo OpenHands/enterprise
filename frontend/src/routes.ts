@@ -64,6 +64,7 @@ export default [
       route("admins", "routes/super-admin-admins.tsx"),
       route("usage", "routes/super-admin-usage.tsx"),
       route("instance", "routes/super-admin-instance.tsx"),
+      route("oauth-providers", "routes/super-admin-oauth-providers.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),
