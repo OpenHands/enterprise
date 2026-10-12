@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import { Toggle } from "#/components/shared/toggle/toggle";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import {
@@ -512,10 +513,13 @@ export function SuperAdminAuthProviders() {
             key: "is_idp",
             header: t(I18nKey.SUPER_ADMIN$COL_IS_IDP),
             className: "w-[8%]",
-            render: (row) =>
-              row.is_idp
-                ? t(I18nKey.SUPER_ADMIN$YES)
-                : t(I18nKey.SUPER_ADMIN$NO),
+            render: (row) => (
+              <Toggle
+                checked={row.is_idp}
+                disabled
+                aria-label={`${t(I18nKey.SUPER_ADMIN$COL_IS_IDP)}: ${row.title}`}
+              />
+            ),
           },
           {
             key: "actions",

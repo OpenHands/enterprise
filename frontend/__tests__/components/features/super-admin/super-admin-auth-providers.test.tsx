@@ -95,14 +95,30 @@ describe("Super Admin Auth Providers page", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists configured auth providers by title, kind, and IDP flag, without client id/secret columns", async () => {
+  it("lists configured auth providers by title, kind, and a read-only IDP switch, without client id/secret columns", async () => {
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      GITHUB_PROVIDER,
+      PASSWORD_PROVIDER,
+    ]);
     renderAuthProvidersPage();
 
     expect(await screen.findByText("GitHub")).toBeInTheDocument();
     expect(
       screen.getByText("SUPER_ADMIN$AUTH_PROVIDER_KIND_OAUTH"),
     ).toBeInTheDocument();
-    expect(screen.getByText("SUPER_ADMIN$NO")).toBeInTheDocument();
+
+    const githubIsIdpSwitch = screen.getByRole("switch", {
+      name: "SUPER_ADMIN$COL_IS_IDP: GitHub",
+    });
+    expect(githubIsIdpSwitch).toBeDisabled();
+    expect(githubIsIdpSwitch).toHaveAttribute("aria-checked", "false");
+
+    const passwordIsIdpSwitch = screen.getByRole("switch", {
+      name: "SUPER_ADMIN$COL_IS_IDP: Password Login",
+    });
+    expect(passwordIsIdpSwitch).toBeDisabled();
+    expect(passwordIsIdpSwitch).toHaveAttribute("aria-checked", "true");
+
     expect(screen.queryByText("github-client-id")).not.toBeInTheDocument();
     expect(
       screen.queryByText("SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET"),
