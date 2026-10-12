@@ -90,20 +90,29 @@ async def test_integration_resolver_rejects_inactive(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
 async def test_idp_completion_rejects_inactive(create_user, field):
-    from fastapi import HTTPException
+    from starlette.requests import Request
 
     from server.routes.idp import _complete_idp_login
 
     user = create_user(**{field: True})
-    with pytest.raises(HTTPException) as exc:
-        await _complete_idp_login(
-            request=None,
-            user=user,
-            is_new_user=False,
-            email='test@example.com',
-            redirect_url='/',
-        )
-    assert exc.value.status_code == 403
+    response = await _complete_idp_login(
+        request=Request(
+            {
+                'type': 'http',
+                'headers': [],
+                'path': '/',
+                'scheme': 'https',
+                'server': ('example.test', 443),
+            }
+        ),
+        user=user,
+        is_new_user=False,
+        email='test@example.com',
+        redirect_url='/',
+    )
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?account_disabled=true')
+    assert 'set-cookie' not in response.headers
 
 
 @pytest.mark.asyncio

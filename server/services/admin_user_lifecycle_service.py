@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from server.logger import logger
 from server.services.user_lifecycle_remote import UserLifecycleRemote
 from storage.database import a_session_maker
+from storage.org_store import OrgStore
 from storage.role import Role
 from storage.user import User
 from storage.user_data_cleanup import (
@@ -54,7 +55,7 @@ class AdminUserLifecycleService:
         async with self.session_factory() as lock_session:
             await lock_session.execute(
                 text('SELECT pg_advisory_xact_lock(:namespace, hashtext(:uid))'),
-                {'uid': str(uid), 'namespace': USER_LIFECYCLE_LOCK_NAMESPACE},
+                {'uid': str(uid), 'namespace': USER_LIFECYCLE_LOCK_NAMESPACE + 1},
             )
             async with self.session_factory() as session:
                 await session.execute(
@@ -63,6 +64,14 @@ class AdminUserLifecycleService:
                 )
                 user = await session.get(User, uid, with_for_update=True)
                 if user is None:
+                    await session.commit()
+                    if operation == 'delete':
+                        try:
+                            await OrgStore.delete_org_cascade(uid)
+                        except Exception as exc:
+                            raise LifecycleCleanupError(
+                                'Personal workspace cleanup incomplete; retry DELETE.'
+                            ) from exc
                     return None
                 result = UserLifecycleResult(str(uid), user.email)
                 if operation == 'enable':
@@ -124,6 +133,8 @@ class AdminUserLifecycleService:
                     elif operation == 'delete':
                         await delete_user_data(session, uid)
                     await session.commit()
+                if operation == 'delete':
+                    await OrgStore.delete_org_cascade(uid)
             except UserCleanupConflict:
                 raise
             except Exception as exc:

@@ -1,10 +1,10 @@
-"""Restore lifecycle state without changing the historical 157/162 migrations."""
+"""Restore retryable administrator lifecycle state."""
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = '184'
-down_revision = '183'
+revision = '186'
+down_revision = '185'
 branch_labels = None
 depends_on = None
 

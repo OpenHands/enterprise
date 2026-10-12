@@ -5,6 +5,7 @@ from keycloak.exceptions import KeycloakError
 
 from server.auth.keycloak_manager import get_keycloak_admin
 from server.constants import LITE_LLM_API_KEY, LITE_LLM_API_URL
+from storage.lite_llm_manager import is_litellm_enabled
 
 
 class UserLifecycleRemote:
@@ -18,7 +19,7 @@ class UserLifecycleRemote:
                 raise
         # Unlike the general get_user_keys helper, a failed listing must not
         # look like an empty list and silently claim that revocation succeeded.
-        if LITE_LLM_API_URL and LITE_LLM_API_KEY:
+        if await is_litellm_enabled() and LITE_LLM_API_URL and LITE_LLM_API_KEY:
             async with httpx.AsyncClient(
                 headers={'x-goog-api-key': LITE_LLM_API_KEY}, timeout=30
             ) as client:
@@ -30,7 +31,7 @@ class UserLifecycleRemote:
                         params={'user_id': user_id, 'page': page, 'size': 100},
                     )
                     if response.status_code == 404:
-                        return
+                        break
                     response.raise_for_status()
                     data = response.json()
                     keys.extend(data['keys'])
@@ -53,7 +54,7 @@ class UserLifecycleRemote:
                 raise
 
     async def delete(self, user_id: str) -> None:
-        if LITE_LLM_API_URL and LITE_LLM_API_KEY:
+        if await is_litellm_enabled() and LITE_LLM_API_URL and LITE_LLM_API_KEY:
             async with httpx.AsyncClient(
                 headers={'x-goog-api-key': LITE_LLM_API_KEY}, timeout=30
             ) as client:

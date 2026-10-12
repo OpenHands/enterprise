@@ -15,7 +15,8 @@ from storage.user_data_cleanup import UserCleanupConflict
 
 
 @pytest.fixture
-def service(async_session_maker):
+def service(async_session_maker, monkeypatch):
+    monkeypatch.setattr('storage.org_store.a_session_maker', async_session_maker)
     # Only the remote identity/LLM boundary is replaced; DB operations are real.
     return AdminUserLifecycleService(
         session_factory=async_session_maker, remote=AsyncMock()
@@ -225,7 +226,7 @@ async def test_delete_preserves_team_history(
     target = create_user(current_org_id=org.id)
     other = create_user(current_org_id=org.id)
     async with async_session_maker() as session:
-        role = Role(name='member', rank=1)
+        role = Role(name='owner', rank=1)
         session.add(role)
         await session.flush()
         session.add(
@@ -253,14 +254,99 @@ async def test_delete_preserves_team_history(
 
 
 @pytest.mark.asyncio
-async def test_personal_workspace_blocks_before_mutation(
-    create_org, create_user, service, async_session_maker
+async def test_personal_workspace_deleted_with_user(
+    create_org, create_user, service, async_session_maker, monkeypatch
 ):
+    from storage.org import Org
+
+    # The real cascade uses the same test database; only external team cleanup is replaced.
+    monkeypatch.setattr('storage.org_store.a_session_maker', async_session_maker)
+    monkeypatch.setattr('storage.org_store.LiteLlmManager.delete_team', AsyncMock())
     org = create_org()
     target = create_user(id=org.id, current_org_id=org.id)
-    with pytest.raises(UserCleanupConflict, match='personal workspace'):
+    await service.delete_user(str(target.id))
+    async with async_session_maker() as session:
+        assert await session.get(User, target.id) is None
+        assert await session.get(Org, org.id) is None
+
+
+@pytest.mark.asyncio
+async def test_last_team_owner_blocks_before_mutation(
+    create_org, create_user, service, async_session_maker
+):
+    from storage.org_member import OrgMember
+
+    org = create_org()
+    target = create_user(current_org_id=org.id)
+    create_user(current_org_id=org.id)
+    async with async_session_maker() as session:
+        role = Role(name='owner', rank=1)
+        session.add(role)
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=org.id, user_id=target.id, role_id=role.id, llm_api_key='key'
+            )
+        )
+        await session.commit()
+    with pytest.raises(UserCleanupConflict, match='last owner'):
+        await service.delete_user(str(target.id))
+    service.remote.disable.assert_not_awaited()
+    async with async_session_maker() as session:
+        assert not (await session.get(User, target.id)).is_disabled
+
+
+@pytest.mark.asyncio
+async def test_personal_workspace_cleanup_retries_after_user_is_gone(
+    create_org, create_user, service, async_session_maker, monkeypatch
+):
+    from storage.org import Org
+
+    org = create_org()
+    target = create_user(id=org.id, current_org_id=org.id)
+    delete_team = AsyncMock(side_effect=RuntimeError('gateway unavailable'))
+    monkeypatch.setattr('storage.org_store.LiteLlmManager.delete_team', delete_team)
+    with pytest.raises(LifecycleCleanupError):
         await service.delete_user(str(target.id))
     async with async_session_maker() as session:
-        user = await session.get(User, target.id)
-        assert not user.is_disabled and not user.deletion_pending
+        assert await session.get(User, target.id) is None
+        assert await session.get(Org, org.id) is not None
+    delete_team.side_effect = None
+    assert await service.delete_user(str(target.id)) is None
+    async with async_session_maker() as session:
+        assert await session.get(Org, org.id) is None
+
+
+@pytest.mark.asyncio
+async def test_team_conversation_requires_remaining_owner(
+    create_org, create_user, service, async_session_maker
+):
+    from storage.org_member import OrgMember
+    from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
+
+    org = create_org()
+    target = create_user(current_org_id=org.id)
+    member = create_user(current_org_id=org.id)
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=1)
+        session.add(role)
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=org.id, user_id=member.id, role_id=role.id, llm_api_key='key'
+            )
+        )
+        session.add(
+            StoredConversationMetadataSaas(
+                conversation_id='private', user_id=target.id, org_id=org.id
+            )
+        )
+        await session.commit()
+    with pytest.raises(UserCleanupConflict, match='Transfer conversation ownership'):
+        await service.delete_user(str(target.id))
     service.remote.disable.assert_not_awaited()
+    async with async_session_maker() as session:
+        assert (
+            await session.get(StoredConversationMetadataSaas, 'private')
+        ).user_id == target.id
+        assert not (await session.get(User, target.id)).is_disabled

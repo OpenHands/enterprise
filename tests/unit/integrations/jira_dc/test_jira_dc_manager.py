@@ -44,6 +44,24 @@ class TestAuthenticateUser:
     """Test user authentication functionality."""
 
     @pytest.mark.asyncio
+    async def test_disabled_user_is_not_authenticated(
+        self, jira_dc_manager, sample_jira_dc_user
+    ):
+        from server.auth.auth_error import AuthError
+
+        # Replace only the auth boundary; exercise the manager's real rejection path.
+        jira_dc_manager.integration_store.get_active_user.return_value = (
+            sample_jira_dc_user
+        )
+        with patch(
+            'integrations.jira_dc.jira_dc_manager.get_user_auth_from_keycloak_id',
+            AsyncMock(side_effect=AuthError()),
+        ):
+            assert await jira_dc_manager.authenticate_user(
+                'test@example.com', 'jira_user_123', 1
+            ) == (None, None)
+
+    @pytest.mark.asyncio
     async def test_authenticate_user_success(
         self, jira_dc_manager, mock_token_manager, sample_jira_dc_user, sample_user_auth
     ):

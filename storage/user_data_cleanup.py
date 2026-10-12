@@ -1,4 +1,4 @@
-"""User-only purge inside the caller's transaction; organizations are retained."""
+"""User-only purge inside the caller's transaction; team organizations are retained."""
 
 from uuid import UUID
 
@@ -15,7 +15,7 @@ async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
     await check_user_data_cleanup(session, user_id)
     await session.execute(
         text(
-            'UPDATE conversation_metadata_saas c SET user_id = (SELECT m.user_id FROM org_member m WHERE m.org_id = c.org_id AND m.user_id != :uid ORDER BY m.user_id LIMIT 1) WHERE c.user_id = :uid'
+            "UPDATE conversation_metadata_saas c SET user_id = (SELECT m.user_id FROM org_member m JOIN role r ON r.id = m.role_id WHERE r.name = 'owner' AND m.org_id = c.org_id AND m.user_id != :uid ORDER BY m.user_id LIMIT 1) WHERE c.user_id = :uid AND c.org_id != :uid"
         ),
         params,
     )
@@ -44,6 +44,8 @@ async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
         'DELETE FROM slack_conversation WHERE keycloak_user_id = :uid',
         'DELETE FROM slack_users WHERE keycloak_user_id = :uid',
         'DELETE FROM resend_synced_users WHERE keycloak_user_id = :uid',
+        'UPDATE instance_settings SET setup_user_id = NULL WHERE setup_user_id = :uid',
+        'DELETE FROM org_git_claim WHERE claimed_by = :uid AND org_id = :uid',
         'DELETE FROM org_invitation WHERE inviter_id = :uid OR accepted_by_user_id = :uid',
         'DELETE FROM org_user_budget_override WHERE user_id = :uid',
         'DELETE FROM org_member WHERE user_id = :uid',
@@ -61,10 +63,23 @@ async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
 
 async def check_user_data_cleanup(session: AsyncSession, user_id: UUID) -> None:
     params = {'uid': str(user_id)}
-    # Separate workspace deletion owns its cascade and external team cleanup.
-    if await session.scalar(text('SELECT 1 FROM org WHERE id = :uid'), params):
+    if await session.scalar(
+        text(
+            'SELECT 1 FROM org_member WHERE org_id = :uid AND user_id != :uid LIMIT 1'
+        ),
+        params,
+    ):
         raise UserCleanupConflict(
-            'Delete or transfer the personal workspace before deleting this user'
+            'Transfer personal workspace members before deleting this user'
+        )
+    if await session.scalar(
+        text(
+            "SELECT 1 FROM org_member m JOIN role r ON r.id = m.role_id WHERE m.user_id = :uid AND m.org_id != :uid AND r.name = 'owner' AND NOT EXISTS (SELECT 1 FROM org_member o JOIN role ro ON ro.id = o.role_id WHERE o.org_id = m.org_id AND o.user_id != :uid AND ro.name = 'owner') LIMIT 1"
+        ),
+        params,
+    ):
+        raise UserCleanupConflict(
+            'Cannot delete user: last owner of a team organization'
         )
     if await session.scalar(
         text('SELECT 1 FROM v1_remote_sandbox WHERE created_by_user_id = :uid LIMIT 1'),
@@ -75,7 +90,7 @@ async def check_user_data_cleanup(session: AsyncSession, user_id: UUID) -> None:
         )
     if await session.scalar(
         text(
-            'SELECT 1 FROM conversation_metadata_saas c WHERE c.user_id = :uid AND NOT EXISTS (SELECT 1 FROM org_member m WHERE m.org_id = c.org_id AND m.user_id != :uid) LIMIT 1'
+            "SELECT 1 FROM conversation_metadata_saas c WHERE c.user_id = :uid AND c.org_id != :uid AND NOT EXISTS (SELECT 1 FROM org_member m JOIN role r ON r.id = m.role_id WHERE r.name = 'owner' AND m.org_id = c.org_id AND m.user_id != :uid) LIMIT 1"
         ),
         params,
     ):
@@ -91,7 +106,10 @@ async def check_user_data_cleanup(session: AsyncSession, user_id: UUID) -> None:
                 'Transfer integration workspace administration before deleting this user'
             )
     if await session.scalar(
-        text('SELECT 1 FROM org_git_claim WHERE claimed_by = :uid LIMIT 1'), params
+        text(
+            'SELECT 1 FROM org_git_claim WHERE claimed_by = :uid AND org_id != :uid LIMIT 1'
+        ),
+        params,
     ):
         raise UserCleanupConflict(
             'Transfer organization git claims before deleting this user'
