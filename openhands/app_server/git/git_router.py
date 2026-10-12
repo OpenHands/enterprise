@@ -118,14 +118,7 @@ async def search_repositories(
     ] = None,
     limit: Annotated[
         int,
-        Query(
-            title=(
-                'Page size. With a query, the page size of each provider search '
-                'call; the results can be longer.'
-            ),
-            gt=0,
-            le=100,
-        ),
+        Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
     sort_order: Annotated[
         SortOrder | None,
@@ -135,8 +128,8 @@ async def search_repositories(
 ) -> RepositoryPage:
     """Get or search repositories.
 
-    If query is empty, returns a paginated list of the authenticated user's repositories.
-    If query is provided, returns one page of matching repositories with no next page.
+    If query is provided, searches repositories across the git provider.
+    If query is not provided, returns a paginated list of the authenticated user's repositories.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -206,7 +199,7 @@ async def search_repositories(
     # of limit, the client gets one empty last page.
     next_page_id = encode_page_id(page + 1) if len(repos) >= limit else None
 
-    return RepositoryPage(items=repos[:limit], next_page_id=next_page_id)
+    return RepositoryPage(items=repos, next_page_id=next_page_id)
 
 
 @router.get('/branches/search')
@@ -232,8 +225,7 @@ async def search_branches(
 ) -> BranchPage:
     """Search branches in a repository.
 
-    If query is empty, returns a paginated list of all branches.
-    If query is provided, returns one page of matching branches with no next page.
+    Returns a paginated list of branches matching the search query.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -284,7 +276,7 @@ async def search_branches(
     )
     next_page_id = encode_page_id(page + 1) if current_page.has_next_page else None
 
-    return BranchPage(items=current_page.branches[:limit], next_page_id=next_page_id)
+    return BranchPage(items=current_page.branches, next_page_id=next_page_id)
 
 
 @router.get('/suggested-tasks/search')
