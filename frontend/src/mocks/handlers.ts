@@ -15,9 +15,11 @@ import { AUTH_HANDLERS } from "./auth-handlers";
 import { FEEDBACK_HANDLERS } from "./feedback-handlers";
 import { ANALYTICS_HANDLERS } from "./analytics-handlers";
 import { SUPER_ADMIN_HANDLERS } from "./super-admin-handlers";
+import { OAUTH_PROVIDERS_HANDLERS } from "./oauth-providers-handlers";
 
 export const handlers = [
   ...SUPER_ADMIN_HANDLERS,
+  ...OAUTH_PROVIDERS_HANDLERS,
   ...ORG_HANDLERS,
   ...API_KEYS_HANDLERS,
   ...BILLING_HANDLERS,

@@ -77,16 +77,6 @@ const REQUESTS: {
     args: ["/api/admin/organizations/org-1"],
   },
   {
-    method: "updateOrganizationStatus",
-    call: () =>
-      superAdminService.updateOrganizationStatus({
-        orgId: "org-1",
-        status: "suspended",
-      }),
-    verb: "patch",
-    args: ["/api/admin/organizations/org-1", { status: "suspended" }],
-  },
-  {
     method: "listUsers",
     call: () => superAdminService.listUsers(),
     verb: "get",

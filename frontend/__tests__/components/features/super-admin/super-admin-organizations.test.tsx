@@ -84,8 +84,6 @@ beforeAll(async () => {
         translation: {
           ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME:
             translations.ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME.en,
-          SUPER_ADMIN$SUSPEND_ORG_CONFIRM:
-            translations.SUPER_ADMIN$SUSPEND_ORG_CONFIRM.en,
         },
       },
     },
@@ -175,72 +173,31 @@ describe("Super Admin Organizations page", () => {
     expect(screen.getByText("Acme Corp")).toBeInTheDocument();
   });
 
-  it("asks for confirmation naming the organization before suspending it", async () => {
-    // Arrange
-    const user = userEvent.setup();
-    const updateOrganizationStatus = vi
-      .spyOn(superAdminService, "updateOrganizationStatus")
-      .mockResolvedValue({ ...ACME, status: "suspended" });
-    renderOrganizationsPage();
+  it.each(["active", "suspended"] as const)(
+    "offers no suspend or resume action for an %s organization",
+    async (status) => {
+      // Arrange
+      const user = userEvent.setup();
+      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+        { ...ACME, status },
+      ]);
+      renderOrganizationsPage();
 
-    // Act
-    await chooseOrgAction(user, "super-admin-org-suspend-2");
+      // Act
+      await user.click(await screen.findByTestId("super-admin-org-actions-2"));
 
-    // Assert
-    const dialog = screen.getByTestId("super-admin-org-confirm");
-    expect(
-      within(dialog).getByText("SUPER_ADMIN$SUSPEND_ORG_TITLE"),
-    ).toBeInTheDocument();
-    expect(dialog).toHaveTextContent("Acme Corp");
-    expect(updateOrganizationStatus).not.toHaveBeenCalled();
-  });
-
-  it("suspends the organization once the suspension is confirmed", async () => {
-    // Arrange
-    const user = userEvent.setup();
-    const updateOrganizationStatus = vi
-      .spyOn(superAdminService, "updateOrganizationStatus")
-      .mockResolvedValue({ ...ACME, status: "suspended" });
-    renderOrganizationsPage();
-
-    // Act
-    await chooseOrgAction(user, "super-admin-org-suspend-2");
-    await user.click(screen.getByRole("button", { name: "BUTTON$CONFIRM" }));
-
-    // Assert
-    await waitFor(() =>
-      expect(updateOrganizationStatus).toHaveBeenCalledWith({
-        orgId: "2",
-        status: "suspended",
-      }),
-    );
-  });
-
-  it("resumes a suspended organization without asking for confirmation", async () => {
-    // Arrange
-    const user = userEvent.setup();
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      { ...ACME, status: "suspended" },
-    ]);
-    const updateOrganizationStatus = vi
-      .spyOn(superAdminService, "updateOrganizationStatus")
-      .mockResolvedValue(ACME);
-    renderOrganizationsPage();
-
-    // Act
-    await chooseOrgAction(user, "super-admin-org-resume-2");
-
-    // Assert
-    await waitFor(() =>
-      expect(updateOrganizationStatus).toHaveBeenCalledWith({
-        orgId: "2",
-        status: "active",
-      }),
-    );
-    expect(
-      screen.queryByTestId("super-admin-org-confirm"),
-    ).not.toBeInTheDocument();
-  });
+      // Assert
+      expect(
+        screen.getByTestId("super-admin-org-remove-2"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("super-admin-org-suspend-2"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("super-admin-org-resume-2"),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("invites a person into the organization chosen from its row menu", async () => {
     // Arrange

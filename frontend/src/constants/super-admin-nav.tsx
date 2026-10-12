@@ -1,6 +1,7 @@
 import {
   Building2,
   ClipboardList,
+  KeyRound,
   LayoutDashboard,
   ServerCog,
   ShieldCheck,
@@ -15,6 +16,7 @@ export const SUPER_ADMIN_PATHS = {
   users: "/super-admin/users",
   admins: "/super-admin/admins",
   instance: "/super-admin/instance",
+  oauthProviders: "/super-admin/oauth-providers",
 } as const;
 
 export const SUPER_ADMIN_SETUP_ITEM: SettingsNavItem = {
@@ -62,5 +64,11 @@ export const SUPER_ADMIN_NAV_ITEMS: SettingsNavItem[] = [
     to: SUPER_ADMIN_PATHS.instance,
     text: "SUPER_ADMIN$NAV_INSTANCE",
     subtitle: "SUPER_ADMIN$INSTANCE_SUBLINE",
+  },
+  {
+    icon: <KeyRound className="size-4" strokeWidth={2} aria-hidden />,
+    to: SUPER_ADMIN_PATHS.oauthProviders,
+    text: "SUPER_ADMIN$NAV_OAUTH_PROVIDERS",
+    subtitle: "SUPER_ADMIN$OAUTH_PROVIDERS_SUBLINE",
   },
 ];

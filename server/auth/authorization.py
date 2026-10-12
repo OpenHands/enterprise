@@ -136,6 +136,13 @@ class Permission(str, Enum):
     # role -- no org-scoped role implies it.
     CREATE_SIGNUP_LINK = 'create_signup_link'
 
+    # Instance-level administration of the ``oauth_providers`` table (login
+    # IDPs and git providers). Like MANAGE_SUPER_ADMINS and
+    # MANAGE_FEATURE_FLAGS this is an explicit instance-admin capability --
+    # it is NOT implied by any org-scoped role, so an org owner cannot
+    # reconfigure instance-wide OAuth/OIDC endpoints.
+    MANAGE_OAUTH_PROVIDERS = 'manage_oauth_providers'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -283,6 +290,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_FEATURE_FLAGS,
             Permission.MANAGE_ORG_QUOTA,
             Permission.CREATE_SIGNUP_LINK,
+            Permission.MANAGE_OAUTH_PROVIDERS,
         ]
     ),
     RoleName.MEMBER: frozenset(),

@@ -1,7 +1,29 @@
 import React from "react";
 import { useSearchParams } from "react-router";
+import { useTranslation } from "react-i18next";
+import { I18nKey } from "#/i18n/declaration";
+import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { reportInvitationFailure } from "#/utils/report-invitation-failure";
 
 const INVITATION_TOKEN_KEY = "openhands_invitation_token";
+
+/** What the sign-in callback adds to its redirect after trying the invitation. */
+const CALLBACK_OUTCOME_PARAMS = [
+  "invitation_success",
+  "invitation_expired",
+  "invitation_invalid",
+  "invitation_error",
+  "already_member",
+  "email_mismatch",
+] as const;
+
+interface UseInvitationOptions {
+  /**
+   * Tell the user how the sign-in callback's invitation attempt ended. Only
+   * one mounted instance should, or each would show the same message.
+   */
+  reportOutcome?: boolean;
+}
 
 interface UseInvitationReturn {
   /** The invitation token, if present */
@@ -35,8 +57,12 @@ interface UseInvitationReturn {
  * Note: localStorage is used instead of sessionStorage to support scenarios where
  * the user opens the email verification link in a new tab/browser window.
  */
-export function useInvitation(): UseInvitationReturn {
+export function useInvitation({
+  reportOutcome = false,
+}: UseInvitationOptions = {}): UseInvitationReturn {
+  const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const reportedOutcomeRef = React.useRef<string | null>(null);
   const [invitationToken, setInvitationToken] = React.useState<string | null>(
     () => {
       // Initialize from localStorage (persists across tabs and page refreshes)
@@ -67,17 +93,30 @@ export function useInvitation(): UseInvitationReturn {
   // Clear invitation token when invitation flow completes (success or failure)
   // These query params are set by the backend after processing the invitation
   React.useEffect(() => {
-    const invitationCompleted =
-      searchParams.has("invitation_success") ||
-      searchParams.has("invitation_expired") ||
-      searchParams.has("invitation_invalid") ||
-      searchParams.has("invitation_error") ||
-      searchParams.has("already_member") ||
-      searchParams.has("email_mismatch");
+    const outcome = CALLBACK_OUTCOME_PARAMS.find((param) =>
+      searchParams.has(param),
+    );
 
-    if (invitationCompleted) {
-      localStorage.removeItem(INVITATION_TOKEN_KEY);
-      setInvitationToken(null);
+    if (outcome) {
+      // A sign-in with the wrong account leaves the invitation pending, so
+      // keep the token: the signed-in accept retries it and explains the
+      // mismatch, and signing in with the invited email can still use it.
+      if (outcome !== "email_mismatch") {
+        localStorage.removeItem(INVITATION_TOKEN_KEY);
+        setInvitationToken(null);
+      }
+
+      if (reportOutcome && reportedOutcomeRef.current !== outcome) {
+        reportedOutcomeRef.current = outcome;
+        if (outcome === "invitation_success") {
+          displaySuccessToast(t(I18nKey.ORG$INVITATION_ACCEPTED));
+        } else if (outcome !== "email_mismatch") {
+          reportInvitationFailure(
+            outcome === "invitation_error" ? null : outcome,
+            t,
+          );
+        }
+      }
 
       // Remove invitation params from URL to clean up
       const newSearchParams = new URLSearchParams(searchParams);
@@ -89,7 +128,7 @@ export function useInvitation(): UseInvitationReturn {
       newSearchParams.delete("email_mismatch");
       setSearchParams(newSearchParams, { replace: true });
     }
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, reportOutcome, t]);
 
   const clearInvitation = React.useCallback(() => {
     localStorage.removeItem(INVITATION_TOKEN_KEY);

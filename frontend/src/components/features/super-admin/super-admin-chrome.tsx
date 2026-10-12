@@ -277,7 +277,13 @@ export function SuperAdminRowMenu({
                   testId={item.testId}
                   isDisabled={item.isDisabled}
                   title={item.title}
-                  onClick={() => {
+                  onClick={(event) => {
+                    // This menu renders in a document-body portal, so its DOM
+                    // parent isn't the table row -- but React still bubbles
+                    // the event through the component tree, straight into
+                    // the row's onClick. Stop it so selecting an item here
+                    // doesn't also trigger the row click behind it.
+                    event.stopPropagation();
                     item.onSelect();
                     setOpen(false);
                   }}

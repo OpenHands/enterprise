@@ -361,6 +361,10 @@ class OrgUpdate(BaseModel):
 
     def _resolve_agent_llm_base_url(self, llm_diff: dict[str, Any]) -> None:
         """Fill provider-default base URLs for sparse LLM diffs when needed."""
+        if llm_diff.get('provider_connection_id'):
+            # A linked LLM takes its base_url from the provider connection at
+            # load time; don't infer a provider default underneath the link.
+            return
         resolved_base_url = resolve_llm_base_url(
             model=llm_diff.get('model'),
             base_url=llm_diff.get('base_url'),
