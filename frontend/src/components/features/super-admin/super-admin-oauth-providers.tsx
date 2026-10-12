@@ -142,15 +142,30 @@ function OAuthProviderFormModal({
           items={PROVIDER_CATEGORY_OPTIONS}
           defaultSelectedKey={form.providerCategory || undefined}
           allowsCustomValue
-          onSelectionChange={(key) =>
+          onSelectionChange={(key) => {
+            // The underlying Autocomplete also fires `onSelectionChange(null)`
+            // on blur once its displayed text no longer matches the selected
+            // item's label (see `onInputChange` below) -- that is an internal
+            // deselect, not the user clearing the field (there's no clear
+            // button here), so it must not wipe out a value we already set.
+            if (key) {
+              setForm((prev) => ({ ...prev, providerCategory: String(key) }));
+            }
+          }}
+          onInputChange={(value) => {
+            // The underlying Autocomplete also fires `onInputChange` to sync
+            // its displayed text to the selected item's *label* right after
+            // `onSelectionChange` already set the real key -- that sync is
+            // undone here by mapping a known label back to its key. A value
+            // that matches no label is real custom text.
+            const matched = PROVIDER_CATEGORY_OPTIONS.find(
+              (option) => option.label === value,
+            );
             setForm((prev) => ({
               ...prev,
-              providerCategory: key ? String(key) : "",
-            }))
-          }
-          onInputChange={(value) =>
-            setForm((prev) => ({ ...prev, providerCategory: value }))
-          }
+              providerCategory: matched ? matched.key : value,
+            }));
+          }}
           required
         />
         <SettingsInput

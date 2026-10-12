@@ -14,6 +14,13 @@ whether one is configured (``has_client_secret``), mirroring how the
 dashboard already treats other secrets (API keys, LLM keys). To clear a
 configured secret, send ``client_secret: ""`` on update; omit the field
 entirely to leave it untouched.
+
+**Integrated/password IDP invariant.** At most one row may have
+``provider_category == INTEGRATED_IDP_CATEGORY``, and that row must always
+have ``is_idp=True`` -- see ``_validate_integrated_idp_invariant`` and
+migration 185 (which adds the matching DB-level unique index and check
+constraint; this validation exists only to turn a would-be ``IntegrityError``
+into a clean ``400``/``409``).
 """
 
 from __future__ import annotations
@@ -26,7 +33,11 @@ from pydantic import BaseModel, Field
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
-from storage.oauth_provider import DEFAULT_PERMITTED_DRIFT_SECONDS, OAuthProvider
+from storage.oauth_provider import (
+    DEFAULT_PERMITTED_DRIFT_SECONDS,
+    INTEGRATED_IDP_CATEGORY,
+    OAuthProvider,
+)
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token_store import wrap_token
@@ -101,6 +112,45 @@ class UpdateOAuthProviderRequest(BaseModel):
     permitted_drift_seconds: int | None = Field(default=None, ge=0)
 
 
+async def _validate_integrated_idp_invariant(
+    store: OAuthProviderStore,
+    provider_category: str,
+    is_idp: bool,
+    *,
+    exclude_id: int | None,
+) -> None:
+    """Enforce "at most one integrated/password IDP row, and it is an IDP".
+
+    No-op for every other ``provider_category``. Mirrors the DB-level guard
+    migration 185 adds (``uq_oauth_providers_one_integrated_idp`` /
+    ``ck_oauth_providers_integrated_idp_is_idp``), so a violating request gets
+    a clean ``400``/``409`` instead of a raw ``IntegrityError``.
+
+    ``exclude_id`` is the row being updated in place (so updating the
+    existing integrated-IDP row isn't mistaken for a duplicate of itself);
+    pass ``None`` on create, where no row can be excluded.
+    """
+    if provider_category != INTEGRATED_IDP_CATEGORY:
+        return
+    if not is_idp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                'The integrated/password IDP provider '
+                f'({INTEGRATED_IDP_CATEGORY!r}) must have is_idp=True'
+            ),
+        )
+    existing = await store.get_first_by_category(INTEGRATED_IDP_CATEGORY)
+    if existing is not None and existing.id != exclude_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'An integrated/password IDP provider already exists '
+                f'(id={existing.id}); only one is allowed'
+            ),
+        )
+
+
 def _to_response(provider: OAuthProvider) -> OAuthProviderResponse:
     return OAuthProviderResponse(
         id=provider.id,
@@ -152,6 +202,10 @@ async def create_oauth_provider(
     ),
 ) -> OAuthProviderResponse:
     """Create a new OAuth/OIDC provider row."""
+    store = OAuthProviderStore()
+    await _validate_integrated_idp_invariant(
+        store, body.provider_category, body.is_idp, exclude_id=None
+    )
     provider = OAuthProvider(
         provider_category=body.provider_category,
         display_name=body.display_name,
@@ -164,7 +218,7 @@ async def create_oauth_provider(
         scopes=body.scopes,
         permitted_drift_seconds=body.permitted_drift_seconds,
     )
-    created = await OAuthProviderStore().create(provider)
+    created = await store.create(provider)
     logger.info(
         'oauth_providers_admin:create',
         extra={
@@ -190,12 +244,28 @@ async def update_oauth_provider(
 
     Only fields explicitly set in the request body are modified.
     """
+    store = OAuthProviderStore()
+    existing = await store.get_by_id(provider_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
+        )
+
     fields = body.model_dump(exclude_unset=True)
     if 'client_secret' in fields:
         secret = fields['client_secret']
         fields['client_secret'] = wrap_token(secret) if secret else None
-    updated = await OAuthProviderStore().update(provider_id, **fields)
+
+    resulting_category = fields.get('provider_category', existing.provider_category)
+    resulting_is_idp = fields.get('is_idp', existing.is_idp)
+    await _validate_integrated_idp_invariant(
+        store, resulting_category, resulting_is_idp, exclude_id=provider_id
+    )
+
+    updated = await store.update(provider_id, **fields)
     if updated is None:
+        # Deleted between the fetch above and this update -- safety net, not
+        # expected in practice since this endpoint is not re-entrant per row.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
         )

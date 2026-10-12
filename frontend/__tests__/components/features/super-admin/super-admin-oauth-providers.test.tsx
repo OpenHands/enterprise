@@ -151,6 +151,87 @@ describe("Super Admin OAuth Providers page", () => {
     );
   });
 
+  it("sends the provider_category key, not its label, when picked from the dropdown", async () => {
+    const user = userEvent.setup();
+    const createOAuthProvider = vi
+      .spyOn(oauthProvidersService, "createOAuthProvider")
+      .mockResolvedValue({
+        ...GITHUB_PROVIDER,
+        id: 2,
+        provider_category: "integrated_idp",
+        display_name: "Password Login",
+        is_idp: true,
+      });
+    renderOAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
+    const categoryInput = within(dialog).getByTestId(
+      "super-admin-oauth-provider-category",
+    );
+    // Open the list and click the option by its visible label, exactly as a
+    // user would -- this is what previously left `provider_category` set to
+    // the English label ("Integrated (password) IDP") instead of the
+    // "integrated_idp" key, because the autocomplete syncs its input text to
+    // the selected item's label after selection.
+    await user.click(categoryInput);
+    await user.click(
+      await screen.findByRole("option", {
+        name: "Integrated (password) IDP",
+      }),
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-oauth-provider-display-name"),
+      "Password Login",
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-oauth-provider-client-id"),
+      "integrated-idp",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-oauth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(createOAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider_category: "integrated_idp",
+        }),
+      ),
+    );
+  });
+
+  it("keeps the existing provider_category key when editing without touching the dropdown", async () => {
+    const user = userEvent.setup();
+    const updateOAuthProvider = vi
+      .spyOn(oauthProvidersService, "updateOAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    renderOAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-oauth-provider-actions-1"),
+    );
+    await user.click(screen.getByTestId("super-admin-oauth-provider-edit-1"));
+
+    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
+    expect(
+      within(dialog).getByTestId("super-admin-oauth-provider-category"),
+    ).toHaveValue("GitHub");
+
+    await user.click(
+      within(dialog).getByTestId("super-admin-oauth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateOAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, provider_category: "github" }),
+      ),
+    );
+  });
+
   it("asks for confirmation naming the provider before deleting it", async () => {
     const user = userEvent.setup();
     const deleteOAuthProvider = vi
