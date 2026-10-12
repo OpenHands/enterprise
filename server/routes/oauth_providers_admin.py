@@ -19,6 +19,7 @@ entirely to leave it untouched.
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,6 +28,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from storage.oauth_provider import DEFAULT_PERMITTED_DRIFT_SECONDS, OAuthProvider
 from storage.oauth_provider_store import OAuthProviderStore
+from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token_store import wrap_token
 
 oauth_provider_admin_router = APIRouter(
@@ -213,11 +215,28 @@ async def delete_oauth_provider(
         require_permission(Permission.MANAGE_OAUTH_PROVIDERS)
     ),
 ) -> None:
-    """Delete an OAuth/OIDC provider row."""
+    """Delete an OAuth/OIDC provider row.
+
+    Refuses with ``409 Conflict`` if the caller themselves signed in (or
+    linked a git identity) through this provider: ``oauth_providers`` rows
+    cascade-delete their ``oauth_provider_users``/``oauth_tokens`` rows, so
+    deleting the provider the caller is currently authenticated through
+    would sever their own login/connection -- possibly locking them out of
+    the instance entirely. Ask another super admin to delete it instead.
+    """
     provider = await OAuthProviderStore().get_by_id(provider_id)
     if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
+        )
+    caller_link = await OAuthProviderUserStore().get_by_user(
+        UUID(caller_user_id), provider_id
+    )
+    if caller_link is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Cannot delete the OAuth provider you are currently '
+            'authenticated with',
         )
     await OAuthProviderStore().delete(provider_id)
     logger.info(

@@ -8,6 +8,7 @@ faked by short-circuiting the org-role lookup to ``None`` and stacking a
 ``get_user_super_role -> None`` default.
 """
 
+import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,7 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from openhands.app_server.user_auth import get_user_id
 from server.routes.oauth_providers_admin import oauth_provider_admin_router
 
-CALLER_USER_ID = 'caller-user-id'
+CALLER_USER_ID = str(uuid.uuid4())
 
 
 @pytest.fixture
@@ -332,6 +333,10 @@ async def test_delete_provider_success(mock_app, grant_manage_oauth_providers):
             AsyncMock(return_value=_fake_provider()),
         ),
         patch(
+            'server.routes.oauth_providers_admin.OAuthProviderUserStore.get_by_user',
+            AsyncMock(return_value=None),
+        ) as get_by_user_mock,
+        patch(
             'server.routes.oauth_providers_admin.OAuthProviderStore.delete',
             AsyncMock(return_value=None),
         ) as delete_mock,
@@ -341,6 +346,7 @@ async def test_delete_provider_success(mock_app, grant_manage_oauth_providers):
 
     assert resp.status_code == 204
     assert resp.content == b''
+    get_by_user_mock.assert_awaited_once_with(uuid.UUID(CALLER_USER_ID), 1)
     delete_mock.assert_awaited_once_with(1)
 
 
@@ -366,3 +372,30 @@ async def test_delete_provider_forbidden_without_permission(mock_app):
             resp = await client.delete('/api/admin/oauth-providers/1')
 
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_provider_refuses_callers_own_provider(
+    mock_app, grant_manage_oauth_providers
+):
+    """A caller cannot delete the provider they themselves authenticated
+    through -- cascade-deleting it would sever their own login/connection."""
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.OAuthProviderStore.get_by_id',
+            AsyncMock(return_value=_fake_provider()),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.OAuthProviderUserStore.get_by_user',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.OAuthProviderStore.delete',
+            AsyncMock(return_value=None),
+        ) as delete_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete('/api/admin/oauth-providers/1')
+
+    assert resp.status_code == 409
+    delete_mock.assert_not_awaited()
