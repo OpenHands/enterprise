@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import (
@@ -77,6 +78,7 @@ from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
 )
+from openhands.sdk.tool import ClientToolSpec
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
@@ -2124,6 +2126,14 @@ class TestLiveStatusAppConversationService:
             return_value=(real_llm, mock_mcp_config)
         )
 
+        client_tools = [
+            ClientToolSpec(
+                name='automation_form_update',
+                description='Update the automation setup form.',
+                parameters={'type': 'object', 'properties': {}},
+            )
+        ]
+
         result = await self.service._build_start_conversation_request_for_user(
             user=self.mock_user,
             sandbox=self.mock_sandbox,
@@ -2136,6 +2146,7 @@ class TestLiveStatusAppConversationService:
             llm_model='gpt-4',
             remote_workspace=None,
             selected_repository='test/repo',
+            client_tools=client_tools,
         )
 
         assert isinstance(result, StartConversationRequest)
@@ -2152,6 +2163,7 @@ class TestLiveStatusAppConversationService:
         )
         # Workspace points to the repo subdirectory
         assert result.workspace.working_dir == '/test/dir/repo'
+        assert result.client_tools == client_tools
 
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
             self.mock_user
@@ -2553,6 +2565,41 @@ class TestLiveStatusAppConversationService:
             'profile-skill',
             'request-skill',
         ]
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_client_tools_for_acp_agent_before_sandbox(
+        self,
+    ):
+        """ACP agents own their tool protocol, so client tools fail fast."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.agent_settings = ACPAgentSettings(
+            acp_server='claude-code',
+            llm=LLM(model='claude-sonnet-4-5', api_key=None),
+            agent_context=None,
+        )
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.service._wait_for_sandbox_start = Mock()
+        request = AppConversationStartRequest(
+            client_tools=[
+                ClientToolSpec(
+                    name='automation_form_update',
+                    description='Update the automation setup form.',
+                    parameters={'type': 'object', 'properties': {}},
+                )
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in self.service._start_app_conversation(request):
+                pass
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == (
+            'client_tools are not supported for ACP agent launches'
+        )
+        self.service._wait_for_sandbox_start.assert_not_called()
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
@@ -3803,6 +3850,38 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     @pytest.mark.asyncio
+    async def test_start_app_conversation_forwards_client_tools(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """Client-defined tools from the App API reach the runtime request builder."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        client_tools = [
+            ClientToolSpec(
+                name='automation_form_update',
+                description='Update the automation setup form.',
+                parameters={'type': 'object', 'properties': {}},
+            )
+        ]
+        request = AppConversationStartRequest(client_tools=client_tools)
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        kwargs = (
+            self.service._build_start_conversation_request_for_user.call_args.kwargs
+        )
+        assert kwargs['client_tools'] == client_tools
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
     async def test_start_app_conversation_preserves_acp_and_repository_tags(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):
@@ -3884,6 +3963,156 @@ class TestLiveStatusAppConversationService:
         assert saved_info.tags['repo_name'] == 'OpenHands/OpenHands'
         assert saved_info.tags['git_provider'] == 'github'
         assert saved_info.tags['selected_branch'] == 'main'
+
+    async def _start_and_get_saved_info(
+        self,
+        request,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
+    ):
+        """Run _start_app_conversation with a stub sandbox and return the saved info."""
+        conversation_id = uuid4()
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
+        mock_sandbox_spec.working_dir = '/test/workspace'
+        self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        self.mock_sandbox.id = str(uuid4())
+        self.mock_sandbox.session_api_key = 'test_session_key'
+        self.mock_sandbox.exposed_urls = [
+            ExposedUrl(name=AGENT_SERVER, url='http://agent-server:8000', port=60000)
+        ]
+        self.mock_sandbox_service.get_sandbox = AsyncMock(
+            return_value=self.mock_sandbox
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=mock_sandbox_spec
+        )
+        mock_remote_workspace_class.return_value = Mock()
+
+        async def mock_wait_for_sandbox(task):
+            task.sandbox_id = self.mock_sandbox.id
+            yield task
+
+        async def mock_run_setup_scripts(
+            task, sandbox, workspace, agent_server_url, conversation_id
+        ):
+            yield task
+
+        self.service._wait_for_sandbox_start = mock_wait_for_sandbox
+        self.service.run_setup_scripts = mock_run_setup_scripts
+        self.service._seed_sandbox_profiles = AsyncMock()
+        mock_agent = Mock()
+        mock_agent.agent_kind = 'openhands'
+        mock_agent.llm.model = 'gpt-4'
+        mock_start_request = Mock(spec=StartConversationRequest)
+        mock_start_request.agent = mock_agent
+        mock_start_request.model_dump.return_value = {'test': 'data'}
+        self.service._build_start_conversation_request_for_user = AsyncMock(
+            return_value=mock_start_request
+        )
+        mock_conversation_info = Mock()
+        mock_conversation_info.id = conversation_id
+        mock_conversation_info_class.model_validate.return_value = (
+            mock_conversation_info
+        )
+        mock_response = Mock()
+        mock_response.json.return_value = {'id': str(conversation_id)}
+        mock_response.raise_for_status = Mock()
+        self.mock_httpx_client.post = AsyncMock(return_value=mock_response)
+        self.mock_event_callback_service.save_event_callback = AsyncMock()
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        return self.mock_app_conversation_info_service.save_app_conversation_info.call_args[
+            0
+        ][0]
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_saves_the_provider_of_the_selected_repository(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A start request with a repository but no provider stores the provider."""
+        provider_handler = Mock()
+        provider_handler.verify_repo_provider = AsyncMock(
+            return_value=Mock(git_provider=ProviderType.GITLAB)
+        )
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=provider_handler
+        )
+        request = AppConversationStartRequest(
+            selected_repository='group/sub/repo', selected_branch='main'
+        )
+
+        saved_info = await self._start_and_get_saved_info(
+            request, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
+        assert saved_info.git_provider == ProviderType.GITLAB
+        assert saved_info.tags['git_provider'] == 'gitlab'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_starts_the_agent_with_the_resolved_provider(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """The agent gets the same provider as the saved row, so the PLAN.md
+        path matches the one that sub-conversations inherit."""
+        provider_handler = Mock()
+        provider_handler.verify_repo_provider = AsyncMock(
+            return_value=Mock(git_provider=ProviderType.GITLAB)
+        )
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=provider_handler
+        )
+        request = AppConversationStartRequest(
+            selected_repository='group/sub/repo', selected_branch='main'
+        )
+
+        await self._start_and_get_saved_info(
+            request, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
+        build_args = (
+            self.service._build_start_conversation_request_for_user.call_args.args
+        )
+        assert build_args[5] == ProviderType.GITLAB
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_starts_when_the_provider_lookup_fails(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A failed provider lookup does not block the start; the provider stays empty."""
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            side_effect=NotImplementedError
+        )
+        request = AppConversationStartRequest(selected_repository='owner/repo')
+
+        saved_info = await self._start_and_get_saved_info(
+            request, mock_conversation_info_class, mock_remote_workspace_class
+        )
+
+        assert saved_info.selected_repository == 'owner/repo'
+        assert saved_info.git_provider is None
+        assert 'git_provider' not in saved_info.tags
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -4032,6 +4261,31 @@ class TestLiveStatusAppConversationService:
         assert result is not None
         assert result.title == 'New title'
         assert result.tags == {'environmenturl': 'https://env/a'}
+
+    @pytest.mark.parametrize(
+        'repository',
+        ['owner/repo', 'org/project/repo', 'group/sub/repo'],
+    )
+    def test_validate_repository_update_accepts_provider_repository_names(
+        self, repository
+    ):
+        """Azure DevOps and GitLab subgroup names have more than one slash."""
+        request = AppConversationUpdateRequest(
+            selected_repository=repository, selected_branch='main'
+        )
+
+        self.service._validate_repository_update(request)
+
+    @pytest.mark.parametrize(
+        'repository', ['repo', 'owner//repo', '/repo', 'owner/repo;rm']
+    )
+    def test_validate_repository_update_rejects_invalid_names(self, repository):
+        request = AppConversationUpdateRequest(
+            selected_repository=repository, selected_branch='main'
+        )
+
+        with pytest.raises(ValueError):
+            self.service._validate_repository_update(request)
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

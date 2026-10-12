@@ -25,6 +25,7 @@ from server.routes.auth import (
     complete_onboarding,
     onboarding_status,
 )
+from storage.instance_settings import InstanceSettings
 from storage.user import User
 
 # --- Fixtures ---
@@ -321,6 +322,127 @@ class TestGetPostAuthRedirect:
         assert result == (
             'https://example.com/onboarding?returnTo=%2Fconversations%2Fabc%3Ffoo%3Dbar'
         )
+
+
+# --- Tests for routing the first Super Admin into the install wizard ---
+
+
+@pytest.fixture
+def setup_state_db(async_session_maker):
+    """Read ``instance_settings`` from the test database, with the flag on."""
+    with (
+        patch('server.routes.auth.a_session_maker', async_session_maker),
+        patch('server.routes.auth.ENABLE_SUPER_ADMIN', True),
+    ):
+        yield async_session_maker
+
+
+async def _record_first_super_admin(
+    async_session_maker, user_id: str, wizard_completed: bool = False
+) -> None:
+    async with async_session_maker() as session:
+        session.add(
+            InstanceSettings(
+                id=1,
+                setup_user_id=uuid.UUID(user_id),
+                wizard_completed=wizard_completed,
+            )
+        )
+        await session.commit()
+
+
+def _self_hosted_first_owner(user):
+    """Without the wizard, this user would be sent to the onboarding survey."""
+    return (
+        patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
+        patch(
+            'server.routes.auth.UserStore.get_first_owner_in_org',
+            new_callable=AsyncMock,
+            return_value=user,
+        ),
+    )
+
+
+class TestFirstSuperAdminInstallRedirect:
+    """The first Super Admin goes to /install until the wizard is finished."""
+
+    @pytest.mark.asyncio
+    async def test_sends_first_super_admin_to_install_while_wizard_pending(
+        self, mock_user, setup_state_db
+    ):
+        # Arrange
+        user_id = str(mock_user.id)
+        await _record_first_super_admin(setup_state_db, user_id)
+        deployment_mode, first_owner = _self_hosted_first_owner(mock_user)
+
+        # Act
+        with deployment_mode, first_owner:
+            result = await _get_post_auth_redirect(
+                user_id, 'https://example.com/canvas', 'https://example.com', mock_user
+            )
+
+        # Assert
+        assert result == 'https://example.com/install'
+
+    @pytest.mark.asyncio
+    async def test_sends_first_super_admin_to_default_url_once_wizard_finished(
+        self, mock_user, setup_state_db
+    ):
+        # Arrange
+        user_id = str(mock_user.id)
+        await _record_first_super_admin(setup_state_db, user_id, wizard_completed=True)
+        deployment_mode, first_owner = _self_hosted_first_owner(mock_user)
+
+        # Act
+        with deployment_mode, first_owner:
+            result = await _get_post_auth_redirect(
+                user_id, 'https://example.com/canvas', 'https://example.com', mock_user
+            )
+
+        # Assert
+        assert result == 'https://example.com/canvas'
+
+    @pytest.mark.asyncio
+    async def test_keeps_onboarding_redirect_for_other_users(
+        self, mock_user, setup_state_db
+    ):
+        # Arrange
+        await _record_first_super_admin(setup_state_db, str(uuid.uuid4()))
+        deployment_mode, first_owner = _self_hosted_first_owner(mock_user)
+
+        # Act
+        with deployment_mode, first_owner:
+            result = await _get_post_auth_redirect(
+                str(mock_user.id),
+                'https://example.com/',
+                'https://example.com',
+                mock_user,
+            )
+
+        # Assert
+        assert result == 'https://example.com/onboarding'
+
+    @pytest.mark.asyncio
+    async def test_keeps_onboarding_redirect_when_super_admin_flag_is_off(
+        self, mock_user, setup_state_db
+    ):
+        # Arrange
+        user_id = str(mock_user.id)
+        await _record_first_super_admin(setup_state_db, user_id)
+        deployment_mode, first_owner = _self_hosted_first_owner(mock_user)
+
+        # Act
+        with (
+            patch('server.routes.auth.ENABLE_SUPER_ADMIN', False),
+            deployment_mode,
+            first_owner,
+        ):
+            result = await _get_post_auth_redirect(
+                user_id, 'https://example.com/', 'https://example.com', mock_user
+            )
+
+        # Assert
+        assert result == 'https://example.com/onboarding'
 
 
 class TestBuildCrossAppRedirectUrl:

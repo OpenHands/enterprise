@@ -81,6 +81,11 @@ class User(Base):
     allow_match_by_email: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default='false'
     )
+    # Set by a Super Admin to block sign-in, sessions and API keys, whatever
+    # organizations the user belongs to. Clearing it restores access.
+    is_disabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
     # Argon2id hash of the user's dev-IDP password (``server.auth.password_hashing``).
     # NULL for every user who authenticates via a real OAuth/OIDC IDP — only
     # accounts created through the dev IDP sign-up flow set this column.

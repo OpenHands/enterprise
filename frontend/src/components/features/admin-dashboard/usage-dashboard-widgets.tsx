@@ -6,6 +6,74 @@ import {
 } from "#/components/shared/icons/inline-icons";
 import { formatCost, formatShortDate } from "./usage-dashboard-utils";
 
+type ChartHoverPoint = {
+  index: number;
+  xPct: number;
+  clientX: number;
+  clientY: number;
+};
+
+function nearestPointIndex(
+  event: React.MouseEvent<HTMLElement>,
+  pointCount: number,
+) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  if (rect.width <= 0 || pointCount < 1) {
+    return 0;
+  }
+  const ratio = Math.min(
+    1,
+    Math.max(0, (event.clientX - rect.left) / rect.width),
+  );
+  return Math.round(ratio * (pointCount - 1));
+}
+
+function ChartTooltip({
+  x,
+  y,
+  children,
+}: {
+  x: number;
+  y: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid="usage-chart-tooltip"
+      className="pointer-events-none absolute z-10 min-w-28 -translate-x-1/2 -translate-y-[calc(100%+10px)] rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+      style={{ left: x, top: y }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * HTML overlay dot — SVG circles flatten under `preserveAspectRatio="none"`.
+ */
+function ChartHoverDot({
+  xPct,
+  yPct,
+  color,
+}: {
+  xPct: number;
+  yPct: number;
+  color: string;
+}) {
+  return (
+    <span
+      aria-hidden
+      data-testid="usage-chart-hover-dot"
+      className="pointer-events-none absolute z-[1] size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[var(--oh-color-base)]"
+      style={{
+        left: `${xPct}%`,
+        top: `${yPct}%`,
+        backgroundColor: color,
+      }}
+    />
+  );
+}
+
 export function KPICard({
   label,
   value,
@@ -37,11 +105,166 @@ export function KPICard({
   );
 }
 
+export type ChartSeries = {
+  id: string;
+  label: string;
+  color: string;
+  values: number[];
+};
+
+export function MultiLineChart({
+  dates,
+  series,
+}: {
+  dates: string[];
+  series: ChartSeries[];
+}) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [hover, setHover] = React.useState<ChartHoverPoint | null>(null);
+  const pointCount = series[0]?.values.length ?? 0;
+  const maxValue = Math.max(1, ...series.flatMap((row) => row.values));
+  const width = 100;
+  const height = 100;
+  const dateStep = Math.max(1, Math.ceil(dates.length / 7));
+
+  if (pointCount < 2) {
+    return (
+      <div className="flex h-full min-h-36 items-center justify-center text-sm text-muted">
+        No usage data available yet.
+      </div>
+    );
+  }
+
+  const updateHover = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const index = nearestPointIndex(event, pointCount);
+    setHover({
+      index,
+      xPct: (index / (pointCount - 1)) * 100,
+      clientX: event.clientX - rect.left,
+      clientY: event.clientY - rect.top,
+    });
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative h-full w-full pb-5"
+      onMouseMove={updateHover}
+      onMouseLeave={() => setHover(null)}
+    >
+      <div className="relative h-full w-full">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="h-full w-full"
+          preserveAspectRatio="none"
+        >
+          {[0, 25, 50, 75, 100].map((pct) => (
+            <line
+              key={pct}
+              x1="0"
+              y1={`${pct}%`}
+              x2="100%"
+              y2={`${pct}%`}
+              stroke="var(--oh-border-subtle)"
+              strokeWidth="0.5"
+            />
+          ))}
+          {series.map((row) => {
+            const points = row.values.map((value, index) => {
+              const x = (index / (pointCount - 1)) * width;
+              const y = height - (value / maxValue) * height;
+              return `${x},${y}`;
+            });
+            return (
+              <path
+                key={row.id}
+                d={`M ${points.join(" L ")}`}
+                fill="none"
+                stroke={row.color}
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+          {hover && (
+            <line
+              x1={hover.xPct}
+              y1="0"
+              x2={hover.xPct}
+              y2="100"
+              stroke="var(--oh-muted)"
+              strokeWidth="1"
+              strokeDasharray="2 2"
+              vectorEffect="non-scaling-stroke"
+              className="pointer-events-none"
+            />
+          )}
+        </svg>
+        {hover &&
+          series.map((row) => {
+            const value = row.values[hover.index] ?? 0;
+            const yPct = height - (value / maxValue) * height;
+            return (
+              <ChartHoverDot
+                key={`hover-${row.id}`}
+                xPct={hover.xPct}
+                yPct={yPct}
+                color={row.color}
+              />
+            );
+          })}
+      </div>
+      <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
+        <span>{maxValue.toLocaleString()}</span>
+        <span>{Math.round(maxValue / 2).toLocaleString()}</span>
+        <span>0</span>
+      </div>
+      <div className="absolute bottom-0 left-0 right-0 mt-2 flex justify-between text-xs text-text-dim">
+        {dates
+          .filter((_, index) => index % dateStep === 0)
+          .map((date) => (
+            <span key={date}>{formatShortDate(date)}</span>
+          ))}
+      </div>
+      {hover && (
+        <ChartTooltip x={hover.clientX} y={hover.clientY}>
+          <div className="text-xs font-medium text-foreground">
+            {formatShortDate(dates[hover.index] ?? "")}
+          </div>
+          <div className="mt-1 flex flex-col gap-0.5">
+            {series.map((row) => (
+              <div
+                key={row.id}
+                className="flex items-center gap-2 text-xs tabular-nums text-muted"
+              >
+                <span
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: row.color }}
+                />
+                <span className="min-w-0 truncate">{row.label}</span>
+                <span className="ml-auto text-foreground">
+                  {(row.values[hover.index] ?? 0).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </ChartTooltip>
+      )}
+    </div>
+  );
+}
+
 export function AreaChart({
   data,
 }: {
   data: { date: string; value: number }[];
 }) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [hover, setHover] = React.useState<ChartHoverPoint | null>(null);
   const maxValue = Math.max(...data.map((d) => d.value), 1);
   const minValue = Math.min(...data.map((d) => d.value), 0);
   const range = maxValue - minValue || 1;
@@ -57,53 +280,107 @@ export function AreaChart({
   const pathD = `M ${points.join(" L ")}`;
   const areaD = `${pathD} L ${width},${height} L 0,${height} Z`;
 
+  if (data.length < 2) {
+    return (
+      <div className="flex h-full min-h-36 items-center justify-center text-sm text-muted">
+        No usage data available yet.
+      </div>
+    );
+  }
+
+  const updateHover = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const index = nearestPointIndex(event, data.length);
+    setHover({
+      index,
+      xPct: (index / (data.length - 1)) * 100,
+      clientX: event.clientX - rect.left,
+      clientY: event.clientY - rect.top,
+    });
+  };
+
+  const hoveredPoint = hover ? data[hover.index] : null;
+  const hoveredY = hoveredPoint
+    ? height - ((hoveredPoint.value - minValue) / range) * height
+    : 0;
+
   return (
-    <div className="relative h-full w-full pb-5">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="h-full w-full"
-        preserveAspectRatio="none"
-      >
-        {[0, 25, 50, 75, 100].map((pct) => (
-          <line
-            key={pct}
-            x1="0"
-            y1={`${pct}%`}
-            x2="100%"
-            y2={`${pct}%`}
-            stroke="var(--oh-border-subtle)"
-            strokeWidth="0.5"
+    <div
+      ref={containerRef}
+      className="relative h-full w-full pb-5"
+      onMouseMove={updateHover}
+      onMouseLeave={() => setHover(null)}
+    >
+      <div className="relative h-full w-full">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="h-full w-full"
+          preserveAspectRatio="none"
+        >
+          {[0, 25, 50, 75, 100].map((pct) => (
+            <line
+              key={pct}
+              x1="0"
+              y1={`${pct}%`}
+              x2="100%"
+              y2={`${pct}%`}
+              stroke="var(--oh-border-subtle)"
+              strokeWidth="0.5"
+            />
+          ))}
+          <path d={areaD} fill="url(#usageAreaGradient)" opacity="0.3" />
+          <path
+            d={pathD}
+            fill="none"
+            stroke="var(--oh-color-primary)"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
           />
-        ))}
-        <path d={areaD} fill="url(#usageAreaGradient)" opacity="0.3" />
-        <path
-          d={pathD}
-          fill="none"
-          stroke="var(--oh-color-primary)"
-          strokeWidth="1.5"
-          vectorEffect="non-scaling-stroke"
-        />
-        <defs>
-          <linearGradient
-            id="usageAreaGradient"
-            x1="0%"
-            y1="0%"
-            x2="0%"
-            y2="100%"
-          >
-            <stop
-              offset="0%"
-              stopColor="var(--oh-color-primary)"
-              stopOpacity="0.5"
+          {hover && hoveredPoint && (
+            <line
+              x1={hover.xPct}
+              y1="0"
+              x2={hover.xPct}
+              y2="100"
+              stroke="var(--oh-muted)"
+              strokeWidth="1"
+              strokeDasharray="2 2"
+              vectorEffect="non-scaling-stroke"
+              className="pointer-events-none"
             />
-            <stop
-              offset="100%"
-              stopColor="var(--oh-color-primary)"
-              stopOpacity="0"
-            />
-          </linearGradient>
-        </defs>
-      </svg>
+          )}
+          <defs>
+            <linearGradient
+              id="usageAreaGradient"
+              x1="0%"
+              y1="0%"
+              x2="0%"
+              y2="100%"
+            >
+              <stop
+                offset="0%"
+                stopColor="var(--oh-color-primary)"
+                stopOpacity="0.5"
+              />
+              <stop
+                offset="100%"
+                stopColor="var(--oh-color-primary)"
+                stopOpacity="0"
+              />
+            </linearGradient>
+          </defs>
+        </svg>
+        {hover && hoveredPoint && (
+          <ChartHoverDot
+            xPct={hover.xPct}
+            yPct={hoveredY}
+            color="var(--oh-color-primary)"
+          />
+        )}
+      </div>
       <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
         <span>{maxValue.toLocaleString()}</span>
         <span>{Math.round((maxValue + minValue) / 2).toLocaleString()}</span>
@@ -116,6 +393,16 @@ export function AreaChart({
             <span key={d.date}>{formatShortDate(d.date)}</span>
           ))}
       </div>
+      {hover && hoveredPoint && (
+        <ChartTooltip x={hover.clientX} y={hover.clientY}>
+          <div className="text-xs font-medium text-foreground">
+            {formatShortDate(hoveredPoint.date)}
+          </div>
+          <div className="mt-0.5 text-xs tabular-nums text-muted">
+            {hoveredPoint.value.toLocaleString()} conversations
+          </div>
+        </ChartTooltip>
+      )}
     </div>
   );
 }

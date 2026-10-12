@@ -14,7 +14,15 @@ A sandbox always counts as active for a full idle period after it starts or
 resumes. The agent server's idle clock can include time spent paused, so it
 would otherwise read as idle right after a resume.
 
-A failed read never leads to a delete. A failed idle probe changes nothing.
+A running sandbox the provider reports as broken is paused by the idle and max
+session rules too. Its agent server can't be read, so the activity recorded on
+its row stands in for its idle time, over twice the idle period. The sweep
+re-checks a busy sandbox as soon as its recorded activity is one idle period
+old, so a single failed read then says nothing about idleness. A healthy check
+during the second period records activity and resets the clock.
+
+A failed read never leads to a delete, and a single failed read never makes a
+sandbox count as idle.
 """
 
 from dataclasses import dataclass
@@ -98,4 +106,13 @@ def decide(
     last_ran_at = max(row.state_changed_at, row.last_active_at)
     if _elapsed(settings.delete_after_seconds, last_ran_at, now):
         return Decision(Action.DELETE, Reason.INACTIVE)
+
+    if (
+        live_status == SandboxStatus.ERROR
+        and row.lifecycle_state == LifecycleState.RUNNING
+    ):
+        if max_session_due(row, settings, now):
+            return Decision(Action.PAUSE, Reason.MAX_SESSION)
+        if _elapsed(2 * settings.idle_seconds, last_ran_at, now):
+            return Decision(Action.PAUSE, Reason.IDLE, last_ran_at)
     return NOTHING

@@ -32,12 +32,12 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
-          SETTINGS$NAV_APPLICATION: "Application",
+          SETTINGS$NAV_APPLICATION: "Application Settings",
           SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_BILLING: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
           SETTINGS$NAV_LLM: "LLM",
-          SETTINGS$NAV_USER: "User",
+          SETTINGS$NAV_USER: "User Settings",
           SETTINGS$NAV_SECRETS: "Secrets",
           SETTINGS$NAV_MCP: "MCP",
           SETTINGS$TITLE: "Settings",

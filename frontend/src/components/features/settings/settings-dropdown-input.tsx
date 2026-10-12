@@ -80,7 +80,7 @@ export function SettingsDropdownInput({
         isRequired={required}
         className="w-full"
         classNames={{
-          popoverContent: "bg-content1 rounded-xl",
+          popoverContent: "z-[80] bg-content1 rounded-xl",
           selectorButton: heroUiAutocompleteSelectorButtonClassName,
         }}
         selectorButtonProps={{ disableRipple: true }}

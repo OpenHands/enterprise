@@ -122,8 +122,12 @@ class ManagedSandboxService(SandboxService, ABC):
     async def resume_sandbox(self, sandbox_id: str) -> bool:
         # Pausing old sandboxes locks their rows, so it runs before this row is
         # locked. Otherwise two resumes of running sandboxes could each hold
-        # one row while waiting for the other's.
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        # one row while waiting for the other's. The sandbox being resumed is
+        # left out: if already running, it would count toward the limit and be
+        # paused by its own resume.
+        await self.pause_old_sandboxes(
+            self.max_num_sandboxes - 1, exclude_id=sandbox_id
+        )
 
         stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:

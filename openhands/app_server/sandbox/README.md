@@ -47,6 +47,12 @@ process backend has no lifecycle.) The background worker applies three rules:
 
 A sandbox counts as active for a full idle period after it starts or resumes.
 
+A running sandbox that the provider reports as broken, such as a Docker
+container whose agent server no longer answers its health check, is paused by
+the idle and max session rules too. Its `idle_time` can't be read, so the
+worker uses the activity recorded on its row instead. It waits two idle periods
+rather than one, so a single failed health check doesn't stop a busy sandbox.
+
 | Variable | Default |
 | --- | --- |
 | `OH_SANDBOX_LIFECYCLE_IDLE_SECONDS` | 1200 (20 minutes) |
@@ -63,7 +69,17 @@ What a pause does depends on the backend:
   its volume stays.
 
 The agent server gets `OH_RUNTIME_IDLE_TIMEOUT_SECONDS` set to `idle_seconds`,
-so that a long foreground command times out before the sandbox looks idle.
+and caps a foreground terminal command at 90% of it (18 minutes by default), so
+that a long command times out before the sandbox looks idle.
+
+Docker and E2B set the variable only when a sandbox is created. A stopped
+container keeps its env, and E2B restores the agent server from memory, so a
+resume keeps the old value. Kubernetes agent-sandbox sends it again on every
+resume, because the new pod's agent server boots dormant and is initialized
+again. So a sandbox created before release 1.69.0, or before `idle_seconds` changed, has
+no cap or the old one: on Docker and E2B for as long as it exists, and on
+Kubernetes until it next resumes. The worker can pause such a sandbox partway
+through a long foreground command.
 
 The rules read three columns of the sandbox table: `lifecycle_state`,
 `state_changed_at` and `last_active_at`. `ManagedSandboxService` keeps them

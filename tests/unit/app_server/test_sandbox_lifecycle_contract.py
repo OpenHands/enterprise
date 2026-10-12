@@ -54,6 +54,7 @@ class FakeContainer:
         self.name = name
         self.status = status
         self.calls = 0
+        self.transitions: list[str] = []
         self.attrs: dict[str, Any] = {
             'Config': {'Env': [], 'WorkingDir': '/workspace'},
             'HostConfig': {},
@@ -67,6 +68,7 @@ class FakeContainer:
         if self.fail_with:
             raise self.fail_with
         self.status = status
+        self.transitions.append(status)
 
     def pause(self):
         self._transition('paused')
@@ -152,6 +154,13 @@ class DockerHarness:
     def provider_calls(self) -> int:
         return sum(container.calls for container in self.containers.values())
 
+    def pause_calls(self) -> int:
+        return sum(
+            container.transitions.count('exited')
+            + container.transitions.count('paused')
+            for container in self.containers.values()
+        )
+
 
 class E2BHarness:
     sandbox_id = e2b_tests.SANDBOX_ID
@@ -160,6 +169,7 @@ class E2BHarness:
         self.states: dict[str, SandboxState] = {}
         self.sdk = e2b_tests._mock_sdk()
         self.sdk.get_info.side_effect = self._get_info
+        self.sdk.list.side_effect = self._list
         self.sdk.connect.side_effect = self._set(SandboxState.RUNNING)
         self.sdk.pause.side_effect = self._set(SandboxState.PAUSED)
         self.sdk.create.side_effect = self._create
@@ -173,6 +183,14 @@ class E2BHarness:
         if sandbox_id not in self.states:
             raise e2b_tests.SandboxNotFoundException(sandbox_id)
         return e2b_tests._e2b_info(sandbox_id, state=self.states[sandbox_id])
+
+    def _list(self, **kwargs):
+        return e2b_tests._paginator(
+            [
+                e2b_tests._e2b_info(sandbox_id, state=state)
+                for sandbox_id, state in self.states.items()
+            ]
+        )
 
     def _set(self, state: SandboxState):
         async def _transition(sandbox_id: str, **kwargs):
@@ -206,6 +224,9 @@ class E2BHarness:
             + self.sdk.kill.await_count
         )
 
+    def pause_calls(self) -> int:
+        return self.sdk.pause.await_count
+
 
 class K8sHarness:
     sandbox_id = k8s_tests.CLAIM_NAME
@@ -230,6 +251,9 @@ class K8sHarness:
 
     def provider_calls(self) -> int:
         return len(self.k8s.modes) + len(self.k8s.deleted)
+
+    def pause_calls(self) -> int:
+        return [mode for _, mode in self.k8s.modes].count('Suspended')
 
 
 @pytest.fixture(params=['docker', 'e2b', 'k8s-agent-sandbox'])
@@ -355,6 +379,21 @@ async def test_resuming_a_running_sandbox_leaves_its_row(
     assert row.last_active_at == LONG_AGO
 
 
+async def test_resume_of_a_sandbox_paused_outside_the_app_records_when_it_resumed(
+    harness, db_session, add_sandbox
+):
+    """The provider paused it (E2B on timeout) before the row caught up."""
+    await add_sandbox(LifecycleState.RUNNING, live_paused=True)
+    before = datetime.now(UTC)
+
+    assert await harness.service(db_session).resume_sandbox(harness.sandbox_id)
+
+    row = await _reload(db_session, harness.sandbox_id)
+    assert row.lifecycle_state == LifecycleState.RUNNING
+    assert row.state_changed_at >= before
+    assert row.last_active_at == row.state_changed_at
+
+
 async def test_resume_corrects_a_row_that_says_paused(harness, db_session, add_sandbox):
     """Someone resumed the sandbox outside the app."""
     await add_sandbox(LifecycleState.PAUSED, live_paused=False)
@@ -365,6 +404,22 @@ async def test_resume_corrects_a_row_that_says_paused(harness, db_session, add_s
     row = await _reload(db_session, harness.sandbox_id)
     assert row.lifecycle_state == LifecycleState.RUNNING
     assert row.state_changed_at >= before
+
+
+async def test_resume_at_the_limit_leaves_a_running_sandbox_alone(
+    harness, db_session, add_sandbox
+):
+    """Making room for the sandbox being resumed never pauses that sandbox."""
+    await add_sandbox(LifecycleState.RUNNING, live_paused=False)
+    service = harness.service(db_session)
+    service.max_num_sandboxes = 1
+
+    assert await service.resume_sandbox(harness.sandbox_id)
+
+    assert harness.pause_calls() == 0
+    row = await _reload(db_session, harness.sandbox_id)
+    assert row.lifecycle_state == LifecycleState.RUNNING
+    assert row.state_changed_at == LONG_AGO
 
 
 @pytest.mark.parametrize('transition', ['pause_sandbox', 'resume_sandbox'])

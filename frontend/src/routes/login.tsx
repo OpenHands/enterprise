@@ -36,6 +36,7 @@ export default function LoginPage() {
     emailVerified,
     hasDuplicatedEmail,
     recaptchaBlocked,
+    accountDisabled,
     wasRateLimited,
     emailVerificationModalOpen,
     setEmailVerificationModalOpen,
@@ -106,6 +107,7 @@ export default function LoginPage() {
           emailVerified={emailVerified}
           hasDuplicatedEmail={hasDuplicatedEmail}
           recaptchaBlocked={recaptchaBlocked}
+          accountDisabled={accountDisabled}
           hasInvitation={hasInvitation}
           buildOAuthStateData={buildOAuthStateData}
         />

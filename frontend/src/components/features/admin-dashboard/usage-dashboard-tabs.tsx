@@ -7,29 +7,39 @@ import {
   SearchIcon,
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
+import { useConfig } from "#/hooks/query/use-config";
 import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
-import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
+import { Provider } from "#/types/settings";
+import {
+  AreaChart,
+  KPICard,
+  MultiLineChart,
+  PieChart,
+  type ChartSeries,
+} from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
   formatAgentLabel,
-  formatAssociatedPr,
   formatBudget,
   formatCost,
   formatDateTimeOrDash,
   formatDuration,
   formatMergedStatus,
+  formatPrLabel,
   formatTokens,
   rowsToCsv,
 } from "./usage-dashboard-utils";
-import { cn, downloadBlob } from "#/utils/utils";
+import { cn, constructPullRequestUrl, downloadBlob } from "#/utils/utils";
 import {
   formControlFilterTriggerClassName,
   formControlInlineInputClassName,
   formControlNativeSelectClassName,
   formControlShellClassName,
 } from "#/utils/form-control-classes";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import {
   settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
@@ -43,7 +53,11 @@ const usageNativeSelectClassName = cn(
 
 const usageFilterSelectClassName = formControlNativeSelectClassName;
 
-const usageTableShellClassName = cn(settingsListContainerClassName, "min-w-0");
+const usageTableShellClassName = cn(
+  settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
+  "min-w-0",
+);
 
 const usageTableHeaderCellClassName = settingsListTableHeaderCellClassName;
 
@@ -73,14 +87,16 @@ function countActiveConversationFilters({
   conversationSortBy,
   conversationSortOrder,
   conversationSandboxStatus,
+  defaultConversationStatus,
 }: {
   conversationStatus: string;
   conversationSortBy: string;
   conversationSortOrder: string;
   conversationSandboxStatus: string;
+  defaultConversationStatus: string;
 }) {
   return [
-    conversationStatus !== DEFAULT_CONVERSATION_STATUS,
+    conversationStatus !== defaultConversationStatus,
     conversationSortBy !== DEFAULT_CONVERSATION_SORT_BY,
     conversationSortOrder !== DEFAULT_CONVERSATION_SORT_ORDER,
     conversationSandboxStatus !== DEFAULT_CONVERSATION_SANDBOX_STATUS,
@@ -103,6 +119,8 @@ export function OverviewTab({
   totalSpend,
   timeWindowLabel,
   chartData,
+  chartSubtitle,
+  compareSeries,
   agentSpendRows,
   agentSpendTotal,
 }: {
@@ -112,9 +130,13 @@ export function OverviewTab({
   totalSpend: string;
   timeWindowLabel: string;
   chartData: ChartPoint[];
+  chartSubtitle?: string;
+  compareSeries?: ChartSeries[];
   agentSpendRows: AgentSpendRow[];
   agentSpendTotal: number;
 }) {
+  const comparing = (compareSeries?.length ?? 0) > 1;
+  const compareDates = chartData.map((point) => point.date);
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-4 gap-4">
@@ -144,17 +166,30 @@ export function OverviewTab({
                 Conversations started per day
               </h2>
               <p className="text-sm text-muted">
-                {timeWindowLabel} · all users
+                {chartSubtitle ?? `${timeWindowLabel} · all users`}
               </p>
             </div>
             <button
               type="button"
               disabled={chartData.length === 0}
               onClick={() => {
-                const csv = rowsToCsv(
-                  ["date", "conversations_started"],
-                  chartData.map((point) => [point.date, point.value]),
-                );
+                const csv = comparing
+                  ? rowsToCsv(
+                      [
+                        "date",
+                        ...(compareSeries ?? []).map((row) => row.label),
+                      ],
+                      compareDates.map((date, index) => [
+                        date,
+                        ...(compareSeries ?? []).map(
+                          (row) => row.values[index] ?? 0,
+                        ),
+                      ]),
+                    )
+                  : rowsToCsv(
+                      ["date", "conversations_started"],
+                      chartData.map((point) => [point.date, point.value]),
+                    );
                 downloadBlob(
                   new Blob([csv], { type: "text/csv;charset=utf-8;" }),
                   buildExportFilename("conversations_per_day"),
@@ -172,7 +207,14 @@ export function OverviewTab({
           <div className="relative min-h-36 flex-1">
             {chartData.length > 0 ? (
               <div className="absolute inset-0">
-                <AreaChart data={chartData} />
+                {comparing ? (
+                  <MultiLineChart
+                    dates={compareDates}
+                    series={compareSeries ?? []}
+                  />
+                ) : (
+                  <AreaChart data={chartData} />
+                )}
               </div>
             ) : (
               <div className="flex h-full min-h-36 items-center justify-center py-8 text-center text-sm text-muted">
@@ -180,6 +222,22 @@ export function OverviewTab({
               </div>
             )}
           </div>
+          {comparing && (
+            <div className="mt-4 flex flex-wrap gap-3">
+              {(compareSeries ?? []).map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center gap-2 text-sm text-foreground"
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: row.color }}
+                  />
+                  {row.label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6">
           <div className="mb-4">
@@ -234,19 +292,86 @@ export function OverviewTab({
 export type ConversationRow = {
   id: string;
   user_email?: string | null;
+  org_name?: string | null;
+  /** Present on Super Admin multi-org rows for stop/routing. */
+  org_id?: string;
   total_tokens: number;
   accumulated_cost: number;
   created_at?: string | null;
   updated_at?: string | null;
   pr_number?: number[];
   selected_repository?: string | null;
+  git_provider?: Provider | null;
   pr_merged?: boolean | null;
   agent_kind?: string | null;
   llm_model?: string | null;
   trigger?: string | null;
   execution_status?: string | null;
+  sandbox_status?: string | null;
   title?: string | null;
 };
+
+// One PR in the Associated PR cell. The link is built from the deployment's
+// provider host. The viewer's own token host is not used: the viewer is often
+// an admin who looks at other members' PRs.
+function PullRequestLink({
+  number,
+  repository,
+  provider,
+}: {
+  number: number;
+  repository?: string | null;
+  provider?: Provider | null;
+}) {
+  const { data: config } = useConfig();
+  const host = provider ? config?.provider_default_hosts?.[provider] : null;
+  const label = formatPrLabel(number, repository);
+  const href =
+    repository && provider
+      ? constructPullRequestUrl(provider, repository, number, host)
+      : "";
+
+  if (!href) return <span>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-400 hover:underline"
+    >
+      {label}
+    </a>
+  );
+}
+
+// The PRs that a conversation opened. Each PR is assumed to be in the
+// conversation's selected repository.
+export function AssociatedPrCell({
+  conversation,
+}: {
+  conversation: Pick<
+    ConversationRow,
+    "pr_number" | "selected_repository" | "git_provider"
+  >;
+}) {
+  // The same number can be stored twice; it is the same PR.
+  const prNumbers = [...new Set(conversation.pr_number ?? [])];
+
+  if (prNumbers.length === 0) return "-";
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {prNumbers.map((number) => (
+        <PullRequestLink
+          key={number}
+          number={number}
+          repository={conversation.selected_repository}
+          provider={conversation.git_provider}
+        />
+      ))}
+    </div>
+  );
+}
 
 export type ConversationsResponse = {
   items: ConversationRow[];
@@ -260,6 +385,7 @@ export function ConversationsTab({
   conversationSortBy,
   conversationSortOrder,
   conversationSandboxStatus,
+  defaultConversationStatus = DEFAULT_CONVERSATION_STATUS,
   exportUrl,
   conversationPage,
   conversationPerPage,
@@ -286,6 +412,8 @@ export function ConversationsTab({
   conversationSortBy: string;
   conversationSortOrder: string;
   conversationSandboxStatus: string;
+  /** The status "Reset filters" returns to; "" means all statuses. */
+  defaultConversationStatus?: string;
   exportUrl: string;
   conversationPage: number;
   conversationPerPage: number;
@@ -304,8 +432,9 @@ export function ConversationsTab({
   onStopConversation: (conversation: {
     id: string;
     title: string | null;
+    orgId?: string;
   }) => void;
-  pendingStop: { id: string; title: string | null } | null;
+  pendingStop: { id: string; title: string | null; orgId?: string } | null;
   stopConfirmationText: string;
   onConfirmStop: () => void;
   onCancelStop: () => void;
@@ -319,14 +448,18 @@ export function ConversationsTab({
     conversationSortBy,
     conversationSortOrder,
     conversationSandboxStatus,
+    defaultConversationStatus,
   });
 
   const clearFilters = () => {
-    onStatusChange(DEFAULT_CONVERSATION_STATUS);
+    onStatusChange(defaultConversationStatus);
     onSortByChange(DEFAULT_CONVERSATION_SORT_BY);
     onSortOrderChange(DEFAULT_CONVERSATION_SORT_ORDER);
     onSandboxStatusChange(DEFAULT_CONVERSATION_SANDBOX_STATUS);
   };
+  const showOrgColumn =
+    conversationsData?.items.some((row) => Boolean(row.org_name)) === true;
+  const conversationColumnCount = showOrgColumn ? 12 : 11;
 
   return (
     <div className="space-y-4">
@@ -474,11 +607,16 @@ export function ConversationsTab({
       </div>
 
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
                 <th className={usageTableHeaderCellRightClassName}>Tokens</th>
                 <th className={usageTableHeaderCellRightClassName}>Spend</th>
                 <th className={usageTableHeaderCellClassName}>Duration</th>
@@ -494,7 +632,10 @@ export function ConversationsTab({
             <tbody>
               {conversationsLoading && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={conversationColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     Loading conversations...
                   </td>
                 </tr>
@@ -502,7 +643,10 @@ export function ConversationsTab({
               {!conversationsLoading &&
                 (conversationsData?.items.length ?? 0) === 0 && (
                   <tr>
-                    <td colSpan={11} className={usageTableEmptyCellClassName}>
+                    <td
+                      colSpan={conversationColumnCount}
+                      className={usageTableEmptyCellClassName}
+                    >
                       No conversations found for this time window.
                     </td>
                   </tr>
@@ -523,6 +667,11 @@ export function ConversationsTab({
                         {conversation.user_email || "-"}
                       </div>
                     </td>
+                    {showOrgColumn && (
+                      <td className={cn(usageTableCellClassName, "text-muted")}>
+                        {conversation.org_name || "-"}
+                      </td>
+                    )}
                     <td
                       className={cn(
                         usageTableCellRightClassName,
@@ -552,7 +701,7 @@ export function ConversationsTab({
                       {formatDateTimeOrDash(conversation.updated_at)}
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
-                      {formatAssociatedPr(conversation)}
+                      <AssociatedPrCell conversation={conversation} />
                     </td>
                     <td className={cn(usageTableCellClassName, "text-muted")}>
                       {formatMergedStatus(conversation.pr_merged)}
@@ -576,6 +725,7 @@ export function ConversationsTab({
                             onStopConversation({
                               id: conversation.id,
                               title: conversation.title ?? null,
+                              orgId: conversation.org_id,
                             })
                           }
                           disabled={stoppingIds.has(conversation.id)}
@@ -595,7 +745,7 @@ export function ConversationsTab({
               })}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
         <div className="flex items-center justify-between border-t border-[var(--oh-border)] px-3 py-3">
           <div className="flex items-center gap-2">
             <button
@@ -665,6 +815,7 @@ export type UserUsageRow = {
   user_id: string;
   user_name?: string | null;
   user_email?: string | null;
+  org_name?: string | null;
   conversation_count: number;
   first_conversation_at?: string | null;
   last_conversation_at?: string | null;
@@ -689,14 +840,23 @@ export function UsersTab({
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
 }) {
+  const showOrgColumn =
+    userUsage?.items.some((user) => Boolean(user.org_name)) === true;
+  const userColumnCount = showOrgColumn ? 12 : 11;
+
   return (
     <div className="space-y-4">
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
                 <th className={usageTableHeaderCellRightClassName}>Convos</th>
                 <th className={usageTableHeaderCellClassName}>First convo</th>
                 <th className={usageTableHeaderCellClassName}>Last convo</th>
@@ -718,14 +878,20 @@ export function UsersTab({
             <tbody>
               {userUsageLoading && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     Loading user usage...
                   </td>
                 </tr>
               )}
               {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={11} className={usageTableEmptyCellClassName}>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
                     No user usage data available yet.
                   </td>
                 </tr>
@@ -745,6 +911,11 @@ export function UsersTab({
                       {user.user_email || "-"}
                     </div>
                   </td>
+                  {showOrgColumn && (
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {user.org_name || "-"}
+                    </td>
+                  )}
                   <td
                     className={cn(
                       usageTableCellRightClassName,
@@ -801,7 +972,7 @@ export function UsersTab({
               ))}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );
@@ -878,7 +1049,7 @@ export function ModelsTab({
       </div>
 
       <div className={usageTableShellClassName}>
-        <div className="overflow-x-auto">
+        <HorizontalScrollFade>
           <table className="w-full min-w-max">
             <thead className={settingsListTableHeadClassName}>
               <tr>
@@ -963,7 +1134,7 @@ export function ModelsTab({
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

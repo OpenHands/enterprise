@@ -750,10 +750,14 @@ class K8sAgentSandboxService(ManagedSandboxService):
         the router path and the stored key are the same after a resume.
         """
         claim = await self.k8s.get_claim(stored_sandbox.id)
-        if claim is None or _claim_status(claim) == SandboxStatus.MISSING:
+        status = _claim_status(claim)
+        if claim is None or status == SandboxStatus.MISSING:
             return ProviderOutcome.FAILED
         sandbox_name = _sandbox_name(claim)
         if sandbox_name is None:
+            if status == SandboxStatus.ERROR:
+                # The claim failed before it got a pod.
+                return ProviderOutcome.SKIPPED
             raise SandboxError(
                 f'Sandbox {stored_sandbox.id} has no pod yet, so there is nothing '
                 'to pause'

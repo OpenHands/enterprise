@@ -164,7 +164,11 @@ class E2BSandboxService(ManagedSandboxService):
         return params
 
     async def _get_info(self, e2b_sandbox_id: str) -> E2BSandboxInfo | None:
-        """Get E2B's info for a sandbox, or None when E2B has no such one."""
+        """Get E2B's info for a sandbox, or None when E2B has no such one.
+
+        None also covers a failed lookup (a transient error or a malformed id),
+        so it does not prove the sandbox is gone.
+        """
         try:
             return await AsyncSandbox.get_info(e2b_sandbox_id, **self._api_params)
         except AuthenticationException as exc:
@@ -639,9 +643,11 @@ class E2BSandboxService(ManagedSandboxService):
         """
         sandbox_id = stored_sandbox.id
         info = await self._get_info(sandbox_id)
-        if info is None:
-            return ProviderOutcome.FAILED
-        was_paused = info.state == SandboxState.PAUSED
+        # None may also mean the lookup failed transiently, so it does not end
+        # the resume: ``connect`` below decides whether the sandbox is gone. An
+        # unknown prior state counts as running, so a running row keeps its
+        # times.
+        was_paused = info is not None and info.state == SandboxState.PAUSED
         for attempt in range(1, self.resume_retries + 1):
             try:
                 # E2B has no resume(); connecting to a paused sandbox resumes

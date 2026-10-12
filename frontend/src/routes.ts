@@ -9,6 +9,11 @@ export default [
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
+  route("install", "routes/super-admin-install-layout.tsx", [
+    index("routes/super-admin-install-welcome.tsx"),
+    route("company", "routes/super-admin-install-company.tsx"),
+    route("org", "routes/super-admin-install-org.tsx"),
+  ]),
   route("automations/*", "routes/automations-redirect.tsx"),
   route("canvas/*", "routes/cross-app-redirect.tsx", {
     id: "routes/canvas-cross-app-redirect",
@@ -50,6 +55,15 @@ export default [
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
       route("your-budget", "routes/your-budget.tsx"),
+    ]),
+    route("super-admin", "routes/super-admin.tsx", [
+      index("routes/super-admin-overview.tsx"),
+      route("setup", "routes/super-admin-setup.tsx"),
+      route("organizations", "routes/super-admin-organizations.tsx"),
+      route("users", "routes/super-admin-users.tsx"),
+      route("admins", "routes/super-admin-admins.tsx"),
+      route("usage", "routes/super-admin-usage.tsx"),
+      route("instance", "routes/super-admin-instance.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

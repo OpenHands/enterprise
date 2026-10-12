@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from openhands.app_server.sandbox.lifecycle.rules import (
+    NOTHING,
     Action,
     Decision,
     Reason,
@@ -22,6 +23,7 @@ DAY = timedelta(days=1)
 DEFAULTS = SandboxLifecycleSettings()
 RUNNING = SandboxStatus.RUNNING
 PAUSED = SandboxStatus.PAUSED
+ERROR = SandboxStatus.ERROR
 
 
 def _row(
@@ -92,6 +94,59 @@ class TestRunning:
         settings = SandboxLifecycleSettings(idle_seconds=0, max_session_seconds=0)
 
         assert _decide(row, RUNNING, None, settings).action == Action.NOTHING
+
+
+class TestBroken:
+    """The row says running, but the provider reports ERROR."""
+
+    def test_it_is_paused_once_its_recorded_activity_is_two_idle_periods_old(self):
+        decision = _decide(_row(changed=5 * HOUR, active=40 * MINUTE), ERROR)
+
+        assert decision == Decision(Action.PAUSE, Reason.IDLE, NOW - 40 * MINUTE)
+
+    @pytest.mark.parametrize('active', [5 * MINUTE, 20 * MINUTE, 39 * MINUTE])
+    def test_one_failed_read_does_not_pause_a_busy_sandbox(self, active):
+        """The sweep re-queues a busy sandbox once its recorded activity is an
+        idle period old, so a single ERROR read then is no sign of idleness."""
+        row = _row(changed=5 * HOUR, active=active)
+
+        assert _decide(row, ERROR) == NOTHING
+
+    def test_the_max_session_pauses_it(self):
+        decision = _decide(_row(changed=13 * HOUR, active=0 * MINUTE), ERROR)
+
+        assert decision == Decision(Action.PAUSE, Reason.MAX_SESSION)
+
+    def test_the_max_session_comes_before_idle(self):
+        decision = _decide(_row(changed=13 * HOUR), ERROR)
+
+        assert decision == Decision(Action.PAUSE, Reason.MAX_SESSION)
+
+    @pytest.mark.parametrize(
+        'live_status', [SandboxStatus.STARTING, SandboxStatus.MISSING]
+    )
+    def test_only_error_counts_as_broken(self, live_status):
+        assert _decide(_row(changed=13 * HOUR), live_status) == NOTHING
+
+    def test_a_resumed_sandbox_gets_a_full_idle_period(self):
+        row = _row(changed=5 * MINUTE, active=3 * DAY)
+
+        assert _decide(row, ERROR) == NOTHING
+
+    def test_the_delete_comes_first(self):
+        decision = _decide(_row(changed=10 * DAY), ERROR)
+
+        assert decision == Decision(Action.DELETE, Reason.INACTIVE)
+
+    def test_a_paused_row_is_not_paused_again(self):
+        row = _row(LifecycleState.PAUSED, changed=13 * HOUR)
+
+        assert _decide(row, ERROR) == NOTHING
+
+    def test_zero_turns_both_rules_off(self):
+        settings = SandboxLifecycleSettings(idle_seconds=0, max_session_seconds=0)
+
+        assert _decide(_row(changed=13 * HOUR), ERROR, settings=settings) == NOTHING
 
 
 class TestNotRunning:
