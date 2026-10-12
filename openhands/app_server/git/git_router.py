@@ -118,7 +118,14 @@ async def search_repositories(
     ] = None,
     limit: Annotated[
         int,
-        Query(title='The max number of results in the page', gt=0, le=100),
+        Query(
+            title=(
+                'Page size. With a query, the page size of each provider search '
+                'call; the results can be longer.'
+            ),
+            gt=0,
+            le=100,
+        ),
     ] = 100,
     sort_order: Annotated[
         SortOrder | None,
