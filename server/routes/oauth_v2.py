@@ -35,9 +35,10 @@ from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_store import AuthProviderStore
 from storage.encrypt_utils import get_jwt_service
-from storage.oauth_provider import OAuthProvider
-from storage.oauth_provider_store import OAuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_store import UserStore
@@ -79,8 +80,8 @@ class OAuthState(BaseModel):
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-async def _get_provider(provider_id: int) -> OAuthProvider:
-    store = OAuthProviderStore()
+async def _get_provider(provider_id: int) -> AuthProvider:
+    store = AuthProviderStore()
     provider = await store.get_by_id(provider_id)
     if provider is None:
         raise HTTPException(
@@ -90,16 +91,24 @@ async def _get_provider(provider_id: int) -> OAuthProvider:
     return provider
 
 
-def _secret_str(provider: OAuthProvider) -> str | None:
-    blob = provider.client_secret
-    if blob is None:
-        return None
-    return blob.get('v') if isinstance(blob, dict) else str(blob)
+def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
+    """Narrow ``provider.details`` to ``OAuthProviderDetails``.
+
+    Every caller of this helper runs after the generic OAuth2 redirect/token
+    routes have already excluded non-OAuth2 rows (see the ``kind ==
+    PasswordProviderDetails.__name__`` checks in ``oauth_v2_login`` /
+    ``oauth_v2_callback``), so this should never actually mismatch -- the
+    assertion documents that invariant instead of silently reaching into the
+    wrong subclass's fields.
+    """
+    assert isinstance(provider.details, OAuthProviderDetails)
+    return provider.details
 
 
-async def _exchange_code(provider: OAuthProvider, code: str, redirect_uri: str) -> dict:
+async def _exchange_code(provider: AuthProvider, code: str, redirect_uri: str) -> dict:
     """Exchange an authorization code for a token response dict."""
-    token_url = provider.token_url
+    details = _oauth_details(provider)
+    token_url = details.token_url
     if not token_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -109,9 +118,11 @@ async def _exchange_code(provider: OAuthProvider, code: str, redirect_uri: str) 
         'grant_type': 'authorization_code',
         'code': code,
         'redirect_uri': redirect_uri,
-        'client_id': provider.client_id,
+        'client_id': details.client_id,
     }
-    client_secret = _secret_str(provider)
+    client_secret = (
+        details.client_secret.get_secret_value() if details.client_secret else None
+    )
     if client_secret:
         payload['client_secret'] = client_secret
     async with httpx.AsyncClient(
@@ -173,9 +184,10 @@ def _parse_token_response(
     return access_token, refresh_token, access_expires_at, refresh_expires_at
 
 
-async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
+async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
     """Call the provider userinfo endpoint with the access token."""
-    if not provider.userinfo_url:
+    details = _oauth_details(provider)
+    if not details.userinfo_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Provider {provider.id} has no userinfo_url',
@@ -184,7 +196,7 @@ async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
         verify=httpx_verify_option(), timeout=OAUTH_HTTP_TIMEOUT
     ) as client:
         response = await client.get(
-            provider.userinfo_url,
+            details.userinfo_url,
             headers={'Authorization': f'Bearer {access_token}'},
         )
         if response.status_code >= 400:
@@ -200,7 +212,7 @@ async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
         return response.json()
 
 
-async def _resolve_or_create_user(provider: OAuthProvider, userinfo: dict) -> str:
+async def _resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     """Resolve the internal user for a provider userinfo dict.
 
     Looks up ``oauth_provider_users`` by ``external_subject_id`` (the OIDC
@@ -352,36 +364,11 @@ async def oauth_v2_idp_login(
     Convenience entry point so callers do not need to know the concrete OAuth
     provider ID. Returns ``404`` when no IDP provider is configured.
     """
-    provider = await OAuthProviderStore().get_first_idp()
+    provider = await AuthProviderStore().get_first_idp()
     if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='No IDP OAuth provider is configured',
-        )
-    return RedirectResponse(
-        _login_redirect_url(request, provider.id, redirect_url, mode),
-        status_code=302,
-    )
-
-
-@oauth_v2_router.get('/{provider_type}-login')
-async def oauth_v2_provider_type_login(
-    request: Request,
-    provider_type: str,
-    redirect_url: str = '',
-    mode: str = 'login',
-):
-    """Redirect to ``/oauth/<id>/login`` of the first provider of a given type.
-
-    ``provider_type`` is the ``provider_category`` value (e.g. ``github``) taken
-    from the URL segment before ``-login`` — e.g. ``/oauth/github-login``.
-    Returns ``404`` when no matching provider exists.
-    """
-    provider = await OAuthProviderStore().get_first_by_category(provider_type)
-    if provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'No OAuth provider found for type {provider_type!r}',
         )
     return RedirectResponse(
         _login_redirect_url(request, provider.id, redirect_url, mode),
@@ -404,11 +391,9 @@ async def oauth_v2_login(
     provider = await _get_provider(provider_id)
 
     # Integrated IDP is handled by its own routes (registered before this
-    # router): intercept by category and redirect to its dedicated
-    # email+password login page instead of building an external OAuth URL.
-    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
-
-    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
+    # router): intercept by kind and redirect to its dedicated email+password
+    # login page instead of building an external OAuth URL.
+    if provider.kind == PasswordProviderDetails.__name__:
         from server.routes.idp import IDP_LOGIN_PATH
 
         web_url = get_web_url(request)
@@ -422,7 +407,8 @@ async def oauth_v2_login(
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
 
-    auth_url = provider.authorization_url
+    details = _oauth_details(provider)
+    auth_url = details.authorization_url
     if not auth_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -440,12 +426,12 @@ async def oauth_v2_login(
     callback_uri = f'{web_url}/oauth/{provider_id}/callback'
 
     params = {
-        'client_id': provider.client_id,
+        'client_id': details.client_id,
         'redirect_uri': callback_uri,
         'response_type': 'code',
         'state': encrypted_state,
     }
-    scopes = provider.scopes or []
+    scopes = details.scopes or []
     if scopes:
         params['scope'] = ' '.join(scopes)
 
@@ -469,11 +455,9 @@ async def oauth_v2_callback(
     provider = await _get_provider(provider_id)
 
     # Integrated IDP callbacks are handled by dedicated routes -- checked
-    # first, unconditionally, so this 404s on provider category alone
-    # regardless of whatever ``code``/``state`` a caller happens to send.
-    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
-
-    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
+    # first, unconditionally, so this 404s on provider kind alone regardless
+    # of whatever ``code``/``state`` a caller happens to send.
+    if provider.kind == PasswordProviderDetails.__name__:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login callback must use POST with email field',
@@ -646,14 +630,14 @@ async def oauth_v2_unlink(
 @oauth_v2_router.get('/providers')
 async def oauth_v2_list_providers():
     """List configured OAuth providers (Phase 1 introspection/debug)."""
-    store = OAuthProviderStore()
+    store = AuthProviderStore()
     providers = await store.list_all()
     return {
         'providers': [
             {
                 'id': p.id,
-                'provider_category': p.provider_category,
-                'display_name': p.display_name,
+                'kind': p.kind,
+                'title': p.title,
                 'is_idp': p.is_idp,
             }
             for p in providers

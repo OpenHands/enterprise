@@ -38,11 +38,12 @@ from server.routes.org_models import (
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
 from storage.lite_llm_manager import LiteLlmManager
-from storage.oauth_provider import OAuthProvider
 from storage.oauth_token import OAuthToken
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
@@ -874,12 +875,29 @@ async def _user_has_automation_git_account(
     )
     if keycloak_token is not None:
         return True
+
+    # ``provider_type`` lives inside the encrypted ``details`` blob, not a
+    # plain column, so this can no longer be a single joined/filtered query
+    # -- resolve the matching provider ids in Python first (the provider
+    # table is tiny: one row per configured provider, not per user). Not
+    # filtered by ``is_idp``: a git provider configured as the sign-in IDP
+    # still counts, matching the pre-refactor query (which had no such
+    # filter either).
+    git_providers = await session.scalars(select(AuthProvider))
+    automation_provider_ids = [
+        provider.id
+        for provider in git_providers
+        if isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type.value in _AUTOMATION_GIT_PROVIDERS
+    ]
+    if not automation_provider_ids:
+        return False
+
     oauth_v2_token = await session.scalar(
         select(OAuthToken.id)
-        .join(OAuthProvider, OAuthProvider.id == OAuthToken.oauth_provider_id)
         .where(
             OAuthToken.user_id == user_id,
-            OAuthProvider.provider_category.in_(_AUTOMATION_GIT_PROVIDERS),
+            OAuthToken.oauth_provider_id.in_(automation_provider_ids),
         )
         .limit(1)
     )

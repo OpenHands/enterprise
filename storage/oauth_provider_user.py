@@ -25,7 +25,7 @@ class OAuthProviderUser(Base):
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     oauth_provider_id: Mapped[int] = mapped_column(
-        ForeignKey('oauth_providers.id', ondelete='CASCADE'), nullable=False
+        ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=False
     )
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey('user.id', ondelete='CASCADE'), nullable=False

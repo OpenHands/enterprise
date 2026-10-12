@@ -5,7 +5,7 @@ from base64 import b64decode, b64encode
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, TypeAdapter
 from sqlalchemy import String, TypeDecorator
 from sqlalchemy.engine.interfaces import Dialect
 
@@ -123,3 +123,38 @@ class EncryptedJSON(TypeDecorator[dict[str, Any]]):
         if value is None:
             return None
         return json.loads(decrypt_value(value))
+
+
+def create_encrypted_json_type_decorator(object_type: type):
+    """Like ``sql_utils.create_json_type_decorator``, but the serialized JSON
+    is encrypted at rest via the same JWE service as ``EncryptedJSON``.
+
+    Use for a ``DiscriminatedUnionMixin`` column that may contain secrets
+    (e.g. ``AuthProvider.details``): the type adapter dumps with
+    ``context={'expose_secrets': True}`` before encrypting -- the column
+    itself is the encryption boundary, so masking on the way in would
+    corrupt round-trips, same as ``EncryptedJSON`` -- and re-hydrates the
+    correct concrete subclass via ``TypeAdapter.validate_python`` on read, so
+    the mapped attribute is always a real ``object_type`` instance, never a
+    bare ``dict``.
+    """
+    type_adapter: TypeAdapter = TypeAdapter(object_type)
+
+    class EncryptedDiscriminatedJSON(TypeDecorator):
+        impl = String
+        cache_ok = True
+
+        def process_bind_param(self, value, dialect):
+            if value is None:
+                return None
+            dumped = type_adapter.dump_python(
+                value, mode='json', context={'expose_secrets': True}
+            )
+            return encrypt_value(json.dumps(dumped))
+
+        def process_result_value(self, value, dialect):
+            if value is None:
+                return None
+            return type_adapter.validate_python(json.loads(decrypt_value(value)))
+
+    return EncryptedDiscriminatedJSON
