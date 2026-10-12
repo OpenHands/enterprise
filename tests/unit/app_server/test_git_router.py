@@ -7,7 +7,7 @@ focusing on pagination and error handling.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
 from openhands.app_server.git.git_models import SortOrder
@@ -641,6 +641,41 @@ class TestSearchRepositories:
         # Assert
         assert [repo.id for repo in result.items] == ['1', '2', '3']
         assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_search_with_query_rejects_non_first_page(self, mock_handler_cls):
+        """Search with a query returns 400 for a page after the first.
+
+        search_repositories takes no page number, so it cannot return a later page.
+        """
+        # Arrange
+        mock_handler = MagicMock()
+        mock_handler.search_repositories = AsyncMock(return_value=[])
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await search_repositories(
+                provider=ProviderType.GITHUB,
+                query='test',
+                installation_id=None,
+                page_id=encode_page_id(2),
+                limit=2,
+                sort_order=None,
+                user_context=mock_context,
+            )
+
+        # Assert
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        mock_handler.search_repositories.assert_not_called()
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')

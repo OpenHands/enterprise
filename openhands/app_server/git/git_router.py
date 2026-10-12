@@ -154,6 +154,14 @@ async def search_repositories(
 
     # If query is provided, use search; otherwise get user's repositories
     if query:
+        if page != 1:
+            # TODO: Support pagination for repository search after refactoring.
+            # search_repositories takes no page number, so a later page would
+            # only repeat the first page.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Pagination not yet supported for repository search queries. Use empty query to list repositories with pagination.',
+            )
         # Parse sort_order into sort and order components (if provided)
         if sort_order:
             search_sort, order = sort_order.value.rsplit('-', 1)
