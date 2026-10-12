@@ -162,6 +162,7 @@ function OAuthProviderFormModal({
             setForm((prev) => ({ ...prev, displayName: value }))
           }
           showRequiredTag
+          autoComplete="off"
         />
         <SettingsSwitch
           testId="super-admin-oauth-provider-is-idp"
@@ -179,6 +180,7 @@ function OAuthProviderFormModal({
             setForm((prev) => ({ ...prev, clientId: value }))
           }
           showRequiredTag
+          autoComplete="off"
         />
         <SettingsInput
           testId="super-admin-oauth-provider-client-secret"
@@ -199,6 +201,7 @@ function OAuthProviderFormModal({
             setForm((prev) => ({ ...prev, clientSecret: value }))
           }
           showOptionalTag
+          autoComplete="new-password"
         />
         <SettingsInput
           testId="super-admin-oauth-provider-authorization-url"
