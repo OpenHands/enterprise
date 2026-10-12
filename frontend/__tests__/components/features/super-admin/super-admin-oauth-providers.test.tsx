@@ -91,6 +91,21 @@ describe("Super Admin OAuth Providers page", () => {
     ).toBeInTheDocument();
   });
 
+  it("defaults the category dropdown to Enterprise SSO when adding a provider", async () => {
+    const user = userEvent.setup();
+    renderOAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
+
+    expect(
+      within(dialog).getByTestId("super-admin-oauth-provider-category"),
+    ).toHaveValue("Enterprise SSO");
+  });
+
   it("creates a new OAuth provider from the form", async () => {
     const user = userEvent.setup();
     const createOAuthProvider = vi
@@ -103,10 +118,11 @@ describe("Super Admin OAuth Providers page", () => {
       screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
     );
     const dialog = screen.getByTestId("super-admin-oauth-provider-form");
-    await user.type(
-      within(dialog).getByTestId("super-admin-oauth-provider-category"),
-      "gitlab",
+    const categoryInput = within(dialog).getByTestId(
+      "super-admin-oauth-provider-category",
     );
+    await user.clear(categoryInput);
+    await user.type(categoryInput, "gitlab");
     await user.type(
       within(dialog).getByTestId("super-admin-oauth-provider-display-name"),
       "GitLab",

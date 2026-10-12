@@ -65,9 +65,9 @@ interface OAuthProviderFormState {
 }
 
 const EMPTY_FORM: OAuthProviderFormState = {
-  providerCategory: "",
+  providerCategory: "enterprise_sso",
   displayName: "",
-  isIdp: false,
+  isIdp: true,
   clientId: "",
   clientSecret: "",
   authorizationUrl: "",
