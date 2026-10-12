@@ -6,8 +6,8 @@ import { I18nKey } from "#/i18n/declaration";
 import V1ConversationService from "#/api/conversation-service/v1-conversation-service.api";
 import {
   displayErrorToast,
+  displayLoadingToast,
   displaySuccessToast,
-  TOAST_OPTIONS,
 } from "#/utils/custom-toast-handlers";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
 
@@ -80,8 +80,7 @@ export const useNewConversationCommand = () => {
       };
     },
     onMutate: () => {
-      toast.loading(t(I18nKey.CONVERSATION$CLEARING), {
-        ...TOAST_OPTIONS,
+      displayLoadingToast(t(I18nKey.CONVERSATION$CLEARING), {
         id: "clear-conversation",
       });
     },

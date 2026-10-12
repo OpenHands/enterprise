@@ -1178,6 +1178,133 @@ async def test_get_user_orgs_paginated_ordering(async_session_maker, mock_litell
     assert orgs[2].name == 'Zebra Org'
 
 
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_filters_by_exact_name(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of organizations named 'Acme' and 'Acme Corp'
+    WHEN: get_user_orgs_paginated is called with name='Acme'
+    THEN: Only the organization whose name matches exactly is returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        org1 = Org(name='Acme')
+        org2 = Org(name='Acme Corp')
+        session.add_all([org1, org2])
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=org1.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        await session.flush()
+
+        member1 = OrgMember(
+            org_id=org1.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        member2 = OrgMember(
+            org_id=org2.id, user_id=user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member1, member2])
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='Acme'
+        )
+
+    # Assert
+    assert [org.name for org in orgs] == ['Acme']
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_name_filter_is_case_sensitive(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of an organization named 'Acme'
+    WHEN: get_user_orgs_paginated is called with name='acme'
+    THEN: No organizations are returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        org = Org(name='Acme')
+        session.add(org)
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=org.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        await session.flush()
+
+        member = OrgMember(
+            org_id=org.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        session.add(member)
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='acme'
+        )
+
+    # Assert
+    assert orgs == []
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_orgs_paginated_name_filter_excludes_non_member_orgs(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: An organization named 'Other Org' exists but the user is not a member
+    WHEN: get_user_orgs_paginated is called with name='Other Org'
+    THEN: No organizations are returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+    other_user_id = uuid.uuid4()
+
+    async with async_session_maker() as session:
+        own_org = Org(name='My Org')
+        other_org = Org(name='Other Org')
+        session.add_all([own_org, other_org])
+        await session.flush()
+
+        user = User(id=user_id, current_org_id=own_org.id)
+        other_user = User(id=other_user_id, current_org_id=other_org.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, other_user, role])
+        await session.flush()
+
+        member = OrgMember(
+            org_id=own_org.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        other_member = OrgMember(
+            org_id=other_org.id, user_id=other_user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member, other_member])
+        await session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgStore.get_user_orgs_paginated(
+            user_id=user_id, name='Other Org'
+        )
+
+    # Assert
+    assert orgs == []
+    assert next_page_id is None
+
+
 def test_orphaned_user_error_contains_user_ids():
     """
     GIVEN: OrphanedUserError is created with a list of user IDs
@@ -1199,9 +1326,6 @@ def test_orphaned_user_error_contains_user_ids():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_sole_org_requester_is_deleted(
     async_session_maker, mock_litellm_api
 ):
@@ -1274,9 +1398,6 @@ async def test_delete_org_cascade_sole_org_requester_is_deleted(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_keeps_user_with_alternative_org(
     async_session_maker, mock_litellm_api
 ):
@@ -1339,9 +1460,6 @@ async def test_delete_org_cascade_keeps_user_with_alternative_org(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason='Uses PostgreSQL-specific ::uuid cast syntax not supported by SQLite'
-)
 async def test_delete_org_cascade_raises_for_non_requester_orphans(
     async_session_maker, mock_litellm_api
 ):
@@ -1434,8 +1552,6 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
     With passive_deletes=True on the relationship, SQLAlchemy defers to the
     database's CASCADE constraint instead of trying to nullify the foreign key.
 
-    Note: SQLite doesn't enforce CASCADE by default, so we only verify that
-    the deletion succeeds. In production (PostgreSQL), CASCADE handles cleanup.
     """
     from datetime import datetime, timedelta
 
@@ -1496,10 +1612,12 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
         session.delete(org)
         session.commit()  # Success indicates passive_deletes=True is working
 
-    # Assert - Organization should be deleted
+    # Assert - the org is gone, and CASCADE took the invitation with it
     with session_maker() as session:
         deleted_org = session.query(Org).filter(Org.id == org_id).first()
         assert deleted_org is None
+        remaining = session.query(OrgInvitation).filter_by(org_id=org_id).count()
+        assert remaining == 0
 
 
 # =============================================================================
@@ -1675,7 +1793,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
     org_id = uuid.uuid4()
     admin_user_id = uuid.uuid4()
     member_user_id = uuid.uuid4()
-    managed_url = 'https://litellm.example.com'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     async with async_session_maker() as session:
         role = Role(name='member', rank=2)
@@ -1901,7 +2019,7 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
     """When the key is registered AND passes auth verification, return it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
@@ -1954,7 +2072,7 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     """When the key is registered but fails auth verification, rotate it."""
     user_id = uuid.uuid4()
     org_id = uuid.uuid4()
-    managed_url = 'http://test.url'
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('stale-managed-key')
@@ -2003,6 +2121,74 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
 
 
+@pytest.mark.asyncio
+async def test_ensure_managed_key_skips_when_litellm_disabled(mock_litellm_api):
+    """With ENABLE_LEGACY_LITELLM off, no verify/rotate/generate call is attempted.
+
+    Regression: an org-defaults save previously tried to mint a key
+    unconditionally for any managed (openhands/*) default -- which is
+    virtually every existing org -- raising ``ValueError`` out of
+    ``LiteLlmManager.generate_key`` and surfacing as an opaque 500
+    (enterprise#474).
+    """
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('existing-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.org_store.is_litellm_enabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(),
+        ) as mock_verify_existing,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(),
+        ) as mock_verify,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(),
+        ) as mock_generate,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ) as mock_delete,
+    ):
+        result = await OrgStore._ensure_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result is None
+    mock_verify_existing.assert_not_awaited()
+    mock_verify.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    mock_delete.assert_not_awaited()
+
+
 class TestUsesManagedDefaultLlm:
     def test_managed_proxy_base_url_is_managed(self):
         org = MagicMock(spec=Org)
@@ -2040,6 +2226,64 @@ class TestUsesManagedDefaultLlm:
     def test_missing_llm_is_not_managed(self):
         org = MagicMock(spec=Org)
         org.agent_settings = {}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    @pytest.mark.parametrize(
+        'proxy_url',
+        [
+            None,
+            'http://openhands-litellm:4000',
+            'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+        ],
+    )
+    @pytest.mark.parametrize(
+        'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+    )
+    def test_bundled_proxy_route_is_managed_without_its_url_env(self, proxy_url, model):
+        # With LiteLLM off the chart no longer sets LITE_LLM_API_URL.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': model, 'base_url': proxy_url}}
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    @pytest.mark.parametrize(
+        ('model', 'llm_base_url'),
+        [
+            ('litellm_proxy/claude-sonnet-4-5', None),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://localhost:4000'),
+            ('openhands/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+        ],
+    )
+    def test_other_in_cluster_gateway_is_not_managed_with_litellm_on(
+        self, model, llm_base_url
+    ):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': model, 'base_url': llm_base_url}}
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_external_litellm_proxy_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'litellm_proxy/claude-sonnet-4-5',
+                'base_url': 'https://litellm.customer.example.com',
+            }
+        }
         with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
             assert OrgStore._uses_managed_default_llm(org) is False
 
@@ -2120,3 +2364,140 @@ async def test_validate_org_version_repair_failure_does_not_brick(async_session_
 
     assert result is not None
     assert result.org_version == ORG_SETTINGS_VERSION
+
+
+_GATEWAY_ERA_LLM = {
+    'model': 'litellm_proxy/claude-sonnet-4-5',
+    'base_url': 'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+}
+
+
+def _gateway_off(direct_model: str | None, direct_key: str | None = None):
+    """Patch a LiteLLM-off deployment, optionally with a direct install default."""
+    return (
+        patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', False),
+        patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        patch(
+            'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
+            'direct' if direct_model else None,
+        ),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_MODEL', direct_model),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_API_KEY', direct_key),
+    )
+
+
+async def _current_org_on_gateway_default(
+    async_session_maker, llm: dict | None = None
+) -> uuid.UUID:
+    async with async_session_maker() as session:
+        org = Org(
+            name='gateway-era-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={'llm': dict(llm or _GATEWAY_ERA_LLM)},
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        return org.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+)
+async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
+    async_session_maker, model
+):
+    org_id = await _current_org_on_gateway_default(
+        async_session_maker, {**_GATEWAY_ERA_LLM, 'model': model}
+    )
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        first = await OrgStore.get_org_by_id(org_id)
+        with patch.object(
+            OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
+        ) as update:
+            second = await OrgStore.get_org_by_id(org_id)
+
+    assert first is not None and second is not None
+    assert first.agent_settings['llm']['model'] == 'anthropic/claude-x'
+    assert first.agent_settings['llm'].get('base_url') is None
+    assert first.llm_api_key.get_secret_value() == 'sk-install'
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_without_install_default_uses_sdk_default(
+    async_session_maker,
+):
+    from openhands.sdk.settings import default_agent_settings
+
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    p = _gateway_off(None)
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == default_agent_settings().llm.model
+    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_on_leaves_current_org_on_gateway_default(async_session_maker):
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm'] == _GATEWAY_ERA_LLM
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_keeps_byok_org(async_session_maker):
+    async with async_session_maker() as session:
+        org = Org(
+            name='byok-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={
+                'llm': {'model': 'openai/gpt-5', 'base_url': 'https://api.openai.com'}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == 'openai/gpt-5'
+    assert result.llm_api_key is None

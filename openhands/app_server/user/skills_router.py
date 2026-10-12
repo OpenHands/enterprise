@@ -66,6 +66,19 @@ class MarketplacePluginPreview(BaseModel):
     marketplace: str  # the marketplace registration name this plugin belongs to
 
 
+class SkillNameConflict(BaseModel):
+    """A marketplace skill whose name collides with a built-in skill.
+
+    Skill enablement is keyed by name, so disabling the built-in skill also
+    disables the same-named marketplace skill.
+    """
+
+    name: str
+    marketplace: str  # the marketplace registration name
+    source: str  # the marketplace registration source (e.g. 'github:owner/repo')
+    conflicts_with: str  # source of the built-in skill ('global')
+
+
 class MarketplaceSkillsPreviewResponse(BaseModel):
     """Response for marketplace skills preview endpoint."""
 
@@ -73,6 +86,9 @@ class MarketplaceSkillsPreviewResponse(BaseModel):
     plugins: list[MarketplacePluginPreview]
     marketplace_skills: dict[str, list[str]]  # marketplace_name -> skill names
     errors: list[str]
+    # Warnings only. Kept out of ``errors`` because clients treat any error as a
+    # failed validation and refuse to save the marketplace.
+    conflicts: list[SkillNameConflict] = []
 
 
 def _parse_skill_frontmatter(file_path: Path) -> dict | None:
@@ -141,6 +157,60 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
             logger.warning(f'Failed to parse skill file {md_file}: {e}')
 
     return skills
+
+
+def _manifest_entry_skill_names(
+    marketplace_root: Path, source: object, is_plugin: bool
+) -> set[str]:
+    """Names of the skills a manifest entry ships from inside the marketplace repo.
+
+    Mirrors the agent-server's discovery (a plugin's ``skills/`` directory, else
+    a root ``SKILL.md``) but reads frontmatter only, so nothing from the repo is
+    loaded. The manifest is untrusted: remote and absolute sources are skipped
+    and every path must resolve inside the cloned marketplace.
+    """
+    if not isinstance(source, str) or '://' in source or source.startswith(('/', '~')):
+        return set()
+
+    names: set[str] = set()
+    try:
+        root = marketplace_root.resolve()
+        entry_dir = (root / source).resolve()
+        if not entry_dir.is_relative_to(root) or not entry_dir.is_dir():
+            return names
+
+        skills_dir = entry_dir / 'skills'
+        if is_plugin and skills_dir.is_dir():
+            candidates = sorted(skills_dir.iterdir())
+        else:
+            candidates = [entry_dir]
+
+        for candidate in candidates:
+            if candidate.is_dir():
+                skill_md = next(
+                    (
+                        f
+                        for f in sorted(candidate.iterdir())
+                        if f.is_file() and f.name.lower() == 'skill.md'
+                    ),
+                    None,
+                )
+                fallback_name = candidate.name
+            elif candidate.suffix.lower() == '.md' and candidate.name != 'README.md':
+                skill_md, fallback_name = candidate, candidate.stem
+            else:
+                continue
+
+            if skill_md is None or not skill_md.resolve().is_relative_to(root):
+                continue
+
+            fm = _parse_skill_frontmatter(skill_md)
+            declared_name = fm.get('name') if isinstance(fm, dict) else None
+            names.add(str(declared_name or fallback_name))
+    except Exception as e:
+        logger.warning(f'Failed to inspect marketplace entry {source!r}: {e}')
+
+    return names
 
 
 @router.get(
@@ -359,6 +429,16 @@ async def get_marketplace_skills(
     plugins: list[MarketplacePluginPreview] = []
     marketplace_skills: dict[str, list[str]] = {}
     errors: list[str] = []
+    conflicts: list[SkillNameConflict] = []
+
+    # Built-in skill names, to flag marketplace skills that share one
+    builtin_names: set[str] = set()
+    try:
+        builtin_names = {
+            skill.name for skill in _load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global')
+        }
+    except Exception as e:
+        logger.warning(f'Failed to load global skills: {e}')
 
     # Track cloned directories for cleanup
     cloned_dirs: list[Path] = []
@@ -385,6 +465,9 @@ async def get_marketplace_skills(
             # skills are intentionally not expanded — the UI shows plugins, not
             # their internals.
             skill_names: list[str] = []
+            # Every skill name the marketplace ships, including skills bundled
+            # in plugins, which are not surfaced as rows.
+            shipped_names: set[str] = set()
             loaded_marketplace: Marketplace | None = None
             try:
                 loaded_marketplace = Marketplace.load(clone_path)
@@ -409,6 +492,9 @@ async def get_marketplace_skills(
                             marketplace=marketplace.name,
                         )
                     )
+                    shipped_names |= _manifest_entry_skill_names(
+                        clone_path, plugin_entry.source, is_plugin=True
+                    )
                 # Standalone skills declared in the manifest (not plugin-bundled).
                 for skill_entry in loaded_marketplace.skills:
                     all_skills.append(
@@ -420,6 +506,9 @@ async def get_marketplace_skills(
                         )
                     )
                     skill_names.append(skill_entry.name)
+                    shipped_names |= _manifest_entry_skill_names(
+                        clone_path, skill_entry.source, is_plugin=False
+                    )
             else:
                 # No manifest: surface loose skills from skills/ and .skills/.
                 # Bundled plugin skills under plugins/*/skills/ are deliberately
@@ -448,6 +537,17 @@ async def get_marketplace_skills(
 
             marketplace_skills[marketplace.name] = skill_names
 
+            shipped_names.update(skill_names)
+            conflicts.extend(
+                SkillNameConflict(
+                    name=name,
+                    marketplace=marketplace.name,
+                    source=marketplace.source,
+                    conflicts_with='global',
+                )
+                for name in sorted(shipped_names & builtin_names)
+            )
+
     except Exception as e:
         logger.exception(
             'Unexpected error in marketplace-skills endpoint', stack_info=True
@@ -468,6 +568,7 @@ async def get_marketplace_skills(
         plugins=plugins,
         marketplace_skills=marketplace_skills,
         errors=errors,
+        conflicts=conflicts,
     )
 
     return result

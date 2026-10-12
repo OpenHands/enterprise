@@ -11,6 +11,20 @@ source of truth for database connection configuration.
 import contextlib
 
 
+def sqlstate(exc: BaseException) -> str | None:
+    """Return the SQLSTATE code carried by a database exception, if any.
+
+    Drivers disagree on whether the code lands on ``sqlstate`` or ``pgcode``,
+    so both are checked.
+    """
+    orig = getattr(exc, 'orig', None)
+    for attr in ('sqlstate', 'pgcode'):
+        value = getattr(orig, attr, None)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _get_db_session_injector():
     from openhands.app_server.config import get_global_config
 

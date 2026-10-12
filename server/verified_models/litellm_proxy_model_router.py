@@ -34,6 +34,8 @@ from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     get_default_litellm_model,
+    get_default_llm_model,
+    to_openhands_model,
 )
 
 _logger = logging.getLogger(__name__)
@@ -43,8 +45,6 @@ MODEL_INFO_TIMEOUT = 5.0
 # How long (seconds) a successful discovery result is reused before refetching.
 CACHE_TTL_SECONDS = 60.0
 
-# The proxy-transport prefix used by LITELLM_DEFAULT_MODEL.
-_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
 # The public/stored prefix used by the app. The SDK translates
 # ``openhands/`` -> ``litellm_proxy/`` at the transport boundary.
 _OPENHANDS_PREFIX = 'openhands/'
@@ -57,12 +57,7 @@ def _derive_default_model() -> str:
     the app stores and displays models as ``openhands/<name>``. An already-
     ``openhands/``-prefixed default is kept as-is; a bare name is prefixed.
     """
-    default = get_default_litellm_model()
-    if default.startswith(_LITELLM_PROXY_PREFIX):
-        return _OPENHANDS_PREFIX + default[len(_LITELLM_PROXY_PREFIX) :]
-    if default.startswith(_OPENHANDS_PREFIX):
-        return default
-    return _OPENHANDS_PREFIX + default
+    return to_openhands_model(get_default_litellm_model())
 
 
 class LiteLLMProxyModelService(DefaultLLMModelService):
@@ -219,10 +214,32 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             models_response.verified_models
         )
 
+    async def _litellm_enabled(self) -> bool:
+        """Whether this deployment may contact the LiteLLM gateway.
+
+        Lazy import to avoid a hard dependency on the enterprise ``storage``
+        package from this module's import path.
+        """
+        try:
+            from storage.lite_llm_manager import is_litellm_enabled
+        except ImportError:
+            return True
+        return await is_litellm_enabled()
+
     async def _get_models_response(
         self,
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
+        if not await self._litellm_enabled():
+            # LiteLLM disabled deployment-wide: the OpenHands/managed models
+            # (served through the bundled proxy) are hidden entirely rather
+            # than fetched -- only direct provider configurations (BYOK) are
+            # offered. Never touches the network.
+            direct_only = self._build_response([]).model_copy(
+                update={'default_model': get_default_llm_model()}
+            )
+            return await self._union_with_catalogue(direct_only)
+
         cls = LiteLLMProxyModelService
         response = cls._shared_response
         if (

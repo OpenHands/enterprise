@@ -17,6 +17,22 @@ class AzureDevOpsFeaturesMixin(AzureDevOpsMixinBase):
 
     async def get_user(self) -> User:
         """Get the authenticated user's information."""
+        if not self.organization:
+            url = (
+                'https://app.vssps.visualstudio.com/_apis/profile/profiles/me'
+                '?api-version=7.1'
+            )
+            profile, _ = await self._make_request(url)
+            display_name = profile.get('displayName', '')
+            return User(
+                id=str(profile.get('id', '')),
+                login=display_name,
+                avatar_url='',
+                name=display_name,
+                email=profile.get('emailAddress', ''),
+                company=None,
+            )
+
         url = f'{self.base_url}/_apis/connectionData?api-version=7.1-preview.1'
         response, _ = await self._make_request(url)
 

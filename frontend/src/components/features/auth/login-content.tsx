@@ -25,6 +25,7 @@ export interface LoginContentProps {
   emailVerified?: boolean;
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
+  accountDisabled?: boolean;
   hasInvitation?: boolean;
   buildOAuthStateData?: (
     baseStateData: Record<string, string>,
@@ -39,6 +40,7 @@ export function LoginContent({
   emailVerified = false,
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
+  accountDisabled = false,
   hasInvitation = false,
   buildOAuthStateData,
 }: LoginContentProps) {
@@ -186,6 +188,7 @@ export function LoginContent({
     emailVerified ||
     hasDuplicatedEmail ||
     recaptchaBlocked ||
+    accountDisabled ||
     hasInvitation ||
     showBitbucket;
 
@@ -222,6 +225,11 @@ export function LoginContent({
             {recaptchaBlocked && (
               <p className="text-sm text-danger text-center max-w-125">
                 {t(I18nKey.AUTH$RECAPTCHA_BLOCKED)}
+              </p>
+            )}
+            {accountDisabled && (
+              <p className="text-sm text-danger text-center max-w-125">
+                {t(I18nKey.AUTH$ACCOUNT_DISABLED)}
               </p>
             )}
             {hasInvitation && (

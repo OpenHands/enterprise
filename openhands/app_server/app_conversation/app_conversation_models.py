@@ -1,9 +1,16 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, SecretStr, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    SecretStr,
+    computed_field,
+    field_validator,
+)
 
 from openhands.agent_server.models import (
     ImageContent,
@@ -22,6 +29,8 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
+    TAG_KEY_PATTERN,
+    TAG_VALUE_MAX_LENGTH,
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
     ConversationObservabilityTags,
@@ -29,6 +38,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.tool import ClientToolSpec
 
 __all__ = ['SandboxGroupingStrategy']
 
@@ -44,12 +54,63 @@ ACP_SERVER_TAG_KEY = 'acpserver'
 # rule — no underscores.
 ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
 
+CLIENT_TOOL_RESERVED_NAMES = frozenset(
+    {
+        'terminal',
+        'file_editor',
+        'task_tracker',
+        'browser_tool_set',
+    }
+)
+
+
 # Conversation-tag keys recording which Agent Profile launched the conversation
 # (provenance). Ride the tags dict + a @computed_field exactly like
 # ``acp_server`` so the projection is zero-migration. The SDK ^[a-z0-9]+$
 # tag-key rule forbids underscores, hence the squashed keys.
 AGENT_PROFILE_ID_TAG_KEY = 'agentprofileid'
 AGENT_PROFILE_REVISION_TAG_KEY = 'agentprofilerevision'
+
+# Tag keys the app server manages itself. Callers can read them but must not set
+# or delete them through the public API.
+RESERVED_TAG_KEYS = frozenset(
+    {
+        ACP_SERVER_TAG_KEY,
+        ARCHIVE_WORKSPACE_PATH_TAG_KEY,
+        AGENT_PROFILE_ID_TAG_KEY,
+        AGENT_PROFILE_REVISION_TAG_KEY,
+    }
+)
+
+
+def _validate_caller_tags(tags: dict[str, str | None]) -> dict[str, str | None]:
+    """Apply the SDK tag rules plus the reserved-key guard to caller-supplied tags.
+
+    Runs as an AfterValidator so malformed values surface as validation errors.
+    """
+    for key, value in tags.items():
+        if not TAG_KEY_PATTERN.fullmatch(key):
+            raise ValueError(
+                f"Tag key '{key}' is invalid: keys must be lowercase alphanumeric"
+            )
+        if key in RESERVED_TAG_KEYS:
+            raise ValueError(
+                f"Tag key '{key}' is managed by the server and cannot be changed"
+            )
+        if value is not None and len(value) > TAG_VALUE_MAX_LENGTH:
+            raise ValueError(
+                f"Tag value for '{key}' exceeds {TAG_VALUE_MAX_LENGTH} characters"
+            )
+    return tags
+
+
+# Caller-supplied tags at conversation start.
+ConversationTagsInput = Annotated[dict[str, str], AfterValidator(_validate_caller_tags)]
+
+# Caller-supplied tag changes on update (merge patch): a None value deletes the key.
+ConversationTagsPatch = Annotated[
+    dict[str, str | None], AfterValidator(_validate_caller_tags)
+]
 
 
 class ConversationTrigger(Enum):
@@ -209,6 +270,10 @@ class AppConversation(AppConversationInfo):  # type: ignore
     conversation_url: str | None = Field(
         default=None, description='The URL where the conversation may be accessed'
     )
+    conversation_ui_url: str | None = Field(
+        default=None,
+        description='Browser URL that opens the conversation in Agent Canvas',
+    )
     session_api_key: str | None = Field(
         default=None, description='The Session Api Key for REST operations.'
     )
@@ -307,6 +372,42 @@ class AppConversationStartRequest(OpenHandsModel):
         ),
     )
 
+    client_tools: list[ClientToolSpec] | None = Field(
+        default=None,
+        description=(
+            'Client-defined tools to register with the runtime agent-server. '
+            'These tools are handled by the browser/client over the event stream '
+            'instead of by a server-side executor.'
+        ),
+    )
+
+    @field_validator('client_tools')
+    @classmethod
+    def _validate_client_tools(
+        cls, client_tools: list[ClientToolSpec] | None
+    ) -> list[ClientToolSpec] | None:
+        if not client_tools:
+            return client_tools
+
+        seen_names: set[str] = set()
+        for tool in client_tools:
+            if tool.name in seen_names:
+                raise ValueError(
+                    f"Duplicate client tool name '{tool.name}' in one request. "
+                    'Client tool names must be unique.'
+                )
+            seen_names.add(tool.name)
+
+        reserved_names = sorted(seen_names & CLIENT_TOOL_RESERVED_NAMES)
+        if reserved_names:
+            names = ', '.join(f"'{name}'" for name in reserved_names)
+            raise ValueError(
+                f'Client tool name collides with a built-in tool: {names}. '
+                'Choose a unique client tool name.'
+            )
+
+        return client_tools
+
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(
         default=None,
@@ -316,6 +417,16 @@ class AppConversationStartRequest(OpenHandsModel):
             'secrets taking precedence (overriding any existing secret with the same name). '
             'Keys are secret names (e.g., "MY_API_KEY"), values are the secret values. '
             'Warning: Providing a secret that already exists will silently override it.'
+        ),
+    )
+
+    tags: ConversationTagsInput | None = Field(
+        default=None,
+        description=(
+            'Key-value tags to store on the conversation. Keys must be lowercase '
+            'alphanumeric and values at most 256 characters. Tags are stored on the '
+            'app server and can be queried with the tags__contains search filter. '
+            'Server-managed tag keys are rejected.'
         ),
     )
 
@@ -331,6 +442,15 @@ class AppConversationUpdateRequest(BaseModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    tags: ConversationTagsPatch | None = Field(
+        default=None,
+        description=(
+            'Tag changes applied as a merge patch: each key is set to its value and '
+            'a null value deletes the key. Keys not mentioned are left untouched. '
+            'Keys must be lowercase alphanumeric and values at most 256 characters; '
+            'server-managed tag keys are rejected.'
+        ),
+    )
 
 
 class AppConversationStartTaskStatus(Enum):

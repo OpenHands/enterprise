@@ -5,10 +5,12 @@ import React from "react";
 import { getSettingsQueryFn, useSettings } from "#/hooks/query/use-settings";
 import { useGetSecrets } from "#/hooks/query/use-get-secrets";
 import { useApiKeys } from "#/hooks/query/use-api-keys";
+import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { SecretsService } from "#/api/secrets-service";
 import ApiKeysClient from "#/api/api-keys";
+import { openHands } from "#/api/open-hands-axios";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
@@ -219,6 +221,49 @@ describe("Organization-scoped query hooks", () => {
       // Verify no data is cached under the old key without org ID
       const oldKeyData = queryClient.getQueryData(["api-keys"]);
       expect(oldKeyData).toBeUndefined();
+    });
+  });
+
+  describe("useLlmApiKey", () => {
+    it("should include organizationId in query key for proper cache isolation", async () => {
+      const getSpy = vi.spyOn(openHands, "get");
+      getSpy.mockResolvedValue({ data: { key: "sk-org-1" } });
+
+      const { result } = renderHook(() => useLlmApiKey(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => expect(result.current.data?.key).toBe("sk-org-1"));
+
+      // Verify the query was cached with the org-specific key
+      const cachedData = queryClient.getQueryData(["llm-api-key", "org-1"]);
+      expect(cachedData).toBeDefined();
+
+      // Verify no data is cached under the old key without org ID
+      const oldKeyData = queryClient.getQueryData(["llm-api-key"]);
+      expect(oldKeyData).toBeUndefined();
+    });
+
+    it("should fetch the new workspace's key when organization changes", async () => {
+      const getSpy = vi.spyOn(openHands, "get");
+      getSpy.mockResolvedValueOnce({ data: { key: "sk-org-1" } });
+
+      const { result, rerender } = renderHook(() => useLlmApiKey(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => expect(result.current.data?.key).toBe("sk-org-1"));
+
+      // Switch to the personal workspace
+      useSelectedOrganizationStore.setState({ organizationId: "personal-org" });
+      getSpy.mockResolvedValueOnce({ data: { key: "sk-personal" } });
+
+      rerender();
+
+      await waitFor(() => {
+        expect(result.current.data?.key).toBe("sk-personal");
+      });
+      expect(getSpy).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -73,15 +73,8 @@ export const formatDuration = (start?: string | null, end?: string | null) => {
   return `${totalMinutes}m`;
 };
 
-export const formatAssociatedPr = (conversation: {
-  pr_number?: number[];
-  selected_repository?: string | null;
-}) => {
-  const prNumbers = conversation.pr_number ?? [];
-  if (prNumbers.length === 0) return "-";
-  const repo = conversation.selected_repository;
-  return prNumbers.map((pr) => (repo ? `${repo}#${pr}` : `#${pr}`)).join(", ");
-};
+export const formatPrLabel = (prNumber: number, repository?: string | null) =>
+  repository ? `${repository} #${prNumber}` : `#${prNumber}`;
 
 export const formatBudget = (user: {
   budget_monthly_limit?: number | null;

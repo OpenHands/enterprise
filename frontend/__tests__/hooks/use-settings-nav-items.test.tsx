@@ -6,8 +6,11 @@ import OptionService from "#/api/option-service/option-service.api";
 import {
   useSettingsNavItems,
   SettingsNavRenderedItem,
+  filterSettingsNavForSidebar,
+  getSettingsUserMenuItems,
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -35,11 +38,34 @@ vi.mock("#/hooks/use-org-type-and-access", () => ({
 
 // Mock useMe
 const mockMe = vi.hoisted(() => ({
-  data: null as { role: string } | null | undefined,
+  data: null as
+    | {
+        role: string;
+        permissions?: string[];
+      }
+    | null
+    | undefined,
 }));
 
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
+}));
+
+// Mock useIsSuperAdmin
+const mockIsSuperAdmin = vi.hoisted(() => ({
+  data: false as boolean | undefined,
+}));
+
+vi.mock("#/hooks/query/use-is-super-admin", () => ({
+  useIsSuperAdmin: () => mockIsSuperAdmin,
+}));
+
+const mockQuotaStatus = vi.hoisted(() => ({
+  data: { daily_limit: 100 } as { daily_limit: number | null } | undefined,
+}));
+
+vi.mock("#/hooks/query/use-quota-status", () => ({
+  useQuotaStatus: () => mockQuotaStatus,
 }));
 
 const queryClient = new QueryClient();
@@ -99,6 +125,32 @@ describe("useSettingsNavItems", () => {
     mockOrgTypeAndAccess.selectedOrg = null;
     mockOrgTypeAndAccess.canViewOrgRoutes = false;
     mockMe.data = null;
+    mockIsSuperAdmin.data = false;
+    mockQuotaStatus.data = { daily_limit: 100 };
+  });
+
+  it("should show quota route when a daily limit is configured", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: 100 };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeDefined();
+    });
+  });
+
+  it("should hide quota route when the daily limit is unlimited", async () => {
+    mockConfig("saas");
+    mockMe.data = { role: "member" };
+    mockQuotaStatus.data = { daily_limit: null };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/quota")).toBeUndefined();
+    });
   });
 
   it("should return SAAS_NAV_ITEMS minus billing/org/org-members when userRole is 'member'", async () => {
@@ -109,8 +161,9 @@ describe("useSettingsNavItems", () => {
     const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
     await waitFor(() => {
-      // Members should not see billing, org, or org-members routes
+      // Members should not see billing, credits, org, or org-members routes
       expect(findItemByPath(result.current, "/settings/billing")).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/credits")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org-members")).toBeUndefined();
       // Personal LLM/Condenser/Verification routes are hidden in SaaS;
@@ -121,6 +174,40 @@ describe("useSettingsNavItems", () => {
       ).toBeDefined();
       expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
     });
+  });
+
+  it("does not put Super Admin pages in Settings nav", async () => {
+    mockConfig("saas");
+    mockOrgTypeAndAccess.isTeamOrg = true;
+    mockOrgTypeAndAccess.organizationId = "org-123";
+    mockMe.data = {
+      role: "owner",
+      permissions: [
+        "create_organization",
+        "provision_user",
+        "manage_super_admins",
+      ],
+    };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      expect(findItemByPath(result.current, "/settings/org")).toBeDefined();
+    });
+
+    expect(findItemByPath(result.current, "/super-admin")).toBeUndefined();
+    expect(
+      result.current.some(
+        (item) =>
+          item.type === "item" && item.item.to.startsWith("/super-admin"),
+      ),
+    ).toBe(false);
+    expect(
+      result.current.some(
+        (item) =>
+          item.type === "header" && String(item.text).includes("SUPER_ADMIN"),
+      ),
+    ).toBe(false);
   });
 
   it("should return OSS_NAV_ITEMS when app_mode is 'oss'", async () => {
@@ -178,9 +265,38 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeDefined();
       expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeDefined();
+      expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeDefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeDefined();
+
+      const orgItems = result.current
+        .filter(
+          (item): item is Extract<SettingsNavRenderedItem, { type: "item" }> =>
+            item.type === "item" && item.item.section === "org",
+        )
+        .map((item) => ({ to: item.item.to, text: item.item.text }));
+      expect(orgItems).toEqual([
+        {
+          to: "/settings/usage-monitoring",
+          text: "SETTINGS$NAV_ADMIN_DASHBOARD",
+        },
+        { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
+        { to: "/settings/org-members", text: "SETTINGS$NAV_ORG_MEMBERS" },
+        { to: "/settings/org-defaults", text: "COMMON$LANGUAGE_MODEL_LLM" },
+        {
+          to: "/settings/org-defaults/condenser",
+          text: "SETTINGS$NAV_CONDENSER",
+        },
+        {
+          to: "/settings/org-defaults/verification",
+          text: "SETTINGS$NAV_VERIFICATION",
+        },
+        { to: "/settings/credits", text: "SETTINGS$NAV_CREDITS" },
+        { to: "/settings/org", text: "SETTINGS$NAV_ORGANIZATION" },
+      ]);
     });
 
     it("should hide org routes when isPersonalOrg is true", async () => {
@@ -210,6 +326,55 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
+
+    it("should still show org-members for a super admin when isPersonalOrg is true and enable_integrated_idp is on", async () => {
+      mockConfigWithFeatureFlags("saas", { enable_integrated_idp: true });
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+      mockIsSuperAdmin.data = true;
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(result.current.length).toBeGreaterThan(0);
+        expect(
+          findItemByPath(result.current, "/settings/user"),
+        ).toBeDefined();
+      });
+
+      // A super admin keeps org-members even on a personal workspace...
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeDefined();
+      // ...but other org-only routes are still hidden for a personal org.
+      expect(
+        findItemByPath(result.current, "/settings/org"),
+      ).toBeUndefined();
+    });
+
+    it("should hide org-members for a super admin on a personal org when enable_integrated_idp is off", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+      mockIsSuperAdmin.data = true;
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(result.current.length).toBeGreaterThan(0);
+        expect(
+          findItemByPath(result.current, "/settings/user"),
+        ).toBeDefined();
+      });
+
+      // Without the flag, a super admin gets no new nav options -- same as
+      // on main, org-members is hidden for a personal org.
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeUndefined();
     });
 
     it("should hide org routes when user role is member", async () => {
@@ -291,6 +456,10 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeUndefined();
+      // Credits replaces billing for team orgs
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeDefined();
     });
 
     it("should show billing route for personal org", async () => {
@@ -314,6 +483,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/billing"),
       ).toBeDefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeUndefined();
     });
   });
 
@@ -497,6 +669,29 @@ describe("useSettingsNavItems", () => {
       });
     });
 
+    it("adds a This org chip on the personal settings header for team-org admins", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.isPersonalOrg = false;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "admin" };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        const personalHeader = result.current.find(
+          (item) =>
+            item.type === "header" &&
+            item.text === "SETTINGS$PERSONAL_SETTINGS_HEADER",
+        );
+        expect(personalHeader).toEqual({
+          type: "header",
+          text: "SETTINGS$PERSONAL_SETTINGS_HEADER",
+          chip: "SETTINGS$THIS_ORG_CHIP",
+        });
+      });
+    });
+
     it("hides personal LLM/Condenser/Verification for any user in a non-personal org (team-org member)", async () => {
       mockConfig("saas");
       mockOrgTypeAndAccess.isTeamOrg = true;
@@ -567,6 +762,71 @@ describe("useSettingsNavItems", () => {
       });
     });
   });
+
+  describe("Your Budget visibility", () => {
+    const selectTeamOrg = (role: string) => {
+      mockConfig("saas");
+      mockMe.data = { role };
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-1";
+    };
+
+    it.each(["member", "admin", "owner"])(
+      "should show Your Budget to a %s in a team org without asking whether budgets are enabled",
+      async (role) => {
+        // Arrange
+        selectTeamOrg(role);
+        const getMyBudgetSpy = vi.spyOn(organizationService, "getMyBudget");
+
+        // Act
+        const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+        // Assert
+        await waitFor(() => {
+          expect(
+            findItemByPath(result.current, "/settings/your-budget"),
+          ).toBeDefined();
+        });
+        expect(getMyBudgetSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it("should hide Your Budget in a personal workspace", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockOrgTypeAndAccess.isTeamOrg = false;
+      mockOrgTypeAndAccess.isPersonalOrg = true;
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
+    });
+
+    it("should hide Your Budget and Budgets when enable_litellm is false", async () => {
+      // Arrange
+      selectTeamOrg("owner");
+      mockConfigWithFeatureFlags("saas", { enable_litellm: false });
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/your-budget"),
+      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
+  });
 });
 
 describe("disabledByAcp flags (ACP-incompatible settings surfaces)", () => {
@@ -593,5 +853,45 @@ describe("disabledByAcp flags (ACP-incompatible settings surfaces)", () => {
     expect(
       items.find((item) => item.to === "/settings/condenser")?.disabledByAcp,
     ).toBe(true);
+  });
+});
+
+describe("account-menu settings items", () => {
+  it("marks User and Application as menu-only in SaaS nav", () => {
+    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly).toBe(
+      true,
+    );
+    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
+      true,
+    );
+  });
+
+  it("marks Application as menu-only in OSS nav", () => {
+    expect(OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
+      true,
+    );
+  });
+
+  it("keeps menu-only items out of the sidebar and in the account menu", () => {
+    const rendered: SettingsNavRenderedItem[] = [
+      { type: "item", item: SAAS_NAV_ITEMS[0] },
+      { type: "divider" },
+      {
+        type: "item",
+        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")!,
+      },
+      {
+        type: "item",
+        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")!,
+      },
+    ];
+
+    expect(filterSettingsNavForSidebar(rendered)).toEqual([
+      { type: "item", item: SAAS_NAV_ITEMS[0] },
+    ]);
+    expect(getSettingsUserMenuItems(rendered).map((item) => item.to)).toEqual([
+      "/settings/user",
+      "/settings/app",
+    ]);
   });
 });

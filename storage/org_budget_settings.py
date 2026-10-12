@@ -37,6 +37,9 @@ class OrgBudgetSettings(Base):
         nullable=False,
     )
     cycle_start_spend: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    next_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     user_cycle_start_spend: Mapped[dict[str, float]] = mapped_column(
         JSON, default=dict, nullable=False
     )

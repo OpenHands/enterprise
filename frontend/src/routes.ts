@@ -9,6 +9,11 @@ export default [
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
+  route("install", "routes/super-admin-install-layout.tsx", [
+    index("routes/super-admin-install-welcome.tsx"),
+    route("company", "routes/super-admin-install-company.tsx"),
+    route("org", "routes/super-admin-install-org.tsx"),
+  ]),
   route("automations/*", "routes/automations-redirect.tsx"),
   route("canvas/*", "routes/cross-app-redirect.tsx", {
     id: "routes/canvas-cross-app-redirect",
@@ -17,7 +22,7 @@ export default [
     id: "routes/integrations-hub-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
-    index("routes/home.tsx"),
+    index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),
     route("launch", "routes/launch.tsx"),
     route("settings", "routes/settings.tsx", [
@@ -40,6 +45,7 @@ export default [
       route("integrations", "routes/git-settings.tsx"),
       route("app", "routes/app-settings.tsx"),
       route("billing", "routes/billing.tsx"),
+      route("credits", "routes/credits.tsx"),
       route("secrets", "routes/secrets-settings.tsx"),
       route("api-keys", "routes/api-keys.tsx"),
       route("org-members", "routes/manage-organization-members.tsx"),
@@ -48,6 +54,17 @@ export default [
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
+      route("your-budget", "routes/your-budget.tsx"),
+    ]),
+    route("super-admin", "routes/super-admin.tsx", [
+      index("routes/super-admin-overview.tsx"),
+      route("setup", "routes/super-admin-setup.tsx"),
+      route("organizations", "routes/super-admin-organizations.tsx"),
+      route("users", "routes/super-admin-users.tsx"),
+      route("admins", "routes/super-admin-admins.tsx"),
+      route("usage", "routes/super-admin-usage.tsx"),
+      route("instance", "routes/super-admin-instance.tsx"),
+      route("oauth-providers", "routes/super-admin-oauth-providers.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

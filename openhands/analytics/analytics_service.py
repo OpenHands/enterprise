@@ -4,7 +4,8 @@ Provides a thin wrapper around the PostHog SDK with:
 - Consent gate: all calls are no-ops when consented=False
 - OSS/SaaS dual-mode: $process_person_profile is set to False in OSS mode;
   set_person_properties and group_identify are SaaS-only
-- Common properties: app_mode, is_feature_env added to every event
+- Common properties: app_mode, deployment_kind, is_feature_env added to every
+  event
 - Feature-env distinct_id prefix: FEATURE_ prefix for staging/feature envs
 - SDK error isolation: all exceptions are caught and logged, never raised
 
@@ -13,7 +14,7 @@ via constructor args.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from posthog import Posthog
 
@@ -41,6 +42,8 @@ from openhands.analytics.analytics_constants import (
 from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
+
+DeploymentKind = Literal['local', 'remote']
 
 # Maps the enterprise ConversationTrigger enum values to the unified
 # ``conversation_source`` property that both the SDK agent-server telemetry
@@ -73,9 +76,13 @@ class AnalyticsService:
         host: str,
         app_mode: AppMode,
         is_feature_env: bool,
+        deployment_kind: DeploymentKind | None = None,
     ) -> None:
         self._app_mode = app_mode
         self._is_feature_env = is_feature_env
+        self._deployment_kind = deployment_kind or (
+            'remote' if app_mode == AppMode.SAAS else 'local'
+        )
         self._client: Posthog = Posthog(
             project_api_key=api_key,
             host=host,
@@ -96,8 +103,9 @@ class AnalyticsService:
         """Capture a server-side event.
 
         Consent gate: returns immediately when ctx.consented=False.
-        Common properties (app_mode, is_feature_env, and optionally org_id /
-        $session_id / $process_person_profile) are merged with caller-provided
+        Common properties (app_mode, deployment_kind, is_feature_env, and
+        optionally org_id / $session_id / $process_person_profile) are merged
+        with caller-provided
         properties before forwarding to PostHog.
         """
         if not ctx.consented:
@@ -723,6 +731,7 @@ class AnalyticsService:
         """Build the base property dict included on every event."""
         props: dict[str, Any] = {
             'app_mode': self._app_mode.value,
+            'deployment_kind': self._deployment_kind,
             'is_feature_env': self._is_feature_env,
         }
 

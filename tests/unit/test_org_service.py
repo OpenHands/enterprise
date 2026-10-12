@@ -865,6 +865,49 @@ async def test_get_user_orgs_paginated_with_pagination(
 
 
 @pytest.mark.asyncio
+async def test_get_user_orgs_paginated_filters_by_name(
+    session_maker, async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: User is a member of organizations named 'Acme' and 'Beta Org'
+    WHEN: get_user_orgs_paginated is called with name='Acme'
+    THEN: Only the organization named 'Acme' is returned
+    """
+    # Arrange
+    user_id = uuid.uuid4()
+
+    with session_maker() as session:
+        org1 = Org(name='Acme')
+        org2 = Org(name='Beta Org')
+        session.add_all([org1, org2])
+        session.flush()
+
+        user = User(id=user_id, current_org_id=org1.id)
+        role = Role(id=1, name='member', rank=2)
+        session.add_all([user, role])
+        session.flush()
+
+        member1 = OrgMember(
+            org_id=org1.id, user_id=user_id, role_id=1, llm_api_key='key1'
+        )
+        member2 = OrgMember(
+            org_id=org2.id, user_id=user_id, role_id=1, llm_api_key='key2'
+        )
+        session.add_all([member1, member2])
+        session.commit()
+
+    # Act
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        orgs, next_page_id = await OrgService.get_user_orgs_paginated(
+            user_id=str(user_id), name='Acme'
+        )
+
+    # Assert
+    assert [org.name for org in orgs] == ['Acme']
+    assert next_page_id is None
+
+
+@pytest.mark.asyncio
 async def test_get_user_orgs_paginated_empty_results(async_session_maker):
     """
     GIVEN: User has no organizations
@@ -2274,6 +2317,16 @@ async def test_switch_org_success():
             new_callable=AsyncMock,
             return_value=mock_updated_user,
         ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         # Act
         result = await OrgService.switch_org(user_id, org_id)
@@ -2308,9 +2361,15 @@ async def test_switch_org_org_not_found():
 
 
 @pytest.mark.asyncio
-async def test_switch_org_user_not_member():
+@pytest.mark.parametrize(
+    'super_role',
+    [None, Role(name='admin')],
+    ids=['regular user', 'instance super admin'],
+)
+async def test_switch_org_user_not_member(super_role):
     """
-    GIVEN: User is not a member of the organization
+    GIVEN: User is not a member of the organization, with or without the
+           instance Super Admin role
     WHEN: switch_org is called
     THEN: OrgAuthorizationError is raised
     """
@@ -2331,6 +2390,11 @@ async def test_switch_org_user_not_member():
             return_value=mock_org,
         ),
         patch('storage.org_service.OrgService.is_org_member', return_value=False),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=super_role,
+        ),
     ):
         # Act & Assert
         with pytest.raises(OrgAuthorizationError) as exc_info:
@@ -2365,6 +2429,16 @@ async def test_switch_org_user_not_found():
         patch('storage.org_service.OrgService.is_org_member', return_value=True),
         patch(
             'storage.org_service.UserStore.update_current_org',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
             new_callable=AsyncMock,
             return_value=None,
         ),

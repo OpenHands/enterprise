@@ -12,12 +12,15 @@ import { I18nKey } from "#/i18n/declaration";
 import i18n from "#/i18n";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
-import { Sidebar } from "#/components/features/sidebar/sidebar";
 import { ReauthModal } from "#/components/features/waitlist/reauth-modal";
 import { AnalyticsConsentFormModal } from "#/components/features/analytics/analytics-consent-form-modal";
+import { SettingsModal } from "#/components/shared/modals/settings/settings-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useMigrateUserConsent } from "#/hooks/use-migrate-user-consent";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
 import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
@@ -32,6 +35,12 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
+import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { useSuspendedOrganizationStore } from "#/stores/suspended-organization-store";
+import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-mismatch-store";
+import { InvitationEmailMismatchModal } from "#/components/features/org/invitation-email-mismatch-modal";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -72,7 +81,12 @@ export default function MainApp() {
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
   const isOnIntermediatePage = useIsOnIntermediatePage();
-  const { data: settings } = useSettings();
+  const {
+    data: settings,
+    error: settingsError,
+    isError: settingsIsError,
+    isFetching: isFetchingSettings,
+  } = useSettings();
   const { migrateUserConsent } = useMigrateUserConsent();
   const { t } = useTranslation();
 
@@ -83,7 +97,16 @@ export default function MainApp() {
     isError: isAuthError,
   } = useIsAuthed();
 
+  const selectedOrganizationId = useSelectedOrganizationStore(
+    (state) => state.organizationId,
+  );
+  const suspension = useSuspendedOrganizationStore((state) => state.suspension);
+  const invitationEmailMismatch = useInvitationEmailMismatchStore(
+    (state) => state.isOpen,
+  );
+
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
+  const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
   // Accept a pending invitation token once authenticated
   useAutoAcceptInvitation();
@@ -137,6 +160,34 @@ export default function MainApp() {
       displaySuccessToast(t(I18nKey.BILLING$YOURE_IN));
     }
   }, [settings?.is_new_user, config.data?.app_mode]);
+
+  // OSS first-run: prompt for LLM settings when none exist yet.
+  React.useEffect(() => {
+    if (pathname === "/settings") {
+      setSettingsModalIsOpen(false);
+    } else if (
+      !isFetchingSettings &&
+      settingsIsError &&
+      settingsError?.status !== 404
+    ) {
+      displayErrorToast(
+        "Something went wrong while fetching settings. Please reload the page.",
+      );
+    } else if (
+      config.data?.app_mode === "oss" &&
+      settingsError?.status === 404 &&
+      !config.data?.feature_flags?.hide_llm_settings
+    ) {
+      setSettingsModalIsOpen(true);
+    }
+  }, [
+    pathname,
+    isFetchingSettings,
+    settingsIsError,
+    settingsError,
+    config.data?.app_mode,
+    config.data?.feature_flags?.hide_llm_settings,
+  ]);
 
   // Function to check if login method exists in local storage
   const checkLoginMethodExists = React.useCallback(() => {
@@ -192,20 +243,39 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     !loginMethodExists;
 
+  const enableOauthV2Login = config.data?.feature_flags?.enable_oauth_v2_login;
+
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
       // Include search params in returnTo to preserve query string (e.g., user_code for device OAuth)
       const searchString = searchParams.toString();
-      let fullPath = "";
-      if (pathname !== "/") {
-        fullPath = searchString ? `${pathname}?${searchString}` : pathname;
+      const fullPath = searchString ? `${pathname}?${searchString}` : pathname;
+
+      if (enableOauthV2Login) {
+        // /oauth/idp-login is a backend-only redirect endpoint (not a
+        // frontend route), so it needs a full page navigation rather than
+        // client-side routing.
+        const redirectUrl =
+          fullPath === "/"
+            ? "/oauth/idp-login"
+            : `/oauth/idp-login?redirect_url=${encodeURIComponent(fullPath)}`;
+        window.location.href = redirectUrl;
+        return;
       }
-      const loginUrl = fullPath
-        ? `/login?returnTo=${encodeURIComponent(fullPath)}`
-        : "/login";
+
+      const loginUrl =
+        fullPath === "/"
+          ? "/login"
+          : `/login?returnTo=${encodeURIComponent(fullPath)}`;
       navigate(loginUrl, { replace: true });
     }
-  }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
+  }, [
+    shouldRedirectToLogin,
+    pathname,
+    searchParams,
+    navigate,
+    enableOauthV2Login,
+  ]);
 
   // Show loading spinner while loading OR when about to redirect
   if (isLoading || shouldRedirectToLogin) {
@@ -238,18 +308,36 @@ export default function MainApp() {
     );
   }
 
+  // The server refused the selected organization (suspended org or
+  // membership). Unmount the app tree for the same reason as above; switching
+  // to another organization changes the selection and lifts the block.
+  if (suspension && suspension.orgId === selectedOrganizationId) {
+    return (
+      <div className="min-h-screen bg-base">
+        <SuspendedOrganizationModal
+          organizationId={suspension.orgId}
+          reason={suspension.reason}
+        />
+      </div>
+    );
+  }
+
+  // Settings and Super Admin own their own gutters (aside + main), matching
+  // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
+  const isFlushChromeRoute =
+    pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
+
   return (
     <div
       data-testid="root-layout"
       className={cn(
-        "h-screen lg:min-w-5xl flex flex-col md:flex-row bg-base overflow-hidden",
-        pathname === "/" ? "p-0" : "p-0 md:p-3 md:pl-0",
+        "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
+        pathname === "/" || isFlushChromeRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>
-      <Sidebar />
 
-      <div className="flex flex-col w-full min-w-0 h-[calc(100%-50px)] md:h-full gap-3">
+      <div className="flex flex-col w-full min-w-0 h-full gap-3">
         {config.data &&
           (config.data.maintenance_start_time ||
             (config.data.faulty_models &&
@@ -269,6 +357,12 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
+              {/* The guide reads the API, which signs out a session that has
+                  not accepted the TOS yet, so wait until the user is signed
+                  in and past the intermediate pages. */}
+              {config.data?.app_mode === "saas" &&
+                isAuthed === true &&
+                !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>
@@ -281,6 +375,13 @@ export default function MainApp() {
           }}
         />
       )}
+      {settingsModalIsOpen && (
+        <SettingsModal
+          settings={settings}
+          onClose={() => setSettingsModalIsOpen(false)}
+        />
+      )}
+      {invitationEmailMismatch && <InvitationEmailMismatchModal />}
     </div>
   );
 }

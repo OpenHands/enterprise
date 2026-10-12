@@ -114,13 +114,31 @@ async def pause_sandbox(
     return Success()
 
 
-@router.post('/{sandbox_id}/resume', responses={404: {'description': 'Item not found'}})
+@router.post(
+    '/{sandbox_id}/resume',
+    responses={
+        404: {'description': 'Sandbox or its runtime was not found'},
+        409: {
+            'description': (
+                'Sandbox exists but its runtime cannot be resumed from its '
+                'current state'
+            )
+        },
+        502: {'description': 'Runtime API lookup or resume failed'},
+    },
+)
 async def resume_sandbox(
     sandbox_id: str,
     user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
     db_session: AsyncSession = db_session_dependency,
 ) -> Success:
+    """Resume a paused sandbox.
+
+    Idempotent: a sandbox that is already STARTING or RUNNING returns 200
+    without calling the runtime resume endpoint and without returning or
+    rotating its session key.
+    """
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

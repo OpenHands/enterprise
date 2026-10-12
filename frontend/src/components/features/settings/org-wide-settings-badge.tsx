@@ -22,10 +22,15 @@ export function OrgWideSettingsBadge({
   return (
     <div
       data-testid="org-wide-settings-badge"
-      className="flex items-center gap-2 bg-[rgba(31,31,31,0.4)] border border-[#242424] rounded-full px-2.5 py-1"
+      className="flex w-full items-center justify-center gap-2 border-b border-[var(--oh-border)] bg-base-secondary px-4 py-1.5"
+      role="status"
     >
-      <InfoCircleIcon width={12} height={12} className="text-[#8c8c8c]" />
-      <Typography.Text className="text-[11px] font-medium text-[#8c8c8c] leading-5">
+      <InfoCircleIcon
+        width={12}
+        height={12}
+        className="shrink-0 text-[var(--oh-muted)]"
+      />
+      <Typography.Text className="text-[11px] font-medium leading-5 text-[var(--oh-muted)]">
         {t(i18nKey)}
       </Typography.Text>
     </div>

@@ -11,18 +11,20 @@ import pytest
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
 
+from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
 from openhands.app_server.user_auth import get_user_id
-from server.routes.user_app_settings import user_app_settings_router
+from server.routes.user_app_settings import _injector, user_app_settings_router
 from server.routes.user_app_settings_models import (
     UserAppSettingsResponse,
     UserNotFoundError,
 )
+from server.services.user_app_settings_service import UserAppSettingsService
 
 TEST_USER_ID = str(uuid.uuid4())
 
 
 @pytest.fixture
-def mock_app():
+def mock_app(app_db_session):
     """Create a test FastAPI app with user app settings routes and mocked auth."""
     app = FastAPI()
     app.include_router(user_app_settings_router)
@@ -41,10 +43,13 @@ def mock_app_unauthenticated():
     app = FastAPI()
     app.include_router(user_app_settings_router)
 
-    def mock_get_user_id():
-        return None
+    # The service reads the user from its injected user_context, not get_user_id.
+    async def unauthenticated_service():
+        yield UserAppSettingsService(
+            store=AsyncMock(), user_context=SpecifyUserContext(user_id=None)
+        )
 
-    app.dependency_overrides[get_user_id] = mock_get_user_id
+    app.dependency_overrides[_injector.depends] = unauthenticated_service
 
     return app
 

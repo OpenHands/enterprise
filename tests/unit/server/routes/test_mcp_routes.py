@@ -151,6 +151,22 @@ async def test_get_conversation_link_none_conversation_id():
         mock_service.get_user.assert_not_called()
 
 
+def test_conversation_url_points_at_canvas_route():
+    """The default CONVERSATION_URL must route to Agent Canvas, not the legacy SPA.
+
+    get_conversation_link appends a PR-body link built from this template; if it
+    points at /conversations/{id} the link opens the retired legacy UI.
+    """
+    import os
+
+    from openhands.app_server.mcp import mcp_router
+
+    host = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
+    expected = f'https://{host}/canvas/conversations/{{}}'
+    assert mcp_router.CONVERSATION_URL == expected
+    assert '/canvas/conversations/' in mcp_router.CONVERSATION_URL
+
+
 class TestInitTavilyProxy:
     """Tests for init_tavily_proxy function."""
 

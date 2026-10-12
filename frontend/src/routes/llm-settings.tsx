@@ -18,10 +18,12 @@ import {
   SdkSectionPage,
 } from "#/components/features/settings/sdk-settings/sdk-section-page";
 import { I18nKey } from "#/i18n/declaration";
+import { formControlBackNavButtonClassName } from "#/utils/form-control-classes";
 import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
 import { extractModelAndProvider } from "#/utils/extract-model-and-provider";
 import {
@@ -617,6 +619,7 @@ export function LlmSettingsScreen({
         if (useOrgHooks) {
           await saveOrgProfile.mutateAsync({ name, request });
           await activateOrgProfile.mutateAsync(name);
+          notifySuperAdminSetupStep("add-llm");
         } else {
           await saveProfile.mutateAsync({ name, request });
           await activateProfile.mutateAsync(name);
@@ -769,7 +772,7 @@ export function LlmSettingsScreen({
         setEditingProfile(null);
         setShowProfiles(true);
       }}
-      className="flex items-center gap-2 self-start text-sm text-gray-300 hover:text-white cursor-pointer"
+      className={formControlBackNavButtonClassName}
     >
       <FaChevronLeft size={12} aria-hidden="true" />
       {t(I18nKey.SETTINGS$BACK_TO_LLM_LIST)}

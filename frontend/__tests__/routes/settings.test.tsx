@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createRoutesStub } from "react-router";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -7,6 +8,7 @@ import { getFirstAvailablePath } from "#/utils/settings-utils";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { adminService } from "#/api/admin-service/admin-service.api";
 import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
@@ -29,6 +31,18 @@ vi.mock("#/query-client-config", () => ({
   queryClient: mockQueryClient,
 }));
 
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn().mockResolvedValue(false),
+    getAllUsers: vi.fn().mockResolvedValue({
+      items: [],
+      current_page: 1,
+      per_page: 10,
+    }),
+    getAllUsersCount: vi.fn().mockResolvedValue(0),
+  },
+}));
+
 // Mock the i18next hook
 vi.mock("react-i18next", async () => {
   const actual =
@@ -39,14 +53,14 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => {
         const translations: Record<string, string> = {
           SETTINGS$NAV_INTEGRATIONS: "Integrations",
-          SETTINGS$NAV_APPLICATION: "Application",
-          SETTINGS$NAV_CREDITS: "Credits",
+          SETTINGS$NAV_APPLICATION: "Application Settings",
+          SETTINGS$NAV_CREDITS: "Billing & Credits",
           SETTINGS$NAV_API_KEYS: "API Keys",
           SETTINGS$NAV_LLM: "LLM",
           SETTINGS$NAV_SECRETS: "Secrets",
           SETTINGS$NAV_MCP: "MCP",
-          SETTINGS$NAV_USER: "User",
-          SETTINGS$NAV_BILLING: "Billing",
+          SETTINGS$NAV_USER: "User Settings",
+          SETTINGS$NAV_BILLING: "Billing & Credits",
           SETTINGS$TITLE: "Settings",
           COMMON$LANGUAGE_MODEL_LLM: "LLM",
           SETTINGS$ORG_WIDE_SETTING_BADGE:
@@ -114,6 +128,10 @@ describe("Settings Screen", () => {
           path: "/settings/billing",
         },
         {
+          Component: () => <div data-testid="credits-settings-screen" />,
+          path: "/settings/credits",
+        },
+        {
           Component: () => <div data-testid="api-keys-settings-screen" />,
           path: "/settings/api-keys",
         },
@@ -152,6 +170,10 @@ describe("Settings Screen", () => {
           ),
           path: "/settings/org-defaults/verification",
         },
+        {
+          Component: () => <div data-testid="budgets-settings-screen" />,
+          path: "/settings/budgets",
+        },
       ],
     },
   ]);
@@ -166,7 +188,7 @@ describe("Settings Screen", () => {
     });
 
   it("should render the navbar", async () => {
-    const sectionsToInclude = ["llm", "integrations", "application", "secrets"];
+    const sectionsToInclude = ["llm", "integrations", "secrets"];
     const sectionsToExclude = ["api keys", "credits", "billing"];
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
     // @ts-expect-error - only return app mode
@@ -192,6 +214,12 @@ describe("Settings Screen", () => {
       });
       expect(sectionElement).not.toBeInTheDocument();
     });
+    await userEvent.click(
+      within(navbar).getByTestId("settings-nav-user-trigger"),
+    );
+    expect(
+      within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+    ).toBeInTheDocument();
 
     getConfigSpy.mockRestore();
   });
@@ -215,9 +243,7 @@ describe("Settings Screen", () => {
 
     const sectionsToInclude = [
       "llm", // LLM settings are now always shown in SaaS mode
-      "user",
       "integrations",
-      "application",
       "billing", // The nav item shows "Billing" text and routes to /billing
       "secrets",
       "api keys",
@@ -228,7 +254,7 @@ describe("Settings Screen", () => {
 
     const navbar = await screen.findByTestId("settings-navbar");
     await waitFor(() => {
-      expect(within(navbar).getByText("Billing")).toBeInTheDocument();
+      expect(within(navbar).getByText("Billing & Credits")).toBeInTheDocument();
     });
     sectionsToInclude.forEach((section) => {
       const sectionElements = within(navbar).getAllByText(section, {
@@ -242,6 +268,32 @@ describe("Settings Screen", () => {
       });
       expect(sectionElement).not.toBeInTheDocument();
     });
+    await userEvent.click(
+      within(navbar).getByTestId("settings-nav-user-trigger"),
+    );
+    expect(
+      within(navbar).getByRole("menuitem", { name: "User Settings" }),
+    ).toBeInTheDocument();
+    expect(
+      within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+    ).toBeInTheDocument();
+  });
+
+  it("should not link to the Agent Profiles library in the saas navbar", async () => {
+    // Arrange
+    mockQueryClient.clear();
+    mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+    seedActiveUser({ role: "member" });
+
+    // Act
+    renderSettingsScreen();
+
+    // Assert
+    const navbar = await screen.findByTestId("settings-navbar");
+    await within(navbar).findByText("SETTINGS$AGENT");
+    expect(
+      navbar.querySelector('a[href="/canvas/settings/agents"]'),
+    ).not.toBeInTheDocument();
   });
 
   it("should not be able to access saas-only routes in oss mode", async () => {
@@ -447,6 +499,65 @@ describe("Settings Screen", () => {
       expect(response.headers.get("Location")).toBe("/settings");
     });
 
+    it("should allow a super admin direct URL access to /settings/org-members when personal org is selected and enable_integrated_idp is on", async () => {
+      // Clear any cached super-admin status from a previous test in this file
+      mockQueryClient.clear();
+      // Set up config and organizations in query client so clientLoader can access them
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: { enable_integrated_idp: true },
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      // Use Zustand store for selected org ID
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+
+      // Mock getMe so getActiveOrganizationUser returns a plain member --
+      // the super-admin bypass must grant access regardless of org role.
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role: "member", org_id: "1" }),
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      const request = new Request("http://localhost/settings/org-members");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      const result = await clientLoader({ request, params: {} });
+
+      // Assert: no redirect for a super admin, even on their personal org
+      expect(result).not.toBeInstanceOf(Response);
+    });
+
+    it("should not allow a super admin direct URL access to /settings/org-members on a personal org when enable_integrated_idp is off", async () => {
+      // Clear any cached super-admin status from a previous test in this file
+      mockQueryClient.clear();
+      // Set up config and organizations in query client so clientLoader can access them
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "1" });
+
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role: "member", org_id: "1" }),
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      const request = new Request("http://localhost/settings/org-members");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      const result = await clientLoader({ request, params: {} });
+
+      // Assert: without the flag, a super admin gets no new access -- same
+      // redirect as any other member on a personal org (see the test above).
+      expect(result).not.toBeNull();
+      expect(result).toBeInstanceOf(Response);
+      const response = result as Response;
+      expect(response.status).toBe(302);
+      expect(response.headers.get("Location")).toBe("/settings");
+    });
+
     it("should not allow direct URL access to /settings/billing when team org is selected", async () => {
       // Set up orgs in query client so clientLoader can access them
       mockQueryClient.setQueryData(["organizations"], {
@@ -481,6 +592,62 @@ describe("Settings Screen", () => {
         ).not.toBeInTheDocument();
       });
     });
+
+    const seedTeamOrgUser = (role: OrganizationMember["role"]) => {
+      mockQueryClient.clear();
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: MOCK_TEAM_ORG_ACME.id }),
+      );
+    };
+
+    it("should show the Account settings header to an admin in a team org and keep User in the account menu", async () => {
+      // Arrange
+      seedTeamOrgUser("admin");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
+      // User is an account-menu destination, not a rail item.
+      expect(
+        within(navbar).queryByRole("link", { name: "User Settings" }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
+      ).toBeInTheDocument();
+    });
+
+    it("should not show the Account settings header to a member of a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("member");
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      await within(navbar).findByText("Secrets");
+      expect(
+        within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe("enable_billing feature flag", () => {
@@ -499,7 +666,7 @@ describe("Settings Screen", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
+            enable_onboarding: false,
           },
         }),
       );
@@ -534,7 +701,9 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await waitFor(() => {
-        expect(within(navbar).getByText("Billing")).toBeInTheDocument();
+        expect(
+          within(navbar).getByText("Billing & Credits"),
+        ).toBeInTheDocument();
       });
 
       getConfigSpy.mockRestore();
@@ -555,7 +724,7 @@ describe("Settings Screen", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
+            enable_onboarding: false,
           },
         }),
       );
@@ -567,7 +736,9 @@ describe("Settings Screen", () => {
 
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
-      expect(within(navbar).queryByText("Billing")).not.toBeInTheDocument();
+      expect(
+        within(navbar).queryByText("Billing & Credits"),
+      ).not.toBeInTheDocument();
 
       getConfigSpy.mockRestore();
     });
@@ -644,6 +815,80 @@ describe("Settings Screen", () => {
     });
   });
 
+  describe("Your Budget route access", () => {
+    beforeEach(() => {
+      mockQueryClient.clear();
+      useSelectedOrganizationStore.setState({ organizationId: null });
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    const selectOrg = (
+      org: typeof MOCK_TEAM_ORG_ACME,
+      role: OrganizationMember["role"],
+    ) => {
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [org],
+        currentOrgId: org.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: org.id });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        createMockUser({ role, org_id: org.id }),
+      );
+    };
+
+    const openYourBudget = () => {
+      const request = new Request("http://localhost/settings/your-budget");
+      // @ts-expect-error - test only needs request and params, not full loader args
+      return clientLoader({ request, params: {} });
+    };
+
+    it.each(["member", "admin", "owner"] as const)(
+      "should let a %s open Your Budget in a team org",
+      async (role) => {
+        // Arrange
+        mockQueryClient.setQueryData(["web-client-config"], {
+          app_mode: "saas",
+        });
+        selectOrg(MOCK_TEAM_ORG_ACME, role);
+
+        // Act
+        const result = await openYourBudget();
+
+        // Assert
+        expect(result).not.toBeInstanceOf(Response);
+      },
+    );
+
+    it("should redirect away from Your Budget in a personal workspace", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
+      selectOrg(MOCK_PERSONAL_ORG, "owner");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+
+    it("should redirect away from Your Budget in OSS mode", async () => {
+      // Arrange
+      mockQueryClient.setQueryData(["web-client-config"], { app_mode: "oss" });
+      selectOrg(MOCK_TEAM_ORG_ACME, "member");
+
+      // Act
+      const result = await openYourBudget();
+
+      // Assert
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).headers.get("Location")).toBe("/settings");
+    });
+  });
+
   describe("hide page feature flags", () => {
     beforeEach(() => {
       // Set up as personal org admin so billing is accessible
@@ -677,7 +922,7 @@ describe("Settings Screen", () => {
           hide_users_page: true,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       };
 
@@ -722,7 +967,7 @@ describe("Settings Screen", () => {
           hide_users_page: false,
           hide_billing_page: true,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
         },
       };
 
@@ -740,12 +985,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Billing", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
       expect(
-        within(navbar).getByText("User", { exact: false }),
+        within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
       expect(
-        within(navbar).getByText("Integrations", { exact: false }),
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -783,12 +1030,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Integrations", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
-      expect(
-        within(navbar).getByText("User", { exact: false }),
-      ).toBeInTheDocument();
       expect(
         within(navbar).getByText("Billing", { exact: false }),
+      ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -822,12 +1071,14 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("Integrations", { exact: false }),
       ).not.toBeInTheDocument();
-      // Other pages should still be visible
-      expect(
-        within(navbar).getByText("Application", { exact: false }),
-      ).toBeInTheDocument();
       expect(
         within(navbar).getByText("LLM", { exact: false }),
+      ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
+      expect(
+        within(navbar).getByRole("menuitem", { name: "Application Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -859,8 +1110,11 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByText("LLM", { exact: false }),
       ).toBeInTheDocument();
+      await userEvent.click(
+        within(navbar).getByTestId("settings-nav-user-trigger"),
+      );
       expect(
-        within(navbar).getByText("Application", { exact: false }),
+        within(navbar).getByRole("menuitem", { name: "Application Settings" }),
       ).toBeInTheDocument();
     });
   });
@@ -873,6 +1127,9 @@ describe("Settings Screen", () => {
       mockQueryClient.clear();
       mockQueryClient.setQueryData(["web-client-config"], {
         app_mode: "saas",
+        feature_flags: {
+          enable_billing: true,
+        },
       });
       mockQueryClient.setQueryData(["organizations"], {
         items: [org],
@@ -900,8 +1157,10 @@ describe("Settings Screen", () => {
       "/settings/org-defaults",
       "/settings/org-defaults/condenser",
       "/settings/org-defaults/verification",
+      "/settings/budgets",
+      "/settings/credits",
     ])(
-      "renders the org-wide settings badge beside the title on %s for an admin in a team org in SaaS mode",
+      "renders the org-wide settings bar at the top of %s for an admin in a team org in SaaS mode",
       async (path) => {
         seedSaasOrgContext(MOCK_TEAM_ORG_ACME, { role: "admin" });
 
@@ -976,7 +1235,7 @@ describe("getFirstAvailablePath", () => {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   };
 
   describe("SaaS mode", () => {
@@ -1086,13 +1345,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/user") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/integrations");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/integrations");
   });
 
   it("should redirect from /settings/billing to first available page when hide_billing_page is true", async () => {
@@ -1112,13 +1371,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/billing") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/user");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
   });
 
   it("should redirect from /settings/integrations to first available page when hide_integrations_page is true", async () => {
@@ -1137,13 +1396,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/integrations") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/user");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/user");
   });
 
   it("should redirect from /settings to /settings/app when LLM, users, and integrations are all hidden", async () => {
@@ -1162,11 +1421,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(createMockRequest("/settings") as any);
+    const result = (await clientLoader(
+      createMockRequest("/settings") as any,
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/app");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/app");
   });
 
   it("should redirect from /settings to /settings/mcp in OSS mode when LLM settings is hidden", async () => {
@@ -1186,11 +1447,13 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(createMockRequest("/settings") as any);
+    const result = (await clientLoader(
+      createMockRequest("/settings") as any,
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings/mcp");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings/mcp");
   });
 
   it("should redirect non-admins away from /settings/budgets", async () => {
@@ -1227,13 +1490,13 @@ describe("clientLoader redirect behavior", () => {
       status: "active",
     });
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/budgets") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
-    expect(result?.headers.get("Location")).toBe("/settings");
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
   });
 
   it("should not redirect when accessing a non-hidden page", async () => {
@@ -1257,7 +1520,7 @@ describe("clientLoader redirect behavior", () => {
       createMockRequest("/settings/app") as any,
     );
 
-    expect(result).toBeNull();
+    expect(result).toEqual({});
   });
 
   it("should redirect from /settings/integrations in OSS mode when hide_integrations_page is true", async () => {
@@ -1276,13 +1539,131 @@ describe("clientLoader redirect behavior", () => {
     };
     mockQueryClient.setQueryData(["web-client-config"], config);
 
-    const result = await clientLoader(
+    const result = (await clientLoader(
       createMockRequest("/settings/integrations") as any,
-    );
+    )) as Response;
 
     expect(result).toBeDefined();
-    expect(result?.status).toBe(302);
+    expect(result.status).toBe(302);
     // In OSS mode, first available is /settings (LLM)
-    expect(result?.headers.get("Location")).toBe("/settings");
+    expect(result.headers.get("Location")).toBe("/settings");
+  });
+});
+
+describe("clientLoader ?org= deep link", () => {
+  const seedConfig = (appMode: "saas" | "oss") => {
+    mockQueryClient.setQueryData(["web-client-config"], {
+      app_mode: appMode,
+      feature_flags: {
+        enable_billing: false,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    mockQueryClient.clear();
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("switches to the requested org and redirects to the same page without the param", async () => {
+    // Arrange: the cloud's current org is the personal workspace
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+    });
+    const switchSpy = vi
+      .spyOn(organizationService, "switchOrganization")
+      .mockResolvedValue(MOCK_TEAM_ORG_ACME);
+
+    // Act: open settings deep-linked to the team org
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: org switched locally and server-side, param stripped
+    expect(switchSpy).toHaveBeenCalledWith({ orgId: MOCK_TEAM_ORG_ACME.id });
+    expect(useSelectedOrganizationStore.getState().organizationId).toBe(
+      MOCK_TEAM_ORG_ACME.id,
+    );
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  it("replaces the history entry when stripping the param so Back returns to the referrer", async () => {
+    // Arrange: the requested org is already current, so only the param is stripped
+    seedConfig("saas");
+    mockQueryClient.setQueryData(["organizations"], {
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+
+    // Act: enter settings from agent-canvas with the org deep link
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = (await clientLoader({ request, params: {} })) as Response;
+
+    // Assert: a replacing redirect, so the pre-switch URL is not left in history
+    expect(result.status).toBe(302);
+    expect(result.headers.get("Location")).toBe("/settings");
+    expect(result.headers.get("X-Remix-Replace")).toBe("true");
+  });
+
+  it("keeps the param and does not redirect when organizations cannot be fetched", async () => {
+    // Arrange: e.g. no cloud session yet, so the org list request fails
+    seedConfig("saas");
+    vi.spyOn(organizationService, "getOrganizations").mockRejectedValue(
+      new Error("Unauthorized"),
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert: nothing switched; the page renders so the login redirect can
+    // carry the param in returnTo
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+
+  it("ignores the param in OSS mode", async () => {
+    // Arrange
+    seedConfig("oss");
+    const getOrganizationsSpy = vi.spyOn(
+      organizationService,
+      "getOrganizations",
+    );
+    const switchSpy = vi.spyOn(organizationService, "switchOrganization");
+
+    // Act
+    const request = new Request(
+      `http://localhost/settings?org=${MOCK_TEAM_ORG_ACME.id}`,
+    );
+    // @ts-expect-error - test only needs request and params, not full loader args
+    const result = await clientLoader({ request, params: {} });
+
+    // Assert
+    expect(getOrganizationsSpy).not.toHaveBeenCalled();
+    expect(switchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({});
   });
 });

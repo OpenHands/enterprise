@@ -322,7 +322,7 @@ export function GitRepoDropdown({
       <div className="relative">
         <div className="absolute left-2 top-1/2 transform -translate-y-1/2 z-10">
           {isLoadingState ? (
-            <div className="animate-spin h-4 w-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+            <div className="animate-spin h-4 w-4 border-2 border-transparent border-t-white rounded-full" />
           ) : (
             <RepoIcon width={16} height={16} />
           )}

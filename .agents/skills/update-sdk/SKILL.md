@@ -38,7 +38,6 @@ For the complete inventory of every file containing a hardcoded Docker image tag
 | File | Image reference | Updated during SDK bump? |
 |------|----------------|:------------------------:|
 | `openhands/app_server/sandbox/sandbox_spec_service.py` | `AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:<tag>-python'` | ✅ Yes |
-| `docker-compose.yml` | `AGENT_SERVER_IMAGE_TAG` default | ✅ Should be |
 | `containers/dev/compose.yml` | `AGENT_SERVER_IMAGE_REPOSITORY` + `_TAG` defaults | ✅ Should be |
 
 > **CI enforcement:** `.github/workflows/check-version-consistency.yml` validates version consistency and compose file image references on every PR and push to main.
@@ -67,12 +66,11 @@ A release commit updates the version string across 3 files. Gold-standard exampl
 
 ### Compose Files (2 files)
 
-Both compose files should use `ghcr.io/openhands/agent-server` with the current SDK version tag.
+The compose file should use `ghcr.io/openhands/agent-server` with the current SDK version tag.
 
 | File | What to verify |
 |------|----------------|
-| `docker-compose.yml` | `AGENT_SERVER_IMAGE_REPOSITORY` defaults to agent-server, `AGENT_SERVER_IMAGE_TAG` is current |
-| `containers/dev/compose.yml` | Same — must use agent-server, not runtime |
+| `containers/dev/compose.yml` | `AGENT_SERVER_IMAGE_REPOSITORY` defaults to agent-server, `AGENT_SERVER_IMAGE_TAG` is current |
 
 ### Release Workflow
 
@@ -81,7 +79,7 @@ Both compose files should use `ghcr.io/openhands/agent-server` with the current 
 ```bash
 grep -n "openhands-sdk\|openhands-agent-server\|openhands-tools" pyproject.toml
 grep -n "AGENT_SERVER_IMAGE" openhands/app_server/sandbox/sandbox_spec_service.py
-grep "AGENT_SERVER_IMAGE_TAG" docker-compose.yml containers/dev/compose.yml
+grep "AGENT_SERVER_IMAGE_TAG" containers/dev/compose.yml
 ```
 
 #### Step 2: Merge the release PR
@@ -103,13 +101,12 @@ Requires the commit to already be built. If you push the tag too early, the reta
 
 For detailed examples of all pinning formats (commit, branch, uv-only), see `references/sdk-pinning-examples.md`.
 
-### Files to change (3 manual + 1 lock file)
+### Files to change (2 manual + 1 lock file)
 
 | File | What to change |
 |------|----------------|
 | `pyproject.toml` | Pin all 3 SDK packages to the git commit, either as direct references in `[project] dependencies` or via `[tool.uv.sources]` |
 | `openhands/app_server/sandbox/sandbox_spec_service.py` | `AGENT_SERVER_IMAGE` — use the merge-commit SHA tag, NOT the head-commit SHA |
-| `docker-compose.yml` | `AGENT_SERVER_IMAGE_TAG` default (for local development) |
 | `uv.lock` | Auto-regenerated via `uv lock` |
 
 ### CI guard

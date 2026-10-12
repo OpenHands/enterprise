@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
@@ -22,11 +22,14 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import MetricsSnapshot, TokenUsage
 from server.routes.org_models import (
     AgentUsageData,
+    DailySpendData,
     DailyUsageData,
     ModelUsageData,
+    MyRecentUsageItem,
     OrgConversationPage,
     OrgConversationResponse,
     OrgConversationStats,
+    OrgMyUsageStats,
     OrgUsageStats,
     OrgUserUsageRow,
     OrgUserUsageStats,
@@ -851,6 +854,69 @@ class OrgConversationService:
 
         return tokens
 
+    async def _get_daily_cost(
+        self, base_filter: list, cutoff: datetime
+    ) -> dict[str, float]:
+        """Cost per ISO day on spend time; legacy fallback by created_at."""
+        costs: dict[str, float] = {}
+
+        ledger_day = func.date(StoredConversationCostEvent.occurred_at)
+        ledger_query = (
+            select(
+                ledger_day.label('day'),
+                func.coalesce(func.sum(StoredConversationCostEvent.cost_delta), 0),
+            )
+            .select_from(StoredConversationCostEvent)
+            .join(
+                StoredConversationMetadata,
+                StoredConversationMetadata.conversation_id
+                == StoredConversationCostEvent.conversation_id,
+            )
+            .join(
+                StoredConversationMetadataSaas,
+                StoredConversationMetadata.conversation_id
+                == StoredConversationMetadataSaas.conversation_id,
+            )
+            .where(*base_filter)
+            .where(StoredConversationCostEvent.occurred_at >= cutoff)
+            .group_by(ledger_day)
+        )
+        result = await self.db_session.execute(ledger_query)
+        for row in result.all():
+            key = str(row[0])[:10]
+            costs[key] = costs.get(key, 0.0) + float(row[1] or 0)
+
+        legacy_day = func.date(StoredConversationMetadata.created_at)
+        legacy_query = (
+            select(
+                legacy_day.label('day'),
+                func.coalesce(func.sum(StoredConversationMetadata.accumulated_cost), 0),
+            )
+            .select_from(StoredConversationMetadata)
+            .join(
+                StoredConversationMetadataSaas,
+                StoredConversationMetadata.conversation_id
+                == StoredConversationMetadataSaas.conversation_id,
+            )
+            .where(*base_filter)
+            .where(StoredConversationMetadata.created_at >= cutoff)
+            .where(
+                ~select(StoredConversationCostEvent.id)
+                .where(
+                    StoredConversationCostEvent.conversation_id
+                    == StoredConversationMetadata.conversation_id
+                )
+                .exists()
+            )
+            .group_by(legacy_day)
+        )
+        result = await self.db_session.execute(legacy_query)
+        for row in result.all():
+            key = str(row[0])[:10]
+            costs[key] = costs.get(key, 0.0) + float(row[1] or 0)
+
+        return costs
+
     async def _get_team_usage(
         self, base_filter: list, cutoff: datetime
     ) -> dict[str, tuple[int, int, str | None, str | None]]:
@@ -1137,11 +1203,92 @@ class OrgConversationService:
             agent_usage=agent_usage,
         )
 
+    async def get_my_usage_stats(
+        self,
+        org_id: UUID,
+        user_id: UUID,
+        days: int = 30,
+    ) -> OrgMyUsageStats:
+        """Get one member's own spend for their budget page.
+
+        Args:
+            org_id: The organization ID
+            user_id: The member whose usage is reported
+            days: Number of days to look back (default 30)
+
+        Returns:
+            OrgMyUsageStats with daily spend, model breakdown and recent usage
+        """
+        base_filter = [
+            StoredConversationMetadata.conversation_version == 'V1',
+            StoredConversationMetadataSaas.org_id == org_id,
+            StoredConversationMetadataSaas.user_id == user_id,
+        ]
+
+        # Align to UTC midnight so the daily series, the model breakdown and
+        # the previous-period comparison all cover exactly the same days.
+        today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        window_start = today - timedelta(days=days - 1)
+        previous_start = window_start - timedelta(days=days)
+
+        # One query spans both periods; ISO day keys sort chronologically.
+        daily_costs = await self._get_daily_cost(base_filter, previous_start)
+        window_key = window_start.strftime('%Y-%m-%d')
+        previous_period_spend = sum(
+            cost for day, cost in daily_costs.items() if day < window_key
+        )
+
+        daily_spend = []
+        for i in range(days - 1, -1, -1):
+            day_key = (today - timedelta(days=i)).strftime('%Y-%m-%d')
+            daily_spend.append(
+                DailySpendData(date=day_key, cost=daily_costs.get(day_key, 0.0))
+            )
+
+        model_usage = await self._get_model_usage(base_filter, window_start)
+
+        recent_query = (
+            select(
+                StoredConversationMetadata.conversation_id,
+                StoredConversationMetadata.title,
+                StoredConversationMetadata.last_updated_at,
+                StoredConversationMetadata.accumulated_cost,
+            )
+            .join(
+                StoredConversationMetadataSaas,
+                StoredConversationMetadata.conversation_id
+                == StoredConversationMetadataSaas.conversation_id,
+            )
+            .where(*base_filter)
+            .where(StoredConversationMetadata.parent_conversation_id.is_(None))
+            .order_by(StoredConversationMetadata.last_updated_at.desc().nullslast())
+            .limit(6)
+        )
+        result = await self.db_session.execute(recent_query)
+        recent_usage = [
+            MyRecentUsageItem(
+                conversation_id=row.conversation_id,
+                title=row.title,
+                updated_at=row.last_updated_at,
+                accumulated_cost=float(row.accumulated_cost or 0),
+            )
+            for row in result.all()
+        ]
+
+        return OrgMyUsageStats(
+            total_spend=sum(item.cost for item in daily_spend),
+            previous_period_spend=previous_period_spend,
+            daily_spend=daily_spend,
+            model_usage=model_usage,
+            recent_usage=recent_usage,
+        )
+
     async def get_user_usage_stats(
         self,
         org_id: UUID,
         limit: int = 500,
         offset: int = 0,
+        time_window: str | None = None,
     ) -> OrgUserUsageStats:
         now = datetime.now(UTC)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1153,6 +1300,16 @@ class OrgConversationService:
             StoredConversationMetadata.conversation_version == 'V1',
             StoredConversationMetadataSaas.org_id == org_id,
         ]
+
+        # The conversation count matches list_org_conversations: top-level
+        # conversations only, created within the time window when one is given.
+        # Spend columns keep their own periods (MTD, YTD, lifetime).
+        counted: ColumnElement[bool] = (
+            StoredConversationMetadata.parent_conversation_id.is_(None)
+        )
+        if time_window and time_window in TIME_WINDOW_OPTIONS:
+            cutoff = now - timedelta(days=TIME_WINDOW_OPTIONS[time_window])
+            counted = and_(counted, StoredConversationMetadata.created_at >= cutoff)
 
         cost_events_subquery = (
             select(
@@ -1204,9 +1361,9 @@ class OrgConversationService:
                 User.git_user_name,
                 User.first_login_at,
                 User.last_login_at,
-                func.count(StoredConversationMetadata.conversation_id).label(
-                    'conversation_count'
-                ),
+                func.count(
+                    case((counted, StoredConversationMetadata.conversation_id))
+                ).label('conversation_count'),
                 func.min(StoredConversationMetadata.created_at).label(
                     'first_conversation_at'
                 ),
@@ -1260,17 +1417,32 @@ class OrgConversationService:
             has_more = True
             user_rows = user_rows[:limit]
 
-        settings_result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
-        budget_settings = settings_result.scalar_one_or_none()
+        from storage.lite_llm_manager import is_litellm_enabled
 
-        overrides_result = await self.db_session.execute(
-            select(OrgUserBudgetOverride).where(OrgUserBudgetOverride.org_id == org_id)
-        )
-        override_map = {
-            override.user_id: override for override in overrides_result.scalars().all()
-        }
+        # Budgets are enforced through LiteLLM: with the gateway disabled
+        # deployment-wide, any stored budget row is stale and no longer
+        # enforced, so omit it from usage monitoring rather than implying
+        # enforcement that is not happening. Conversation/usage stats
+        # (spend_mtd/ytd/lifetime, conversation counts, etc.) are OHE's own
+        # tracking and are unaffected.
+        litellm_enabled = await is_litellm_enabled()
+        budget_settings = None
+        override_map: dict[UUID, OrgUserBudgetOverride] = {}
+        if litellm_enabled:
+            settings_result = await self.db_session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+            budget_settings = settings_result.scalar_one_or_none()
+
+            overrides_result = await self.db_session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+            override_map = {
+                override.user_id: override
+                for override in overrides_result.scalars().all()
+            }
 
         pr_rows_result = await self.db_session.execute(
             select(

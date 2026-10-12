@@ -13,7 +13,6 @@ import {
   INITIAL_MOCK_ORGS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
-import BillingService from "#/api/billing-service/billing-service.api";
 import { OrganizationMember } from "#/types/org";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -194,30 +193,6 @@ describe("Manage Org Route", () => {
     queryClient?.clear();
   });
 
-  it("should render the available credits", async () => {
-    renderManageOrg();
-    await screen.findByTestId("manage-org-screen");
-
-    await selectOrganization({ orgIndex: 0 });
-
-    await waitFor(() => {
-      const credits = screen.getByTestId("available-credits");
-      expect(credits).toHaveTextContent("100");
-    });
-  });
-
-  it("should render no limit when the organization has no configured cap", async () => {
-    vi.spyOn(BillingService, "getBalance").mockResolvedValueOnce(null);
-    renderManageOrg();
-    await screen.findByTestId("manage-org-screen");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("available-credits")).toHaveTextContent(
-        "CONVERSATION$NO_BUDGET_LIMIT",
-      );
-    });
-  });
-
   it("should render account details", async () => {
     renderManageOrg();
     await screen.findByTestId("manage-org-screen");
@@ -228,88 +203,6 @@ describe("Manage Org Route", () => {
       const orgName = screen.getByTestId("org-name");
       expect(orgName).toHaveTextContent("Personal Workspace");
     });
-  });
-
-  it("should be able to add credits", async () => {
-    const createCheckoutSessionSpy = vi.spyOn(
-      BillingService,
-      "createCheckoutSession",
-    );
-
-    renderManageOrg();
-    await screen.findByTestId("manage-org-screen");
-
-    await selectOrganization({ orgIndex: 0 }); // user is owner in org 1
-
-    expect(screen.queryByTestId("add-credits-form")).not.toBeInTheDocument();
-    // Simulate adding credits — wait for permissions-dependent button
-    const addCreditsButton = await waitFor(() => screen.getByText(/add/i));
-    await userEvent.click(addCreditsButton);
-
-    const addCreditsForm = screen.getByTestId("add-credits-form");
-    expect(addCreditsForm).toBeInTheDocument();
-
-    const amountInput = within(addCreditsForm).getByTestId("amount-input");
-    const nextButton = within(addCreditsForm).getByRole("button", {
-      name: /next/i,
-    });
-
-    await userEvent.type(amountInput, "1000");
-    await userEvent.click(nextButton);
-
-    // expect redirect to payment page
-    await waitFor(() =>
-      expect(createCheckoutSessionSpy).toHaveBeenCalledWith(1000),
-    );
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("add-credits-form")).not.toBeInTheDocument(),
-    );
-  });
-
-  it("should close the modal when clicking cancel", async () => {
-    const createCheckoutSessionSpy = vi.spyOn(
-      BillingService,
-      "createCheckoutSession",
-    );
-    renderManageOrg();
-    await screen.findByTestId("manage-org-screen");
-
-    await selectOrganization({ orgIndex: 0 }); // user is owner in org 1
-
-    expect(screen.queryByTestId("add-credits-form")).not.toBeInTheDocument();
-    // Simulate adding credits — wait for permissions-dependent button
-    const addCreditsButton = await waitFor(() => screen.getByText(/add/i));
-    await userEvent.click(addCreditsButton);
-
-    const addCreditsForm = screen.getByTestId("add-credits-form");
-    expect(addCreditsForm).toBeInTheDocument();
-
-    const cancelButton = within(addCreditsForm).getByRole("button", {
-      name: /close/i,
-    });
-
-    await userEvent.click(cancelButton);
-
-    expect(screen.queryByTestId("add-credits-form")).not.toBeInTheDocument();
-    expect(createCheckoutSessionSpy).not.toHaveBeenCalled();
-  });
-
-  it("should show add credits option for ADMIN role", async () => {
-    renderManageOrg();
-    await screen.findByTestId("manage-org-screen");
-
-    await selectOrganization({ orgIndex: 3 }); // user is admin in org 4 (All Hands AI)
-
-    // Verify credits are shown
-    await waitFor(() => {
-      const credits = screen.getByTestId("available-credits");
-      expect(credits).toBeInTheDocument();
-    });
-
-    // Verify add credits button is present (admins can add credits)
-    const addButton = screen.getByText(/add/i);
-    expect(addButton).toBeInTheDocument();
   });
 
   describe("actions", () => {
@@ -457,6 +350,10 @@ describe("Manage Org Route", () => {
 
       expect(deleteButton).toBeInTheDocument();
       expect(deleteButton).not.toBeDisabled();
+      const deleteBar = screen.getByTestId("delete-org-bar");
+      expect(deleteBar).toContainElement(deleteButton);
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE");
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE_DELETE_BAR");
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Admin' role)", async () => {
@@ -482,6 +379,7 @@ describe("Manage Org Route", () => {
       });
 
       expect(deleteButton).not.toBeInTheDocument();
+      expect(screen.queryByTestId("delete-org-bar")).not.toBeInTheDocument();
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Member' role)", async () => {
@@ -530,39 +428,6 @@ describe("Manage Org Route", () => {
   });
 
   describe("enable_billing feature flag", () => {
-    it("should show credits section when enable_billing is true", async () => {
-      // Arrange
-      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-      getConfigSpy.mockResolvedValue(
-        createMockWebClientConfig({
-          app_mode: "saas",
-          feature_flags: {
-            enable_billing: true,
-            hide_llm_settings: false,
-            enable_jira: false,
-            enable_jira_dc: false,
-            enable_linear: false,
-            hide_users_page: false,
-            hide_billing_page: false,
-            hide_integrations_page: false,
-            enable_onboarding: false,
-          },
-        }),
-      );
-
-      // Act
-      renderManageOrg();
-      await screen.findByTestId("manage-org-screen");
-      await selectOrganization({ orgIndex: 0 });
-
-      // Assert
-      await waitFor(() => {
-        expect(screen.getByTestId("available-credits")).toBeInTheDocument();
-      });
-
-      getConfigSpy.mockRestore();
-    });
-
     it("should show organization name section when enable_billing is true", async () => {
       // Arrange
       const getConfigSpy = vi.spyOn(OptionService, "getConfig");
@@ -595,76 +460,6 @@ describe("Manage Org Route", () => {
 
       getConfigSpy.mockRestore();
     });
-
-    it("should show Add Credits button when enable_billing is true", async () => {
-      // Arrange
-      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-      getConfigSpy.mockResolvedValue(
-        createMockWebClientConfig({
-          app_mode: "saas",
-          feature_flags: {
-            enable_billing: true,
-            hide_llm_settings: false,
-            enable_jira: false,
-            enable_jira_dc: false,
-            enable_linear: false,
-            hide_users_page: false,
-            hide_billing_page: false,
-            hide_integrations_page: false,
-            enable_onboarding: false,
-          },
-        }),
-      );
-
-      // Act
-      renderManageOrg();
-      await screen.findByTestId("manage-org-screen");
-      await selectOrganization({ orgIndex: 0 });
-
-      // Assert
-      await waitFor(() => {
-        const addButton = screen.getByText(/add/i);
-        expect(addButton).toBeInTheDocument();
-      });
-
-      getConfigSpy.mockRestore();
-    });
-
-    it("should hide all billing-related elements when enable_billing is false", async () => {
-      // Arrange
-      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-      getConfigSpy.mockResolvedValue(
-        createMockWebClientConfig({
-          app_mode: "saas",
-          feature_flags: {
-            enable_billing: false,
-            hide_llm_settings: false,
-            enable_jira: false,
-            enable_jira_dc: false,
-            enable_linear: false,
-            hide_users_page: false,
-            hide_billing_page: false,
-            hide_integrations_page: false,
-            enable_onboarding: false,
-          },
-        }),
-      );
-
-      // Act
-      renderManageOrg();
-      await screen.findByTestId("manage-org-screen");
-      await selectOrganization({ orgIndex: 0 });
-
-      // Assert
-      await waitFor(() => {
-        expect(
-          screen.queryByTestId("available-credits"),
-        ).not.toBeInTheDocument();
-        expect(screen.queryByText(/add/i)).not.toBeInTheDocument();
-      });
-
-      getConfigSpy.mockRestore();
-    });
   });
 
   describe("Git conversation routing visibility", () => {
@@ -677,6 +472,18 @@ describe("Manage Org Route", () => {
           screen.getByTestId("git-conversation-routing"),
         ).toBeInTheDocument();
       });
+
+      const screenRoot = screen.getByTestId("manage-org-screen");
+      const gitSection = screen.getByTestId("git-conversation-routing");
+      const deleteBar = await screen.findByTestId("delete-org-bar");
+      expect(
+        screenRoot.compareDocumentPosition(gitSection) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        gitSection.compareDocumentPosition(deleteBar) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
     });
 
     it("should hide the section in org-only installs with a single team org", async () => {

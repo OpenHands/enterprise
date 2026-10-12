@@ -1,22 +1,26 @@
-import toast from "react-hot-toast";
+import {
+  displayErrorToast,
+  displayLoadingToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 
 export function renderConversationErroredToast(
   _conversationId: string,
   message: string,
 ): void {
-  toast.error(message);
+  displayErrorToast(message);
 }
 
 export function renderConversationCreatedToast(): void {
-  toast.success("Runtime started");
+  displaySuccessToast("Runtime started");
 }
 
 export function renderConversationFinishedToast(): void {
-  toast.success("Conversation finished");
+  displaySuccessToast("Conversation finished");
 }
 
 export function renderConversationStartingToast(conversationId: string): void {
-  toast.loading("Starting runtime...", {
+  displayLoadingToast("Starting runtime...", {
     id: `starting-${conversationId}`,
   });
 }

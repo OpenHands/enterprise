@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
-import { LlmSettingsInputsSkeleton } from "#/components/features/settings/llm-settings/llm-settings-inputs-skeleton";
+import { AgentSettingsInputsSkeleton } from "#/components/features/settings/agent-settings/agent-settings-inputs-skeleton";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
@@ -32,6 +32,12 @@ import {
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
+import {
+  formControlMultilineFieldClassName,
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
+import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
 const ENABLE_SUB_AGENTS_FIELD_KEY = "enable_sub_agents";
@@ -137,6 +143,13 @@ export default function AgentSettingsScreen() {
     setToolConcurrency(initialToolConcurrency);
   }, [initialToolConcurrency]);
 
+  // ── Memory context (OpenHands mode) ──────────────────────────────────────
+  const initialMemoryEnabled = !!settings?.enable_memory_context;
+  const [memoryOverride, setMemoryOverride] = useState<boolean | undefined>(
+    undefined,
+  );
+  const isMemoryEnabled = memoryOverride ?? initialMemoryEnabled;
+
   // ── ACP (ACP mode) ───────────────────────────────────────────────────────
   const [agentType, setAgentType] = useState<"openhands" | "acp">("openhands");
   const [commandText, setCommandText] = useState("");
@@ -209,8 +222,10 @@ export default function AgentSettingsScreen() {
 
   const subAgentsDirty = isSubAgentsEnabled !== initialSubAgentsEnabled;
   const toolConcurrencyDirty = toolConcurrency !== initialToolConcurrency;
+  const memoryDirty = isMemoryEnabled !== initialMemoryEnabled;
   const settingsDirty =
-    isDirty || (!isAcp && (subAgentsDirty || toolConcurrencyDirty));
+    isDirty ||
+    (!isAcp && (subAgentsDirty || toolConcurrencyDirty || memoryDirty));
   const credentialsDirty = isAcp && credentialForm.isDirty;
   const canSave = settingsDirty || credentialsDirty;
   const isSavingAny = isPending || credentialForm.isSaving;
@@ -267,30 +282,34 @@ export default function AgentSettingsScreen() {
       }
     }
 
-    saveSettings(
-      { agent_settings_diff: agentSettingsDiff },
-      {
-        onError: (error) => {
-          const message = retrieveAxiosErrorMessage(error as AxiosError);
-          displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
-        },
-        onSuccess: () => {
-          displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-          setIsDirty(false);
-        },
+    const settingsPayload: Record<string, unknown> = {
+      agent_settings_diff: agentSettingsDiff,
+    };
+    if (memoryDirty) {
+      settingsPayload.enable_memory_context = isMemoryEnabled;
+    }
+
+    saveSettings(settingsPayload, {
+      onError: (error) => {
+        const message = retrieveAxiosErrorMessage(error as AxiosError);
+        displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
       },
-    );
+      onSuccess: () => {
+        displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
+        setIsDirty(false);
+      },
+    });
   };
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (isSettingsLoading || isSchemaLoading || isConfigLoading) {
-    return <LlmSettingsInputsSkeleton />;
+    return <AgentSettingsInputsSkeleton />;
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div data-testid="agent-settings-screen" className="h-full relative">
-      <div className="flex flex-col gap-8 pb-20">
+      <div className="flex flex-col gap-6">
         {/* Agent-type selector — only when ACP feature flag is on */}
         {isAcpEnabled && (
           <section className="grid gap-4 xl:grid-cols-2">
@@ -327,7 +346,7 @@ export default function AgentSettingsScreen() {
         {!isAcp && (
           <section className="grid gap-4 xl:grid-cols-2">
             {subAgentsField ? (
-              <div className="flex flex-col gap-1.5">
+              <div className={formControlSwitchFieldClassName}>
                 <SettingsSwitch
                   testId="agent-settings-enable-sub-agents"
                   isToggled={isSubAgentsEnabled}
@@ -344,7 +363,12 @@ export default function AgentSettingsScreen() {
                   subAgentsField.key,
                   subAgentsField.description,
                 ) ? (
-                  <Typography.Paragraph className="text-tertiary-alt text-xs leading-5">
+                  <Typography.Paragraph
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-tertiary-alt text-xs leading-5",
+                    )}
+                  >
                     {resolveSchemaFieldDescription(
                       t,
                       subAgentsField.key,
@@ -372,6 +396,35 @@ export default function AgentSettingsScreen() {
             />
           </section>
         ) : null}
+
+        {/* Agent Context: persistent memory toggle (OpenHands mode) */}
+        {!isAcp && (
+          <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
+            <h3 className="text-lg font-medium mb-2">
+              {t(I18nKey.SETTINGS$AGENT_CONTEXT)}
+            </h3>
+            <p className="mb-4 text-sm leading-5 text-muted">
+              {t(I18nKey.SETTINGS$AGENT_CONTEXT_DESCRIPTION)}
+            </p>
+            <div className={cn("mt-2", formControlSwitchFieldClassName)}>
+              <SettingsSwitch
+                testId="agent-settings-enable-memory-context"
+                defaultIsToggled={initialMemoryEnabled}
+                onToggle={setMemoryOverride}
+              >
+                {t(I18nKey.SETTINGS$ENABLE_MEMORY_CONTEXT)}
+              </SettingsSwitch>
+              <Typography.Paragraph
+                className={cn(
+                  formControlSwitchDescriptionClassName,
+                  "text-xs leading-5 text-[var(--oh-muted)]",
+                )}
+              >
+                {t(I18nKey.SETTINGS$ENABLE_MEMORY_CONTEXT_HELPER)}
+              </Typography.Paragraph>
+            </div>
+          </div>
+        )}
 
         {/* ACP: preset, command, model, credentials */}
         {isAcp && (
@@ -414,7 +467,10 @@ export default function AgentSettingsScreen() {
               </Typography.Text>
               <textarea
                 data-testid="agent-command-input"
-                className="bg-tertiary border border-[#717888] rounded-sm p-2 text-sm font-mono text-white placeholder:italic placeholder:text-[#717888] min-h-[60px] resize-y focus:outline-none focus:border-white"
+                className={cn(
+                  formControlMultilineFieldClassName,
+                  "font-mono min-h-[60px] resize-y",
+                )}
                 value={commandText}
                 placeholder={commandPlaceholder}
                 onChange={(e) => {
@@ -432,7 +488,7 @@ export default function AgentSettingsScreen() {
                   setIsDirty(true);
                 }}
               />
-              <Typography.Text className="text-xs text-[#717888]">
+              <Typography.Text className="text-xs text-[var(--oh-muted)]">
                 {t(I18nKey.SETTINGS$AGENT_COMMAND_HINT)}
               </Typography.Text>
             </div>
@@ -485,7 +541,7 @@ export default function AgentSettingsScreen() {
                   }}
                 />
               )}
-              <Typography.Text className="text-xs text-[#717888]">
+              <Typography.Text className="text-xs text-[var(--oh-muted)]">
                 {t(I18nKey.SETTINGS$AGENT_MODEL_HINT)}
               </Typography.Text>
             </div>
@@ -493,7 +549,7 @@ export default function AgentSettingsScreen() {
             {/* Credentials section for built-in providers */}
             {credentialForm.fields.length > 0 && (
               <>
-                <hr className="border-[#3D4046]" />
+                <hr className="border-[var(--oh-border)]" />
                 <AcpCredentialsSection form={credentialForm} />
               </>
             )}

@@ -7,6 +7,11 @@ import { MarketplaceRegistration } from "#/types/settings";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
+import {
+  formControlNativeSelectClassName,
+  formControlSettingsFieldClassName,
+} from "#/utils/form-control-classes";
+import { ToggleSwitch } from "#/ui/toggle-switch";
 
 /**
  * Best-effort marketplace name from a repository source, mirroring the backend
@@ -139,11 +144,10 @@ export function MarketplaceModal({
   const isEdit = mode === "edit";
 
   const footer = (
-    <div className="w-full flex gap-2 mt-2">
+    <div className="flex w-full justify-end gap-2 mt-2">
       <BrandButton
         type="button"
         variant="secondary"
-        className="grow"
         onClick={onClose}
         isDisabled={isSaving}
       >
@@ -153,7 +157,6 @@ export function MarketplaceModal({
         testId="marketplace-save-button"
         type="button"
         variant="primary"
-        className="grow"
         onClick={handleSave}
         isDisabled={isSaving}
       >
@@ -165,7 +168,7 @@ export function MarketplaceModal({
   return (
     <ModalBackdrop>
       <div
-        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-tertiary"
+        className="bg-base p-6 rounded-xl flex flex-col gap-4 border border-[var(--oh-border)]"
         style={{ width: "500px" }}
       >
         <h3 className="text-xl font-bold">
@@ -197,7 +200,8 @@ export function MarketplaceModal({
             disabled={isEdit}
             readOnly={isEdit}
             className={cn(
-              "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt disabled:opacity-50 disabled:cursor-not-allowed",
+              formControlSettingsFieldClassName,
+              "disabled:opacity-50 disabled:cursor-not-allowed",
               sourceError && "border-red-500",
             )}
           />
@@ -228,7 +232,7 @@ export function MarketplaceModal({
             }}
             placeholder="e.g., my-skills"
             className={cn(
-              "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
+              formControlSettingsFieldClassName,
               nameError && "border-red-500",
             )}
           />
@@ -249,7 +253,7 @@ export function MarketplaceModal({
               data-testid="marketplace-scope-select"
               value={scope}
               onChange={(e) => setScope(e.target.value as "org" | "personal")}
-              className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2"
+              className={formControlNativeSelectClassName}
             >
               <option value="personal">
                 {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_PERSONAL)}
@@ -274,7 +278,7 @@ export function MarketplaceModal({
             value={ref}
             onChange={(e) => setRef(e.target.value)}
             placeholder="e.g., main, develop, v1.0.0"
-            className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+            className={formControlSettingsFieldClassName}
           />
         </div>
 
@@ -295,7 +299,7 @@ export function MarketplaceModal({
             }}
             placeholder="e.g., marketplaces/internal"
             className={cn(
-              "bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
+              formControlSettingsFieldClassName,
               repoPathError && "border-red-500",
             )}
           />
@@ -314,27 +318,11 @@ export function MarketplaceModal({
             </label>
             <InfoTooltip content={t(I18nKey.SETTINGS$AUTO_LOAD_TOOLTIP)} />
           </div>
-          <button
-            type="button"
-            onClick={() => setAutoLoad(!autoLoad)}
-            aria-label={t(I18nKey.SETTINGS$MARKETPLACE_AUTO_LOAD)}
-            className="cursor-pointer"
-          >
-            <div
-              className={cn(
-                "w-12 h-6 rounded-xl flex items-center p-1.5",
-                autoLoad && "justify-end bg-white",
-                !autoLoad && "justify-start bg-base-secondary",
-              )}
-            >
-              <div
-                className={cn(
-                  "w-3 h-3 rounded-xl",
-                  autoLoad ? "bg-[#0D0F11]" : "bg-tertiary-light",
-                )}
-              />
-            </div>
-          </button>
+          <ToggleSwitch
+            enabled={autoLoad}
+            label={t(I18nKey.SETTINGS$MARKETPLACE_AUTO_LOAD)}
+            onToggle={() => setAutoLoad(!autoLoad)}
+          />
         </div>
 
         {footer}

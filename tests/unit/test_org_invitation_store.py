@@ -1,6 +1,6 @@
 """Tests for organization invitation store.
 
-The DB-touching tests use the shared SQLite ``async_session_maker`` fixture
+The DB-touching tests use the shared ``async_session_maker`` fixture
 (see ``tests/unit/conftest.py``) rather than mocking the session.
 This exercises real SQL semantics: column constraints, unique indexes,
 ``joinedload`` relationships, and the commit/re-fetch round-trip that the
@@ -45,7 +45,7 @@ async def seeded_org_role_user(async_session_maker):
 
 @pytest.fixture
 def store_with_session(async_session_maker):
-    """Patch ``a_session_maker`` in the store module to use the SQLite fixture."""
+    """Patch ``a_session_maker`` in the store module to use the test database."""
     with patch('storage.org_invitation_store.a_session_maker', async_session_maker):
         yield
 

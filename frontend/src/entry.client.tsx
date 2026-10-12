@@ -20,9 +20,16 @@ async function prepareApp() {
   ) {
     const { worker } = await import("./mocks/browser");
 
-    await worker.start({
-      onUnhandledRequest: "bypass",
-    });
+    // Some embedded browsers never complete the MSW service-worker handshake.
+    // Don't block hydration forever — mocks still work once the worker activates.
+    await Promise.race([
+      worker.start({
+        onUnhandledRequest: "bypass",
+      }),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 3000);
+      }),
+    ]);
   }
 }
 

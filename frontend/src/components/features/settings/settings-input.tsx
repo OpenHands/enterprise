@@ -1,4 +1,6 @@
+import { forwardRef } from "react";
 import { cn } from "#/utils/utils";
+import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { OptionalTag } from "./optional-tag";
 
 interface SettingsInputProps {
@@ -12,68 +14,144 @@ interface SettingsInputProps {
   showOptionalTag?: boolean;
   description?: React.ReactNode;
   isDisabled?: boolean;
+  /** Keeps the value visible/copyable while blocking edits (e.g. locked email). */
+  isReadOnly?: boolean;
   startContent?: React.ReactNode;
   className?: string;
   onChange?: (value: string) => void;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   required?: boolean;
   min?: number;
   max?: number;
   step?: number;
   pattern?: string;
+  /** Validation message shown when pattern doesn't match */
+  title?: string;
   labelClassName?: string;
   autoComplete?: string;
+  /** ARIA describedby attribute for accessibility */
+  ariaDescribedBy?: string;
+  /** ARIA invalid attribute for accessibility */
+  ariaInvalid?: boolean;
+  /**
+   * Validation error message. When set, the input gets a red border and
+   * the message is rendered below it. Also sets aria-invalid automatically.
+   */
+  error?: string;
+  /** Renders a red asterisk next to the label to mark the field as required. */
+  showRequiredTag?: boolean;
+  /**
+   * Short guidance rendered next to the label, above the input. It sits inside
+   * the `<label>`, so it is announced as part of the field's accessible name —
+   * keep it to a phrase that reads well after the label text.
+   */
+  hint?: string;
+  onBlur?: () => void;
+  /** Extra classes merged onto the `<input>` element. */
+  inputClassName?: string;
 }
 
-export function SettingsInput({
-  testId,
-  name,
-  label,
-  type,
-  defaultValue,
-  value,
-  placeholder,
-  showOptionalTag,
-  description,
-  isDisabled,
-  startContent,
-  className,
-  onChange,
-  required,
-  min,
-  max,
-  step,
-  pattern,
-  labelClassName,
-  autoComplete,
-}: SettingsInputProps) {
-  return (
-    <label className={cn("flex flex-col gap-2.5 w-fit", className)}>
-      <div className="flex items-center gap-2">
-        {startContent}
-        <span className={cn("text-sm", labelClassName)}>{label}</span>
-        {showOptionalTag && <OptionalTag />}
-      </div>
-      {description}
-      <input
-        data-testid={testId}
-        onChange={(e) => onChange && onChange(e.target.value)}
-        name={name}
-        disabled={isDisabled}
-        type={type}
-        defaultValue={defaultValue}
-        value={value}
-        placeholder={placeholder}
-        min={min}
-        max={max}
-        step={step}
-        required={required}
-        pattern={pattern}
-        autoComplete={autoComplete}
-        className={cn(
-          "bg-tertiary border border-[#717888] h-10 w-full max-w-[680px] rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
-          "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+export const SettingsInput = forwardRef<HTMLInputElement, SettingsInputProps>(
+  (
+    {
+      testId,
+      name,
+      label,
+      type,
+      defaultValue,
+      value,
+      placeholder,
+      showOptionalTag,
+      description,
+      isDisabled,
+      isReadOnly,
+      startContent,
+      className,
+      onChange,
+      onKeyDown,
+      required,
+      min,
+      max,
+      step,
+      pattern,
+      title,
+      labelClassName,
+      autoComplete,
+      ariaDescribedBy,
+      ariaInvalid,
+      error,
+      showRequiredTag,
+      hint,
+      onBlur,
+      inputClassName,
+    },
+    ref,
+  ) => {
+    const errorId = error && testId ? `${testId}-error` : undefined;
+    return (
+      <label className={cn("flex flex-col gap-2.5 w-full min-w-0", className)}>
+        <div className="flex items-center gap-2">
+          {startContent}
+          <span className={cn("text-sm", labelClassName)}>{label}</span>
+          {showRequiredTag && (
+            <span className="text-red-400 text-sm leading-none" aria-hidden>
+              *
+            </span>
+          )}
+          {showOptionalTag && <OptionalTag />}
+          {hint && (
+            <span
+              data-testid={testId ? `${testId}-hint` : undefined}
+              className="min-w-0 text-xs text-[var(--oh-muted)]"
+            >
+              {hint}
+            </span>
+          )}
+        </div>
+        {description}
+        <input
+          ref={ref}
+          data-testid={testId}
+          onChange={(e) => onChange?.(e.target.value)}
+          onKeyDown={onKeyDown}
+          onBlur={onBlur}
+          name={name}
+          disabled={isDisabled}
+          readOnly={isReadOnly}
+          type={type}
+          defaultValue={defaultValue}
+          value={value}
+          placeholder={placeholder}
+          min={min}
+          max={max}
+          step={step}
+          required={required}
+          pattern={pattern}
+          title={title}
+          autoComplete={autoComplete}
+          aria-describedby={errorId ?? ariaDescribedBy}
+          aria-invalid={!!error || ariaInvalid}
+          className={cn(
+            formControlSettingsFieldClassName,
+            "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
+            isReadOnly &&
+              "cursor-not-allowed opacity-70 bg-[var(--oh-surface-raised)] border-[var(--oh-border-subtle)]",
+            error && "border-red-500",
+            inputClassName,
+          )}
+        />
+        {error && (
+          <p
+            id={errorId}
+            role="alert"
+            data-testid={testId ? `${testId}-error` : undefined}
+            className="text-xs text-red-400 -mt-1"
+          >
+            {error}
+          </p>
         )}
-      />
-    </label>
-  );
-}
+      </label>
+    );
+  },
+);
+SettingsInput.displayName = "SettingsInput";

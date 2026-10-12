@@ -21,6 +21,7 @@ export interface Organization {
   credits: number | null;
   credits_available?: boolean;
   is_personal?: boolean;
+  is_visible?: boolean;
 }
 
 export interface OrganizationMember {
@@ -83,6 +84,7 @@ export interface CreateOrganizationRequest {
   name: string;
   contact_name: string;
   contact_email: string;
+  owner_user_id?: string;
 }
 
 export type OrganizationsQueryData = {

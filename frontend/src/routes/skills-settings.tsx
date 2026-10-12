@@ -19,7 +19,11 @@ import { useMarketplaceMutations } from "#/hooks/mutation/use-marketplace-mutati
 import { useSkillMutations } from "#/hooks/mutation/use-skill-mutations";
 import { MarketplaceTable } from "#/components/features/settings/skills-settings/marketplace-table";
 import { SkillsTable } from "#/components/features/settings/skills-settings/skills-table";
-import { MarketplaceRegistration, SkillWithState } from "#/types/settings";
+import {
+  MarketplaceRegistration,
+  SkillNameConflict,
+  SkillWithState,
+} from "#/types/settings";
 import { I18nKey } from "#/i18n/declaration";
 import SkillsService from "#/api/skills-service";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
@@ -49,6 +53,9 @@ function SkillsSettingsScreen() {
   // State for skills
   const [skillsState, setSkillsState] = useState<SkillWithState[]>([]);
   const originalSkillsRef = useRef<SkillWithState[]>([]);
+  const [skillNameConflicts, setSkillNameConflicts] = useState<
+    SkillNameConflict[]
+  >([]);
 
   // State for marketplaces
   const [allMarketplaces, setAllMarketplaces] = useState<
@@ -183,6 +190,7 @@ function SkillsSettingsScreen() {
         if (!cancelled) {
           setSkillsState(mappedSkills);
           originalSkillsRef.current = mappedSkills;
+          setSkillNameConflicts([]);
         }
         return;
       }
@@ -256,10 +264,12 @@ function SkillsSettingsScreen() {
         ];
         setSkillsState(combinedSkills);
         originalSkillsRef.current = combinedSkills;
+        setSkillNameConflicts(preview.conflicts ?? []);
       } catch {
         if (!cancelled) {
           setSkillsState(mappedSkills);
           originalSkillsRef.current = mappedSkills;
+          setSkillNameConflicts([]);
         }
       }
     };
@@ -545,11 +555,11 @@ function SkillsSettingsScreen() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <div className="flex flex-col gap-10 pb-6">
+      <div className="flex flex-col gap-6">
         {/* Marketplaces */}
         <section className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex flex-col gap-1">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex flex-col gap-1">
               <Typography.H2>{t(I18nKey.SETTINGS$MARKETPLACES)}</Typography.H2>
               <Typography.Paragraph className="max-w-2xl text-sm text-tertiary-alt">
                 {t(I18nKey.SETTINGS$CONNECT_MARKETPLACES_DESCRIPTION)}
@@ -559,6 +569,7 @@ function SkillsSettingsScreen() {
               testId="add-marketplace-button"
               variant="primary"
               type="button"
+              className="shrink-0 whitespace-nowrap"
               onClick={() => openAddModal()}
             >
               {t(I18nKey.SETTINGS$MARKETPLACE_ADD)}
@@ -577,7 +588,7 @@ function SkillsSettingsScreen() {
         </section>
 
         {/* Available Skills */}
-        <section className="flex flex-col gap-4">
+        <section className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex flex-col gap-1">
             <Typography.H2>
               {t(I18nKey.SETTINGS$SKILLS_AND_PLUGINS)}
@@ -586,6 +597,42 @@ function SkillsSettingsScreen() {
               {t(I18nKey.SETTINGS$SKILLS_DESCRIPTION)}
             </Typography.Paragraph>
           </div>
+
+          {skillNameConflicts.length > 0 && (
+            <div
+              data-testid="skill-name-conflicts-alert"
+              role="alert"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-300"
+            >
+              <p className="font-medium">
+                {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_TITLE)}
+              </p>
+              <p className="text-sm text-amber-300/90">
+                {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_DESCRIPTION)}
+              </p>
+              <ul className="mt-2 flex flex-col gap-1 text-sm text-amber-300/90">
+                {skillNameConflicts.map((conflict) => (
+                  <li
+                    key={`${conflict.marketplace}:${conflict.name}`}
+                    className="flex flex-wrap gap-x-2"
+                  >
+                    <span className="font-medium text-amber-300">
+                      {conflict.name}
+                    </span>
+                    <span>
+                      {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_BUILT_IN)}{" "}
+                      <span>{conflict.conflicts_with}</span>
+                    </span>
+                    <span>
+                      {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_MARKETPLACE)}{" "}
+                      <span>{conflict.marketplace}</span> (
+                      <span>{conflict.source}</span>)
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <SkillsTable
             skills={filteredSkills}
@@ -601,12 +648,7 @@ function SkillsSettingsScreen() {
       </div>
 
       {/* Sticky action bar — keeps Save reachable without scrolling to the end */}
-      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-end gap-4 border-t border-tertiary bg-base/95 py-4 backdrop-blur-sm">
-        {hasUnsavedChanges && (
-          <span className="text-sm text-tertiary-alt">
-            {t(I18nKey.SETTINGS$UNSAVED_CHANGES)}
-          </span>
-        )}
+      <div className="sticky bottom-0 z-10 mt-auto flex items-center justify-start gap-4 bg-base/95 py-4 backdrop-blur-sm">
         <BrandButton
           testId="skills-save-button"
           variant="primary"
@@ -621,6 +663,11 @@ function SkillsSettingsScreen() {
             ? t(I18nKey.SETTINGS$SAVING)
             : t(I18nKey.SETTINGS$SAVE_CHANGES)}
         </BrandButton>
+        {hasUnsavedChanges && (
+          <span className="text-sm text-tertiary-alt">
+            {t(I18nKey.SETTINGS$UNSAVED_CHANGES)}
+          </span>
+        )}
       </div>
 
       {/* Marketplace Modal */}

@@ -12,14 +12,6 @@ These files contain image tags that **must** be updated whenever the SDK version
 - **Source of truth** for which agent-server image the app server pulls at runtime
 - **⚠️ Gotcha:** When pinning to an SDK PR, the image tag is the **merge-commit SHA** from GitHub Actions, not the PR head-commit SHA. Check the SDK PR description or CI logs for the correct tag.
 
-### `docker-compose.yml`
-- **Lines:**
-  ```yaml
-  - AGENT_SERVER_IMAGE_REPOSITORY=${AGENT_SERVER_IMAGE_REPOSITORY:-ghcr.io/openhands/agent-server}
-  - AGENT_SERVER_IMAGE_TAG=${AGENT_SERVER_IMAGE_TAG:-<tag>-python}
-  ```
-- Used by `docker compose up` for local development
-
 ### `containers/dev/compose.yml`
 - **Lines:**
   ```yaml

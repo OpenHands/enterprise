@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SettingsNavigation } from "#/components/features/settings/settings-navigation";
 import OptionService from "#/api/option-service/option-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { SAAS_NAV_ITEMS, SettingsNavItem } from "#/constants/settings-nav";
 import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
@@ -11,6 +12,31 @@ import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
 vi.mock("react-router", async () => ({
   ...(await vi.importActual("react-router")),
   useRevalidator: () => ({ revalidate: vi.fn() }),
+}));
+
+vi.mock("#/hooks/query/use-git-user", () => ({
+  useGitUser: () => ({
+    data: { avatar_url: "https://example.com/avatar.png", login: "neo-user" },
+    isFetching: false,
+  }),
+}));
+
+vi.mock("#/hooks/query/use-settings", () => ({
+  useSettings: () => ({
+    data: { email: "neo@example.com" },
+  }),
+}));
+
+vi.mock("#/hooks/mutation/use-logout", () => ({
+  useLogout: () => ({ mutate: vi.fn() }),
+}));
+
+vi.mock("#/hooks/use-app-mode", () => ({
+  useAppMode: () => ({ isSaas: true, isEnterpriseCloud: true }),
+}));
+
+vi.mock("#/components/shared/buttons/styled-tooltip", () => ({
+  StyledTooltip: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 const mockConfig = () => {
@@ -25,7 +51,9 @@ const toRenderedItems = (items: SettingsNavItem[]): SettingsNavRenderedItem[] =>
 
 const ITEMS_WITHOUT_ORG = SAAS_NAV_ITEMS.filter(
   (item) =>
-    item.to !== "/settings/org" && item.to !== "/settings/org-members",
+    item.to !== "/settings/org" &&
+    item.to !== "/settings/org-members" &&
+    item.to !== "/settings/credits",
 );
 
 const renderSettingsNavigation = (
@@ -59,17 +87,120 @@ describe("SettingsNavigation", () => {
     useSelectedOrganizationStore.setState({ organizationId: "org-1" });
   });
 
+  describe("settings brand header", () => {
+    it("should show Account label and Back to App link to canvas on the selected org", async () => {
+      renderSettingsNavigation();
+
+      await screen.findByTestId("settings-navbar");
+
+      const backLinks = screen.getAllByTestId("settings-back-to-app");
+      expect(backLinks.length).toBeGreaterThan(0);
+      expect(backLinks[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas?org=org-1`,
+      );
+      expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+    });
+
+    it("should link Back to App to plain canvas while no org is selected", async () => {
+      // Arrange
+      useSelectedOrganizationStore.setState({ organizationId: null });
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(screen.getAllByTestId("settings-back-to-app")[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
+    });
+
+    it("should show the instance logo and company name in place of the mark and Account", async () => {
+      // Arrange
+      const savedLogo = "data:image/jpeg;base64,c2F2ZWQ=";
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+        company_name: "Acme",
+        logo: savedLogo,
+      });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      const logos = await screen.findAllByTestId("instance-logo-mark");
+      expect(logos[0]).toHaveAttribute("src", savedLogo);
+      expect(
+        screen.queryByTestId("openhands-brand-mark"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("Acme");
+    });
+
+    it("should keep the OpenHands mark and Account when no logo or company name is saved", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      const getInstanceSettings = vi
+        .spyOn(superAdminService, "getInstanceSettings")
+        .mockResolvedValue({ company_name: null, logo: null });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      await waitFor(() => expect(getInstanceSettings).toHaveBeenCalled());
+      expect(
+        (await screen.findAllByTestId("openhands-brand-mark")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("ORG$ACCOUNT");
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should not request the instance logo when the Super Admin feature is off", async () => {
+      // Arrange
+      const getInstanceSettings = vi.spyOn(
+        superAdminService,
+        "getInstanceSettings",
+      );
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(getInstanceSettings).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("renders navigation items passed via props", () => {
     it("should render org routes when included in navigation items", async () => {
       renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
 
       await screen.findByTestId("settings-navbar");
 
-      const orgMembersLink = await screen.findByText("SETTINGS$NAV_ORG_MEMBERS");
-      const orgLink = await screen.findByText("SETTINGS$NAV_ORGANIZATION");
-
-      expect(orgMembersLink).toBeInTheDocument();
-      expect(orgLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_ORG_MEMBERS")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$NAV_ORGANIZATION").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should not render org routes when excluded from navigation items", async () => {
@@ -91,11 +222,12 @@ describe("SettingsNavigation", () => {
 
       // Verify non-org items are rendered (using their i18n keys as text since
       // react-i18next returns the key when no translation is loaded)
-      const secretsLink = await screen.findByText("SETTINGS$NAV_SECRETS");
-      const apiKeysLink = await screen.findByText("SETTINGS$NAV_API_KEYS");
-
-      expect(secretsLink).toBeInTheDocument();
-      expect(apiKeysLink).toBeInTheDocument();
+      expect(
+        (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$NAV_API_KEYS").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render empty nav when given an empty items list", async () => {
@@ -109,6 +241,21 @@ describe("SettingsNavigation", () => {
 
       expect(orgMembersLink).not.toBeInTheDocument();
       expect(orgLink).not.toBeInTheDocument();
+    });
+
+    it("should render Account brand chrome and user menu", async () => {
+      renderSettingsNavigation(toRenderedItems(SAAS_NAV_ITEMS));
+
+      await screen.findByTestId("settings-navbar");
+
+      expect(
+        screen.getAllByTestId("settings-back-to-app").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-user-menu").length,
+      ).toBeGreaterThan(0);
+      expect(screen.getAllByText("neo@example.com").length).toBeGreaterThan(0);
     });
   });
 
@@ -125,7 +272,9 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render dividers when included in navigation items", async () => {
@@ -161,8 +310,12 @@ describe("SettingsNavigation", () => {
       await screen.findByTestId("settings-navbar");
 
       // Assert
-      expect(screen.getByText("SETTINGS$ORG_SETTINGS_HEADER")).toBeInTheDocument();
-      expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
+      expect(
+        screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
+      ).toBeGreaterThan(0);
     });
   });
 });

@@ -16,7 +16,7 @@ HOST = WEB_HOST
 IS_LOCAL_DEPLOYMENT = 'localhost' in HOST
 HOST_URL = f'https://{HOST}' if not IS_LOCAL_DEPLOYMENT else f'http://{HOST}'
 GITLAB_WEBHOOK_URL = f'{HOST_URL}/integration/gitlab/events'
-CONVERSATION_URL = f'{HOST_URL}/conversations/{{}}'
+CONVERSATION_URL = f'{HOST_URL}/canvas/conversations/{{}}'
 
 # Toggle for auto-response feature that proactively starts conversations with users when workflow tests fail
 ENABLE_PROACTIVE_CONVERSATION_STARTERS = (

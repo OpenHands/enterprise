@@ -1,6 +1,7 @@
 """Tests for enterprise integrations utils module."""
 
 from integrations.utils import (
+    CONVERSATION_URL,
     HOST_URL,
     get_jira_dc_relink_message,
     get_session_expired_message,
@@ -154,3 +155,24 @@ class TestGetJiraDcRelinkMessage:
         assert not result.startswith('Hi ')
         assert f'[OpenHands Cloud|{HOST_URL}]' in result
         assert 'your Jira workspace link has expired' in result
+
+
+class TestConversationUrl:
+    """Test cases for the CONVERSATION_URL template.
+
+    Integration "track my progress" messages and V1 error fallbacks all
+    link to the conversation through this template. It must point at Agent
+    Canvas (/canvas) rather than the retired legacy SPA route.
+    """
+
+    def test_url_points_at_canvas_route(self):
+        assert CONVERSATION_URL == f'{HOST_URL}/canvas/conversations/{{}}'
+
+    def test_url_does_not_use_legacy_route(self):
+        assert '/conversations/' not in CONVERSATION_URL.replace(
+            '/canvas/conversations/', ''
+        )
+
+    def test_url_formats_with_conversation_id(self):
+        formatted = CONVERSATION_URL.format('conv-123')
+        assert formatted == f'{HOST_URL}/canvas/conversations/conv-123'

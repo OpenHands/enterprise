@@ -62,13 +62,13 @@ jobs:
                   print(f"  ✔ frontend/package-lock.json {key}: {val}")
 
           # ── 4. Check compose files use agent-server images ─────────────────
-          # Both compose files should use ghcr.io/.../agent-server (not runtime).
+          # The compose file should use ghcr.io/.../agent-server (not runtime).
           # Agent-server tags use SDK version (e.g. "1.12.0-python") or commit
           # hashes (e.g. "31536c8-python") — both are acceptable.
           repo_pattern = re.compile(r"AGENT_SERVER_IMAGE_REPOSITORY[^}]*:-([^}]+)")
           tag_pattern = re.compile(r"AGENT_SERVER_IMAGE_TAG:-([^}]+)")
 
-          for filepath in ["docker-compose.yml", "containers/dev/compose.yml"]:
+          for filepath in ["containers/dev/compose.yml"]:
               try:
                   with open(filepath) as f:
                       content = f.read()

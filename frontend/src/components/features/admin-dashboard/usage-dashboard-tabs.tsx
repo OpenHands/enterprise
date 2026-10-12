@@ -3,23 +3,105 @@ import React from "react";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import {
   ExportIcon,
+  FilterIcon,
   SearchIcon,
   StopIcon,
 } from "#/components/shared/icons/inline-icons";
-import { AreaChart, KPICard, PieChart } from "./usage-dashboard-widgets";
+import { useConfig } from "#/hooks/query/use-config";
+import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
+import { Provider } from "#/types/settings";
+import {
+  AreaChart,
+  KPICard,
+  MultiLineChart,
+  PieChart,
+  type ChartSeries,
+} from "./usage-dashboard-widgets";
 import {
   buildExportFilename,
   formatAgentLabel,
-  formatAssociatedPr,
   formatBudget,
   formatCost,
   formatDateTimeOrDash,
   formatDuration,
   formatMergedStatus,
+  formatPrLabel,
   formatTokens,
   rowsToCsv,
 } from "./usage-dashboard-utils";
-import { downloadBlob } from "#/utils/utils";
+import { cn, constructPullRequestUrl, downloadBlob } from "#/utils/utils";
+import {
+  formControlFilterTriggerClassName,
+  formControlInlineInputClassName,
+  formControlNativeSelectClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
+import {
+  settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
+  settingsListTableCellClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableRowClassName,
+} from "#/utils/settings-list-classes";
+
+const usageNativeSelectClassName = cn(
+  formControlNativeSelectClassName,
+  "w-auto shrink-0",
+);
+
+const usageFilterSelectClassName = formControlNativeSelectClassName;
+
+const usageTableShellClassName = cn(
+  settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
+  "min-w-0",
+);
+
+const usageTableHeaderCellClassName = settingsListTableHeaderCellClassName;
+
+const usageTableHeaderCellRightClassName = cn(
+  settingsListTableHeaderCellClassName,
+  "text-right",
+);
+
+const usageTableCellClassName = settingsListTableCellClassName;
+
+const usageTableCellRightClassName = cn(
+  settingsListTableCellClassName,
+  "text-right font-mono tabular-nums",
+);
+
+const usageTableEmptyCellClassName = cn(
+  settingsListTableCellClassName,
+  "h-auto py-8 text-center text-muted",
+);
+const DEFAULT_CONVERSATION_STATUS = "running";
+const DEFAULT_CONVERSATION_SORT_BY = "updated_at";
+const DEFAULT_CONVERSATION_SORT_ORDER = "desc";
+const DEFAULT_CONVERSATION_SANDBOX_STATUS = "";
+
+function countActiveConversationFilters({
+  conversationStatus,
+  conversationSortBy,
+  conversationSortOrder,
+  conversationSandboxStatus,
+  defaultConversationStatus,
+}: {
+  conversationStatus: string;
+  conversationSortBy: string;
+  conversationSortOrder: string;
+  conversationSandboxStatus: string;
+  defaultConversationStatus: string;
+}) {
+  return [
+    conversationStatus !== defaultConversationStatus,
+    conversationSortBy !== DEFAULT_CONVERSATION_SORT_BY,
+    conversationSortOrder !== DEFAULT_CONVERSATION_SORT_ORDER,
+    conversationSandboxStatus !== DEFAULT_CONVERSATION_SANDBOX_STATUS,
+  ].filter(Boolean).length;
+}
 
 export type ChartPoint = { date: string; value: number };
 
@@ -37,6 +119,8 @@ export function OverviewTab({
   totalSpend,
   timeWindowLabel,
   chartData,
+  chartSubtitle,
+  compareSeries,
   agentSpendRows,
   agentSpendTotal,
 }: {
@@ -46,9 +130,13 @@ export function OverviewTab({
   totalSpend: string;
   timeWindowLabel: string;
   chartData: ChartPoint[];
+  chartSubtitle?: string;
+  compareSeries?: ChartSeries[];
   agentSpendRows: AgentSpendRow[];
   agentSpendTotal: number;
 }) {
+  const comparing = (compareSeries?.length ?? 0) > 1;
+  const compareDates = chartData.map((point) => point.date);
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-4 gap-4">
@@ -70,84 +158,128 @@ export function OverviewTab({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 lg:col-span-2">
-          <div className="flex items-start justify-between mb-6">
+      <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-3">
+        <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6 lg:col-span-2">
+          <div className="mb-4 flex items-start justify-between">
             <div>
-              <h2 className="text-lg font-medium text-white">
+              <h2 className="text-lg font-medium text-foreground">
                 Conversations started per day
               </h2>
-              <p className="text-sm text-zinc-500">
-                {timeWindowLabel} · all users
+              <p className="text-sm text-muted">
+                {chartSubtitle ?? `${timeWindowLabel} · all users`}
               </p>
             </div>
             <button
               type="button"
               disabled={chartData.length === 0}
               onClick={() => {
-                const csv = rowsToCsv(
-                  ["date", "conversations_started"],
-                  chartData.map((point) => [point.date, point.value]),
-                );
+                const csv = comparing
+                  ? rowsToCsv(
+                      [
+                        "date",
+                        ...(compareSeries ?? []).map((row) => row.label),
+                      ],
+                      compareDates.map((date, index) => [
+                        date,
+                        ...(compareSeries ?? []).map(
+                          (row) => row.values[index] ?? 0,
+                        ),
+                      ]),
+                    )
+                  : rowsToCsv(
+                      ["date", "conversations_started"],
+                      chartData.map((point) => [point.date, point.value]),
+                    );
                 downloadBlob(
                   new Blob([csv], { type: "text/csv;charset=utf-8;" }),
                   buildExportFilename("conversations_per_day"),
                 );
               }}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className={cn(
+                formControlFilterTriggerClassName,
+                "text-[var(--oh-muted)] hover:text-white disabled:opacity-50",
+              )}
             >
               <ExportIcon />
               Export CSV
             </button>
           </div>
-          {chartData.length > 0 ? (
-            <AreaChart data={chartData} />
-          ) : (
-            <div className="py-10 text-center text-sm text-zinc-500">
-              No usage data available yet.
+          <div className="relative min-h-36 flex-1">
+            {chartData.length > 0 ? (
+              <div className="absolute inset-0">
+                {comparing ? (
+                  <MultiLineChart
+                    dates={compareDates}
+                    series={compareSeries ?? []}
+                  />
+                ) : (
+                  <AreaChart data={chartData} />
+                )}
+              </div>
+            ) : (
+              <div className="flex h-full min-h-36 items-center justify-center py-8 text-center text-sm text-muted">
+                No usage data available yet.
+              </div>
+            )}
+          </div>
+          {comparing && (
+            <div className="mt-4 flex flex-wrap gap-3">
+              {(compareSeries ?? []).map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center gap-2 text-sm text-foreground"
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: row.color }}
+                  />
+                  {row.label}
+                </div>
+              ))}
             </div>
           )}
         </div>
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6">
-          <div className="flex items-start justify-between mb-6">
-            <div>
-              <h2 className="text-lg font-medium text-white">Spend by agent</h2>
-              <p className="text-sm text-zinc-500">
-                {timeWindowLabel} · total spend
-              </p>
-            </div>
+        <div className="flex h-full flex-col rounded-lg border border-border-subtle bg-base-secondary p-6">
+          <div className="mb-4">
+            <h2 className="text-lg font-medium text-foreground">
+              Spend by agent
+            </h2>
+            <p className="text-sm text-muted">
+              {timeWindowLabel} · total spend
+            </p>
           </div>
           {agentSpendTotal > 0 ? (
-            <div className="flex flex-col items-center gap-6 lg:flex-row">
+            <div className="flex flex-1 flex-col items-center justify-center gap-4">
               <PieChart
                 data={agentSpendRows.map((row) => ({
                   value: row.total_cost,
                   color: row.color,
+                  label: row.agent_name,
+                  percent: row.percent,
                 }))}
                 total={agentSpendTotal}
               />
-              <div className="w-full space-y-3">
+              <div className="w-full min-w-0 space-y-2">
                 {agentSpendRows.map((row) => (
-                  <div
-                    key={row.agent_name}
-                    className="flex items-center justify-between text-sm"
-                  >
-                    <div className="flex items-center gap-2">
+                  <div key={row.agent_name} className="space-y-0.5 text-sm">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span
-                        className="h-2 w-2 rounded-full"
+                        className="h-2 w-2 shrink-0 rounded-full"
                         style={{ backgroundColor: row.color }}
                       />
-                      <span className="text-zinc-300">{row.agent_name}</span>
+                      <span className="min-w-0 flex-1 truncate text-foreground">
+                        {row.agent_name}
+                      </span>
                     </div>
-                    <span className="text-zinc-400">
+                    <div className="pl-4 tabular-nums text-muted">
                       {formatCost(row.total_cost)} · {row.percent.toFixed(1)}%
-                    </span>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           ) : (
-            <div className="py-10 text-center text-sm text-zinc-500">
+            <div className="flex flex-1 items-center justify-center py-8 text-center text-sm text-muted">
               No agent spend data available yet.
             </div>
           )}
@@ -160,19 +292,86 @@ export function OverviewTab({
 export type ConversationRow = {
   id: string;
   user_email?: string | null;
+  org_name?: string | null;
+  /** Present on Super Admin multi-org rows for stop/routing. */
+  org_id?: string;
   total_tokens: number;
   accumulated_cost: number;
   created_at?: string | null;
   updated_at?: string | null;
   pr_number?: number[];
   selected_repository?: string | null;
+  git_provider?: Provider | null;
   pr_merged?: boolean | null;
   agent_kind?: string | null;
   llm_model?: string | null;
   trigger?: string | null;
   execution_status?: string | null;
+  sandbox_status?: string | null;
   title?: string | null;
 };
+
+// One PR in the Associated PR cell. The link is built from the deployment's
+// provider host. The viewer's own token host is not used: the viewer is often
+// an admin who looks at other members' PRs.
+function PullRequestLink({
+  number,
+  repository,
+  provider,
+}: {
+  number: number;
+  repository?: string | null;
+  provider?: Provider | null;
+}) {
+  const { data: config } = useConfig();
+  const host = provider ? config?.provider_default_hosts?.[provider] : null;
+  const label = formatPrLabel(number, repository);
+  const href =
+    repository && provider
+      ? constructPullRequestUrl(provider, repository, number, host)
+      : "";
+
+  if (!href) return <span>{label}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-400 hover:underline"
+    >
+      {label}
+    </a>
+  );
+}
+
+// The PRs that a conversation opened. Each PR is assumed to be in the
+// conversation's selected repository.
+export function AssociatedPrCell({
+  conversation,
+}: {
+  conversation: Pick<
+    ConversationRow,
+    "pr_number" | "selected_repository" | "git_provider"
+  >;
+}) {
+  // The same number can be stored twice; it is the same PR.
+  const prNumbers = [...new Set(conversation.pr_number ?? [])];
+
+  if (prNumbers.length === 0) return "-";
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {prNumbers.map((number) => (
+        <PullRequestLink
+          key={number}
+          number={number}
+          repository={conversation.selected_repository}
+          provider={conversation.git_provider}
+        />
+      ))}
+    </div>
+  );
+}
 
 export type ConversationsResponse = {
   items: ConversationRow[];
@@ -186,6 +385,7 @@ export function ConversationsTab({
   conversationSortBy,
   conversationSortOrder,
   conversationSandboxStatus,
+  defaultConversationStatus = DEFAULT_CONVERSATION_STATUS,
   exportUrl,
   conversationPage,
   conversationPerPage,
@@ -212,6 +412,8 @@ export function ConversationsTab({
   conversationSortBy: string;
   conversationSortOrder: string;
   conversationSandboxStatus: string;
+  /** The status "Reset filters" returns to; "" means all statuses. */
+  defaultConversationStatus?: string;
   exportUrl: string;
   conversationPage: number;
   conversationPerPage: number;
@@ -230,17 +432,40 @@ export function ConversationsTab({
   onStopConversation: (conversation: {
     id: string;
     title: string | null;
+    orgId?: string;
   }) => void;
-  pendingStop: { id: string; title: string | null } | null;
+  pendingStop: { id: string; title: string | null; orgId?: string } | null;
   stopConfirmationText: string;
   onConfirmStop: () => void;
   onCancelStop: () => void;
 }) {
+  const [isFiltersOpen, setIsFiltersOpen] = React.useState(false);
+  const filtersRef = useClickOutsideElement<HTMLDivElement>(() =>
+    setIsFiltersOpen(false),
+  );
+  const activeFilterCount = countActiveConversationFilters({
+    conversationStatus,
+    conversationSortBy,
+    conversationSortOrder,
+    conversationSandboxStatus,
+    defaultConversationStatus,
+  });
+
+  const clearFilters = () => {
+    onStatusChange(defaultConversationStatus);
+    onSortByChange(DEFAULT_CONVERSATION_SORT_BY);
+    onSortOrderChange(DEFAULT_CONVERSATION_SORT_ORDER);
+    onSandboxStatusChange(DEFAULT_CONVERSATION_SANDBOX_STATUS);
+  };
+  const showOrgColumn =
+    conversationsData?.items.some((row) => Boolean(row.org_name)) === true;
+  const conversationColumnCount = showOrgColumn ? 12 : 11;
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className={cn(formControlShellClassName, "min-w-0 flex-1")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
             <SearchIcon />
           </span>
           <input
@@ -248,198 +473,280 @@ export function ConversationsTab({
             placeholder="Search by title or user..."
             value={conversationSearch}
             onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-700"
+            className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
-        <select
-          value={conversationStatus}
-          onChange={(event) => onStatusChange(event.target.value)}
-          className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-400 focus:outline-none focus:border-zinc-700"
-        >
-          <option value="">All statuses</option>
-          <option value="running">Running</option>
-          <option value="idle">Idle</option>
-          <option value="paused">Paused</option>
-          <option value="finished">Finished</option>
-          <option value="error">Error</option>
-          <option value="stuck">Stuck</option>
-        </select>
-        <select
-          value={conversationSortBy}
-          onChange={(event) => onSortByChange(event.target.value)}
-          className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-400 focus:outline-none focus:border-zinc-700"
-        >
-          <option value="updated_at">Last updated</option>
-          <option value="created_at">Created</option>
-          <option value="title">Title</option>
-          <option value="llm_model">Model</option>
-          <option value="accumulated_cost">Cost</option>
-        </select>
-        <select
-          value={conversationSortOrder}
-          onChange={(event) => onSortOrderChange(event.target.value)}
-          className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-400 focus:outline-none focus:border-zinc-700"
-        >
-          <option value="desc">Descending</option>
-          <option value="asc">Ascending</option>
-        </select>
-        <select
-          value={conversationSandboxStatus}
-          onChange={(event) => onSandboxStatusChange(event.target.value)}
-          className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-sm text-zinc-400 focus:outline-none focus:border-zinc-700"
-        >
-          <option value="">Runtime status: All</option>
-          <option value="RUNNING">Running</option>
-          <option value="STARTING">Starting</option>
-          <option value="PAUSED">Paused</option>
-          <option value="ERROR">Error</option>
-          <option value="MISSING">Missing</option>
-        </select>
+
+        <div ref={filtersRef} className="relative shrink-0">
+          <button
+            type="button"
+            data-testid="conversation-filters-button"
+            onClick={() => setIsFiltersOpen((open) => !open)}
+            aria-expanded={isFiltersOpen}
+            aria-haspopup="dialog"
+            className={cn(
+              formControlFilterTriggerClassName,
+              "text-white",
+              isFiltersOpen && "bg-surface-raised",
+            )}
+          >
+            <FilterIcon />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 py-0.5 text-[11px] font-medium leading-none text-black">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
+          {isFiltersOpen && (
+            <div
+              role="dialog"
+              aria-label="Conversation filters"
+              data-testid="conversation-filters-panel"
+              className={cn(
+                "absolute right-0 top-full z-50 mt-2 w-72",
+                "rounded-xl border border-[var(--oh-border)] bg-[var(--oh-surface-raised)] p-4 shadow-lg",
+              )}
+            >
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Status
+                  </span>
+                  <select
+                    value={conversationStatus}
+                    onChange={(event) => onStatusChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="">All statuses</option>
+                    <option value="running">Running</option>
+                    <option value="idle">Idle</option>
+                    <option value="paused">Paused</option>
+                    <option value="finished">Finished</option>
+                    <option value="error">Error</option>
+                    <option value="stuck">Stuck</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Sort by
+                  </span>
+                  <select
+                    value={conversationSortBy}
+                    onChange={(event) => onSortByChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="updated_at">Last updated</option>
+                    <option value="created_at">Created</option>
+                    <option value="title">Title</option>
+                    <option value="llm_model">Model</option>
+                    <option value="accumulated_cost">Cost</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Order
+                  </span>
+                  <select
+                    value={conversationSortOrder}
+                    onChange={(event) => onSortOrderChange(event.target.value)}
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-text-dim">
+                    Runtime status
+                  </span>
+                  <select
+                    value={conversationSandboxStatus}
+                    onChange={(event) =>
+                      onSandboxStatusChange(event.target.value)
+                    }
+                    className={usageFilterSelectClassName}
+                  >
+                    <option value="">All</option>
+                    <option value="RUNNING">Running</option>
+                    <option value="STARTING">Starting</option>
+                    <option value="PAUSED">Paused</option>
+                    <option value="ERROR">Error</option>
+                    <option value="MISSING">Missing</option>
+                  </select>
+                </label>
+
+                {activeFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="self-start text-sm text-[var(--oh-muted)] transition-colors hover:text-white cursor-pointer"
+                  >
+                    Reset filters
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         <a
           href={exportUrl}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors"
+          className={cn(
+            formControlFilterTriggerClassName,
+            "text-[var(--oh-muted)] hover:text-white",
+          )}
         >
           <ExportIcon />
           Export CSV
         </a>
       </div>
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-zinc-800">
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                User
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Tokens
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Spend
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Duration
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Started
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Last update
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Associated PR
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Merged?
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Agent
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Type
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Stop
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {conversationsLoading && (
+      <div className={usageTableShellClassName}>
+        <HorizontalScrollFade>
+          <table className="w-full min-w-max">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
-                <td
-                  colSpan={11}
-                  className="px-4 py-8 text-center text-zinc-500"
-                >
-                  Loading conversations...
-                </td>
+                <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
+                <th className={usageTableHeaderCellRightClassName}>Tokens</th>
+                <th className={usageTableHeaderCellRightClassName}>Spend</th>
+                <th className={usageTableHeaderCellClassName}>Duration</th>
+                <th className={usageTableHeaderCellClassName}>Started</th>
+                <th className={usageTableHeaderCellClassName}>Last update</th>
+                <th className={usageTableHeaderCellClassName}>Associated PR</th>
+                <th className={usageTableHeaderCellClassName}>Merged?</th>
+                <th className={usageTableHeaderCellClassName}>Agent</th>
+                <th className={usageTableHeaderCellClassName}>Type</th>
+                <th className={usageTableHeaderCellRightClassName}>Stop</th>
               </tr>
-            )}
-            {!conversationsLoading &&
-              (conversationsData?.items.length ?? 0) === 0 && (
+            </thead>
+            <tbody>
+              {conversationsLoading && (
                 <tr>
                   <td
-                    colSpan={11}
-                    className="px-4 py-8 text-center text-zinc-500"
+                    colSpan={conversationColumnCount}
+                    className={usageTableEmptyCellClassName}
                   >
-                    No conversations found for this time window.
+                    Loading conversations...
                   </td>
                 </tr>
               )}
-            {conversationsData?.items.map((conversation) => {
-              const isRunning =
-                conversation.execution_status?.toLowerCase() === "running";
-              return (
-                <tr
-                  key={conversation.id}
-                  className="border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors"
-                >
-                  <td className="px-4 py-4">
-                    <div className="text-white text-sm font-medium">
-                      {conversation.user_email?.split("@")[0] || "Unknown"}
-                    </div>
-                    <div className="text-xs text-zinc-500">
-                      {conversation.user_email || "-"}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm font-mono text-white">
-                    {formatTokens(conversation.total_tokens)}
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm text-white">
-                    {formatCost(conversation.accumulated_cost)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatDuration(
-                      conversation.created_at,
-                      conversation.updated_at,
+              {!conversationsLoading &&
+                (conversationsData?.items.length ?? 0) === 0 && (
+                  <tr>
+                    <td
+                      colSpan={conversationColumnCount}
+                      className={usageTableEmptyCellClassName}
+                    >
+                      No conversations found for this time window.
+                    </td>
+                  </tr>
+                )}
+              {conversationsData?.items.map((conversation) => {
+                const isRunning =
+                  conversation.execution_status?.toLowerCase() === "running";
+                return (
+                  <tr
+                    key={conversation.id}
+                    className={settingsListTableRowClassName}
+                  >
+                    <td className={cn(usageTableCellClassName, "h-auto py-3")}>
+                      <div className="text-foreground font-medium">
+                        {conversation.user_email?.split("@")[0] || "Unknown"}
+                      </div>
+                      <div className="text-xs text-tertiary-alt">
+                        {conversation.user_email || "-"}
+                      </div>
+                    </td>
+                    {showOrgColumn && (
+                      <td className={cn(usageTableCellClassName, "text-muted")}>
+                        {conversation.org_name || "-"}
+                      </td>
                     )}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatDateTimeOrDash(conversation.created_at)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatDateTimeOrDash(conversation.updated_at)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatAssociatedPr(conversation)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatMergedStatus(conversation.pr_merged)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400">
-                    {formatAgentLabel(conversation)}
-                  </td>
-                  <td className="px-4 py-4 text-sm text-zinc-400 capitalize">
-                    {conversation.trigger || "-"}
-                  </td>
-                  <td className="px-4 py-4 text-right text-sm">
-                    {isRunning && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onStopConversation({
-                            id: conversation.id,
-                            title: conversation.title ?? null,
-                          })
-                        }
-                        disabled={stoppingIds.has(conversation.id)}
-                        className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-400 disabled:cursor-not-allowed"
-                        title="Stop conversation"
-                        aria-label="Stop conversation"
-                      >
-                        <StopIcon />
-                        {stoppingIds.has(conversation.id)
-                          ? "Stopping…"
-                          : "Stop"}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-800">
+                    <td
+                      className={cn(
+                        usageTableCellRightClassName,
+                        "text-foreground",
+                      )}
+                    >
+                      {formatTokens(conversation.total_tokens)}
+                    </td>
+                    <td
+                      className={cn(
+                        usageTableCellRightClassName,
+                        "text-foreground",
+                      )}
+                    >
+                      {formatCost(conversation.accumulated_cost)}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {formatDuration(
+                        conversation.created_at,
+                        conversation.updated_at,
+                      )}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {formatDateTimeOrDash(conversation.created_at)}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {formatDateTimeOrDash(conversation.updated_at)}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      <AssociatedPrCell conversation={conversation} />
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {formatMergedStatus(conversation.pr_merged)}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {formatAgentLabel(conversation)}
+                    </td>
+                    <td
+                      className={cn(
+                        usageTableCellClassName,
+                        "text-muted capitalize",
+                      )}
+                    >
+                      {conversation.trigger || "-"}
+                    </td>
+                    <td className={cn(usageTableCellClassName, "text-right")}>
+                      {isRunning && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onStopConversation({
+                              id: conversation.id,
+                              title: conversation.title ?? null,
+                              orgId: conversation.org_id,
+                            })
+                          }
+                          disabled={stoppingIds.has(conversation.id)}
+                          className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-muted transition-colors hover:bg-interactive-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
+                          title="Stop conversation"
+                          aria-label="Stop conversation"
+                        >
+                          <StopIcon />
+                          {stoppingIds.has(conversation.id)
+                            ? "Stopping…"
+                            : "Stop"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
+        <div className="flex items-center justify-between border-t border-[var(--oh-border)] px-3 py-3">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -447,8 +754,8 @@ export function ConversationsTab({
               disabled={conversationPage <= 1}
               className={`flex items-center gap-1 px-2 py-1 text-sm rounded transition-colors ${
                 conversationPage <= 1
-                  ? "text-zinc-600 cursor-not-allowed"
-                  : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                  ? "text-text-dim cursor-not-allowed opacity-60"
+                  : "text-muted hover:text-foreground hover:bg-interactive-hover"
               }`}
             >
               Previous
@@ -463,8 +770,8 @@ export function ConversationsTab({
               disabled={conversationPage >= conversationTotalPages}
               className={`flex items-center gap-1 px-2 py-1 text-sm rounded transition-colors ${
                 conversationPage >= conversationTotalPages
-                  ? "text-zinc-600 cursor-not-allowed"
-                  : "text-zinc-400 hover:text-white hover:bg-zinc-800"
+                  ? "text-text-dim cursor-not-allowed opacity-60"
+                  : "text-muted hover:text-foreground hover:bg-interactive-hover"
               }`}
             >
               Next
@@ -472,20 +779,20 @@ export function ConversationsTab({
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <span className="text-zinc-500 text-sm">Per page</span>
+              <span className="text-muted text-sm">Per page</span>
               <select
                 value={conversationPerPage}
                 onChange={(event) =>
                   onPerPageChange(Number(event.target.value))
                 }
-                className="px-2 py-1 bg-zinc-900 border border-zinc-800 rounded text-sm text-white focus:outline-none"
+                className={cn(usageNativeSelectClassName, "min-w-16")}
               >
                 <option value="10">10</option>
                 <option value="20">20</option>
                 <option value="50">50</option>
               </select>
             </div>
-            <span className="text-zinc-500 text-sm">
+            <span className="text-muted text-sm">
               Page {conversationPage} of {conversationTotalPages} ·{" "}
               {conversationTotalItems} conversations
             </span>
@@ -508,6 +815,7 @@ export type UserUsageRow = {
   user_id: string;
   user_name?: string | null;
   user_email?: string | null;
+  org_name?: string | null;
   conversation_count: number;
   first_conversation_at?: string | null;
   last_conversation_at?: string | null;
@@ -532,117 +840,139 @@ export function UsersTab({
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
 }) {
+  const showOrgColumn =
+    userUsage?.items.some((user) => Boolean(user.org_name)) === true;
+  const userColumnCount = showOrgColumn ? 12 : 11;
+
   return (
     <div className="space-y-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-zinc-800">
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                User
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Convos
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                First convo
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Last convo
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                First login
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Last login
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Spend MTD
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Spend YTD
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Lifetime
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Budget
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                PRs merged
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {userUsageLoading && (
+      <div className={usageTableShellClassName}>
+        <HorizontalScrollFade>
+          <table className="w-full min-w-max">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
-                <td
-                  colSpan={11}
-                  className="px-4 py-8 text-center text-zinc-500"
+                <th className={usageTableHeaderCellClassName}>User</th>
+                {showOrgColumn && (
+                  <th className={usageTableHeaderCellClassName}>
+                    Organization
+                  </th>
+                )}
+                <th className={usageTableHeaderCellRightClassName}>Convos</th>
+                <th className={usageTableHeaderCellClassName}>First convo</th>
+                <th className={usageTableHeaderCellClassName}>Last convo</th>
+                <th className={usageTableHeaderCellClassName}>First login</th>
+                <th className={usageTableHeaderCellClassName}>Last login</th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Spend MTD
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Spend YTD
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>Lifetime</th>
+                <th className={usageTableHeaderCellClassName}>Budget</th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  PRs merged
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {userUsageLoading && (
+                <tr>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
+                    Loading user usage...
+                  </td>
+                </tr>
+              )}
+              {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
+                <tr>
+                  <td
+                    colSpan={userColumnCount}
+                    className={usageTableEmptyCellClassName}
+                  >
+                    No user usage data available yet.
+                  </td>
+                </tr>
+              )}
+              {userUsage?.items.map((user) => (
+                <tr
+                  key={user.user_id}
+                  className={settingsListTableRowClassName}
                 >
-                  Loading user usage...
-                </td>
-              </tr>
-            )}
-            {!userUsageLoading && (userUsage?.items.length ?? 0) === 0 && (
-              <tr>
-                <td
-                  colSpan={11}
-                  className="px-4 py-8 text-center text-zinc-500"
-                >
-                  No user usage data available yet.
-                </td>
-              </tr>
-            )}
-            {userUsage?.items.map((user) => (
-              <tr
-                key={user.user_id}
-                className="border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors"
-              >
-                <td className="px-4 py-4">
-                  <div className="text-white text-sm font-medium">
-                    {user.user_name ??
-                      user.user_email?.split("@")[0] ??
-                      "Unknown"}
-                  </div>
-                  <div className="text-xs text-zinc-500">
-                    {user.user_email || "-"}
-                  </div>
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-white">
-                  {user.conversation_count.toLocaleString()}
-                </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatDateTimeOrDash(user.first_conversation_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatDateTimeOrDash(user.last_conversation_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatDateTimeOrDash(user.first_login_at)}
-                </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatDateTimeOrDash(user.last_login_at)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-white">
-                  {formatCost(user.spend_mtd)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-white">
-                  {formatCost(user.spend_ytd)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-white">
-                  {formatCost(user.spend_lifetime)}
-                </td>
-                <td className="px-4 py-4 text-sm text-zinc-400">
-                  {formatBudget(user)}
-                </td>
-                <td className="px-4 py-4 text-right text-sm text-zinc-400">
-                  {user.prs_merged ?? "-"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  <td className={cn(usageTableCellClassName, "h-auto py-3")}>
+                    <div className="text-foreground font-medium">
+                      {user.user_name ??
+                        user.user_email?.split("@")[0] ??
+                        "Unknown"}
+                    </div>
+                    <div className="text-xs text-tertiary-alt">
+                      {user.user_email || "-"}
+                    </div>
+                  </td>
+                  {showOrgColumn && (
+                    <td className={cn(usageTableCellClassName, "text-muted")}>
+                      {user.org_name || "-"}
+                    </td>
+                  )}
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {user.conversation_count.toLocaleString()}
+                  </td>
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
+                    {formatDateTimeOrDash(user.first_conversation_at)}
+                  </td>
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
+                    {formatDateTimeOrDash(user.last_conversation_at)}
+                  </td>
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
+                    {formatDateTimeOrDash(user.first_login_at)}
+                  </td>
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
+                    {formatDateTimeOrDash(user.last_login_at)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {formatCost(user.spend_mtd)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {formatCost(user.spend_ytd)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {formatCost(user.spend_lifetime)}
+                  </td>
+                  <td className={cn(usageTableCellClassName, "text-muted")}>
+                    {formatBudget(user)}
+                  </td>
+                  <td
+                    className={cn(usageTableCellRightClassName, "text-muted")}
+                  >
+                    {user.prs_merged ?? "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
     </div>
   );
@@ -669,8 +999,8 @@ export function ModelsTab({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="relative w-64">
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
+        <div className={cn(formControlShellClassName, "w-64")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
             <SearchIcon />
           </span>
           <input
@@ -678,7 +1008,7 @@ export function ModelsTab({
             placeholder="Search models..."
             value={modelSearch}
             onChange={(event) => onModelSearchChange(event.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-700"
+            className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
         <button
@@ -708,75 +1038,103 @@ export function ModelsTab({
               buildExportFilename("model_usage"),
             );
           }}
-          className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className={cn(
+            formControlFilterTriggerClassName,
+            "text-[var(--oh-muted)] hover:text-white disabled:opacity-50",
+          )}
         >
           <ExportIcon />
           Export CSV
         </button>
       </div>
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-zinc-800">
-              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Model
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Conversations
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Tokens Used
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Avg Tokens / Convo
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Avg Cost / Convo
-              </th>
-              <th className="px-4 py-3 text-right text-xs font-medium text-zinc-500 uppercase tracking-wider">
-                Total Cost
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredModels.map((model) => (
-              <tr
-                key={model.model_name}
-                className="border-b border-zinc-800/50 hover:bg-zinc-800/50 transition-colors"
-              >
-                <td className="px-4 py-5">
-                  <div className="text-white font-medium">
-                    {model.model_name}
-                  </div>
-                </td>
-                <td className="px-4 py-5 text-white text-sm font-mono text-right">
-                  {model.conversation_count.toLocaleString()}
-                </td>
-                <td className="px-4 py-5 text-white text-sm font-mono text-right">
-                  {formatTokens(model.total_tokens)}
-                </td>
-                <td className="px-4 py-5 text-white text-sm font-mono text-right">
-                  {formatTokens(model.avgTokens)}
-                </td>
-                <td className="px-4 py-5 text-white text-sm font-mono text-right">
-                  ${model.avgCost.toFixed(2)}
-                </td>
-                <td className="px-4 py-5 text-white text-sm font-mono text-right font-medium">
-                  ${model.total_cost.toFixed(2)}
-                </td>
-              </tr>
-            ))}
-
-            {filteredModels.length === 0 && (
+      <div className={usageTableShellClassName}>
+        <HorizontalScrollFade>
+          <table className="w-full min-w-max">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-zinc-500">
-                  No model usage data available for this time window.
-                </td>
+                <th className={usageTableHeaderCellClassName}>Model</th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Conversations
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Tokens Used
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Avg Tokens / Convo
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Avg Cost / Convo
+                </th>
+                <th className={usageTableHeaderCellRightClassName}>
+                  Total Cost
+                </th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filteredModels.map((model) => (
+                <tr
+                  key={model.model_name}
+                  className={settingsListTableRowClassName}
+                >
+                  <td className={usageTableCellClassName}>
+                    <div className="truncate font-medium text-foreground">
+                      {model.model_name}
+                    </div>
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {model.conversation_count.toLocaleString()}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {formatTokens(model.total_tokens)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    {formatTokens(model.avgTokens)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "text-foreground",
+                    )}
+                  >
+                    ${model.avgCost.toFixed(2)}
+                  </td>
+                  <td
+                    className={cn(
+                      usageTableCellRightClassName,
+                      "font-medium text-foreground",
+                    )}
+                  >
+                    ${model.total_cost.toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+
+              {filteredModels.length === 0 && (
+                <tr>
+                  <td colSpan={6} className={usageTableEmptyCellClassName}>
+                    No model usage data available for this time window.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

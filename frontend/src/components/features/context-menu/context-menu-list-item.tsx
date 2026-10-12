@@ -1,4 +1,5 @@
 import { cn } from "#/utils/utils";
+import { dropdownMenuRowForegroundClassName } from "#/utils/dropdown-classes";
 
 interface ContextMenuListItemProps {
   testId?: string;
@@ -6,6 +7,7 @@ interface ContextMenuListItemProps {
   isDisabled?: boolean;
   className?: string;
   ariaCurrent?: React.AriaAttributes["aria-current"];
+  title?: string;
 }
 
 export function ContextMenuListItem({
@@ -15,6 +17,7 @@ export function ContextMenuListItem({
   isDisabled,
   className,
   ariaCurrent,
+  title,
 }: React.PropsWithChildren<ContextMenuListItemProps>) {
   return (
     <button
@@ -23,9 +26,10 @@ export function ContextMenuListItem({
       onClick={onClick}
       disabled={isDisabled}
       aria-current={ariaCurrent}
+      title={title}
       className={cn(
-        "text-sm px-4 h-10 w-full text-start hover:bg-white/10 cursor-pointer",
-        "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent text-nowrap",
+        dropdownMenuRowForegroundClassName,
+        "text-nowrap",
         className,
       )}
     >

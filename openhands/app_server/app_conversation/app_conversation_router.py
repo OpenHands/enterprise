@@ -306,6 +306,22 @@ async def _get_agent_server_context(
 # Read methods
 
 
+def _parse_tag_filters(items: list[str] | None) -> dict[str, str] | None:
+    """Parse repeatable ``key=value`` tag filter items into a dict."""
+    if not items:
+        return None
+    tags: dict[str, str] = {}
+    for item in items:
+        key, sep, value = item.partition('=')
+        if not sep or not key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid tags__contains filter '{item}': expected key=value",
+            )
+        tags[key] = value
+    return tags
+
+
 @router.get('/search')
 async def search_app_conversations(
     title__contains: Annotated[
@@ -331,6 +347,10 @@ async def search_app_conversations(
     sandbox_id__eq: Annotated[
         str | None,
         Query(title='Filter by exact sandbox_id'),
+    ] = None,
+    tags__contains: Annotated[
+        list[str] | None,
+        Query(title='Filter by tags as repeatable key=value items; all must match'),
     ] = None,
     page_id: Annotated[
         str | None,
@@ -362,6 +382,7 @@ async def search_app_conversations(
         updated_at__gte=updated_at__gte,
         updated_at__lt=updated_at__lt,
         sandbox_id__eq=sandbox_id__eq,
+        tags__contains=_parse_tag_filters(tags__contains),
         page_id=page_id,
         limit=limit,
         include_sub_conversations=include_sub_conversations,
@@ -394,6 +415,10 @@ async def count_app_conversations(
         str | None,
         Query(title='Filter by exact sandbox_id'),
     ] = None,
+    tags__contains: Annotated[
+        list[str] | None,
+        Query(title='Filter by tags as repeatable key=value items; all must match'),
+    ] = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -406,6 +431,7 @@ async def count_app_conversations(
         updated_at__gte=updated_at__gte,
         updated_at__lt=updated_at__lt,
         sandbox_id__eq=sandbox_id__eq,
+        tags__contains=_parse_tag_filters(tags__contains),
     )
 
 
@@ -576,9 +602,14 @@ async def update_app_conversation(
         app_conversation_service_dependency
     ),
 ) -> AppConversation:
-    info = await app_conversation_service.update_app_conversation(
-        UUID(conversation_id), update_request
-    )
+    try:
+        info = await app_conversation_service.update_app_conversation(
+            UUID(conversation_id), update_request
+        )
+    except ValueError as e:
+        # Invalid repository or branch values are a client error, not a 500.
+        logger.warning(f'Rejected conversation update {conversation_id}: {e}')
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if info is None:
         raise HTTPException(404, 'unknown_app_conversation')
     return info

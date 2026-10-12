@@ -9,7 +9,7 @@ from server.sharing.shared_conversation_models import (
 
 
 class SharedConversationInfoService(ABC):
-    """Service for accessing shared conversation info without user restrictions."""
+    """Service for accessing the info of conversations shared with the viewer."""
 
     @abstractmethod
     async def get_shared_conversation_info(

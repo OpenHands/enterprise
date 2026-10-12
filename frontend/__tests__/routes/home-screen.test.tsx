@@ -496,11 +496,11 @@ describe("HomeScreen", () => {
 });
 
 describe("Settings 404", () => {
-  const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-  const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
+  let getConfigSpy: ReturnType<typeof vi.spyOn>;
+  let getSettingsSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
 
     useIsAuthedMock.mockReturnValue({
       data: true,
@@ -512,8 +512,18 @@ describe("Settings 404", () => {
       data: { app_mode: "oss", feature_flags: DEFAULT_FEATURE_FLAGS },
       isLoading: false,
     });
+    mockUseAppMode.mockReturnValue({
+      isOss: true,
+      isSaas: false,
+      isCloud: false,
+      isSelfHosted: false,
+      isEnterpriseSelfHosted: false,
+      isEnterpriseCloud: false,
+      appMode: "oss",
+      deploymentMode: undefined,
+    });
 
-    getConfigSpy.mockResolvedValue({
+    getConfigSpy = vi.spyOn(OptionService, "getConfig").mockResolvedValue({
       app_mode: "oss",
       posthog_client_key: "test-posthog-key",
       providers_configured: ["github"],
@@ -529,7 +539,9 @@ describe("Settings 404", () => {
 
     vi.spyOn(AuthService, "authenticate").mockResolvedValue(true);
 
-    getSettingsSpy.mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
+    getSettingsSpy = vi
+      .spyOn(SettingsService, "getSettings")
+      .mockResolvedValue(MOCK_DEFAULT_USER_SETTINGS);
 
     vi.stubGlobal("localStorage", {
       getItem: vi.fn(() => null),
@@ -540,7 +552,8 @@ describe("Settings 404", () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    getConfigSpy.mockRestore();
+    getSettingsSpy.mockRestore();
     vi.unstubAllGlobals();
   });
 
@@ -584,7 +597,6 @@ describe("Settings 404", () => {
       isLoading: false,
     });
 
-    // @ts-expect-error - we only need app_mode for this test
     getConfigSpy.mockResolvedValue({
       app_mode: "saas",
       feature_flags: DEFAULT_FEATURE_FLAGS,

@@ -34,6 +34,13 @@ def build_asyncpg_connect_args(db_ssl_mode: str | None) -> dict[str, str]:
     return {}
 
 
+def build_psycopg_connect_args(db_ssl_mode: str | None) -> dict[str, str]:
+    mode = normalize_db_ssl_mode(db_ssl_mode)
+    if mode:
+        return {'sslmode': mode}
+    return {}
+
+
 def build_db_url_query(db_ssl_mode: str | None) -> str:
     mode = normalize_db_ssl_mode(db_ssl_mode)
     if mode:

@@ -4,6 +4,11 @@ import {
   GetMicroagentsResponse,
   ResultSet,
 } from "#/api/open-hands.types";
+import {
+  V1AppConversation,
+  V1AppConversationPage,
+} from "#/api/conversation-service/v1-conversation-service.types";
+import { V1ExecutionStatus } from "#/types/v1/core";
 
 const conversations: Conversation[] = [
   {
@@ -55,6 +60,36 @@ const CONVERSATIONS = new Map<string, Conversation>(
   conversations.map((c) => [c.conversation_id, c]),
 );
 
+const toV1AppConversation = (
+  conversation: Conversation,
+): V1AppConversation => ({
+  id: conversation.conversation_id,
+  created_by_user_id: "mock-user",
+  sandbox_id: `sandbox-${conversation.conversation_id}`,
+  selected_repository: conversation.selected_repository,
+  selected_branch: conversation.selected_branch,
+  git_provider: conversation.git_provider,
+  title: conversation.title,
+  trigger: null,
+  pr_number: [],
+  llm_model: null,
+  metrics: null,
+  created_at: conversation.created_at,
+  updated_at: conversation.last_updated_at,
+  sandbox_status: conversation.status === "RUNNING" ? "RUNNING" : "MISSING",
+  execution_status:
+    conversation.status === "RUNNING"
+      ? V1ExecutionStatus.RUNNING
+      : V1ExecutionStatus.FINISHED,
+  conversation_url: conversation.url,
+  session_api_key: conversation.session_api_key,
+  sub_conversation_ids: [],
+});
+
+const V1_APP_CONVERSATIONS = new Map<string, V1AppConversation>(
+  conversations.map((c) => [c.conversation_id, toV1AppConversation(c)]),
+);
+
 export const CONVERSATION_HANDLERS = [
   http.get("/api/conversations", async () => {
     const values = Array.from(CONVERSATIONS.values());
@@ -88,6 +123,10 @@ export const CONVERSATION_HANDLERS = [
       session_api_key: null,
     };
     CONVERSATIONS.set(conversation.conversation_id, conversation);
+    V1_APP_CONVERSATIONS.set(
+      conversation.conversation_id,
+      toV1AppConversation(conversation),
+    );
     return HttpResponse.json(conversation, { status: 201 });
   }),
 
@@ -100,10 +139,15 @@ export const CONVERSATION_HANDLERS = [
       if (conversation) {
         const body = await request.json();
         if (typeof body === "object" && body?.title) {
-          CONVERSATIONS.set(conversationId, {
+          const updated = {
             ...conversation,
             title: body.title,
-          });
+          };
+          CONVERSATIONS.set(conversationId, updated);
+          V1_APP_CONVERSATIONS.set(
+            conversationId,
+            toV1AppConversation(updated),
+          );
           return HttpResponse.json(null, { status: 200 });
         }
       }
@@ -115,10 +159,70 @@ export const CONVERSATION_HANDLERS = [
     const conversationId = params.conversationId as string;
     if (CONVERSATIONS.has(conversationId)) {
       CONVERSATIONS.delete(conversationId);
+      V1_APP_CONVERSATIONS.delete(conversationId);
       return HttpResponse.json(null, { status: 200 });
     }
     return HttpResponse.json(null, { status: 404 });
   }),
+
+  // V1 app-conversations API used by the home page / conversation panel
+  http.get("/api/v1/app-conversations/search", async () => {
+    const page: V1AppConversationPage = {
+      items: Array.from(V1_APP_CONVERSATIONS.values()),
+      next_page_id: null,
+    };
+    return HttpResponse.json(page);
+  }),
+
+  http.get("/api/v1/app-conversations", async ({ request }) => {
+    const url = new URL(request.url);
+    const ids = url.searchParams.getAll("ids");
+    if (ids.length === 0) {
+      return HttpResponse.json([]);
+    }
+    return HttpResponse.json(
+      ids.map((id) => V1_APP_CONVERSATIONS.get(id) ?? null),
+    );
+  }),
+
+  http.get("/api/v1/app-conversations/:conversationId", async ({ params }) => {
+    const conversationId = params.conversationId as string;
+    const conversation = V1_APP_CONVERSATIONS.get(conversationId);
+    if (conversation) return HttpResponse.json(conversation);
+    return HttpResponse.json(null, { status: 404 });
+  }),
+
+  http.patch(
+    "/api/v1/app-conversations/:conversationId",
+    async ({ params, request }) => {
+      const conversationId = params.conversationId as string;
+      const conversation = V1_APP_CONVERSATIONS.get(conversationId);
+      if (!conversation) {
+        return HttpResponse.json(null, { status: 404 });
+      }
+      const body = (await request.json()) as Partial<V1AppConversation>;
+      const updated = { ...conversation, ...body };
+      V1_APP_CONVERSATIONS.set(conversationId, updated);
+      const legacy = CONVERSATIONS.get(conversationId);
+      if (legacy && typeof body.title === "string") {
+        CONVERSATIONS.set(conversationId, { ...legacy, title: body.title });
+      }
+      return HttpResponse.json(updated);
+    },
+  ),
+
+  http.delete(
+    "/api/v1/app-conversations/:conversationId",
+    async ({ params }) => {
+      const conversationId = params.conversationId as string;
+      if (V1_APP_CONVERSATIONS.has(conversationId)) {
+        V1_APP_CONVERSATIONS.delete(conversationId);
+        CONVERSATIONS.delete(conversationId);
+        return HttpResponse.json(null, { status: 200 });
+      }
+      return HttpResponse.json(null, { status: 404 });
+    },
+  ),
 
   http.post(
     "/api/v1/conversations/:conversationId/pending-messages",

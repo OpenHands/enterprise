@@ -11,8 +11,7 @@ import {
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import { Provider } from "#/types/settings";
-import DebugStackframeDot from "#/icons/debug-stackframe-dot.svg?react";
-import { Typography } from "#/ui/typography";
+import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
 import { BrandButton } from "../brand-button";
 
 interface GitProviderConnectionProps {
@@ -22,10 +21,11 @@ interface GitProviderConnectionProps {
 }
 
 /**
- * Connection status of a git provider linked to the user's account (SaaS),
- * with a Connect button that starts the Keycloak account-linking flow or a
- * Disconnect button that unlinks it. Children render only while connected
- * (e.g. webhook managers, configure links).
+ * Connect / Disconnect controls for a git provider linked to the user's
+ * account (SaaS). Connect starts the Keycloak account-linking flow and
+ * Disconnect unlinks the provider after confirmation. Children render only
+ * while connected (e.g. configure links) and sit beside the Disconnect button.
+ * The connection status itself is shown by the surrounding provider card.
  */
 export function GitProviderConnection({
   provider,
@@ -62,46 +62,33 @@ export function GitProviderConnection({
 
   return (
     <>
-      <div className="flex items-center">
-        <DebugStackframeDot
-          className="w-6 h-6 shrink-0"
-          color={isConnected ? "#BCFF8C" : "#FF684E"}
-        />
-        <Typography.Text
-          className="text-sm text-gray-400"
-          testId={`${provider}-status-text`}
-        >
-          {t(I18nKey.COMMON$STATUS)}:{" "}
-          {isConnected
-            ? t(I18nKey.STATUS$CONNECTED)
-            : t(I18nKey.STATUS$NOT_CONNECTED)}
-        </Typography.Text>
-      </div>
-      {isConnected ? (
-        <>
-          {children}
+      <div className="flex items-center gap-2">
+        {isConnected ? (
+          <>
+            {children}
+            <BrandButton
+              testId={`disconnect-${provider}-button`}
+              type="button"
+              variant="secondary"
+              className={settingsListRowActionButtonClassName}
+              isDisabled={isPending}
+              onClick={() => setConfirmDisconnect(true)}
+            >
+              {t(I18nKey.BUTTON$DISCONNECT)}
+            </BrandButton>
+          </>
+        ) : (
           <BrandButton
-            testId={`disconnect-${provider}-button`}
+            testId={`connect-${provider}-button`}
             type="button"
-            variant="secondary"
-            className="w-55"
-            isDisabled={isPending}
-            onClick={() => setConfirmDisconnect(true)}
+            variant="primary"
+            className={settingsListRowActionButtonClassName}
+            onClick={handleConnect}
           >
-            {t(I18nKey.BUTTON$DISCONNECT)}
+            {t(I18nKey.BUTTON$CONNECT)}
           </BrandButton>
-        </>
-      ) : (
-        <BrandButton
-          testId={`connect-${provider}-button`}
-          type="button"
-          variant="primary"
-          className="w-55"
-          onClick={handleConnect}
-        >
-          {t(I18nKey.BUTTON$CONNECT)}
-        </BrandButton>
-      )}
+        )}
+      </div>
       {confirmDisconnect && (
         <ConfirmationModal
           text={t(I18nKey.GIT_PROVIDER$DISCONNECT_CONFIRMATION, {

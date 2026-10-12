@@ -1,8 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import { SettingsInput } from "#/components/features/settings/settings-input";
 import { useCreateOrganization } from "#/hooks/mutation/use-create-organization";
+import { useMe } from "#/hooks/query/use-me";
+import { useOrganizations } from "#/hooks/query/use-organizations";
+import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
+import { Dropdown } from "#/ui/dropdown/dropdown";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -10,20 +15,56 @@ import {
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
+  contactName?: string;
   onClose: () => void;
 }
 
 export function CreateOrganizationModal({
   contactEmail,
+  contactName: contactNameProp,
   onClose,
 }: CreateOrganizationModalProps) {
   const { t } = useTranslation();
-  const { mutate: createOrganization, isPending } = useCreateOrganization();
+  const { data } = useOrganizations();
+  const { data: me } = useMe();
+  const { data: users } = useSuperAdminUsers();
+  const { mutateAsync: createOrganization, isPending } =
+    useCreateOrganization();
   const [name, setName] = useState("");
-  const [contactName, setContactName] = useState("");
+  const [contactName, setContactName] = useState(contactNameProp ?? "");
   const [email, setEmail] = useState(contactEmail ?? "");
+  const [ownerUserId, setOwnerUserId] = useState<string>();
 
-  const handleSubmit = () => {
+  // The caller owns the new organization unless they pick another user.
+  const meOption = me
+    ? {
+        value: me.user_id,
+        label: t(I18nKey.ORG$OWNER_ME, { email: me.email }),
+      }
+    : undefined;
+  const ownerOptions = [
+    ...(meOption ? [meOption] : []),
+    ...(users ?? [])
+      .filter((user) => user.user_id !== me?.user_id)
+      .map((user) => ({
+        value: user.user_id,
+        label: user.email || user.name || user.user_id,
+      })),
+  ];
+
+  const inferredContactName =
+    contactNameProp?.trim() ||
+    data?.organizations.find((org) => org.is_personal)?.contact_name?.trim() ||
+    "";
+
+  useEffect(() => {
+    if (!inferredContactName) {
+      return;
+    }
+    setContactName((current) => current || inferredContactName);
+  }, [inferredContactName]);
+
+  const handleSubmit = async () => {
     const trimmedName = name.trim();
     const trimmedContactName = contactName.trim();
     const trimmedEmail = email.trim();
@@ -33,22 +74,18 @@ export function CreateOrganizationModal({
       return;
     }
 
-    createOrganization(
-      {
+    try {
+      await createOrganization({
         name: trimmedName,
         contact_name: trimmedContactName,
         contact_email: trimmedEmail,
-      },
-      {
-        onSuccess: () => {
-          displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
-          onClose();
-        },
-        onError: () => {
-          displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));
-        },
-      },
-    );
+        owner_user_id: ownerUserId ?? me?.user_id,
+      });
+      displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
+      onClose();
+    } catch {
+      displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));
+    }
   };
 
   return (
@@ -62,26 +99,39 @@ export function CreateOrganizationModal({
       isLoading={isPending}
     >
       <div className="flex flex-col gap-3 w-full">
-        <input
-          data-testid="create-organization-name"
+        <SettingsInput
+          testId="create-organization-name"
+          type="text"
+          label={t(I18nKey.ORG$ORGANIZATION_NAME)}
           value={name}
-          placeholder={t(I18nKey.ORG$ORGANIZATION_NAME)}
-          onChange={(e) => setName(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$ORGANIZATION_NAME_PLACEHOLDER)}
+          onChange={setName}
         />
-        <input
-          data-testid="create-organization-contact-name"
+        <label className="flex flex-col gap-2.5 w-full min-w-0">
+          <span className="text-sm">{t(I18nKey.ORG$OWNER)}</span>
+          <Dropdown
+            key={meOption?.value}
+            testId="create-organization-owner"
+            options={ownerOptions}
+            defaultValue={meOption}
+            onChange={(option) => setOwnerUserId(option?.value)}
+          />
+        </label>
+        <SettingsInput
+          testId="create-organization-contact-name"
+          type="text"
+          label={t(I18nKey.ORG$CONTACT_NAME)}
           value={contactName}
-          placeholder={t(I18nKey.ORG$CONTACT_NAME)}
-          onChange={(e) => setContactName(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$CONTACT_NAME_PLACEHOLDER)}
+          onChange={setContactName}
         />
-        <input
-          data-testid="create-organization-contact-email"
+        <SettingsInput
+          testId="create-organization-contact-email"
+          type="email"
+          label={t(I18nKey.ORG$CONTACT_EMAIL)}
           value={email}
-          placeholder={t(I18nKey.ORG$CONTACT_EMAIL)}
-          onChange={(e) => setEmail(e.target.value)}
-          className="bg-tertiary border border-[#717888] h-10 w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt"
+          placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
+          onChange={setEmail}
         />
       </div>
     </OrgModal>

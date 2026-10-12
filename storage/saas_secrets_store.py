@@ -104,6 +104,43 @@ class SaasSecretsStore(SecretsStore):
 
             return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
 
+    async def load_personal(self) -> Secrets | None:
+        """Load only the user's personal secrets (``is_org_shared=False``).
+
+        Unlike ``load()``, org-shared secrets are excluded and no name
+        suffix-dedup is applied — personal secrets own their bare names.
+        Used by the write-path endpoints so that shared secrets are never
+        round-tripped into ``store()`` and re-created as personal duplicates
+        owned by the current user.
+        """
+        if not self.user_id:
+            return None
+        user = await UserStore.get_user_by_id(self.user_id)
+        org_id = self.effective_org_id or (user.current_org_id if user else None)
+
+        async with a_session_maker() as session:
+            query = select(StoredCustomSecrets).filter(
+                StoredCustomSecrets.keycloak_user_id == self.user_id,
+                StoredCustomSecrets.is_org_shared.is_(False),
+            )
+            if org_id is not None:
+                query = query.filter(StoredCustomSecrets.org_id == org_id)
+            result = await session.execute(query)
+            rows = result.scalars().all()
+
+            if not rows:
+                return Secrets()
+
+            kwargs: dict[str, dict[str, str | None]] = {}
+            for secret in rows:
+                kwargs[secret.secret_name] = {
+                    'secret': secret.secret_value,
+                    'description': secret.description,
+                }
+
+            self._decrypt_kwargs(kwargs)
+            return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
+
     async def list_personal(
         self,
     ) -> list[tuple[str, str | None]]:

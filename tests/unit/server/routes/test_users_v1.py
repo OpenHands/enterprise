@@ -13,6 +13,51 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+class TestGitOrganizations:
+    @pytest.mark.parametrize('organizations', [[], ['first-org', 'second-org']])
+    async def test_azure_organizations_use_authenticated_provider(
+        self, monkeypatch, organizations
+    ):
+        from openhands.app_server.integrations.provider import (
+            ProviderHandler,
+            ProviderToken,
+        )
+        from openhands.app_server.integrations.service_types import ProviderType
+        from server.routes.users_v1 import get_current_user_git_organizations
+
+        service = MagicMock()
+        service.get_installations = AsyncMock(return_value=organizations)
+        get_service = MagicMock(return_value=service)
+        monkeypatch.setattr(ProviderHandler, 'get_service', get_service)
+        context = MagicMock()
+        context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.AZURE_DEVOPS: ProviderToken(token='test-azure-token')
+            }
+        )
+        context.get_user_id = AsyncMock(return_value='user-123')
+
+        response = await get_current_user_git_organizations(context)
+
+        assert response.model_dump(mode='json') == {
+            'provider': 'azure_devops',
+            'organizations': organizations,
+        }
+        get_service.assert_called_once_with(ProviderType.AZURE_DEVOPS)
+        service.get_installations.assert_awaited_once_with()
+
+    async def test_missing_provider_token_is_forbidden(self):
+        from fastapi import HTTPException
+
+        from server.routes.users_v1 import get_current_user_git_organizations
+
+        context = MagicMock()
+        context.get_provider_tokens = AsyncMock(return_value={})
+        with pytest.raises(HTTPException) as exc:
+            await get_current_user_git_organizations(context)
+        assert exc.value.status_code == 403
+
+
 class TestSaasUserInfoModel:
     """Test suite for SaasUserInfo model."""
 

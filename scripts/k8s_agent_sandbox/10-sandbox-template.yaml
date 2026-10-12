@@ -1,0 +1,129 @@
+# The agent server pod every sandbox runs. Warm pods boot before any user
+# exists, so nothing per user can be in here. The agent server starts dormant
+# (OH_DEFERRED_INIT), and the app hands it its session key, webhook and
+# settings through POST /api/init after claiming it. OH_SECRET_KEY is the key
+# the app must present to do that: the agent-server-init Secret, which the app
+# gets as AGENT_SANDBOX_INIT_API_KEY.
+#
+# Use the image tag that matches the openhands-agent-server version in the
+# app's uv.lock.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: openhands-agent-server
+  namespace: openhands-sandboxes
+spec:
+  # A headless Service per sandbox, so the router can dial
+  # <sandbox>.<namespace>.svc.cluster.local.
+  service: true
+  # Per-claim env or volumes would force a cold start. The app sends neither,
+  # so reject any claim that does rather than silently skip the pool.
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # The image runs as openhands (10001). Makes the volume writable.
+        fsGroup: 10001
+      containers:
+        - name: agent-server
+          image: ghcr.io/openhands/agent-server:1.49.4-python
+          args: ["--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: OH_DEFERRED_INIT
+              value: "1"
+            - name: OH_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-server-init
+                  key: init-api-key
+            - name: OH_ENABLE_VNC
+              value: "0"
+            # VSCode's path on the router. The router strips it before
+            # forwarding and openvscode-server answers either way, but it
+            # needs the path to write its own links. The pod's name is its
+            # sandbox's name, and a claim does not change it.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OH_VSCODE_BASE_PATH
+              value: /sandbox-router/$(POD_NAMESPACE)/$(POD_NAME)/8001
+          ports:
+            - name: agent-server
+              containerPort: 8000
+          # /ready answers 200 while the server is dormant, which is what a
+          # warm pod is.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+  # Conversations, bash history and the project checkout live here, so they
+  # survive a pause (the pod is deleted, the volume is kept).
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+  networkPolicy:
+    ingress:
+      # Only the sandbox router, on the agent server, VSCode and worker ports.
+      - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: agent-sandbox-system
+            podSelector:
+              matchLabels:
+                app: sandbox-router
+        ports:
+          - port: 8000
+            protocol: TCP
+          - port: 8001
+            protocol: TCP
+          - port: 8011
+            protocol: TCP
+          - port: 8012
+            protocol: TCP
+    egress:
+      # Cluster DNS. agent-sandbox's default policy blocks it.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: kube-system
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - port: 53
+            protocol: UDP
+          - port: 53
+            protocol: TCP
+      # Public addresses only: the app's URL (webhooks), the LLM base URL,
+      # model providers, package registries. If the app or the LLM proxy is
+      # only reachable at a private address, add a rule for it.
+      - to:
+          - ipBlock:
+              cidr: 0.0.0.0/0
+              except:
+                - 10.0.0.0/8
+                - 172.16.0.0/12
+                - 192.168.0.0/16
+                - 169.254.0.0/16

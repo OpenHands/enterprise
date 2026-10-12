@@ -57,11 +57,25 @@ export function isSettingsPageHidden(
   )
     return true;
   if (featureFlags?.hide_users_page && path === "/settings/user") return true;
-  if (featureFlags?.hide_billing_page && path === "/settings/billing")
+  if (
+    featureFlags?.hide_billing_page &&
+    (path === "/settings/billing" || path === "/settings/credits")
+  )
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
     return true;
   return false;
+}
+
+/**
+ * Budgets and the member-facing "Your budget" page are enforced through the
+ * bundled/external LiteLLM gateway. Unlike ``isSettingsPageHidden`` (which
+ * redirects away from a hidden page), these pages stay reachable and render
+ * a "Please enable LiteLLM to use this feature" placeholder instead -- only
+ * the nav entry is hidden.
+ */
+export function isLiteLlmOnlyNavItem(path: string): boolean {
+  return path === "/settings/budgets" || path === "/settings/your-budget";
 }
 
 /**

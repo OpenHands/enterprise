@@ -728,6 +728,14 @@ class Settings(BaseModel):
     title_llm_profile: str | None = None
     git_full_clone: bool = False
     v1_enabled: bool = True
+    # Enterprise persistent-memory: when True, the MemoryChangeCallbackProcessor
+    # is registered for the user's conversations and the stored
+    # ``memory_context`` is injected into each sandbox at conversation start.
+    enable_memory_context: bool = False
+    # The latest MEMORY.md content captured by the callback. Written by the
+    # callback on every successful file_editor edit; read at conversation start
+    # to seed the sandbox's memory file before the agent runs.
+    memory_context: str | None = None
     agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings

@@ -3,6 +3,11 @@ import { X } from "lucide-react";
 import { OrganizationInvitation } from "#/types/org";
 import { I18nKey } from "#/i18n/declaration";
 import { CopyInviteLinkButton } from "#/components/features/org/copy-invite-link-button";
+import { cn } from "#/utils/utils";
+import {
+  settingsListIconActionButtonClassName,
+  settingsListRowClassName,
+} from "#/utils/settings-list-classes";
 
 interface PendingInvitationListItemProps {
   invitation: OrganizationInvitation;
@@ -25,19 +30,19 @@ export function PendingInvitationListItem({
   return (
     <div
       data-testid="pending-invitation-item"
-      className="flex items-center justify-between py-4"
+      className={cn(settingsListRowClassName, "justify-between")}
     >
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-sm font-semibold leading-6 text-gray-400 truncate">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-normal leading-5 text-muted">
           {invitation.email}
         </span>
-        <span className="text-xs text-tertiary-light border border-tertiary px-2 py-1 rounded-lg shrink-0">
+        <span className="shrink-0 rounded-lg border border-[var(--oh-border)] px-2 py-0.5 text-xs text-muted">
           {t(I18nKey.ORG$STATUS_INVITED)}
         </span>
       </div>
 
-      <div className="flex items-center gap-4 shrink-0">
-        <span className="text-xs font-normal leading-4 text-org-text capitalize">
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="text-xs font-normal leading-4 text-muted capitalize">
           {invitation.role}
         </span>
         {invitation.invite_url && (
@@ -50,7 +55,10 @@ export function PendingInvitationListItem({
           title={t(I18nKey.ORG$REVOKE_INVITATION)}
           onClick={onRevoke}
           disabled={isRevoking}
-          className="text-tertiary-alt hover:text-danger cursor-pointer disabled:cursor-not-allowed"
+          className={cn(
+            settingsListIconActionButtonClassName,
+            "hover:text-danger disabled:cursor-not-allowed disabled:opacity-60",
+          )}
         >
           <X size={14} />
         </button>

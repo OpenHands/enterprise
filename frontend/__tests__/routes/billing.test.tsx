@@ -60,15 +60,12 @@ vi.mock("#/hooks/query/use-balance", () => ({
 }));
 
 // Mock useCreateStripeCheckoutSession hook
-vi.mock(
-  "#/hooks/mutation/stripe/use-create-stripe-checkout-session",
-  () => ({
-    useCreateStripeCheckoutSession: () => ({
-      mutate: vi.fn(),
-      isPending: false,
-    }),
+vi.mock("#/hooks/mutation/stripe/use-create-stripe-checkout-session", () => ({
+  useCreateStripeCheckoutSession: () => ({
+    mutate: vi.fn(),
+    isPending: false,
   }),
-);
+}));
 
 describe("Billing Route", () => {
   const { mockQueryClient } = vi.hoisted(() => ({
@@ -122,7 +119,7 @@ describe("Billing Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
+          enable_onboarding: false,
           ...featureFlags,
         },
       }),
@@ -162,7 +159,7 @@ describe("Billing Route", () => {
 
       // Assert: the loader should have found the cached config and NOT called getConfig
       expect(getConfigSpy).not.toHaveBeenCalled();
-      expect(result).toBeNull(); // admin with billing enabled = no redirect
+      expect(result).toEqual({}); // admin with billing enabled = no redirect
     });
   });
 

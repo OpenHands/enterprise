@@ -3,13 +3,14 @@ import { describe, it, expect } from "vitest";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
 describe("OrgWideSettingsBadge", () => {
-  it("should render the badge with translated text", () => {
+  it("should render the bar with translated text", () => {
     // Arrange & Act
     render(<OrgWideSettingsBadge />);
 
     // Assert
     const badge = screen.getByTestId("org-wide-settings-badge");
     expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute("role", "status");
     expect(screen.getByText("SETTINGS$ORG_WIDE_SETTING_BADGE")).toBeInTheDocument();
   });
 
@@ -34,5 +35,16 @@ describe("OrgWideSettingsBadge", () => {
     expect(
       screen.queryByText("SETTINGS$ORG_WIDE_SETTING_BADGE"),
     ).not.toBeInTheDocument();
+  });
+
+  it("should use full-width bar styles instead of a pill", () => {
+    // Arrange & Act
+    render(<OrgWideSettingsBadge />);
+
+    // Assert
+    const badge = screen.getByTestId("org-wide-settings-badge");
+    expect(badge.className).toContain("w-full");
+    expect(badge.className).toContain("border-b");
+    expect(badge.className).not.toContain("rounded-full");
   });
 });

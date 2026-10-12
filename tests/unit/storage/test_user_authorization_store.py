@@ -1,4 +1,4 @@
-"""Unit tests for UserAuthorizationStore using SQLite in-memory database."""
+"""Unit tests for UserAuthorizationStore."""
 
 from unittest.mock import patch
 

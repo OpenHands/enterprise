@@ -221,6 +221,8 @@ async def get_current_user_git_organizations(
         orgs = await client.get_bitbucket_workspaces()
     elif provider == ProviderType.BITBUCKET_DATA_CENTER:
         orgs = await client.get_bitbucket_dc_projects()
+    elif provider == ProviderType.AZURE_DEVOPS:
+        orgs = await client.get_azure_devops_organizations()
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

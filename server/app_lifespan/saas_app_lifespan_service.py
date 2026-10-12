@@ -1,7 +1,8 @@
 """SaaS-specific application lifespan service.
 
-Initializes PostHog analytics on startup and flushes buffered events on
-clean shutdown so no events are lost when the server exits gracefully.
+On startup, optionally migrates the database and initializes PostHog analytics.
+On clean shutdown, flushes buffered events so none are lost when the server
+exits gracefully.
 """
 
 from __future__ import annotations
@@ -9,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
@@ -17,7 +21,9 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+from storage.database import sqlstate
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
     '40001',  # serialization_failure
@@ -32,15 +38,6 @@ class TransientReconciliationError(Exception):
     """Retryable org defaults reconciliation failure."""
 
 
-def _sqlstate(exc: BaseException) -> str | None:
-    orig = getattr(exc, 'orig', None)
-    for attr in ('sqlstate', 'pgcode'):
-        value = getattr(orig, attr, None)
-        if isinstance(value, str):
-            return value
-    return None
-
-
 def _is_transient_reconciliation_error(exc: BaseException) -> bool:
     if isinstance(exc, OperationalError):
         return True
@@ -48,7 +45,7 @@ def _is_transient_reconciliation_error(exc: BaseException) -> bool:
         return False
     if exc.connection_invalidated:
         return True
-    state = _sqlstate(exc)
+    state = sqlstate(exc)
     return bool(
         state
         and (
@@ -61,11 +58,15 @@ def _is_transient_reconciliation_error(exc: BaseException) -> bool:
 class SaasAppLifespanService(AppLifespanService):
     """Lifespan service for the SaaS server.
 
-    On enter: initialises the PostHog analytics singleton from environment vars.
+    On enter: runs ``alembic upgrade head`` when RUN_MIGRATIONS_ON_STARTUP is
+    set, then initialises the PostHog analytics singleton from environment vars.
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
     async def __aenter__(self):
+        if os.getenv('RUN_MIGRATIONS_ON_STARTUP', 'false').lower() in ('true', '1'):
+            await self._run_migrations()
+
         # OHE must not initialize telemetry when a legacy key is configured.
         api_key = (
             ''
@@ -79,9 +80,22 @@ class SaasAppLifespanService(AppLifespanService):
             host=host,
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
+            deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
         )
         await self._reconcile_org_condenser_defaults()
         return self
+
+    async def _run_migrations(self) -> None:
+        # The advisory lock in migrations/env.py makes other workers and replicas
+        # wait, then find the database already at head.
+        config = Config(str(_REPO_ROOT / 'alembic.ini'))
+        config.set_main_option('script_location', str(_REPO_ROOT / 'migrations'))
+        # Keep the app's logging instead of loading the one in alembic.ini.
+        config.attributes['configure_logger'] = False
+        logger.info('database_migrations_starting')
+        # env.py is synchronous, so keep it off the event loop.
+        await asyncio.to_thread(command.upgrade, config, 'head')
+        logger.info('database_migrations_succeeded')
 
     async def _reconcile_org_condenser_defaults(self) -> None:
         from server.org_defaults_config import get_org_defaults_condenser_config

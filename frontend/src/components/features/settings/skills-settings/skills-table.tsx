@@ -4,8 +4,19 @@ import { SkillWithState } from "#/types/settings";
 import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import { SearchIcon } from "#/components/shared/icons/inline-icons";
 import { I18nKey } from "#/i18n/declaration";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
+import {
+  formControlInlineInputClassName,
+  formControlShellClassName,
+} from "#/utils/form-control-classes";
+import {
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
+} from "#/utils/settings-list-classes";
 
 interface SkillsTableProps {
   skills: SkillWithState[];
@@ -40,8 +51,7 @@ function ScopeBadge({ scope }: { scope: "instance" | "org" | "personal" }) {
   );
 }
 
-const HEADER_CLASS =
-  "px-4 py-3 text-left text-xs font-medium text-tertiary-alt whitespace-nowrap";
+const HEADER_CLASS = settingsListTableHeaderCellClassName;
 const CELL_CLASS = "px-4 py-3 align-middle";
 
 export function SkillsTable({
@@ -59,21 +69,25 @@ export function SkillsTable({
   return (
     <div className="flex flex-col gap-4">
       {/* Filters */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <input
-          data-testid="search-skills-input"
-          type="text"
-          placeholder={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
-          aria-label={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="h-10 w-full flex-1 rounded-sm border border-[#717888] bg-tertiary p-2 placeholder:italic placeholder:text-tertiary-alt focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-        />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className={cn(formControlShellClassName, "flex-1")}>
+          <span className="ml-3 shrink-0 text-tertiary-alt" aria-hidden>
+            <SearchIcon />
+          </span>
+          <input
+            data-testid="search-skills-input"
+            type="text"
+            placeholder={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
+            aria-label={t(I18nKey.SETTINGS$SEARCH_PLACEHOLDER)}
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className={cn(formControlInlineInputClassName, "text-white")}
+          />
+        </div>
         <div className="w-full sm:w-52">
           <SettingsDropdownInput
             testId="type-filter-dropdown"
             name="type-filter"
-            label={t(I18nKey.SETTINGS$TYPE)}
             items={typeOptions}
             defaultSelectedKey="all"
             onSelectionChange={(key) => onTypeChange(key?.toString() ?? null)}
@@ -84,7 +98,6 @@ export function SkillsTable({
           <SettingsDropdownInput
             testId="repository-filter-dropdown"
             name="repository-filter"
-            label={t(I18nKey.SETTINGS$REPOSITORY)}
             items={repositoryOptions}
             defaultSelectedKey="all"
             onSelectionChange={(key) =>
@@ -96,9 +109,12 @@ export function SkillsTable({
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-xl border border-tertiary bg-base-secondary/20 table-box-shadow">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] table-fixed border-collapse text-sm">
+      <div className="overflow-hidden rounded-xl border border-[var(--oh-border)] bg-base-secondary/20 table-box-shadow">
+        <HorizontalScrollFade>
+          <table
+            className="w-full table-fixed border-collapse text-sm"
+            style={settingsListTableMinWidthStyle(5)}
+          >
             <colgroup>
               <col className="w-[28%]" />
               <col className="w-[30%]" />
@@ -106,8 +122,8 @@ export function SkillsTable({
               <col className="w-[16%]" />
               <col className="w-[10%]" />
             </colgroup>
-            <thead>
-              <tr className="border-b border-tertiary bg-base-secondary/50">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
                 <th className={HEADER_CLASS}>{t(I18nKey.SETTINGS$NAME)}</th>
                 <th className={HEADER_CLASS}>
                   {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE)}
@@ -130,7 +146,7 @@ export function SkillsTable({
               {skills.map((skill) => (
                 <tr
                   key={skill.id}
-                  className="border-t border-tertiary/60 transition-colors hover:bg-base-secondary/40"
+                  className="border-t border-[var(--oh-border)] transition-colors hover:bg-base-secondary/40"
                 >
                   <td
                     className={cn(CELL_CLASS, "font-medium text-content-2")}
@@ -172,7 +188,7 @@ export function SkillsTable({
                 </tr>
               ))}
               {skills.length === 0 && (
-                <tr className="border-t border-tertiary/60">
+                <tr className="border-t border-[var(--oh-border)]">
                   <td
                     colSpan={5}
                     className="px-4 py-10 text-center text-sm text-tertiary-alt"
@@ -183,7 +199,7 @@ export function SkillsTable({
               )}
             </tbody>
           </table>
-        </div>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

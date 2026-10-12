@@ -497,19 +497,98 @@ async def test_ensure_api_key_generates_new_key_when_verification_fails():
         )
 
 
+@pytest.mark.asyncio
+async def test_ensure_api_key_handles_none_wrapped_fallback_key():
+    """A ``SecretStr`` wrapping a Python ``None`` (a member row created with
+    ``llm_api_key=None`` -- e.g. a user provisioned while ENABLE_LEGACY_LITELLM was
+    off, before the ``OrgMember.llm_api_key`` setter normalized None to '')
+    must not crash ``_ensure_api_key``: it must be treated exactly like "no
+    key" and a fresh managed key generated, not raise ``TypeError`` from
+    pydantic's ``SecretStr.__len__``/``__bool__`` on a bare ``bool()`` check
+    (regression: enterprise#474 -- 'Something went wrong storing settings').
+    """
+    from storage.lite_llm_manager import get_openhands_cloud_key_alias
+
+    store = SaasSettingsStore('test-user-id-123')
+    new_key = 'sk-new-key'
+    item = _make_settings(model='openhands/gpt-4')
+    expected_alias = get_openhands_cloud_key_alias('test-user-id-123', 'org-123')
+
+    with (
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value=new_key,
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(
+            item,
+            'org-123',
+            openhands_type=True,
+            fallback_api_key=SecretStr(None),  # type: ignore[arg-type]
+        )
+
+    assert _secret_value(item, 'llm.api_key') == new_key
+    mock_delete.assert_awaited_once_with(key_alias=expected_alias)
+    mock_generate.assert_awaited_once_with(
+        'test-user-id-123', 'org-123', expected_alias, {'type': 'openhands'}
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_api_key_skips_when_litellm_disabled():
+    """With ENABLE_LEGACY_LITELLM off, _ensure_api_key must not call LiteLlmManager
+    at all -- an openhands/* model (virtually every existing user's
+    default) would otherwise unconditionally try to mint a key and raise
+    ``ValueError`` out of ``LiteLlmManager.generate_key``, surfacing to the
+    user as an opaque 500 (enterprise#474; reproduced live against a fleet
+    VM running with the flag off).
+    """
+    store = SaasSettingsStore('test-user-id-123')
+    item = _make_settings(model='openhands/gpt-4')
+
+    with (
+        patch(
+            'storage.saas_settings_store.is_litellm_enabled',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.verify_existing_key',
+            new_callable=AsyncMock,
+        ) as mock_verify_existing,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ) as mock_delete,
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+        ) as mock_generate,
+    ):
+        await store._ensure_api_key(item, 'org-123', openhands_type=True)
+
+    mock_verify_existing.assert_not_awaited()
+    mock_delete.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    # No key was minted, and the (empty) item api_key is left untouched.
+    assert _secret_value(item, 'llm.api_key') is None
+
+
 @pytest.fixture
 def org_with_multiple_members_fixture(session_maker):
-    """Set up an organization with multiple members for testing LLM settings propagation.
-
-    Uses sync session to avoid UUID conversion issues with async SQLite.
-    """
+    """Set up an organization with multiple members for testing LLM settings propagation."""
     from storage.encrypt_utils import decrypt_value
     from storage.org import Org
     from storage.org_member import OrgMember
     from storage.role import Role
     from storage.user import User
 
-    # Use realistic UUIDs that work well with SQLite
+    # Fixed UUIDs keep the assertions below readable.
     org_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5081')
     admin_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5082')
     member1_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5083')
@@ -616,7 +695,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_active_llm(
             .values(
                 agent_settings_diff={
                     'llm': {
-                        'model': 'litellm_proxy/claude-opus-4-8',
+                        'model': 'litellm_proxy/claude-opus-5',
                         'base_url': LITE_LLM_API_URL,
                     },
                 }
@@ -638,7 +717,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_active_llm(
         loaded = await store.load()
 
     assert loaded is not None
-    assert loaded.agent_settings.llm.model == 'openhands/claude-opus-4-8'
+    assert loaded.agent_settings.llm.model == 'openhands/claude-opus-5'
     assert loaded.agent_settings.llm.base_url is None
 
 
@@ -663,7 +742,7 @@ async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
                 llm_profiles={
                     'profiles': {
                         'legacy': {
-                            'model': 'litellm_proxy/claude-opus-4-8',
+                            'model': 'litellm_proxy/claude-opus-5',
                             'base_url': LITE_LLM_API_URL,
                         },
                         'custom': {
@@ -694,12 +773,147 @@ async def test_load_canonicalizes_legacy_litellm_proxy_llm_profiles(
     assert loaded.llm_profiles.active == 'legacy'
 
     legacy = loaded.llm_profiles.require('legacy')
-    assert legacy.model == 'openhands/claude-opus-4-8'
+    assert legacy.model == 'openhands/claude-opus-5'
     assert legacy.base_url is None
 
     custom = loaded.llm_profiles.require('custom')
     assert custom.model == 'litellm_proxy/custom-alias'
     assert custom.base_url == LITE_LLM_API_URL
+
+
+@pytest.mark.asyncio
+async def test_load_represents_bundled_proxy_default_as_openhands(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """Self-hosted: a ``litellm_proxy/<route>`` default on the bundled proxy
+    loads as the picker's ``openhands/<route>`` with its base_url kept, and the
+    seeded ``Default`` profile survives without a DB-backed OpenHands default.
+    """
+    from sqlalchemy import update
+
+    from server import constants
+    from storage import saas_settings_store
+    from storage.org_member import OrgMember
+    from storage.user import User
+
+    proxy_url = 'http://litellm.test:4000'
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(
+                agent_settings_diff={
+                    'llm': {
+                        'model': 'litellm_proxy/claude-sonnet-4-5-20250929',
+                        'base_url': proxy_url,
+                    },
+                }
+            )
+        )
+        await session.execute(
+            update(User)
+            .where(User.id == admin_user_id)
+            .values(enable_sound_notifications=False)
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'openhands/claude-sonnet-4-5-20250929'
+    assert loaded.agent_settings.llm.base_url == proxy_url
+    assert loaded.llm_profiles.active == 'Default'
+    default = loaded.llm_profiles.require('Default')
+    assert default.model == 'openhands/claude-sonnet-4-5-20250929'
+    assert default.base_url == proxy_url
+
+
+@pytest.mark.asyncio
+async def test_bundled_proxy_load_and_save_preserve_untyped_member_key(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    from sqlalchemy import update
+
+    from server import constants
+    from storage import saas_settings_store
+    from storage.lite_llm_manager import (
+        LiteLlmManager,
+        get_openhands_cloud_key_alias,
+    )
+    from storage.org_member import OrgMember
+
+    proxy_url = 'http://litellm.test:4000'
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+    fixture = org_with_multiple_members_fixture
+    user_id, org_id = fixture['admin_user_id'], fixture['org_id']
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
+            .values(
+                agent_settings_diff={
+                    'llm': {
+                        'model': 'litellm_proxy/test-model',
+                        'base_url': proxy_url,
+                    }
+                }
+            )
+        )
+        await session.commit()
+
+    keys = [
+        {
+            'key_alias': get_openhands_cloud_key_alias(str(user_id), str(org_id)),
+            'team_id': str(org_id),
+            'key_name': 'admin-initial-key',
+            'metadata': {},
+        }
+    ]
+    store = SaasSettingsStore(str(user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch.object(
+            LiteLlmManager, '_get_all_keys_for_user', AsyncMock(return_value=keys)
+        ),
+        patch.object(LiteLlmManager, 'delete_key_by_alias', AsyncMock()) as delete_key,
+        patch.object(
+            LiteLlmManager,
+            'generate_key',
+            AsyncMock(return_value='unexpected-rotation'),
+        ) as generate_key,
+    ):
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.llm.model == 'openhands/test-model'
+        config = saas_settings_store.managed_llm_key_config_from_model(
+            loaded.agent_settings.llm.model, loaded.agent_settings.llm.base_url
+        )
+        assert config is not None and config.openhands_type is False
+        await store.store(loaded)
+        reloaded = await store.load()
+
+    delete_key.assert_not_awaited()
+    generate_key.assert_not_awaited()
+    assert reloaded is not None
+    assert _secret_value(reloaded, 'llm.api_key') == 'admin-initial-key'
 
 
 @pytest.mark.asyncio
@@ -1122,6 +1336,125 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
 
     mock_delete.assert_awaited_once()
     mock_generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_org_level_key_when_active_default_is_managed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """#421 broken state: org._llm_api_key holds a stale BYOR dummy while the
+    active default is a managed openhands model. clear_* must clear it."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openhands/claude-opus-4-5-20251101'}}
+        org.llm_api_key = 'dummymodel'
+        # Clear the member's stale BYOR diff so the resolved default is the
+        # org-level managed model (load() merges org defaults with the member
+        # diff, and the fixture seeds a non-managed member diff).
+        admin_member = next(m for m in org.org_members if m.user_id == admin_user_id)
+        admin_member.agent_settings_diff = {}
+        admin_member.has_custom_llm_api_key = False
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is True
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org._llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_org_level_key_skips_when_active_default_is_byor(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """A legit BYOR-active org keeps its real org-level key — the managed
+    classifier is false, so clear_* must not touch it."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    real_byor_key = 'real-byor-secret'
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {
+            'llm': {
+                'model': 'anthropic/claude-3-5-sonnet',
+                'base_url': 'https://api.anthropic.com/v1',
+            }
+        }
+        org.llm_api_key = real_byor_key
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is False
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org.llm_api_key is not None
+        assert org.llm_api_key.get_secret_value() == real_byor_key
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_org_level_key_is_noop_when_already_healed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Idempotency: an already-healed org (active default managed AND
+    org._llm_api_key already None) is a no-op — clear_* must return False so the
+    caller does not re-rotate the managed key on every load."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        org.agent_settings = {'llm': {'model': 'openhands/claude-opus-4-5-20251101'}}
+        org.llm_api_key = None
+        admin_member = next(m for m in org.org_members if m.user_id == admin_user_id)
+        admin_member.agent_settings_diff = {}
+        admin_member.has_custom_llm_api_key = False
+        session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        cleared = await store.clear_stale_org_level_llm_key_if_managed()
+
+    assert cleared is False
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        assert org is not None
+        assert org._llm_api_key is None
 
 
 @pytest.mark.asyncio
@@ -1592,9 +1925,10 @@ async def test_mcp_config_is_encrypted_at_rest(
 async def test_load_migrates_detached_legacy_mcp_config(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """A v5 settings row can load a separately stored v4 MCP fragment."""
+    """A current-schema settings row can load a separately stored v4 MCP fragment."""
     from sqlalchemy import select
 
+    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from storage.org_member import OrgMember
 
     admin_user_id = org_with_multiple_members_fixture['admin_user_id']
@@ -1624,7 +1958,7 @@ async def test_load_migrates_detached_legacy_mcp_config(
         loaded = await store.load()
 
     assert loaded is not None
-    assert loaded.agent_settings.schema_version == 5
+    assert loaded.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     server = loaded.agent_settings.mcp_config['shttp']
     assert server.url == 'https://example.com/mcp'
     assert server.timeout == 60
@@ -1954,7 +2288,6 @@ async def test_llm_profiles_are_encrypted_at_rest(
 
     async with async_session_maker() as session:
         # Bypass the ORM-level TypeDecorator by reading the raw cell.
-        # SQLite stores UUIDs hyphen-stripped, so normalize both sides.
         rows = (
             await session.execute(text('SELECT id, llm_profiles FROM "user"'))
         ).all()
@@ -2176,6 +2509,104 @@ async def test_load_resolves_active_default_profile_from_verified_model_default(
     async with async_session_maker() as session:
         org = (await session.execute(select(Org).where(Org.id == org_id))).scalar_one()
     assert org.llm_profiles['profiles']['Default']['model'] == 'openhands/stale-default'
+
+
+@pytest.mark.parametrize('route', ['proxy', 'direct'])
+@pytest.mark.parametrize('stored_default', [None, 'openhands/stale-default'])
+async def test_self_hosted_default_ignores_cloud_catalogue(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    route,
+    stored_default,
+):
+    from sqlalchemy import select
+
+    from server import constants
+    from server.routes import org_profiles
+    from server.verified_models.verified_model_service import StoredVerifiedModel
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', route)
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', 'http://litellm.test:4000')
+    monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/local-model')
+    monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/direct-model')
+    monkeypatch.setattr(
+        constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', 'https://llm.example.com/v1'
+    )
+    monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_API_KEY', 'test-direct-key')
+    fixture = org_with_multiple_members_fixture
+    org_id, user_id = fixture['org_id'], fixture['admin_user_id']
+    async with async_session_maker() as session:
+        org = await session.get(Org, org_id)
+        org.llm_profiles = (
+            {'profiles': {'Default': {'model': stored_default}}, 'active': 'Default'}
+            if stored_default
+            else None
+        )
+        original_profiles = org.llm_profiles
+        org.agent_settings = {
+            'llm': {'model': 'openhands/stale-default', 'base_url': None}
+        }
+        org.llm_api_key = None
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == user_id
+                )
+            )
+        ).scalar_one()
+        member.agent_settings_diff = {
+            'llm': {'model': 'openhands/stale-default', 'base_url': None}
+        }
+        member.llm_api_key = None
+        session.add(
+            StoredVerifiedModel(
+                model_name='cloud-only-model',
+                provider='openhands',
+                is_enabled=True,
+                is_verified=True,
+                is_default=True,
+            )
+        )
+        await session.commit()
+
+    expected_model = (
+        'openai/direct-model' if route == 'direct' else 'openhands/local-model'
+    )
+    expected_url = (
+        'https://llm.example.com/v1'
+        if route == 'direct'
+        else 'http://litellm.test:4000'
+    )
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('server.routes.org_profiles.a_session_maker', async_session_maker),
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+    ):
+        for _ in range(2):
+            loaded = await SaasSettingsStore(str(user_id)).load()
+            assert loaded.agent_settings.llm.model == expected_model
+            assert loaded.agent_settings.llm.base_url == expected_url
+            assert loaded.llm_profiles.require('Default').model == expected_model
+            if route == 'direct':
+                assert (
+                    loaded.agent_settings.llm.api_key.get_secret_value()
+                    == 'test-direct-key'
+                )
+        detail = await org_profiles.get_profile(org_id, 'Default', str(user_id))
+        assert detail.llm['model'] == expected_model
+        assert detail.llm['base_url'] == expected_url
+        assert 'test-direct-key' not in str(detail.model_dump())
+
+    if original_profiles is not None:
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            assert org.llm_profiles == original_profiles
 
 
 @pytest.mark.asyncio
@@ -2477,3 +2908,134 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     active = settings.llm_profiles.require('Default')
     assert active.model == 'litellm_proxy/claude-sonnet-4-5-20250929'
     assert active.base_url == 'http://x:4000'
+
+
+async def _seed_litellm_off_member(
+    async_session_maker, fixture, *, org_llm: dict, member_key: str
+) -> None:
+    """One member in the shape signup leaves: model on the org, key on the member."""
+    from sqlalchemy import select, text
+
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+        org.agent_settings = {'llm': org_llm}
+        org.llm_profiles = None
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == fixture['org_id'],
+                    OrgMember.user_id == fixture['admin_user_id'],
+                )
+            )
+        ).scalar_one()
+        member.agent_settings_diff = {}
+        member.llm_api_key = member_key
+        # Every real install has this row from migration 160; the test template truncates it.
+        await session.execute(
+            text(
+                'INSERT INTO verified_models '
+                '(model_name, provider, is_enabled, is_verified, is_free, is_default) '
+                "VALUES ('deepseek-v4-flash', 'openhands', true, true, true, true)"
+            )
+        )
+        await session.commit()
+
+
+async def _launch_settings(async_session_maker, user_id, *, litellm: bool):
+    store = SaasSettingsStore(str(user_id))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', litellm),
+        patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
+        patch(
+            'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
+            None if litellm else 'direct',
+        ),
+        patch(
+            'server.constants.OPENHANDS_DEFAULT_LLM_MODEL',
+            None if litellm else 'anthropic/claude-x',
+        ),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
+        patch(
+            'server.constants.OPENHANDS_DEFAULT_LLM_API_KEY',
+            None if litellm else 'sk-install',
+        ),
+    ):
+        return await store.load(resolve_agent_profile=True)
+
+
+@pytest.mark.asyncio
+async def test_litellm_off_fresh_member_launches_install_default(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """The seeded OpenHands default must not override the direct install default."""
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker,
+        fixture,
+        org_llm={'model': 'anthropic/claude-x', 'base_url': None},
+        member_key='sk-install',
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=False
+    )
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'anthropic/claude-x'
+    assert loaded.agent_settings.llm.base_url is None
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == 'sk-install'
+
+
+@pytest.mark.asyncio
+async def test_litellm_off_member_from_gateway_era_launches_install_default(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """A member created while LiteLLM was on moves to the install default and key."""
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker,
+        fixture,
+        org_llm={
+            'model': 'litellm_proxy/claude-sonnet-4-5',
+            'base_url': 'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+        },
+        member_key='sk-litellm-virtual-key',
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=False
+    )
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'anthropic/claude-x'
+    assert loaded.agent_settings.llm.base_url is None
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == 'sk-install'
+
+
+@pytest.mark.asyncio
+async def test_litellm_on_member_still_launches_openhands_default(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker,
+        fixture,
+        org_llm={'model': 'litellm_proxy/claude-sonnet-4-5', 'base_url': None},
+        member_key='sk-litellm-virtual-key',
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'openhands/deepseek-v4-flash'
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == (
+        'sk-litellm-virtual-key'
+    )

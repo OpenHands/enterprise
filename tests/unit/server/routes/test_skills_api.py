@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.skills_router import (
     GLOBAL_SKILLS_DIR,
     _clone_marketplace_repo,
+    get_marketplace_skills,
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
 
@@ -531,3 +533,101 @@ class TestMarketplaceSkillsCloneFailures:
         clone_argv = mock_run.call_args[0][0]
         assert clone_argv[3] == 'https://github.com/OpenHands/skills.git'
         mock_user_context.get_provider_handler.assert_not_awaited()
+
+
+# Tests for marketplace-skills endpoint built-in skill name conflicts
+
+
+def _write_skill_dir(skill_dir: Path, name: str) -> None:
+    """Write a skill directory whose SKILL.md declares the given name."""
+    skill_dir.mkdir(parents=True)
+    (skill_dir / 'SKILL.md').write_text(f'---\nname: {name}\n---\n{name} content')
+
+
+def _write_marketplace_manifest(repo_dir: Path, layout: str, source: str) -> None:
+    """Write a marketplace manifest listing one entry as a plugin or a skill."""
+    entry = {'name': 'custom', 'source': source}
+    manifest = {
+        'name': 'acme',
+        'owner': {'name': 'Acme'},
+        'plugins': [entry] if layout == 'plugin' else [],
+        'skills': [entry] if layout == 'skill' else [],
+    }
+    manifest_dir = repo_dir / '.plugin'
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / 'marketplace.json').write_text(json.dumps(manifest))
+
+
+async def _preview_marketplace(repo_dir: Path, global_dir: Path):
+    """Preview a marketplace whose clone is repo_dir against built-in skills."""
+    marketplace = MarketplaceRegistration(name='acme', source='github:acme/skills')
+    with (
+        patch(
+            'openhands.app_server.user.skills_router._clone_marketplace_repo',
+            AsyncMock(return_value=(repo_dir, '')),
+        ),
+        patch('openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir),
+    ):
+        return await get_marketplace_skills([marketplace], user_context=MagicMock())
+
+
+class TestMarketplaceSkillsNameConflicts:
+    """Tests for built-in skill name conflicts in marketplace-skills endpoint."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('layout', ['plugin', 'skill', 'no-manifest'])
+    async def test_reports_skill_sharing_builtin_name(self, tmp_path, layout):
+        """A marketplace skill named like a built-in skill is reported."""
+        # Arrange
+        global_dir = tmp_path / 'global'
+        _write_skill_file(global_dir, 'github')
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'custom', 'github')
+        if layout != 'no-manifest':
+            _write_marketplace_manifest(repo_dir, layout, './skills/custom')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, global_dir)
+
+        # Assert
+        assert [conflict.model_dump() for conflict in result.conflicts] == [
+            {
+                'name': 'github',
+                'marketplace': 'acme',
+                'source': 'github:acme/skills',
+                'conflicts_with': 'global',
+            }
+        ]
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_reports_no_conflict_for_unique_skill_name(self, tmp_path):
+        """A marketplace skill with a unique name is not reported."""
+        # Arrange
+        global_dir = tmp_path / 'global'
+        _write_skill_file(global_dir, 'github')
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'custom', 'acme-github')
+        _write_marketplace_manifest(repo_dir, 'plugin', './skills/custom')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, global_dir)
+
+        # Assert
+        assert result.conflicts == []
+
+    @pytest.mark.asyncio
+    async def test_ignores_manifest_entry_outside_marketplace_repo(self, tmp_path):
+        """A manifest entry pointing outside the cloned repo is not inspected."""
+        # Arrange
+        global_dir = tmp_path / 'global'
+        _write_skill_file(global_dir, 'github')
+        _write_skill_dir(tmp_path / 'outside', 'github')
+        repo_dir = tmp_path / 'repo'
+        _write_marketplace_manifest(repo_dir, 'plugin', '../outside')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, global_dir)
+
+        # Assert
+        assert result.conflicts == []

@@ -1,23 +1,53 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&family=Outfit:wght@100..900&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&family=Outfit:wght@100..900&display=swap");
 
 :root {
-  --bg-dark: #0c0e10;
-  --bg-light: #292929;
-  --bg-input: #393939;
-  --bg-workspace: #1f2228;
-  --border: #3c3c4a;
-  --text-editor-base: #9099ac;
-  --text-editor-active: #c4cbda;
-  --bg-editor-sidebar: #24272e;
-  --bg-editor-active: #31343d;
-  --border-editor-sidebar: #3c3c4a;
-  background-color: var(--base) !important;
-  --bg-neutral-muted: #afb8c133;
+  --oh-bg-dark: var(--cool-grey-950);
+  --oh-bg-light: var(--cool-grey-900);
+  --oh-bg-input: var(--cool-grey-800);
+  --oh-bg-workspace: var(--cool-grey-925);
+  --oh-text-editor-base: var(--cool-grey-400);
+  --oh-text-editor-active: var(--cool-grey-300);
+  --oh-bg-editor-sidebar: var(--cool-grey-925);
+  --oh-bg-editor-active: var(--cool-grey-900);
+  --oh-border-editor-sidebar: var(--cool-grey-800);
+  --oh-bg-neutral-muted: color-mix(
+    in srgb,
+    var(--cool-grey-300) 20%,
+    transparent
+  );
+  --bg-dark: var(--oh-bg-dark);
+  --bg-light: var(--oh-bg-light);
+  --bg-input: var(--oh-bg-input);
+  --bg-workspace: var(--oh-bg-workspace);
+  --text-editor-base: var(--oh-text-editor-base);
+  --text-editor-active: var(--oh-text-editor-active);
+  --bg-editor-sidebar: var(--oh-bg-editor-sidebar);
+  --bg-editor-active: var(--oh-bg-editor-active);
+  --border-editor-sidebar: var(--oh-border-editor-sidebar);
+  --bg-neutral-muted: var(--oh-bg-neutral-muted);
+  background-color: var(--oh-color-base) !important;
+
+  /* OpenHands-Neo cool-grey scale (neutral greys) */
+  --cool-grey-50: #f7f7f7;
+  --cool-grey-100: #ececec;
+  --cool-grey-200: #dcdcdc;
+  --cool-grey-300: #bebebe;
+  --cool-grey-400: #979797;
+  --cool-grey-500: #737373;
+  --cool-grey-600: #565656;
+  --cool-grey-700: #404040;
+  --cool-grey-800: #313131;
+  --cool-grey-900: #282828;
+  --cool-grey-925: #202020;
+  --cool-grey-950: #181818;
+  --cool-grey-975: #101010;
 }
 
 body {
   margin: 0;
+  background-color: var(--oh-color-base);
+  color: var(--oh-foreground);
   font-family:
     -apple-system, "SF Pro", BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
     "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
@@ -36,10 +66,10 @@ code {
   margin: 0;
   font-size: 85%;
   white-space: break-spaces;
-  background-color: #2a3038;
+  background-color: var(--cool-grey-900);
   border-radius: 4px;
-  color: #e6edf3;
-  border: 1px solid #30363d;
+  color: var(--cool-grey-100);
+  border: 1px solid var(--cool-grey-900);
   letter-spacing: -0.2px;
 }
 

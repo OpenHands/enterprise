@@ -18,12 +18,114 @@ Covers ``POST /api/analytics/events``:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from openhands.app_server.user_auth import get_user_id
 from server.routes.analytics_events import (
     CreatePrButtonClickedEvent,
+    analytics_events_router,
     track_frontend_event,
 )
+
+
+@pytest.fixture
+def analytics_client():
+    app = FastAPI()
+    app.include_router(analytics_events_router)
+    app.dependency_overrides[get_user_id] = lambda: 'test-user'
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.mark.parametrize(
+    'payload,properties',
+    [
+        (
+            {'event_type': 'canvas_authenticated', 'client_version': '1.22.0'},
+            {'client_version': '1.22.0'},
+        ),
+        (
+            {'event_type': 'create pr button clicked', 'git_provider': 'gitlab'},
+            {'git_provider': 'gitlab'},
+        ),
+    ],
+)
+def test_http_event_contract(analytics_client, payload, properties):
+    with (
+        patch('server.routes.analytics_events.get_analytics_service') as service,
+        patch(
+            'server.routes.analytics_events.resolve_analytics_context',
+            new_callable=AsyncMock,
+        ) as context,
+    ):
+        response = analytics_client.post('/api/analytics/events', json=payload)
+    assert response.status_code == 200
+    assert response.json() == {'status': 'ok'}
+    service.return_value.capture.assert_called_once_with(
+        ctx=context.return_value, event=payload['event_type'], properties=properties
+    )
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [
+        {'event_type': 'unknown'},
+        {'event_type': 'create pr button clicked', 'git_provider': 'unknown'},
+        {'event_type': 'canvas_authenticated'},
+        {'event_type': 'canvas_authenticated', 'client_version': None},
+        {'event_type': 'canvas_authenticated', 'client_version': 123},
+        {'event_type': 'canvas_authenticated', 'client_version': ''},
+        {'event_type': 'canvas_authenticated', 'client_version': 'x' * 65},
+    ],
+)
+def test_http_rejects_invalid_payloads(analytics_client, payload):
+    with patch('server.routes.analytics_events.get_analytics_service') as service:
+        response = analytics_client.post('/api/analytics/events', json=payload)
+    assert response.status_code == 422
+    service.assert_not_called()
+
+
+def test_canvas_event_does_not_forward_extra_properties(analytics_client):
+    with (
+        patch('server.routes.analytics_events.get_analytics_service') as service,
+        patch(
+            'server.routes.analytics_events.resolve_analytics_context',
+            new_callable=AsyncMock,
+        ),
+    ):
+        response = analytics_client.post(
+            '/api/analytics/events',
+            json={
+                'event_type': 'canvas_authenticated',
+                'client_version': '1.22.0',
+                'unexpected_property': 'must not be forwarded',
+            },
+        )
+    assert response.status_code == 200
+    assert service.return_value.capture.call_args.kwargs['properties'] == {
+        'client_version': '1.22.0'
+    }
+
+
+@pytest.mark.parametrize('mode', ['unauthenticated', 'disabled', 'outage'])
+def test_canvas_event_remains_non_blocking(analytics_client, mode):
+    if mode == 'unauthenticated':
+        analytics_client.app.dependency_overrides[get_user_id] = lambda: None
+    with patch('server.routes.analytics_events.get_analytics_service') as service:
+        if mode == 'disabled':
+            service.return_value = None
+        elif mode == 'outage':
+            service.side_effect = RuntimeError('analytics unavailable')
+        response = analytics_client.post(
+            '/api/analytics/events',
+            json={'event_type': 'canvas_authenticated', 'client_version': '1.22.0'},
+        )
+    assert response.status_code == 200
+    assert response.json() == {'status': 'ok'}
+    if mode == 'unauthenticated':
+        service.return_value.capture.assert_not_called()
 
 
 @pytest.mark.asyncio
