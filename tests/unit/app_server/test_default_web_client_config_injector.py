@@ -178,6 +178,28 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_billing is False
 
+    @pytest.mark.parametrize(
+        'value,expected',
+        [('true', True), ('1', True), ('TRUE', True), ('false', False), ('0', False)],
+    )
+    def test_enable_litellm_env_values(self, value, expected):
+        """ENABLE_LEGACY_LITELLM accepts 'true' and '1' (older Helm charts use '1')."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_LEGACY_LITELLM': value}):
+            assert _get_feature_flags().enable_litellm is expected
+
+    def test_enable_litellm_defaults_true(self):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        env = {k: v for k, v in os.environ.items() if k != 'ENABLE_LEGACY_LITELLM'}
+        with patch.dict(os.environ, env, clear=True):
+            assert _get_feature_flags().enable_litellm is True
+
     def test_hide_llm_settings_true_when_env_var_true(self):
         """When HIDE_LLM_SETTINGS is 'true', hide_llm_settings flag is True."""
         from openhands.app_server.web_client.default_web_client_config_injector import (
@@ -340,6 +362,51 @@ class TestGetFeatureFlags:
             result = _get_feature_flags()
             assert result.enable_acp is True
 
+    def test_enable_oauth_v2_login_false_by_default(self):
+        """When ENABLE_OAUTH_V2_LOGIN is unset, enable_oauth_v2_login is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop('ENABLE_OAUTH_V2_LOGIN', None)
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is False
+
+    def test_enable_oauth_v2_login_true_when_env_var_true(self):
+        """When ENABLE_OAUTH_V2_LOGIN is 'true', enable_oauth_v2_login is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is True
+
+    def test_enable_oauth_v2_login_true_when_env_var_is_one(self):
+        """When ENABLE_OAUTH_V2_LOGIN is '1', enable_oauth_v2_login is True.
+
+        Older Helm chart versions default boolean toggles to '1' rather than
+        'true', so both forms must be accepted.
+        """
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is True
+
+    def test_enable_oauth_v2_login_false_when_env_var_false(self):
+        """When ENABLE_OAUTH_V2_LOGIN is 'false', enable_oauth_v2_login is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_OAUTH_V2_LOGIN': 'false'}):
+            result = _get_feature_flags()
+            assert result.enable_oauth_v2_login is False
+
     def test_enable_agent_canvas_banner_false_by_default(self):
         """When ENABLE_AGENT_CANVAS_BANNER is unset, the banner flag is False."""
         from openhands.app_server.web_client.default_web_client_config_injector import (
@@ -385,6 +452,52 @@ class TestGetFeatureFlags:
             config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
 
         assert config.feature_flags.enable_agent_canvas_banner is True
+
+    def test_enable_super_admin_false_by_default(self):
+        """When ENABLE_SUPER_ADMIN is unset, the Super Admin flag is False."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is False
+
+    def test_enable_super_admin_true_when_env_var_true(self):
+        """When ENABLE_SUPER_ADMIN is 'true', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
+    def test_enable_super_admin_true_when_env_var_one(self):
+        """When ENABLE_SUPER_ADMIN is '1', the Super Admin flag is True."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_SUPER_ADMIN': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_super_admin is True
+
+    def test_enable_super_admin_true_from_structured_env(self):
+        """Structured web-client env can enable the Super Admin flag."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_super_admin is True
 
 
 class TestGetJiraDcServiceAccountConfig:
@@ -894,6 +1007,51 @@ class TestEmailChangeEnabled:
         assert config.email_change_enabled is False
 
 
+class TestUserProvisioningEnabled:
+    """Tests for user_provisioning_enabled in the web client config."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('route_registered', [True, False])
+    async def test_reports_whether_provision_user_route_is_registered(
+        self, route_registered
+    ):
+        """The config mirrors the switch that registers provision-user."""
+        # Arrange
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeFeatureFlagService:
+            async def resolve(self, key):
+                return False
+
+            async def get_global_flags(self):
+                return {}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'server.services.feature_flag_service.feature_flag_service',
+                _FakeFeatureFlagService(),
+            ),
+            patch('server.constants.USER_PROVISIONING_ENABLED', route_registered),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+
+            # Act
+            config = await injector.get_web_client_config()
+
+        # Assert
+        assert config.user_provisioning_enabled is route_registered
+
+
 class TestGetJiraOauthEnabled:
     """Tests for _get_jira_oauth_enabled."""
 
@@ -1068,8 +1226,254 @@ class TestResolveFlag:
             app_mode = AppMode.SAAS
 
         with (
-            self._fake_service_module(_FakeService()),
+            # Outermost: patch.dict(sys.modules) would otherwise evict the module this caches.
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
             patch.dict(os.environ, {'ENABLE_BILLING': 'false'}),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_billing is True
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_forces_byok_when_litellm_off(self):
+        """ENABLE_LEGACY_LITELLM off forces allow_user_llm_configuration on, even
+        when OH_ALLOW_USER_LLM_CONFIGURATION is false: otherwise an install
+        with both off has no LLM source at all."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LEGACY_LITELLM': 'false',
+                    'OH_ALLOW_USER_LLM_CONFIGURATION': 'false',
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is True
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_keeps_byok_off_when_litellm_on(self):
+        """ENABLE_LEGACY_LITELLM on leaves OH_ALLOW_USER_LLM_CONFIGURATION=false
+        unchanged (unchanged behavior)."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LEGACY_LITELLM': 'true',
+                    'OH_ALLOW_USER_LLM_CONFIGURATION': 'false',
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_keeps_byok_off_when_litellm_unset(self):
+        """ENABLE_LEGACY_LITELLM unset defaults to enabled, so
+        OH_ALLOW_USER_LLM_CONFIGURATION=false stays false (unchanged
+        behavior for existing installs)."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        env = {k: v for k, v in os.environ.items() if k != 'ENABLE_LEGACY_LITELLM'}
+        env['OH_ALLOW_USER_LLM_CONFIGURATION'] = 'false'
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(os.environ, env, clear=True),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.allow_user_llm_configuration is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_resolves_litellm_from_structured_env(self):
+        """A structured OH_WEB_CLIENT_FEATURE_FLAGS_* env var (e.g. the
+        Replicated chart) builds feature_flags field-by-field, so an untouched
+        enable_litellm field would otherwise fall back to the pydantic
+        default (True) and miss plain ENABLE_LEGACY_LITELLM=false. get_web_client_config
+        must still see it off, and BYOK must still be forced on."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        class _FakeService:
+            async def resolve(self, key):
+                return False
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    'ENABLE_LEGACY_LITELLM': 'false',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING': 'false',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ALLOW_USER_LLM_CONFIGURATION': (
+                        'false'
+                    ),
+                },
+            ),
+            self._fake_service_module(_FakeService()),
+        ):
+            injector = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+            config = await injector.get_web_client_config()
+        assert config.feature_flags.enable_litellm is False
+        assert config.feature_flags.allow_user_llm_configuration is True
+
+
+class TestResolveEnableIntegratedIdp:
+    """Tests for _resolve_enable_integrated_idp and its wiring into feature_flags.
+
+    enable_integrated_idp lives on WebClientFeatureFlags (not as a top-level
+    WebClientConfig field) so it behaves like the other feature flags the
+    frontend reads from ``config.feature_flags``.
+
+    Like ``TestResolveFlag`` above, a lightweight fake module is injected into
+    ``sys.modules`` instead of importing the real ``server.routes.idp``:
+    that module pulls in the full SaaS DB-model graph, which is unnecessary
+    here and can collide with other tests' SQLAlchemy metadata when this file
+    is run in isolation.
+    """
+
+    def _fake_idp_module(self, is_idp_available):
+        import sys
+        import types
+
+        fake_module = types.ModuleType('server.routes.idp')
+        fake_module.is_idp_available = is_idp_available
+        return patch.dict(sys.modules, {'server.routes.idp': fake_module})
+
+    def _fake_feature_flag_service_module(self):
+        """Stub out server.services.feature_flag_service too.
+
+        get_web_client_config also calls _get_db_feature_flags, which
+        imports this module for real unless faked. A real import here pulls
+        in the SaaS storage/DB-model graph, which is unnecessary for this
+        test and can collide with SQLAlchemy declarative registration done
+        elsewhere in the test session.
+        """
+        import sys
+        import types
+
+        class _FakeService:
+            async def get_global_flags(self):
+                return {}
+
+            async def resolve(self, key):
+                # Mirrors the env-var fallback _resolve_flag would otherwise
+                # use; irrelevant to this test, which only asserts on
+                # enable_integrated_idp.
+                return False
+
+        fake_module = types.ModuleType('server.services.feature_flag_service')
+        fake_module.feature_flag_service = _FakeService()
+        return patch.dict(
+            sys.modules, {'server.services.feature_flag_service': fake_module}
+        )
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_is_idp_available(self):
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        async def _available():
+            return True
+
+        with self._fake_idp_module(_available):
+            assert await mod._resolve_enable_integrated_idp() is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_import_error(self):
+        """OSS installs without the enterprise dev-idp module default to False."""
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            assert await mod._resolve_enable_integrated_idp() is False
+
+    @pytest.mark.asyncio
+    async def test_get_web_client_config_surfaces_flag_under_feature_flags(self):
+        """The resolved value lands on feature_flags.enable_integrated_idp,
+        not on a top-level WebClientConfig field."""
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        async def _available():
+            return True
+
+        with (
+            self._fake_idp_module(_available),
+            self._fake_feature_flag_service_module(),
             patch(
                 'openhands.app_server.config.get_global_config',
                 return_value=_FakeGlobalConfig(),
@@ -1077,7 +1481,8 @@ class TestResolveFlag:
         ):
             injector = mod.DefaultWebClientConfigInjector()
             config = await injector.get_web_client_config()
-        assert config.feature_flags.enable_billing is True
+        assert config.feature_flags.enable_integrated_idp is True
+        assert not hasattr(config, 'integrated_idp_enabled')
 
 
 class TestSurfacedACPProviders:
@@ -1103,3 +1508,31 @@ class TestSurfacedACPProviders:
         from openhands.sdk.settings import ACP_PROVIDERS
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+
+
+class TestGetProviderDefaultHosts:
+    """Test cases for _get_provider_default_hosts helper function."""
+
+    def test_includes_bitbucket_data_center_host_when_env_var_set(self):
+        """The Bitbucket Data Center host comes from BITBUCKET_DATA_CENTER_HOST."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(
+            os.environ, {'BITBUCKET_DATA_CENTER_HOST': ' bitbucket.acme.dev '}
+        ):
+            result = _get_provider_default_hosts()
+
+        assert result['bitbucket_data_center'] == 'bitbucket.acme.dev'
+
+    def test_omits_bitbucket_data_center_when_env_var_unset(self):
+        """Without BITBUCKET_DATA_CENTER_HOST there is no Bitbucket Data Center host."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_provider_default_hosts,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_provider_default_hosts()
+
+        assert 'bitbucket_data_center' not in result

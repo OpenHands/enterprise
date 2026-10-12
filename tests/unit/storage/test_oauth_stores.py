@@ -23,7 +23,7 @@ from sqlalchemy import select
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
-from storage.oauth_provider import OAuthProvider
+from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
 from storage.oauth_provider_store import OAuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token import OAuthToken
@@ -70,19 +70,23 @@ def make_provider(async_session_maker, jwt_svc):
 
     async def _make(
         *,
-        category: ProviderType = ProviderType.GITHUB,
+        category: ProviderType | str = ProviderType.GITHUB,
         is_idp: bool = False,
         client_secret: str | None = 'secret',
+        token_url: str | None = 'https://example.com/token',
     ) -> OAuthProvider:
+        category_value = (
+            category.value if isinstance(category, ProviderType) else category
+        )
         provider = OAuthProvider(
-            provider_category=category.value,
-            display_name=category.value.title(),
+            provider_category=category_value,
+            display_name=category_value.title(),
             is_idp=is_idp,
-            client_id='cid-' + category.value,
+            client_id='cid-' + category_value,
             client_secret=wrap_token(client_secret) if client_secret else None,
-            authorization_url='https://example.com/auth',
-            token_url='https://example.com/token',
-            userinfo_url='https://example.com/user',
+            authorization_url='https://example.com/auth' if token_url else None,
+            token_url=token_url,
+            userinfo_url='https://example.com/user' if token_url else None,
             scopes=['repo'],
             permitted_drift_seconds=60,
         )
@@ -126,6 +130,22 @@ class TestOAuthProviderStore:
         ]
 
     @pytest.mark.asyncio
+    async def test_get_idp_providers_lists_integrated_idp_alongside_real_idp(
+        self, patched_session, make_provider
+    ):
+        """``get_idp_providers`` lists every ``is_idp`` row, including the
+        integrated/password IDP, which (since migration 179) is a real row
+        like any other — ``_v2_get_idp_access_token`` relies on this to
+        resolve a session's provider by id for sessions authenticated
+        against either kind."""
+        real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        integrated = await make_provider(category=INTEGRATED_IDP_CATEGORY, is_idp=True)
+
+        idps = await OAuthProviderStore().get_idp_providers()
+
+        assert {p.id for p in idps} == {real.id, integrated.id}
+
+    @pytest.mark.asyncio
     async def test_get_by_category(self, patched_session, make_provider):
         await make_provider(category=ProviderType.GITHUB)
         rows = await OAuthProviderStore().get_by_category(ProviderType.GITHUB)
@@ -133,20 +153,59 @@ class TestOAuthProviderStore:
         assert rows[0].provider_category == 'github'
 
     @pytest.mark.asyncio
-    async def test_get_first_idp(self, patched_session, make_provider):
-        first = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
-        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+    async def test_get_first_idp_picks_most_recently_created(
+        self, patched_session, make_provider
+    ):
+        """``get_first_idp`` (used by ``/oauth/idp-login``) picks whichever
+        ``is_idp`` row was created most recently — not the oldest, and not
+        special-cased by category."""
         await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        last = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
         got = await OAuthProviderStore().get_first_idp()
         assert got is not None
-        assert got.id == first.id
+        assert got.id == last.id
         assert got.is_idp is True
 
     @pytest.mark.asyncio
     async def test_get_first_idp_none(self, patched_session, make_provider):
         await make_provider(category=ProviderType.GITHUB, is_idp=False)
         assert await OAuthProviderStore().get_first_idp() is None
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_integrated_idp_wins_when_created_after_real_idp(
+        self, patched_session, make_provider
+    ):
+        """The integrated/password IDP is a real row like any other: when it
+        was configured (seeded) after a real IDP, it is what
+        ``/oauth/idp-login`` uses — not merely a fallback for when no real
+        IDP is configured."""
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        integrated = await make_provider(
+            category=INTEGRATED_IDP_CATEGORY, is_idp=True, token_url=None
+        )
+
+        got = await OAuthProviderStore().get_first_idp()
+
+        assert got is not None
+        assert got.id == integrated.id
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_real_idp_wins_when_created_after_integrated_idp(
+        self, patched_session, make_provider
+    ):
+        """The reverse of the above: a real IDP configured after the
+        integrated one takes priority for ``/oauth/idp-login``."""
+        await make_provider(
+            category=INTEGRATED_IDP_CATEGORY, is_idp=True, token_url=None
+        )
+        real = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+
+        got = await OAuthProviderStore().get_first_idp()
+
+        assert got is not None
+        assert got.id == real.id
 
     @pytest.mark.asyncio
     async def test_get_first_by_category(self, patched_session, make_provider):
@@ -179,6 +238,44 @@ class TestOAuthProviderStore:
         updated = await OAuthProviderStore().upsert(inserted)
         assert updated.id == inserted.id
         assert updated.display_name == 'GitHub Inc'
+
+    @pytest.mark.asyncio
+    async def test_create(self, patched_session):
+        provider = OAuthProvider(
+            provider_category=ProviderType.GITLAB.value,
+            display_name='GitLab',
+            is_idp=False,
+            client_id='cid',
+            client_secret=wrap_token('secret'),
+            permitted_drift_seconds=60,
+        )
+        created = await OAuthProviderStore().create(provider)
+        assert created.id is not None
+        fetched = await OAuthProviderStore().get_by_id(created.id)
+        assert fetched is not None
+        assert fetched.provider_category == 'gitlab'
+        assert unwrap_token(fetched.client_secret) == 'secret'
+
+    @pytest.mark.asyncio
+    async def test_update_partial_fields_only(self, patched_session, make_provider):
+        provider = await make_provider(client_secret='original')
+        updated = await OAuthProviderStore().update(provider.id, display_name='Renamed')
+        assert updated is not None
+        assert updated.display_name == 'Renamed'
+        # Fields not passed to update() are left untouched.
+        assert updated.client_id == provider.client_id
+        assert unwrap_token(updated.client_secret) == 'original'
+
+    @pytest.mark.asyncio
+    async def test_update_can_clear_secret(self, patched_session, make_provider):
+        provider = await make_provider(client_secret='original')
+        updated = await OAuthProviderStore().update(provider.id, client_secret=None)
+        assert updated is not None
+        assert updated.client_secret is None
+
+    @pytest.mark.asyncio
+    async def test_update_missing_returns_none(self, patched_session):
+        assert await OAuthProviderStore().update(99999, display_name='x') is None
 
     @pytest.mark.asyncio
     async def test_delete(self, patched_session, make_provider):

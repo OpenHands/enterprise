@@ -3,6 +3,7 @@ import {
   BarChart2,
   Briefcase,
   DollarSign,
+  LayoutDashboard,
   Shield,
   Users,
   Wallet,
@@ -35,27 +36,15 @@ export interface SettingsNavItem {
   // Drives both the navigation disable in ``use-settings-nav-items.ts``
   // and the server-side redirect in ``routes/settings.tsx`` from one source.
   disabledByAcp?: boolean;
+  /** Kept for titles/flags but rendered in the account dropdown, not the rail. */
+  menuOnly?: boolean;
 }
 
 const ICON_SIZE = 16;
 
 export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   {
-    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org",
-    text: "SETTINGS$NAV_ORGANIZATION",
-    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <Users className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org-members",
-    text: "SETTINGS$NAV_ORG_MEMBERS",
-    subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
+    icon: <LayoutDashboard className="size-4" strokeWidth={2} aria-hidden />,
     to: "/settings/usage-monitoring",
     text: "SETTINGS$NAV_ADMIN_DASHBOARD",
     subtitle: "SETTINGS$PAGE_USAGE_MONITORING_SUBLINE",
@@ -69,10 +58,10 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
-    icon: <CreditCardIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/credits",
-    text: "SETTINGS$NAV_CREDITS",
-    subtitle: "SETTINGS$PAGE_CREDITS_SUBLINE",
+    icon: <Users className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-members",
+    text: "SETTINGS$NAV_ORG_MEMBERS",
+    subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
     section: "org",
   },
   {
@@ -97,19 +86,24 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
+    icon: <CreditCardIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/credits",
+    text: "SETTINGS$NAV_CREDITS",
+    subtitle: "SETTINGS$PAGE_CREDITS_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org",
+    text: "SETTINGS$NAV_ORGANIZATION",
+    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
+    section: "org",
+  },
+  {
     icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/agent",
     text: "SETTINGS$AGENT",
     subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
-    section: "personal",
-  },
-  {
-    // The Agent Profiles library lives in agent-canvas, which unlists it when
-    // deployed next to this app and leaves the entry to this shell.
-    icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/canvas/settings/agents",
-    text: "SETTINGS$NAV_AGENT_PROFILES",
-    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
     section: "personal",
   },
   {
@@ -185,6 +179,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_USER",
     subtitle: "SETTINGS$PAGE_USER_SUBLINE",
     section: "user",
+    menuOnly: true,
   },
   {
     icon: <AppWindow className="size-4" strokeWidth={2} aria-hidden />,
@@ -192,6 +187,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_APPLICATION",
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
     section: "user",
+    menuOnly: true,
   },
   {
     icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,
@@ -264,6 +260,7 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/app",
     text: "SETTINGS$NAV_APPLICATION",
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
+    menuOnly: true,
   },
   {
     icon: <KeyIcon width={ICON_SIZE} height={ICON_SIZE} />,

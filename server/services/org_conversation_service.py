@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
@@ -1288,6 +1288,7 @@ class OrgConversationService:
         org_id: UUID,
         limit: int = 500,
         offset: int = 0,
+        time_window: str | None = None,
     ) -> OrgUserUsageStats:
         now = datetime.now(UTC)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1299,6 +1300,16 @@ class OrgConversationService:
             StoredConversationMetadata.conversation_version == 'V1',
             StoredConversationMetadataSaas.org_id == org_id,
         ]
+
+        # The conversation count matches list_org_conversations: top-level
+        # conversations only, created within the time window when one is given.
+        # Spend columns keep their own periods (MTD, YTD, lifetime).
+        counted: ColumnElement[bool] = (
+            StoredConversationMetadata.parent_conversation_id.is_(None)
+        )
+        if time_window and time_window in TIME_WINDOW_OPTIONS:
+            cutoff = now - timedelta(days=TIME_WINDOW_OPTIONS[time_window])
+            counted = and_(counted, StoredConversationMetadata.created_at >= cutoff)
 
         cost_events_subquery = (
             select(
@@ -1350,9 +1361,9 @@ class OrgConversationService:
                 User.git_user_name,
                 User.first_login_at,
                 User.last_login_at,
-                func.count(StoredConversationMetadata.conversation_id).label(
-                    'conversation_count'
-                ),
+                func.count(
+                    case((counted, StoredConversationMetadata.conversation_id))
+                ).label('conversation_count'),
                 func.min(StoredConversationMetadata.created_at).label(
                     'first_conversation_at'
                 ),
@@ -1406,17 +1417,32 @@ class OrgConversationService:
             has_more = True
             user_rows = user_rows[:limit]
 
-        settings_result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
-        budget_settings = settings_result.scalar_one_or_none()
+        from storage.lite_llm_manager import is_litellm_enabled
 
-        overrides_result = await self.db_session.execute(
-            select(OrgUserBudgetOverride).where(OrgUserBudgetOverride.org_id == org_id)
-        )
-        override_map = {
-            override.user_id: override for override in overrides_result.scalars().all()
-        }
+        # Budgets are enforced through LiteLLM: with the gateway disabled
+        # deployment-wide, any stored budget row is stale and no longer
+        # enforced, so omit it from usage monitoring rather than implying
+        # enforcement that is not happening. Conversation/usage stats
+        # (spend_mtd/ytd/lifetime, conversation counts, etc.) are OHE's own
+        # tracking and are unaffected.
+        litellm_enabled = await is_litellm_enabled()
+        budget_settings = None
+        override_map: dict[UUID, OrgUserBudgetOverride] = {}
+        if litellm_enabled:
+            settings_result = await self.db_session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+            budget_settings = settings_result.scalar_one_or_none()
+
+            overrides_result = await self.db_session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+            override_map = {
+                override.user_id: override
+                for override in overrides_result.scalars().all()
+            }
 
         pr_rows_result = await self.db_session.execute(
             select(

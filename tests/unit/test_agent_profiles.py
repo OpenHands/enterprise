@@ -1270,6 +1270,10 @@ def agent_profiles_app():
             'server.auth.authorization.get_user_super_role',
             AsyncMock(return_value=None),
         ),
+        patch(
+            'server.auth.authorization.is_org_suspended',
+            AsyncMock(return_value=False),
+        ),
     ):
         yield app
 

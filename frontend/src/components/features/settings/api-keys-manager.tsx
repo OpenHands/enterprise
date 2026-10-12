@@ -18,13 +18,16 @@ import { useApiKeys } from "#/hooks/query/use-api-keys";
 import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
 import { useRefreshLlmApiKey } from "#/hooks/mutation/use-refresh-llm-api-key";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { useConfig } from "#/hooks/query/use-config";
 import {
   settingsListIconActionButtonClassName,
   settingsListScrollContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
+  settingsListTableMinWidthStyle,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
 import {
@@ -347,102 +350,124 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
   }
 
   return (
-    <div className={settingsListScrollContainerClassName}>
-      <table className="w-full min-w-full table-fixed">
-        <thead className={settingsListTableHeadClassName}>
-          <tr>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}>
-              {t(I18nKey.SETTINGS$NAME)}
-            </th>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}>
-              {t(I18nKey.SETTINGS$CREATED_AT)}
-            </th>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}>
-              {t(I18nKey.SETTINGS$LAST_USED)}
-            </th>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-[14%]")}>
-              {t(I18nKey.SETTINGS$API_KEY_STATUS)}
-            </th>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}>
-              {t(I18nKey.SETTINGS$API_KEY_SCOPE)}
-            </th>
-            <th
-              className={cn(
-                settingsListTableHeaderCellClassName,
-                "w-[10%] text-right",
-              )}
-            >
-              {t(I18nKey.SETTINGS$ACTIONS)}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {apiKeys.map((key) => {
-            const status = getApiKeyStatus(key);
-            const dimmed =
-              status === "expired" || status === "pending" ? "opacity-60" : "";
-            return (
-              <tr
-                key={key.id}
-                className={cn(settingsListTableRowClassName, dimmed)}
+    <div
+      className={cn(
+        settingsListScrollContainerClassName,
+        settingsListScrollFadeFromClassName,
+      )}
+    >
+      <HorizontalScrollFade>
+        <table
+          className="w-full table-fixed"
+          style={settingsListTableMinWidthStyle(6)}
+        >
+          <thead className={settingsListTableHeadClassName}>
+            <tr>
+              <th
+                className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}
               >
-                <td
-                  className={cn(
-                    settingsListTableCellClassName,
-                    "truncate text-content-2",
-                  )}
-                  title={key.name}
+                {t(I18nKey.SETTINGS$NAME)}
+              </th>
+              <th
+                className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}
+              >
+                {t(I18nKey.SETTINGS$CREATED_AT)}
+              </th>
+              <th
+                className={cn(settingsListTableHeaderCellClassName, "w-[16%]")}
+              >
+                {t(I18nKey.SETTINGS$LAST_USED)}
+              </th>
+              <th
+                className={cn(settingsListTableHeaderCellClassName, "w-[14%]")}
+              >
+                {t(I18nKey.SETTINGS$API_KEY_STATUS)}
+              </th>
+              <th
+                className={cn(settingsListTableHeaderCellClassName, "w-[22%]")}
+              >
+                {t(I18nKey.SETTINGS$API_KEY_SCOPE)}
+              </th>
+              <th
+                className={cn(
+                  settingsListTableHeaderCellClassName,
+                  "w-[10%] min-w-12 text-right",
+                )}
+              >
+                {t(I18nKey.SETTINGS$ACTIONS)}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {apiKeys.map((key) => {
+              const status = getApiKeyStatus(key);
+              const dimmed =
+                status === "expired" || status === "pending"
+                  ? "opacity-60"
+                  : "";
+              return (
+                <tr
+                  key={key.id}
+                  className={cn(settingsListTableRowClassName, dimmed)}
                 >
-                  {key.name}
-                </td>
-                <td
-                  className={cn(
-                    settingsListTableCellClassName,
-                    "whitespace-nowrap text-content-2",
-                  )}
-                  title={key.created_at ?? undefined}
-                >
-                  {formatApiKeyDate(key.created_at)}
-                </td>
-                <td
-                  className={cn(
-                    settingsListTableCellClassName,
-                    "whitespace-nowrap text-content-2",
-                  )}
-                  title={key.last_used_at ?? undefined}
-                >
-                  {formatApiKeyDate(key.last_used_at)}
-                </td>
-                <td className={settingsListTableCellClassName}>
-                  <ApiKeyStatusBadge
-                    status={status}
-                    notBefore={key.not_before}
-                    expiresAt={key.expires_at}
-                  />
-                </td>
-                <td className={cn(settingsListTableCellClassName, "min-w-0")}>
-                  <ApiKeyScopeBadge
-                    orgId={key.org_id}
-                    orgLabel={resolveOrgLabel(key.org_id)}
-                  />
-                </td>
-                <td
-                  className={cn(settingsListTableCellClassName, "text-right")}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onDeleteKey(key)}
-                    aria-label={`Delete ${key.name}`}
-                    className={settingsListIconActionButtonClassName}
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "truncate text-content-2",
+                    )}
+                    title={key.name}
                   >
-                    <DeleteIcon width={16} height={16} />
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    {key.name}
+                  </td>
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "whitespace-nowrap text-content-2",
+                    )}
+                    title={key.created_at ?? undefined}
+                  >
+                    {formatApiKeyDate(key.created_at)}
+                  </td>
+                  <td
+                    className={cn(
+                      settingsListTableCellClassName,
+                      "whitespace-nowrap text-content-2",
+                    )}
+                    title={key.last_used_at ?? undefined}
+                  >
+                    {formatApiKeyDate(key.last_used_at)}
+                  </td>
+                  <td className={settingsListTableCellClassName}>
+                    <ApiKeyStatusBadge
+                      status={status}
+                      notBefore={key.not_before}
+                      expiresAt={key.expires_at}
+                    />
+                  </td>
+                  <td className={cn(settingsListTableCellClassName, "min-w-0")}>
+                    <ApiKeyScopeBadge
+                      orgId={key.org_id}
+                      orgLabel={resolveOrgLabel(key.org_id)}
+                    />
+                  </td>
+                  <td
+                    className={cn(settingsListTableCellClassName, "text-right")}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onDeleteKey(key)}
+                      aria-label={`Delete ${key.name}`}
+                      className={settingsListIconActionButtonClassName}
+                    >
+                      <DeleteIcon width={16} height={16} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </HorizontalScrollFade>
     </div>
   );
 }
@@ -474,6 +499,8 @@ export function ApiKeysManager() {
   const billingEnabled = !!config?.feature_flags?.enable_billing;
   const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
   const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
+  // `undefined` means the flag isn't set on this deployment; treat that as ON.
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
 
   // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
@@ -508,16 +535,17 @@ export function ApiKeysManager() {
   return (
     <>
       <div className="flex flex-col gap-6">
-        {llmKeyExportAvailable ? (
-          <LlmApiKeyManager
-            llmApiKey={llmApiKey}
-            isLoadingLlmKey={isLoadingLlmKey}
-            isPaymentRequired={isPaymentRequired}
-            refreshLlmApiKey={refreshLlmApiKey}
-          />
-        ) : (
-          <LlmApiKeyDisabled />
-        )}
+        {litellmEnabled &&
+          (llmKeyExportAvailable ? (
+            <LlmApiKeyManager
+              llmApiKey={llmApiKey}
+              isLoadingLlmKey={isLoadingLlmKey}
+              isPaymentRequired={isPaymentRequired}
+              refreshLlmApiKey={refreshLlmApiKey}
+            />
+          ) : (
+            <LlmApiKeyDisabled />
+          ))}
 
         <div className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
           <div className="flex items-start justify-between gap-4">

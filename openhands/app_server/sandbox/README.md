@@ -9,6 +9,9 @@ Since agents can do things that may harm your system, they are typically run ins
 ## Key Components
 
 - **SandboxService**: Abstract service for sandbox lifecycle management
+- **ManagedSandboxService**: The base for the Docker, E2B and k8s agent-sandbox
+  services. It owns each sandbox's row, and each backend implements only the
+  provider calls.
 - **DockerSandboxService**: Docker-based sandbox implementation
 - **RemoteSandboxService**: Runtime-API-based sandbox implementation
 - **E2BSandboxService**: E2B microVM-based sandbox implementation
@@ -17,8 +20,9 @@ Since agents can do things that may harm your system, they are typically run ins
 - **SandboxSpecService**: Manages sandbox specifications and templates
 - **SandboxRouter**: FastAPI router for sandbox endpoints
 - **sandbox_store**: The sandbox table (`v1_remote_sandbox`), which records who
-  owns each sandbox for every backend, and the helper that scopes reads to the
-  caller.
+  owns each sandbox for every backend and its lifecycle state, and the helper
+  that scopes reads to the caller.
+- **lifecycle**: The rules and background jobs that pause and delete sandboxes.
 
 ## Features
 
@@ -26,6 +30,80 @@ Since agents can do things that may harm your system, they are typically run ins
 - Sandbox lifecycle management (create, start, stop, destroy)
 - Multiple sandbox backend support (Docker, Remote, E2B, Kubernetes agent-sandbox, Local)
 - User-scoped sandbox access control
+
+## Lifecycle
+
+For Docker, E2B and Kubernetes agent-sandbox, the app pauses and deletes
+sandboxes itself. (runtime-api does this for the remote backend, and the
+process backend has no lifecycle.) The background worker applies three rules:
+
+- **Idle.** A running sandbox is paused once its agent has done nothing for
+  `idle_seconds`. The worker reads `idle_time` from the agent server's
+  `GET /server_info`. If the read fails, the worker does nothing.
+- **Max session.** A running sandbox is paused `max_session_seconds` after it
+  last started or resumed, even if its agent is still working.
+- **Delete.** A sandbox is deleted, with its workspace, once it has not run for
+  `delete_after_seconds`.
+
+A sandbox counts as active for a full idle period after it starts or resumes.
+
+A running sandbox that the provider reports as broken, such as a Docker
+container whose agent server no longer answers its health check, is paused by
+the idle and max session rules too. Its `idle_time` can't be read, so the
+worker uses the activity recorded on its row instead. It waits two idle periods
+rather than one, so a single failed health check doesn't stop a busy sandbox.
+
+| Variable | Default |
+| --- | --- |
+| `OH_SANDBOX_LIFECYCLE_IDLE_SECONDS` | 1200 (20 minutes) |
+| `OH_SANDBOX_LIFECYCLE_MAX_SESSION_SECONDS` | 43200 (12 hours) |
+| `OH_SANDBOX_LIFECYCLE_DELETE_AFTER_SECONDS` | 864000 (10 days) |
+
+The defaults match runtime-api's. A value of 0 turns a rule off.
+
+What a pause does depends on the backend:
+
+- **Docker** stops the container. Its files stay, and its processes end.
+- **E2B** pauses the microVM, with its memory and processes.
+- **Kubernetes agent-sandbox** suspends the Sandbox. The pod is deleted, and
+  its volume stays.
+
+The agent server gets `OH_RUNTIME_IDLE_TIMEOUT_SECONDS` set to `idle_seconds`,
+and caps a foreground terminal command at 90% of it (18 minutes by default), so
+that a long command times out before the sandbox looks idle.
+
+Docker and E2B set the variable only when a sandbox is created. A stopped
+container keeps its env, and E2B restores the agent server from memory, so a
+resume keeps the old value. Kubernetes agent-sandbox sends it again on every
+resume, because the new pod's agent server boots dormant and is initialized
+again. So a sandbox created before release 1.69.0, or before `idle_seconds` changed, has
+no cap or the old one: on Docker and E2B for as long as it exists, and on
+Kubernetes until it next resumes. The worker can pause such a sandbox partway
+through a long foreground command.
+
+The rules read three columns of the sandbox table: `lifecycle_state`,
+`state_changed_at` and `last_active_at`. `ManagedSandboxService` keeps them
+current. Its resume, pause and delete lock the row, call the backend's
+provider hook, and then update the row.
+
+### The worker
+
+The worker is a [procrastinate](https://procrastinate.readthedocs.io/) worker
+on the app's own database. Run it as its own process, with the same env as the
+app server:
+
+```bash
+python -m openhands.app_server.worker  # make start-worker
+```
+
+It exits when it cannot reach the database.
+
+Every minute a sweep job finds the sandboxes that may be due, and queues one
+check job for each. A check locks the sandbox's row, reads the sandbox, and
+applies the rules. It skips a row that a pause, resume or delete holds, and a
+later sweep checks it again. `OH_WORKER_CONCURRENCY` (default 10) sets how many
+jobs run at once. The procrastinate schema is created by the Alembic
+migrations.
 
 ## E2B backend
 

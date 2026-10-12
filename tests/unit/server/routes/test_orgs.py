@@ -34,6 +34,7 @@ from server.routes.org_models import (
     OrgNameExistsError,
     OrgNotFoundError,
     OrgUpdate,
+    OrgUserUsageStats,
     OrphanedUserError,
     RoleNotFoundError,
 )
@@ -189,6 +190,146 @@ async def test_create_org_success(mock_app, grant_create_organization):
             response_data['agent_settings']['llm']['model']
             == 'claude-opus-4-5-20251101'
         )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_caller_as_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request that names the caller as the owner
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with the caller as its owner
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': TEST_USER_ID,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='John Doe',
+            contact_email='john@example.com',
+            user_id=TEST_USER_ID,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_existing_user_as_owner(
+    mock_app, grant_create_organization
+):
+    """
+    GIVEN: A create request that names another existing user as the owner
+    WHEN: POST /api/organizations is called
+    THEN: That user becomes the owner and the caller is not added
+    """
+    # Arrange
+    owner_user_id = str(uuid.uuid4())
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Jane Owner',
+        contact_email='jane@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Jane Owner',
+        'contact_email': 'jane@example.com',
+        'owner_user_id': owner_user_id,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='Jane Owner',
+            contact_email='jane@example.com',
+            user_id=owner_user_id,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_unknown_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request whose owner does not match an existing user
+    WHEN: POST /api/organizations is called
+    THEN: 404 is returned and no organization is created
+    """
+    # Arrange
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': str(uuid.uuid4()),
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(),
+        ) as create_org_mock,
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        create_org_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -4527,3 +4668,38 @@ async def test_own_usage_rejects_an_unknown_time_window(own_budget_api, org_id):
     # Assert
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     usage_service.get_my_usage_stats.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_usage_counts_conversations_in_the_requested_time_window(
+    mock_app, org_id
+):
+    """
+    GIVEN: An org admin viewing usage for a time window
+    WHEN: GET .../conversations/user-usage?time_window=7d is called
+    THEN: The window is passed on for the per-user conversation count
+    """
+    # Arrange
+    usage_service = AsyncMock()
+    usage_service.get_user_usage_stats.return_value = OrgUserUsageStats(items=[])
+    mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
+        lambda: usage_service
+    )
+    admin_role = MagicMock()
+    admin_role.name = 'admin'
+
+    # Act
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=admin_role),
+    ):
+        response = TestClient(mock_app).get(
+            f'/api/organizations/{org_id}/conversations/user-usage',
+            params={'time_window': '7d'},
+        )
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    usage_service.get_user_usage_stats.assert_awaited_once_with(
+        org_id=uuid.UUID(org_id), limit=500, offset=0, time_window='7d'
+    )

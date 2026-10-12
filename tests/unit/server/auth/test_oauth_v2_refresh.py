@@ -190,21 +190,26 @@ def test_cookie_payload_roundtrip(jwt_svc):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         ate = datetime.now(timezone.utc) + timedelta(hours=1)
         payload = oauth_v2_refresh.create_oauth_v2_cookie_payload(
-            'user-123', ate, accepted_tos=True
+            'user-123', ate, accepted_tos=True, idp_provider_id=3
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
         decoded = jwt_svc.verify_jws_token(signed)
     assert decoded['user_id'] == 'user-123'
     assert decoded['accepted_tos'] is True
     assert decoded['access_token_expires_at'] is not None
+    assert decoded['idp_provider_id'] == 3
 
 
 def test_cookie_payload_none_expiry(jwt_svc):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         payload = oauth_v2_refresh.create_oauth_v2_cookie_payload(
-            'user-123', None, accepted_tos=False
+            'user-123', None, accepted_tos=False, idp_provider_id=None
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
         decoded = jwt_svc.verify_jws_token(signed)
     assert decoded['access_token_expires_at'] is None
     assert decoded['accepted_tos'] is False
+    # Key always present (even None) so decoders can tell this apart from a
+    # pre-idp_provider_id legacy cookie, where the key is absent entirely.
+    assert 'idp_provider_id' in decoded
+    assert decoded['idp_provider_id'] is None

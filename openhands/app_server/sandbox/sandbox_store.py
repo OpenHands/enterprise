@@ -8,10 +8,11 @@ and unmasked ``llm_api_key`` to release.
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import SecretStr
-from sqlalchemy import Select, String, func, select
+from sqlalchemy import Index, Select, String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +25,16 @@ REMOTE_BACKEND = 'remote'
 DOCKER_BACKEND = 'docker'
 E2B_BACKEND = 'e2b'
 K8S_AGENT_SANDBOX_BACKEND = 'k8s-agent-sandbox'
+
+
+class LifecycleState(StrEnum):
+    """What the app last did to a sandbox, or saw it do.
+
+    It is not the live status, which only the provider knows.
+    """
+
+    RUNNING = 'running'
+    PAUSED = 'paused'
 
 
 def hash_session_api_key(session_api_key: str) -> str:
@@ -45,9 +56,21 @@ class StoredSandbox(Base):
     ``session_api_key`` is the key itself, encrypted at rest, for backends
     that cannot read a key back from the provider. The hash serves the indexed
     lookup on the webhook path.
+
+    ``lifecycle_state``, ``state_changed_at`` and ``last_active_at`` record
+    when a sandbox last started, resumed or paused, and when its agent was last
+    seen working. ``ManagedSandboxService`` keeps them current for every
+    backend except remote. runtime-api tracks its own.
     """
 
     __tablename__ = 'v1_remote_sandbox'
+    __table_args__ = (
+        Index(
+            'ix_v1_remote_sandbox_backend_lifecycle_state',
+            'backend',
+            'lifecycle_state',
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     backend: Mapped[str] = mapped_column(String, server_default=REMOTE_BACKEND)
@@ -64,6 +87,36 @@ class StoredSandbox(Base):
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), index=True
     )
+    lifecycle_state: Mapped[str] = mapped_column(
+        String, server_default=LifecycleState.RUNNING.value
+    )
+    state_changed_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now()
+    )
+    last_active_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now()
+    )
+
+
+def mark_running(stored_sandbox: StoredSandbox) -> None:
+    """Record that a sandbox has just started or resumed.
+
+    Its agent counts as active from this moment.
+    """
+    now = datetime.now(UTC)
+    stored_sandbox.lifecycle_state = LifecycleState.RUNNING
+    stored_sandbox.state_changed_at = now
+    stored_sandbox.last_active_at = now
+
+
+def mark_paused(stored_sandbox: StoredSandbox) -> None:
+    """Record that a sandbox is paused.
+
+    A row that already says paused keeps the time it was paused at.
+    """
+    if stored_sandbox.lifecycle_state != LifecycleState.PAUSED:
+        stored_sandbox.lifecycle_state = LifecycleState.PAUSED
+        stored_sandbox.state_changed_at = datetime.now(UTC)
 
 
 @dataclass
@@ -103,10 +156,38 @@ async def get_stored_sandbox(
     user_context: UserContext,
     backend: str,
     sandbox_id: str,
+    for_update: bool = False,
 ) -> StoredSandbox | None:
-    """Get a sandbox by id, or None when the caller may not see it."""
+    """Get a sandbox by id, or None when the caller may not see it.
+
+    With ``for_update`` the row stays locked until the transaction ends. Every
+    transition takes this lock, so two transitions of one sandbox run one after
+    the other, across app servers.
+    """
     stmt = await secure_select(user_context, backend)
     stmt = stmt.where(StoredSandbox.id == sandbox_id)
+    if for_update:
+        # A row already in the session is read again once locked, so the
+        # caller never acts on values from before the lock.
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    result = await db_session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def lock_stored_sandbox_if_free(
+    db_session: AsyncSession, backend: str, sandbox_id: str
+) -> StoredSandbox | None:
+    """Lock a sandbox's row for the lifecycle worker, without waiting.
+
+    Returns None when the row is gone, or when a transition holds its lock.
+    Either way the worker leaves the sandbox alone until its next pass.
+    """
+    stmt = (
+        select(StoredSandbox)
+        .where(StoredSandbox.backend == backend, StoredSandbox.id == sandbox_id)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
     result = await db_session.execute(stmt)
     return result.scalar_one_or_none()
 
