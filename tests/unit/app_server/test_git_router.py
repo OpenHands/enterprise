@@ -589,10 +589,11 @@ class TestSearchRepositories:
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
     async def test_search_results_are_a_single_page(self, mock_handler_cls):
-        """Search with a query returns at most limit items and no next_page_id.
+        """Search with a query returns every result and no next_page_id.
 
         search_repositories takes no page number, so a next page would only
-        repeat the first page.
+        repeat the first page. Providers that search in several places (user
+        and orgs) can return more than limit results; none are cut.
         """
         # Arrange
         mock_handler = MagicMock()
@@ -638,20 +639,7 @@ class TestSearchRepositories:
         )
 
         # Assert
-        assert result.items == [
-            Repository(
-                id='1',
-                full_name='user/repo1',
-                git_provider=ProviderType.GITHUB,
-                is_public=True,
-            ),
-            Repository(
-                id='2',
-                full_name='user/repo2',
-                git_provider=ProviderType.GITHUB,
-                is_public=True,
-            ),
-        ]
+        assert [repo.id for repo in result.items] == ['1', '2', '3']
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -771,7 +759,7 @@ class TestSearchBranches:
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
     async def test_search_results_are_a_single_page(self, mock_handler_cls):
-        """Branch search with a query returns at most limit items and no next_page_id.
+        """Branch search with a query returns every result and no next_page_id.
 
         Branch search returns 400 for a page after the first, so a next page
         must not be advertised.
@@ -805,9 +793,11 @@ class TestSearchBranches:
         )
 
         # Assert
-        assert len(result.items) == 2
-        assert result.items[0].name == 'main'
-        assert result.items[1].name == 'develop'
+        assert [branch.name for branch in result.items] == [
+            'main',
+            'develop',
+            'feature-branch',
+        ]
         assert result.next_page_id is None
 
     @pytest.mark.asyncio

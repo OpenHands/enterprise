@@ -178,8 +178,10 @@ async def search_repositories(
             order=order,
             app_mode=get_global_config().app_mode,
         )
-        # Search results are a single page, so there is no next page.
-        return RepositoryPage(items=repos[:limit], next_page_id=None)
+        # Search results are a single page, so there is no next page. Do not
+        # cut them to limit: some providers search the user and each org with
+        # per_page=limit, so the merged results can be longer than limit.
+        return RepositoryPage(items=repos, next_page_id=None)
     else:
         if sort_order:
             # TODO: This is a temporary state until we refactor the underlying API.
@@ -272,7 +274,7 @@ async def search_branches(
             per_page=limit,
         )
         # Search results are a single page, so there is no next page.
-        return BranchPage(items=branches[:limit], next_page_id=None)
+        return BranchPage(items=branches, next_page_id=None)
 
     # The providers use page-number pagination, so per_page must be equal to
     # limit. A larger per_page moves each page window and skips items.
