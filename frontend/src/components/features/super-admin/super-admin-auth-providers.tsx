@@ -41,6 +41,23 @@ function navCopy(path: string) {
  * the two kinds the form supports today -- SAML is a follow-up. */
 const KIND_OAUTH = "OAuthProviderDetails" as const;
 const KIND_PASSWORD = "PasswordProviderDetails" as const;
+const KIND_SAML = "SamlProviderDetails" as const;
+
+/** Label for ``AuthProvider.kind`` (``type(details).__name__`` on the
+ * backend) -- falls back to the raw value for a kind the UI doesn't have
+ * copy for yet. */
+function kindLabel(t: (key: I18nKey) => string, kind: string): string {
+  switch (kind) {
+    case KIND_OAUTH:
+      return t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND_OAUTH);
+    case KIND_PASSWORD:
+      return t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD);
+    case KIND_SAML:
+      return t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML);
+    default:
+      return kind;
+  }
+}
 
 /** Reuses the ``ProviderType`` enum values -- the built-in password IDP is
  * no longer one of these (it is its own top-level ``kind`` now). */
@@ -488,11 +505,17 @@ export function SuperAdminAuthProviders() {
           {
             key: "type",
             header: t(I18nKey.SUPER_ADMIN$COL_TYPE),
-            className: "w-[28%]",
+            className: "w-[20%]",
+            render: (row) => kindLabel(t, row.kind),
+          },
+          {
+            key: "is_idp",
+            header: t(I18nKey.SUPER_ADMIN$COL_IS_IDP),
+            className: "w-[8%]",
             render: (row) =>
               row.is_idp
-                ? t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TYPE_IDP)
-                : t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TYPE_GIT),
+                ? t(I18nKey.SUPER_ADMIN$YES)
+                : t(I18nKey.SUPER_ADMIN$NO),
           },
           {
             key: "actions",

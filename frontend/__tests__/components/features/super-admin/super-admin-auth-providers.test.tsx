@@ -95,10 +95,14 @@ describe("Super Admin Auth Providers page", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists configured auth providers by title, without category/client id/secret columns", async () => {
+  it("lists configured auth providers by title, kind, and IDP flag, without client id/secret columns", async () => {
     renderAuthProvidersPage();
 
     expect(await screen.findByText("GitHub")).toBeInTheDocument();
+    expect(
+      screen.getByText("SUPER_ADMIN$AUTH_PROVIDER_KIND_OAUTH"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("SUPER_ADMIN$NO")).toBeInTheDocument();
     expect(screen.queryByText("github-client-id")).not.toBeInTheDocument();
     expect(
       screen.queryByText("SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET"),

@@ -35393,6 +35393,23 @@
     "uk": "Integrated Password",
     "ca": "Integrated Password"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML": {
+    "en": "SAML",
+    "ja": "SAML",
+    "zh-CN": "SAML",
+    "zh-TW": "SAML",
+    "ko-KR": "SAML",
+    "no": "SAML",
+    "it": "SAML",
+    "pt": "SAML",
+    "es": "SAML",
+    "ar": "SAML",
+    "fr": "SAML",
+    "tr": "SAML",
+    "de": "SAML",
+    "uk": "SAML",
+    "ca": "SAML"
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_TITLE": {
     "en": "Title",
     "ja": "Title",
@@ -35648,7 +35665,7 @@
     "uk": "No auth providers configured yet.",
     "ca": "No auth providers configured yet."
   },
-  "SUPER_ADMIN$AUTH_PROVIDER_TYPE_IDP": {
+  "SUPER_ADMIN$COL_IS_IDP": {
     "en": "Login IDP",
     "ja": "Login IDP",
     "zh-CN": "Login IDP",
@@ -35665,22 +35682,39 @@
     "uk": "Login IDP",
     "ca": "Login IDP"
   },
-  "SUPER_ADMIN$AUTH_PROVIDER_TYPE_GIT": {
-    "en": "Git Provider",
-    "ja": "Git Provider",
-    "zh-CN": "Git Provider",
-    "zh-TW": "Git Provider",
-    "ko-KR": "Git Provider",
-    "no": "Git Provider",
-    "it": "Git Provider",
-    "pt": "Git Provider",
-    "es": "Git Provider",
-    "ar": "Git Provider",
-    "fr": "Git Provider",
-    "tr": "Git Provider",
-    "de": "Git Provider",
-    "uk": "Git Provider",
-    "ca": "Git Provider"
+  "SUPER_ADMIN$YES": {
+    "en": "Yes",
+    "ja": "Yes",
+    "zh-CN": "Yes",
+    "zh-TW": "Yes",
+    "ko-KR": "Yes",
+    "no": "Yes",
+    "it": "Yes",
+    "pt": "Yes",
+    "es": "Yes",
+    "ar": "Yes",
+    "fr": "Yes",
+    "tr": "Yes",
+    "de": "Yes",
+    "uk": "Yes",
+    "ca": "Yes"
+  },
+  "SUPER_ADMIN$NO": {
+    "en": "No",
+    "ja": "No",
+    "zh-CN": "No",
+    "zh-TW": "No",
+    "ko-KR": "No",
+    "no": "No",
+    "it": "No",
+    "pt": "No",
+    "es": "No",
+    "ar": "No",
+    "fr": "No",
+    "tr": "No",
+    "de": "No",
+    "uk": "No",
+    "ca": "No"
   },
   "SUPER_ADMIN$DELETE_AUTH_PROVIDER_TITLE": {
     "en": "Delete auth provider",
