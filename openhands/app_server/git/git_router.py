@@ -118,7 +118,7 @@ async def search_repositories(
     ] = None,
     limit: Annotated[
         int,
-        Query(title='The max number of results in the page', gt=0, le=100),
+        Query(title='Results per page; a query search can return more', gt=0, le=100),
     ] = 100,
     sort_order: Annotated[
         SortOrder | None,
@@ -128,7 +128,7 @@ async def search_repositories(
 ) -> RepositoryPage:
     """Get or search repositories.
 
-    If query is provided, searches repositories across the git provider.
+    If query is provided, searches repositories across the git provider (first page only).
     If query is not provided, returns a paginated list of the authenticated user's repositories.
     """
     # Get provider tokens from user context
@@ -233,7 +233,7 @@ async def search_branches(
 ) -> BranchPage:
     """Search branches in a repository.
 
-    Returns a paginated list of branches matching the search query.
+    Returns a paginated list of branches, or one page of matches if query is provided.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
