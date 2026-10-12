@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Annotated, Any, AsyncGenerator, Literal
 from uuid import UUID
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -593,7 +594,8 @@ async def start_app_conversation(
         if quota_reserved and getattr(user_context, '_daily_quota_reserved', False):
             setattr(user_context, '_daily_quota_reserved', False)
             if quota_user_id:
-                await _release_daily_conversation_quota(quota_user_id)
+                with anyio.CancelScope(shield=True):
+                    await _release_daily_conversation_quota(quota_user_id)
         await db_session.close()
         await httpx_client.aclose()
         raise
@@ -1250,7 +1252,7 @@ async def stream_app_conversation_start(
     if quota_reserved:
         setattr(user_context, '_daily_quota_reserved', True)
     response = StreamingResponse(
-        _stream_app_conversation_start(request, user_context),
+        _stream_app_conversation_start(request, user_context, quota_user_id),
         media_type='application/json',
     )
     return response
@@ -2187,6 +2189,7 @@ async def _consume_remaining(
 async def _stream_app_conversation_start(
     request: AppConversationStartRequest,
     user_context: UserContext,
+    quota_user_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a json list, item by item."""
     # Because the original dependencies are closed after the method returns, we need
@@ -2208,7 +2211,9 @@ async def _stream_app_conversation_start(
         # Injection or cancellation may fail before the service takes ownership.
         if getattr(user_context, '_daily_quota_reserved', False):
             setattr(user_context, '_daily_quota_reserved', False)
-            quota_user_id = await user_context.get_user_id()
+            if quota_user_id is None:
+                quota_user_id = await user_context.get_user_id()
             if quota_user_id:
-                await _release_daily_conversation_quota(quota_user_id)
+                with anyio.CancelScope(shield=True):
+                    await _release_daily_conversation_quota(quota_user_id)
         raise

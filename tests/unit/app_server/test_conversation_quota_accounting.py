@@ -95,6 +95,13 @@ async def quota_start(app_db_session, async_session_maker, create_user, monkeypa
             yield task
 
         monkeypatch.setattr(service, '_start_app_conversation', sandbox_start)
+        if outcome == 'post-before-handoff-failure':
+
+            async def fail_before_handoff(_request):
+                raise RuntimeError('failure before service handoff')
+                yield
+
+            monkeypatch.setattr(service, 'start_app_conversation', fail_before_handoff)
 
         @asynccontextmanager
         async def service_context(state):
@@ -119,6 +126,20 @@ async def quota_start(app_db_session, async_session_maker, create_user, monkeypa
                 )
                 assert tasks[-1]['status'] == outcome.value
             elif endpoint == 'post':
+                if outcome == 'post-before-handoff-failure':
+                    with pytest.raises(
+                        RuntimeError, match='failure before service handoff'
+                    ):
+                        await router.start_app_conversation(
+                            Request({'type': 'http'}),
+                            request,
+                            user_context,
+                            None,
+                            session,
+                            client,
+                            service,
+                        )
+                    return
                 before = asyncio.all_tasks()
                 task = await router.start_app_conversation(
                     Request({'type': 'http'}),
@@ -234,3 +255,18 @@ async def test_unlimited_start_does_not_change_usage(
         quota = await DailyConversationQuotaService(session).get_status(str(user.id))
     assert quota.used_today == 1
     assert quota.daily_limit is None
+
+
+@pytest.mark.asyncio
+async def test_post_failure_before_service_handoff_releases_reservation_once(
+    quota_start, async_session_maker
+):
+    user, start = quota_start
+    async with async_session_maker() as session:
+        await DailyConversationQuotaService(session).reserve(str(user.id))
+
+    await start('post', 'post-before-handoff-failure')
+
+    async with async_session_maker() as session:
+        quota = await DailyConversationQuotaService(session).get_status(str(user.id))
+    assert quota.used_today == 1
