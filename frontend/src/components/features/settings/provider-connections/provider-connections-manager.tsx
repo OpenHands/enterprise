@@ -137,6 +137,7 @@ export function ProviderConnectionsManager({
         <DeleteProviderConnectionModal
           orgId={orgId}
           connection={deleteTarget}
+          linkedProfileCount={linkedCountById.get(deleteTarget.id) ?? 0}
           onClose={() => setDeleteTarget(null)}
         />
       ) : null}

@@ -4,6 +4,7 @@ import DeleteIcon from "#/icons/u-delete.svg?react";
 import { KeyStatusIcon } from "#/components/features/settings/key-status-icon";
 import type { ProviderConnection } from "#/api/organization-service/org-provider-connections-service.api";
 import { cn } from "#/utils/utils";
+import { mapProvider } from "#/utils/map-provider";
 import {
   settingsListIconActionButtonClassName,
   settingsListRowClassName,
@@ -39,7 +40,7 @@ export function ProviderConnectionRow({
           {connection.display_name}
         </span>
         <span className="min-w-0 max-w-full truncate text-sm text-[var(--oh-muted)]">
-          {connection.provider}
+          {mapProvider(connection.provider)}
         </span>
         <span className="shrink-0 text-sm text-[var(--oh-muted)]">
           {t(I18nKey.SETTINGS$PROVIDER_CONNECTION_MODEL_COUNT, {

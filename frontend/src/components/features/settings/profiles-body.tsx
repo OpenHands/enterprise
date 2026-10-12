@@ -16,9 +16,10 @@ interface ProfilesBodyProps {
   profiles: LlmProfileSummary[];
   active: string | null;
   /**
-   * Display name per provider-connection id. When non-empty, profiles are
-   * grouped under their connection's name so models sharing a connection are
-   * visually clustered. Empty (the default) renders a flat list.
+   * Display name per provider-connection id. Profiles are grouped under their
+   * connection's name once at least one linked profile's name is known, so
+   * models sharing a connection are visually clustered. Empty (the default,
+   * and the state while the names are still loading) renders a flat list.
    */
   connectionNamesById?: Record<string, string>;
   onActivate: (name: string) => void;
@@ -32,6 +33,7 @@ interface ProfilesBodyProps {
 interface ProfileGroup {
   /** Connection id, or null for profiles with no provider connection. */
   connectionId: string | null;
+  /** Connection display name; null when unknown (or for the unlinked group). */
   label: string | null;
   profiles: LlmProfileSummary[];
 }
@@ -39,7 +41,9 @@ interface ProfileGroup {
 /**
  * Bucket profiles by their `provider_connection_id`, preserving input order
  * within each group and ordering groups by first appearance. Unlinked profiles
- * collect under a trailing `null` group.
+ * collect under a trailing `null` group. A linked group whose connection has
+ * no known name keeps a `null` label so the caller can render a neutral
+ * fallback instead of the raw id.
  */
 export function groupProfilesByConnection(
   profiles: LlmProfileSummary[],
@@ -61,7 +65,7 @@ export function groupProfilesByConnection(
       if (!group) {
         group = {
           connectionId,
-          label: connectionNamesById[connectionId] ?? connectionId,
+          label: connectionNamesById[connectionId] ?? null,
           profiles: [],
         };
         groups.set(connectionId, group);
@@ -132,10 +136,16 @@ export function ProfilesBody({
     );
   }
 
-  // Group only when at least one profile links to a connection; otherwise
-  // (nothing linked) render the flat list unchanged.
-  const hasLinkedProfiles = profiles.some((p) => p.provider_connection_id);
-  if (!hasLinkedProfiles) {
+  // Group only once at least one linked profile's connection name is known.
+  // Nothing linked, no names supplied (the personal list), or names still
+  // loading all render the flat list, so a raw connection id never shows up
+  // as a group header.
+  const hasNamedLinks = profiles.some(
+    (p) =>
+      p.provider_connection_id &&
+      connectionNamesById[p.provider_connection_id] !== undefined,
+  );
+  if (!hasNamedLinks) {
     return <div className={listClassName}>{profiles.map(renderRow)}</div>;
   }
 
@@ -151,7 +161,10 @@ export function ProfilesBody({
             data-testid="profile-group-header"
             className="text-xs font-medium uppercase tracking-wide text-[var(--oh-muted)]"
           >
-            {group.label ?? t(I18nKey.SETTINGS$PROFILES_UNGROUPED)}
+            {group.connectionId === null
+              ? t(I18nKey.SETTINGS$PROFILES_UNGROUPED)
+              : (group.label ??
+                t(I18nKey.SETTINGS$PROVIDER_CONNECTION_UNKNOWN))}
           </h3>
           <div className={listClassName}>{group.profiles.map(renderRow)}</div>
         </div>

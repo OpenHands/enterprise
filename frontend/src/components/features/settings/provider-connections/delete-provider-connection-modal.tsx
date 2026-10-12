@@ -15,18 +15,27 @@ import { Typography } from "#/ui/typography";
 interface DeleteProviderConnectionModalProps {
   orgId: string | null | undefined;
   connection: ProviderConnection | null;
+  /**
+   * Profiles still linked to the connection. The backend refuses the delete
+   * (409) while any remain, so the dialog says so up front and disables
+   * Delete instead of letting the admin confirm into a server error.
+   */
+  linkedProfileCount: number;
   onClose: () => void;
 }
 
 export function DeleteProviderConnectionModal({
   orgId,
   connection,
+  linkedProfileCount,
   onClose,
 }: DeleteProviderConnectionModalProps) {
   const { t } = useTranslation();
   const deleteConnection = useDeleteProviderConnection(orgId);
 
   if (!connection) return null;
+
+  const isBlocked = linkedProfileCount > 0;
 
   const handleDelete = async () => {
     try {
@@ -38,8 +47,8 @@ export function DeleteProviderConnectionModal({
       );
       onClose();
     } catch (error) {
-      // The backend returns 409 with a message naming the profiles that still
-      // reference this connection; surface it verbatim.
+      // Safety net for a profile linked after this list loaded: the backend
+      // returns 409 naming the referencing profiles; surface it verbatim.
       displayErrorToast(extractErrorMessage(error, t(I18nKey.ERROR$GENERIC)));
     }
   };
@@ -63,7 +72,7 @@ export function DeleteProviderConnectionModal({
         type="button"
         variant="danger"
         onClick={handleDelete}
-        isDisabled={deleteConnection.isPending}
+        isDisabled={isBlocked || deleteConnection.isPending}
         aria-busy={deleteConnection.isPending}
       >
         {deleteConnection.isPending ? (
@@ -85,9 +94,14 @@ export function DeleteProviderConnectionModal({
       footer={footer}
     >
       <Typography.Paragraph className="text-sm break-all">
-        {t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_CONFIRMATION, {
-          name: connection.display_name,
-        })}
+        {isBlocked
+          ? t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_BLOCKED, {
+              name: connection.display_name,
+              count: linkedProfileCount,
+            })
+          : t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_CONFIRMATION, {
+              name: connection.display_name,
+            })}
       </Typography.Paragraph>
     </ApiKeyModalBase>
   );

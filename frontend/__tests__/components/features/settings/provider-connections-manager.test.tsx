@@ -18,6 +18,17 @@ vi.mock("#/hooks/query/use-provider-connections", () => ({
   useProviderConnections: () => connectionsState,
 }));
 
+// The global `t` mock returns keys verbatim; expose `count` here so the
+// per-connection profile count can be asserted.
+vi.mock("react-i18next", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-i18next")>()),
+  useTranslation: () => ({
+    t: (key: string, options?: { count?: number }) =>
+      typeof options?.count === "number" ? `${key}:${options.count}` : key,
+    i18n: { language: "en", exists: () => false },
+  }),
+}));
+
 vi.mock("#/hooks/mutation/use-provider-connection-mutations", () => ({
   useCreateProviderConnection: () => ({
     mutateAsync: createMock,
@@ -84,10 +95,6 @@ describe("ProviderConnectionsManager", () => {
   });
 
   it("counts profiles linked to each connection", () => {
-    // The mocked t() returns keys verbatim (no interpolation), so we can't
-    // assert on the rendered count text. Instead verify the manager tolerates
-    // a mixed set of linked/unlinked profiles without crashing and still
-    // renders the row.
     renderManager({
       profiles: [
         { provider_connection_id: "conn-1" },
@@ -97,8 +104,17 @@ describe("ProviderConnectionsManager", () => {
       ],
     });
 
-    expect(screen.getByText("OpenAI shared key")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-connection-row")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-connection-row")).toHaveTextContent(
+      "SETTINGS$PROVIDER_CONNECTION_MODEL_COUNT:2",
+    );
+  });
+
+  it("shows a zero count when no profile is linked", () => {
+    renderManager();
+
+    expect(screen.getByTestId("provider-connection-row")).toHaveTextContent(
+      "SETTINGS$PROVIDER_CONNECTION_MODEL_COUNT:0",
+    );
   });
 
   it("renders the empty state when there are no connections", () => {
@@ -143,6 +159,21 @@ describe("ProviderConnectionsManager", () => {
     expect(
       screen.getByTestId("delete-provider-connection-confirm"),
     ).toBeInTheDocument();
+  });
+
+  it("blocks deleting a connection that profiles still use", async () => {
+    renderManager({ profiles: [{ provider_connection_id: "conn-1" }] });
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId("provider-connection-delete"));
+
+    const confirm = screen.getByTestId("delete-provider-connection-confirm");
+    expect(confirm).toBeDisabled();
+    expect(
+      screen.getByText("SETTINGS$PROVIDER_CONNECTION_DELETE_BLOCKED:1"),
+    ).toBeInTheDocument();
+    await user.click(confirm);
+    expect(deleteMock).not.toHaveBeenCalled();
   });
 
   it("deletes the connection on confirm", async () => {

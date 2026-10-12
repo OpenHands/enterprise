@@ -10,7 +10,9 @@ import {
  * Provider connections are org-scoped (the
  * `/api/organizations/{orgId}/provider-connections` CRUD routes). The query is
  * disabled until an org is bound, so callers that pass `null` (personal scope,
- * members, managed installs) never fire the request.
+ * or the org form while its selector is hidden) never fire the request. The
+ * list itself only needs VIEW_ORG_SETTINGS, so the org profiles list fetches
+ * it for every member to label profile groups.
  *
  * The org list route wraps results as `{ connections: [...] }`; this hook
  * unwraps that so callers see a flat `ProviderConnection[]`.

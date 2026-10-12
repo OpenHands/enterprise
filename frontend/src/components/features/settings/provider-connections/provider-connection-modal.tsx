@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Autocomplete,
   AutocompleteItem,
@@ -55,19 +55,19 @@ export function ProviderConnectionModal({
   const updateConnection = useUpdateProviderConnection(orgId);
   const { data: providers = [] } = useSearchProviders();
 
-  const [displayName, setDisplayName] = useState("");
-  const [provider, setProvider] = useState<string | null>(null);
+  // The modal mounts fresh on every open, so the fields seed once from the
+  // connection being edited (blank on create) with no effect and no blank
+  // first paint.
+  const [displayName, setDisplayName] = useState(
+    () => connection?.display_name ?? "",
+  );
+  const [provider, setProvider] = useState<string | null>(
+    () => connection?.provider ?? (isCreate ? null : DEFAULT_PROVIDER),
+  );
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [baseUrl, setBaseUrl] = useState(() => connection?.base_url ?? "");
 
   const keyAlreadySet = Boolean(connection?.api_key_set);
-
-  useEffect(() => {
-    setDisplayName(connection?.display_name ?? "");
-    setProvider(connection?.provider ?? (isCreate ? null : DEFAULT_PROVIDER));
-    setBaseUrl(connection?.base_url ?? "");
-    setApiKey("");
-  }, [connection, isCreate]);
 
   const isPending = createConnection.isPending || updateConnection.isPending;
   const trimmedName = displayName.trim();
@@ -206,20 +206,22 @@ export function ProviderConnectionModal({
               },
             }}
           >
-            <AutocompleteSection
-              title={t(I18nKey.MODEL_SELECTOR$VERIFIED)}
-              classNames={{ heading: "text-muted" }}
-            >
-              {verifiedProviders.map((candidate) => (
-                <AutocompleteItem
-                  data-testid={`provider-item-${candidate.name}`}
-                  key={candidate.name}
-                  textValue={mapProvider(candidate.name)}
-                >
-                  {mapProvider(candidate.name)}
-                </AutocompleteItem>
-              ))}
-            </AutocompleteSection>
+            {verifiedProviders.length > 0 ? (
+              <AutocompleteSection
+                title={t(I18nKey.MODEL_SELECTOR$VERIFIED)}
+                classNames={{ heading: "text-muted" }}
+              >
+                {verifiedProviders.map((candidate) => (
+                  <AutocompleteItem
+                    data-testid={`provider-item-${candidate.name}`}
+                    key={candidate.name}
+                    textValue={mapProvider(candidate.name)}
+                  >
+                    {mapProvider(candidate.name)}
+                  </AutocompleteItem>
+                ))}
+              </AutocompleteSection>
+            ) : null}
             {unverifiedProviders.length > 0 ? (
               <AutocompleteSection
                 title={t(I18nKey.MODEL_SELECTOR$OTHERS)}

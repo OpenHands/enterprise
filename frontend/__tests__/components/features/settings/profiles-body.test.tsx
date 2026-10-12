@@ -190,7 +190,9 @@ describe("ProfilesBody", () => {
     expect(rows[3]).toHaveTextContent("p4");
   });
 
-  it("falls back to the connection id when no display name is known", () => {
+  it("keeps the flat list while no connection name is known", () => {
+    // The personal list never supplies names, and the org list has none
+    // until the connections query resolves; neither may show a raw id.
     render(
       <ProfilesBody
         isLoading={false}
@@ -206,8 +208,34 @@ describe("ProfilesBody", () => {
       />,
     );
 
-    expect(screen.getByTestId("profile-group-header")).toHaveTextContent(
-      "conn-1",
+    expect(screen.getAllByTestId("profile-row")).toHaveLength(1);
+    expect(
+      screen.queryByTestId("profile-group-header"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("labels a group whose connection name is unknown neutrally", () => {
+    render(
+      <ProfilesBody
+        isLoading={false}
+        loadError={null}
+        profiles={[linkedProfiles[0], linkedProfiles[2]]}
+        active="p1"
+        connectionNamesById={{ "conn-1": "OpenAI key" }}
+        onActivate={vi.fn()}
+        onEdit={vi.fn()}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+        isActivating={false}
+      />,
     );
+
+    const headers = screen.getAllByTestId("profile-group-header");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toHaveTextContent("OpenAI key");
+    expect(headers[1]).toHaveTextContent(
+      "SETTINGS$PROVIDER_CONNECTION_UNKNOWN",
+    );
+    expect(headers[1]).not.toHaveTextContent("conn-2");
   });
 });

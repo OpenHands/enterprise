@@ -7,8 +7,9 @@ import { LLM_PROFILES_QUERY_KEY } from "#/hooks/query/use-llm-profiles";
 import { ORG_LLM_PROFILES_QUERY_KEY } from "#/hooks/query/use-org-llm-profiles";
 import { PROVIDER_CONNECTIONS_QUERY_KEYS } from "#/hooks/query/query-keys";
 
-// Linked profiles report the connection's key presence via `api_key_set`, so
-// refresh the profile lists too after a rotation, rename, or delete.
+// Profile group headers are labelled with the connection's `display_name`, so
+// refresh the profile lists too after a rename or delete. (A profile's
+// `api_key_set` reflects only its own inline key, never the connection's.)
 const invalidateProfileCaches = (
   queryClient: ReturnType<typeof useQueryClient>,
   orgId: string | null | undefined,

@@ -3497,6 +3497,96 @@ describe("LlmSettingsScreen", () => {
         await screen.findByTestId("llm-provider-connection-input"),
       ).toBeInTheDocument();
       expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+
+      // The base URL input only exists on the advanced tier; it must be
+      // hidden there too while the connection owns the URL.
+      await userEvent.click(screen.getByTestId("sdk-section-advanced-toggle"));
+      const advancedForm = await screen.findByTestId(
+        "llm-settings-form-advanced",
+      );
+      expect(
+        within(advancedForm).getByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+      expect(
+        within(advancedForm).queryByTestId("base-url-input"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(advancedForm).queryByTestId("llm-api-key-input"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps the link and explains it when a linked profile is edited from personal scope", async () => {
+      // On SaaS the personal page lists org profiles. Without the selector,
+      // the form can't change the link, so it must say where the credentials
+      // come from and must not silently unlink the profile on save.
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "personal",
+        view: "form",
+        profile: { provider_connection_id: "conn-1", base_url: null },
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        screen.getByTestId("llm-provider-connection-notice"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("llm-provider-connection-input"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveSettingsSpy).toHaveBeenCalled();
+      });
+      const payload = saveSettingsSpy.mock.calls[0]?.[0] as Record<
+        string,
+        unknown
+      >;
+      const llm = getPayloadAgentSettings(payload).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).toMatchObject({
+        provider_connection_id: "conn-1",
+        base_url: null,
+      });
+      expect(llm).not.toHaveProperty("api_key");
+    });
+
+    it("leaves provider_connection_id out of the payload for an unlinked profile", async () => {
+      server.use(useConnectionsHandler());
+      const saveOrganizationSettingsSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue(buildSettings());
+
+      // Edit an unlinked profile on the advanced tier (no MAJOR-field reset
+      // there) and save without touching the selector.
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "form",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      await userEvent.click(screen.getByTestId("sdk-section-advanced-toggle"));
+      await screen.findByTestId("llm-settings-form-advanced");
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrganizationSettingsSpy).toHaveBeenCalled();
+      });
+      const { settings } = saveOrganizationSettingsSpy.mock.calls[0][0];
+      const llm = getPayloadAgentSettings(settings).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).not.toHaveProperty("provider_connection_id");
     });
 
     // The mocked schema predates the field; add it the way the real SDK

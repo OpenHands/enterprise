@@ -36,9 +36,11 @@ export function OrgLlmProfilesManager({
   const { t } = useTranslation();
   const { data, isLoading, error } = useOrgLlmProfiles(orgId);
   const activateProfile = useActivateOrgLlmProfile(orgId);
-  // Connection display names drive the profile grouping. Fetched regardless of
-  // `showProviderConnections` — profiles stay grouped even for members who
-  // can't manage the connections themselves.
+  // Connection display names drive the profile grouping. Fetched for every
+  // member regardless of `showProviderConnections` (the list route only needs
+  // VIEW_ORG_SETTINGS), so profiles stay grouped for members who can't manage
+  // the connections themselves. `ProfilesBody` keeps the flat list until the
+  // names have loaded, so a raw connection id never flashes as a header.
   const { data: connections } = useProviderConnections(orgId);
 
   const [profileToRename, setProfileToRename] =
