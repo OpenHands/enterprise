@@ -6,38 +6,52 @@ concrete subclasses, discriminated by ``kind`` -- a computed field that
 (``"OAuthProviderDetails"``, ``"PasswordProviderDetails"``,
 ``"SamlProviderDetails"``). ``AuthProvider.kind`` mirrors this value as a
 plain SQL column (see ``AuthProvider._sync_kind``) purely so it can be
-filtered/indexed without decrypting every row's ``details`` blob -- it is
-never set independently.
+filtered/indexed without parsing every row's ``details`` blob -- it is never
+set independently.
 
-Secret fields (``client_secret``, ``sp_private_key``) are plain pydantic
-``SecretStr`` with a ``field_serializer`` that checks
-``info.context.get('expose_secrets')``, exactly mirroring
-``Secrets.provider_tokens_serializer`` / ``custom_secrets_serializer``
-(``openhands/app_server/secrets/secrets_models.py``) and ``MCPServer``'s own
-secret fields: dumping with ``context={'expose_secrets': True}`` returns the
-real value (used when persisting -- see
-``storage.encrypt_utils.create_encrypted_json_type_decorator``), dumping
-without it returns pydantic's masked ``SecretStr`` representation (used when
-serving the admin API). One model, two dump calls -- no separate
-``has_client_secret`` bookkeeping required.
+``AuthProvider.details`` itself is a *plain* (unencrypted) JSON column --
+unlike ``LLMProfiles``/``ProviderConnections``, whose whole column is the
+encryption boundary -- so each secret field here (``client_secret``,
+``sp_private_key``) is responsible for encrypting *itself*:
+
+* ``storage.encrypt_utils.create_json_with_encrypted_secrets_type_decorator``
+  dumps with ``context={'for_storage': True}`` when binding the column for a
+  write. ``_serialize_secret_field`` responds to that by swapping the real
+  value for its own JWE ciphertext (``storage.encrypt_utils.encrypt_value``)
+  -- every other field in ``details`` is left as plain JSON, readable
+  straight out of the database.
+* That same decorator's ``process_result_value`` validates the row back with
+  ``context={'from_storage': True}``. ``_decrypt_secret_field`` responds by
+  decrypting that ciphertext back into the real value.
+* Any other construction (a brand-new object, or the admin API's create/
+  update request bodies) carries no such context, so the field is treated as
+  an already-decrypted value -- exactly what an admin typing a new secret
+  into a form sends. An explicit empty string (``""``) is normalized to
+  ``None`` here, backing the admin API's "send `""` to clear a configured
+  secret" contract.
+* Any other *serialization* (notably the admin API's response model) returns
+  pydantic's masked ``SecretStr`` placeholder when a secret is configured,
+  ``None`` when it is not -- the two are distinguishable, but the real
+  value, encrypted or not, is never echoed back either way.
 """
 
 from __future__ import annotations
 
 from abc import ABC
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import (
     Field,
     SecretStr,
     SerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
-from pydantic.json import pydantic_encoder
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from storage.encrypt_utils import decrypt_value, encrypt_value
 
 # Default clock-drift margin (seconds). Expired access tokens are still
 # refreshable via the refresh token; this margin only controls how early we
@@ -46,24 +60,34 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 DEFAULT_PERMITTED_DRIFT_SECONDS = 60
 
 
-def _serialize_secret(value: SecretStr | None, info: SerializationInfo) -> str | None:
+def _decrypt_secret_field(value: Any, info: ValidationInfo) -> str | None:
+    """Normalize a secret field on the way in -- see the module docstring."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    if info.context and info.context.get('from_storage'):
+        return decrypt_value(value)
+    return value
+
+
+def _serialize_secret_field(
+    value: SecretStr | None, info: SerializationInfo
+) -> str | None:
+    """Serialize a secret field for storage, or mask it everywhere else.
+
+    Dumping without ``context={'for_storage': True}`` (e.g. the admin API's
+    response model) returns pydantic's masked ``SecretStr`` placeholder
+    (``"**********"``) when a secret is configured, ``None`` when it is not
+    -- the two are distinguishable, so there is no separate
+    ``has_client_secret``/``has_sp_private_key`` flag to maintain, and the
+    real value is never echoed back either way.
+    """
     if value is None:
         return None
-    expose_secrets = bool(info.context and info.context.get('expose_secrets'))
-    return value.get_secret_value() if expose_secrets else pydantic_encoder(value)
-
-
-def _empty_string_clears(value: SecretStr | str | None) -> SecretStr | str | None:
-    """Treat an explicit ``""`` the same as "no secret configured".
-
-    Backs the admin API's "send ``\"\"`` to clear a configured secret"
-    contract (see ``server.routes.oauth_providers_admin``): without this, an
-    empty string would round-trip as ``SecretStr('')`` -- a
-    configured-but-blank secret -- rather than ``None``.
-    """
-    if isinstance(value, SecretStr):
-        return None if value.get_secret_value() == '' else value
-    return None if value == '' else value
+    if info.context and info.context.get('for_storage'):
+        return encrypt_value(value.get_secret_value())
+    return str(value)
 
 
 class AuthProviderDetails(DiscriminatedUnionMixin, ABC):
@@ -90,14 +114,14 @@ class OAuthProviderDetails(AuthProviderDetails):
 
     @field_validator('client_secret', mode='before')
     @classmethod
-    def _clear_empty_client_secret(cls, value):
-        return _empty_string_clears(value)
+    def _normalize_client_secret(cls, value: Any, info: ValidationInfo):
+        return _decrypt_secret_field(value, info)
 
     @field_serializer('client_secret')
     def _dump_client_secret(
         self, value: SecretStr | None, info: SerializationInfo
     ) -> str | None:
-        return _serialize_secret(value, info)
+        return _serialize_secret_field(value, info)
 
 
 class PasswordProviderDetails(AuthProviderDetails):
@@ -123,11 +147,11 @@ class SamlProviderDetails(AuthProviderDetails):
 
     @field_validator('sp_private_key', mode='before')
     @classmethod
-    def _clear_empty_sp_private_key(cls, value):
-        return _empty_string_clears(value)
+    def _normalize_sp_private_key(cls, value: Any, info: ValidationInfo):
+        return _decrypt_secret_field(value, info)
 
     @field_serializer('sp_private_key')
     def _dump_sp_private_key(
         self, value: SecretStr | None, info: SerializationInfo
     ) -> str | None:
-        return _serialize_secret(value, info)
+        return _serialize_secret_field(value, info)

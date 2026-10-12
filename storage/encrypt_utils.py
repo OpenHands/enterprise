@@ -6,7 +6,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, SecretStr, TypeAdapter
-from sqlalchemy import String, TypeDecorator
+from sqlalchemy import JSON, String, TypeDecorator
 from sqlalchemy.engine.interfaces import Dialect
 
 _jwt_service = None
@@ -125,36 +125,45 @@ class EncryptedJSON(TypeDecorator[dict[str, Any]]):
         return json.loads(decrypt_value(value))
 
 
-def create_encrypted_json_type_decorator(object_type: type):
-    """Like ``sql_utils.create_json_type_decorator``, but the serialized JSON
-    is encrypted at rest via the same JWE service as ``EncryptedJSON``.
+def create_json_with_encrypted_secrets_type_decorator(object_type: type):
+    """Create a plain (unencrypted) JSON column for a ``DiscriminatedUnionMixin``
+    whose secret fields encrypt *themselves*, rather than the whole blob.
 
-    Use for a ``DiscriminatedUnionMixin`` column that may contain secrets
-    (e.g. ``AuthProvider.details``): the type adapter dumps with
-    ``context={'expose_secrets': True}`` before encrypting -- the column
-    itself is the encryption boundary, so masking on the way in would
-    corrupt round-trips, same as ``EncryptedJSON`` -- and re-hydrates the
-    correct concrete subclass via ``TypeAdapter.validate_python`` on read, so
-    the mapped attribute is always a real ``object_type`` instance, never a
-    bare ``dict``.
+    Unlike ``EncryptedJSON``/the ``StoredSecretStr`` pattern, this does not
+    make the column itself the encryption boundary -- the row is readable
+    JSON in the database, with only its individual secret fields (e.g.
+    ``AuthProvider.details``'s ``OAuthProviderDetails.client_secret``) turned
+    into ciphertext. That split only works if the model's own
+    ``field_serializer``/``field_validator`` pair does the encrypting --
+    see ``storage.auth_provider_details`` -- which this decorator drives via
+    two dedicated contexts:
+
+    * Binding (write): dumps with ``context={'for_storage': True}``, which
+      those field serializers use to swap each secret's real value for its
+      own JWE ciphertext (``encrypt_value``). Every other field is plain
+      JSON.
+    * Reading (load): validates with ``context={'from_storage': True}``,
+      which the matching field validators use to decrypt that ciphertext
+      back into the real value. ``TypeAdapter.validate_python`` also
+      re-hydrates the correct concrete subclass, so the mapped attribute is
+      always a real ``object_type`` instance, never a bare ``dict``.
     """
     type_adapter: TypeAdapter = TypeAdapter(object_type)
 
-    class EncryptedDiscriminatedJSON(TypeDecorator):
-        impl = String
+    class JSONWithEncryptedSecrets(TypeDecorator):
+        impl = JSON
         cache_ok = True
 
         def process_bind_param(self, value, dialect):
             if value is None:
                 return None
-            dumped = type_adapter.dump_python(
-                value, mode='json', context={'expose_secrets': True}
+            return type_adapter.dump_python(
+                value, mode='json', context={'for_storage': True}
             )
-            return encrypt_value(json.dumps(dumped))
 
         def process_result_value(self, value, dialect):
             if value is None:
                 return None
-            return type_adapter.validate_python(json.loads(decrypt_value(value)))
+            return type_adapter.validate_python(value, context={'from_storage': True})
 
-    return EncryptedDiscriminatedJSON
+    return JSONWithEncryptedSecrets

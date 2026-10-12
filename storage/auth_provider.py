@@ -15,14 +15,17 @@ unencrypted SQL column purely so rows can be filtered by protocol
 (``WHERE kind = ...``) without decrypting ``details`` -- see ``_sync_kind``.
 It is never set independently of ``details``.
 
-``details`` is encrypted at rest via
-``storage.encrypt_utils.create_encrypted_json_type_decorator`` -- the whole
-blob is the encryption boundary (matching ``EncryptedJSON`` elsewhere), so
-any secret fields inside it (e.g. ``OAuthProviderDetails.client_secret``)
-must dump their real value via ``context={'expose_secrets': True}``, which
-that decorator always passes. Reading the column back validates the JSON
-into the correct ``AuthProviderDetails`` subclass, so ``provider.details``
-is always a real typed object, never a bare ``dict``.
+``details`` is stored as a plain (unencrypted, human-readable) JSON column --
+unlike ``EncryptedJSON``/``LLMProfiles``/``ProviderConnections``, the column
+itself is *not* the encryption boundary. Only the handful of secret fields
+inside ``details`` (e.g. ``OAuthProviderDetails.client_secret``,
+``SamlProviderDetails.sp_private_key``) are encrypted, each on its own, via
+the ``field_serializer``/``field_validator`` pair defined right on those
+fields in ``storage.auth_provider_details`` -- see
+``storage.encrypt_utils.create_json_with_encrypted_secrets_type_decorator``
+for how binding/reading the column drives that. Reading the column back
+validates the JSON into the correct ``AuthProviderDetails`` subclass, so
+``provider.details`` is always a real typed object, never a bare ``dict``.
 """
 
 from datetime import datetime
@@ -32,7 +35,7 @@ from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from storage.auth_provider_details import AuthProviderDetails
 from storage.base import Base
-from storage.encrypt_utils import create_encrypted_json_type_decorator
+from storage.encrypt_utils import create_json_with_encrypted_secrets_type_decorator
 
 
 class AuthProvider(Base):
@@ -53,7 +56,8 @@ class AuthProvider(Base):
     # True for login IDPs, False for git providers.
     is_idp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     details: Mapped[AuthProviderDetails] = mapped_column(
-        create_encrypted_json_type_decorator(AuthProviderDetails), nullable=False
+        create_json_with_encrypted_secrets_type_decorator(AuthProviderDetails),
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow

@@ -1,6 +1,6 @@
 """Rename ``oauth_providers`` to ``auth_providers`` and collapse its
-protocol-specific columns into a single encrypted, polymorphic ``details``
-column.
+protocol-specific columns into a single polymorphic ``details`` JSON column
+(with its secret fields individually encrypted).
 
 The OAuth v2 refactor (migrations 168/176/178/179) already showed the seams
 of a flat ``oauth_providers`` table: every row needed the same six OAuth2
@@ -25,14 +25,17 @@ not name) and replaces the flat OAuth2 columns with:
   without decrypting every row.
 - ``title`` -- renamed from ``display_name``; otherwise unchanged.
 - ``details`` -- a ``storage.auth_provider_details.AuthProviderDetails``
-  discriminated union, encrypted at rest as a whole blob via
-  ``storage.encrypt_utils.create_encrypted_json_type_decorator`` (same
-  encryption boundary convention as ``EncryptedJSON`` elsewhere, e.g.
-  ``oauth_tokens.access_token``). Carries whatever the protocol in ``kind``
-  actually needs -- the six old OAuth2 columns for an
-  ``OAuthProviderDetails`` row (including a new ``provider_type`` field that
-  replaces the brand half of the old ``provider_category`` -- see below),
-  nothing extra for ``PasswordProviderDetails``.
+  discriminated union, stored as a *plain* JSON column (readable straight out
+  of the database) rather than an ``EncryptedJSON``-style whole-blob boundary.
+  Only its secret field(s) -- ``OAuthProviderDetails.client_secret`` here --
+  are individually encrypted, via that field's own ``field_serializer`` (see
+  ``storage.auth_provider_details`` and
+  ``storage.encrypt_utils.create_json_with_encrypted_secrets_type_decorator``).
+  ``details`` carries whatever the protocol in ``kind`` actually needs -- the
+  six old OAuth2 columns for an ``OAuthProviderDetails`` row (including a new
+  ``provider_type`` field that replaces the brand half of the old
+  ``provider_category`` -- see below), nothing extra for
+  ``PasswordProviderDetails``.
 
 ``provider_category`` used to do two jobs: which *protocol* a row used
 (``'integrated_idp'`` vs. everything else) and, for OAuth2 rows, which
@@ -87,19 +90,40 @@ _PASSWORD_KIND = 'PasswordProviderDetails'
 _INTEGRATED_IDP_CATEGORY = 'integrated_idp'
 
 
-def _encrypt_details(details) -> str:
-    """Encrypt an ``AuthProviderDetails`` instance for the ``details`` column.
+def _dump_details(details) -> str:
+    """JSON-serialize an ``AuthProviderDetails`` instance for the ``details``
+    column, encrypting its own secret field(s) along the way.
 
-    Delegates to the real app encryption machinery (same as migration 168's
-    ``_encrypt_secret``/``encrypt_value`` calls) rather than reimplementing
-    it, since crypto helpers -- unlike pure sentinel values -- must exactly
-    match runtime behavior.
+    Delegates to the real app machinery (the same ``context={'for_storage':
+    True}`` dump the ``details`` column's own type decorator uses -- see
+    ``storage.encrypt_utils.create_json_with_encrypted_secrets_type_decorator``)
+    rather than reimplementing it, since crypto helpers -- unlike pure
+    sentinel values -- must exactly match runtime behavior. Returned as a
+    JSON string (rather than the raw dict) to match how other raw-SQL
+    migrations in this file write a JSON column (e.g. ``scopes`` below) --
+    Postgres casts a valid JSON text literal to the column's ``json`` type.
     """
-    from storage.auth_provider_details import AuthProviderDetails
-    from storage.encrypt_utils import create_encrypted_json_type_decorator
+    from pydantic import TypeAdapter
 
-    type_decorator = create_encrypted_json_type_decorator(AuthProviderDetails)()
-    return type_decorator.process_bind_param(details, None)
+    from storage.auth_provider_details import AuthProviderDetails
+
+    type_adapter: TypeAdapter = TypeAdapter(AuthProviderDetails)
+    dumped = type_adapter.dump_python(
+        details, mode='json', context={'for_storage': True}
+    )
+    return json.dumps(dumped)
+
+
+def _load_details(raw):
+    """Reverse of ``_dump_details`` -- decrypts the secret field(s) back."""
+    from pydantic import TypeAdapter
+
+    from storage.auth_provider_details import AuthProviderDetails
+
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    type_adapter: TypeAdapter = TypeAdapter(AuthProviderDetails)
+    return type_adapter.validate_python(raw, context={'from_storage': True})
 
 
 def _decrypt_client_secret(raw: str | None) -> str | None:
@@ -162,7 +186,7 @@ def _backfill_details(bind) -> None:
             {
                 'kind': kind,
                 'title': row['display_name'],
-                'details': _encrypt_details(details),
+                'details': _dump_details(details),
                 'id': row['id'],
             },
         )
@@ -184,7 +208,7 @@ def upgrade() -> None:
 
     op.add_column('auth_providers', sa.Column('kind', sa.String(128), nullable=True))
     op.add_column('auth_providers', sa.Column('title', sa.String(128), nullable=True))
-    op.add_column('auth_providers', sa.Column('details', sa.String(), nullable=True))
+    op.add_column('auth_providers', sa.Column('details', sa.JSON(), nullable=True))
 
     _backfill_details(bind)
 
@@ -206,11 +230,6 @@ def upgrade() -> None:
 
 
 def _restore_flat_columns(bind) -> None:
-    from storage.auth_provider_details import OAuthProviderDetails
-    from storage.encrypt_utils import create_encrypted_json_type_decorator
-
-    type_decorator = create_encrypted_json_type_decorator(OAuthProviderDetails)()
-
     rows = (
         bind.execute(sa.text('SELECT id, kind, title, details FROM auth_providers'))
         .mappings()
@@ -239,7 +258,7 @@ def _restore_flat_columns(bind) -> None:
             )
             continue
 
-        details = type_decorator.process_result_value(row['details'], None)
+        details = _load_details(row['details'])
         client_secret = (
             details.client_secret.get_secret_value() if details.client_secret else None
         )

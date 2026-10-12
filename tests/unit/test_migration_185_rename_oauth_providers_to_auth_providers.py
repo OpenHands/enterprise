@@ -1,11 +1,12 @@
 """Real-DB tests for migration 185 (``oauth_providers`` -> ``auth_providers``).
 
 Unlike the lighter migrations (168/178/179), 185 reshapes column-for-column
-data (flat OAuth2 columns -> encrypted polymorphic ``details``), so these
-tests run the real migration against a real database (via
-``postgres_testdb.run_alembic``) rather than faking the bind -- a fake bind
-would have to reimplement the SELECT/UPDATE round-trip this migration
-depends on, which is exactly what would go untested.
+data (flat OAuth2 columns -> polymorphic ``details`` with its secret
+field(s) individually encrypted), so these tests run the real migration
+against a real database (via ``postgres_testdb.run_alembic``) rather than
+faking the bind -- a fake bind would have to reimplement the SELECT/UPDATE
+round-trip this migration depends on, which is exactly what would go
+untested.
 """
 
 from __future__ import annotations
@@ -18,10 +19,17 @@ from sqlalchemy.engine import Engine
 from tests import postgres_testdb
 
 
-def _decrypt_json(raw: str) -> dict:
+def _read_details(raw) -> dict:
+    """``details`` is a plain JSON column -- depending on the DBAPI driver,
+    a raw ``text()`` SELECT may hand back an already-parsed ``dict`` or the
+    JSON text itself; normalize either to a ``dict``."""
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def _decrypt_secret_field(raw: str) -> str:
     from storage.encrypt_utils import decrypt_value
 
-    return json.loads(decrypt_value(raw))
+    return decrypt_value(raw)
 
 
 def _insert_legacy_provider(
@@ -114,11 +122,14 @@ def test_upgrade_reshapes_oauth2_row_into_encrypted_details(
     assert row['title'] == 'GitHub'
     assert row['is_idp'] is False
 
-    details = _decrypt_json(row['details'])
+    details = _read_details(row['details'])
     assert details['kind'] == 'OAuthProviderDetails'
     assert details['provider_type'] == 'github'
     assert details['client_id'] == 'gh-client'
-    assert details['client_secret'] == 'gh-secret'
+    # Only client_secret is encrypted -- everything else in `details` is
+    # plain, human-readable JSON, unlike the old whole-blob-encrypted design.
+    assert details['client_secret'] != 'gh-secret'
+    assert _decrypt_secret_field(details['client_secret']) == 'gh-secret'
     assert details['authorization_url'] == 'https://github.com/login/oauth/authorize'
     assert details['token_url'] == 'https://github.com/login/oauth/access_token'
     assert details['userinfo_url'] == 'https://api.github.com/user'
@@ -160,7 +171,7 @@ def test_upgrade_reshapes_integrated_idp_row_into_password_details(
     assert row['kind'] == 'PasswordProviderDetails'
     assert row['title'] == 'Integrated IDP'
     assert row['is_idp'] is True
-    assert _decrypt_json(row['details']) == {'kind': 'PasswordProviderDetails'}
+    assert _read_details(row['details']) == {'kind': 'PasswordProviderDetails'}
 
 
 def test_upgrade_preserves_ids_so_foreign_keys_still_resolve(
