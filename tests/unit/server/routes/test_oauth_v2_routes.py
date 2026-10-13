@@ -32,7 +32,7 @@ from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.routes import oauth_v2
-from storage.auth_provider_details import OAuthProviderDetails
+from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
 
 
 def _make_jwt_service() -> JwtService:
@@ -88,6 +88,16 @@ def _fake_provider(
         scopes=['repo'],
         permitted_drift_seconds=60,
     )
+    return provider
+
+
+def _fake_saml_provider(*, provider_id: int = 5):
+    provider = MagicMock()
+    provider.id = provider_id
+    provider.kind = SamlProviderDetails.__name__
+    provider.title = 'Acme SSO'
+    provider.is_idp = True
+    provider.details = SamlProviderDetails()
     return provider
 
 
@@ -157,6 +167,45 @@ def test_login_unknown_provider_404(client, jwt_svc):
         ),
     ):
         response = client.get('/oauth/9999/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_login_saml_provider_redirects_to_saml_router(client, jwt_svc):
+    provider = _fake_saml_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/5/login',
+            params={'redirect_url': '/dashboard'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert '/saml/5/login' in location
+    assert 'redirect_url=%2Fdashboard' in location
+
+
+def test_callback_saml_provider_404(client, jwt_svc):
+    provider = _fake_saml_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/5/callback',
+            params={'code': 'c', 'state': 's'},
+            follow_redirects=False,
+        )
     assert response.status_code == 404
 
 
