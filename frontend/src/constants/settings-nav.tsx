@@ -107,6 +107,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "personal",
   },
   {
+    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agent-context",
+    text: "SETTINGS$NAV_AGENT_CONTEXT",
+    subtitle: "SETTINGS$PAGE_AGENT_CONTEXT_SUBLINE",
+    section: "personal",
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
