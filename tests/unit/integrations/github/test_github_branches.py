@@ -169,3 +169,53 @@ async def test_search_branches_github_graphql_error_returns_empty():
     with patch.object(service, 'execute_graphql_query', exec_mock):
         branches = await service.search_branches('foo/bar', query='q')
         assert branches == []
+
+
+def _graphql_refs_page(names, has_next, end_cursor):
+    return {
+        'data': {
+            'repository': {
+                'refs': {
+                    'pageInfo': {'hasNextPage': has_next, 'endCursor': end_cursor},
+                    'nodes': [
+                        {'name': n, 'target': {'__typename': 'Commit', 'oid': n}}
+                        for n in names
+                    ],
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_branches_github_follows_cursor_to_page():
+    service = GitHubService(token=SecretStr('t'))
+
+    exec_mock = AsyncMock(
+        side_effect=[
+            _graphql_refs_page(['feat-1', 'feat-2'], True, 'CURSOR1'),
+            _graphql_refs_page(['feat-3', 'feat-4'], True, 'CURSOR2'),
+        ]
+    )
+    with patch.object(service, 'execute_graphql_query', exec_mock):
+        branches = await service.search_branches(
+            'foo/bar', query='feat', per_page=2, page=2
+        )
+
+    assert [b.name for b in branches] == ['feat-3', 'feat-4']
+    afters = [call.args[1]['after'] for call in exec_mock.call_args_list]
+    assert afters == [None, 'CURSOR1']
+
+
+@pytest.mark.asyncio
+async def test_search_branches_github_page_after_last_is_empty():
+    service = GitHubService(token=SecretStr('t'))
+
+    exec_mock = AsyncMock(return_value=_graphql_refs_page(['feat-1'], False, 'CURSOR1'))
+    with patch.object(service, 'execute_graphql_query', exec_mock):
+        branches = await service.search_branches(
+            'foo/bar', query='feat', per_page=2, page=2
+        )
+
+    assert branches == []
+    assert exec_mock.call_count == 1

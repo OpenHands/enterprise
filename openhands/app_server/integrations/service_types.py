@@ -261,8 +261,9 @@ class GitService(Protocol):
         order: str,
         public: bool,
         app_mode: AppMode,
+        page: int = 1,
     ) -> list[Repository]:
-        """Search for public repositories"""
+        """Search for repositories. page is 1-based."""
         ...
 
     async def get_all_repositories(
@@ -300,9 +301,9 @@ class GitService(Protocol):
         """Get branches for a repository with pagination"""
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
+        self, repository: str, query: str, per_page: int = 30, page: int = 1
     ) -> list[Branch]:
-        """Search for branches within a repository"""
+        """Search for branches within a repository. page is 1-based."""
 
     async def get_pr_details(self, repository: str, pr_number: int) -> dict:
         """Get detailed information about a specific pull request/merge request

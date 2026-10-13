@@ -81,17 +81,19 @@ class GitLabReposMixin(GitLabMixinBase):
         order: str = 'desc',
         public: bool = False,
         app_mode: AppMode = AppMode.OPENHANDS,
+        page: int = 1,
     ) -> list[Repository]:
         if public:
-            # When public=True, query is a GitLab URL that we need to parse
+            # When public=True, query is a GitLab URL that we need to parse.
+            # It names one repository, so only the first page has a result.
             repo_path = self._parse_gitlab_url(query)
-            if not repo_path:
-                return []  # Invalid URL format
+            if not repo_path or page > 1:
+                return []  # Invalid URL format, or a later page
 
             repository = await self.get_repository_details_from_repo_name(repo_path)
             return [repository]
 
-        return await self.get_paginated_repos(1, per_page, sort, None, query)
+        return await self.get_paginated_repos(page, per_page, sort, None, query)
 
     async def get_paginated_repos(
         self,
