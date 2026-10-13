@@ -48,6 +48,28 @@ const PASSWORD_PROVIDER: AuthProvider = {
   updated_at: "2024-01-02T00:00:00Z",
 };
 
+const SAML_PROVIDER: AuthProvider = {
+  id: 3,
+  kind: "SamlProviderDetails",
+  title: "Okta SAML",
+  is_idp: true,
+  details: {
+    kind: "SamlProviderDetails",
+    metadata_url: "https://idp.example.com/metadata",
+    idp_entity_id: "https://idp.example.com/entity",
+    sso_url: "https://idp.example.com/sso",
+    sso_binding: "redirect",
+    slo_url: "https://idp.example.com/slo",
+    idp_x509_cert:
+      "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+    sp_private_key: "**********",
+    name_id_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
+    attribute_mapping: { email: "mail", name: "displayName" },
+  },
+  created_at: "2024-01-03T00:00:00Z",
+  updated_at: "2024-01-03T00:00:00Z",
+};
+
 function renderAuthProvidersPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -303,6 +325,254 @@ describe("Super Admin Auth Providers page", () => {
             kind: "OAuthProviderDetails",
             client_id: "github-client-id-2",
             client_secret: null,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("lists a SAML provider by its kind label", async () => {
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      GITHUB_PROVIDER,
+      SAML_PROVIDER,
+    ]);
+    renderAuthProvidersPage();
+
+    expect(await screen.findByText("Okta SAML")).toBeInTheDocument();
+    expect(
+      screen.getByText("SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML"),
+    ).toBeInTheDocument();
+
+    const samlIsIdpSwitch = screen.getByRole("switch", {
+      name: "SUPER_ADMIN$COL_IS_IDP: Okta SAML",
+    });
+    expect(samlIsIdpSwitch).toBeDisabled();
+    expect(samlIsIdpSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("shows only the SAML fields, hides the IDP switch, and always sends is_idp=true when adding a SAML provider", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    renderAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const kindInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-kind",
+    );
+    await user.click(kindInput);
+    await user.click(
+      await screen.findByRole("option", {
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
+      }),
+    );
+
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-brand"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-client-id"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-is-idp"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-entity-id"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-binding"),
+    ).toHaveValue("SUPER_ADMIN$AUTH_PROVIDER_SSO_BINDING_REDIRECT");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-slo-url"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-x509-cert"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sp-private-key"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
+    ).toBeInTheDocument();
+
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
+      "Okta SAML",
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-entity-id"),
+      "https://idp.example.com/entity",
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
+      "https://idp.example.com/sso",
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
+      "email=mail, name=displayName",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(createAuthProvider).toHaveBeenCalledWith({
+        title: "Okta SAML",
+        is_idp: true,
+        details: {
+          kind: "SamlProviderDetails",
+          metadata_url: null,
+          idp_entity_id: "https://idp.example.com/entity",
+          sso_url: "https://idp.example.com/sso",
+          sso_binding: "redirect",
+          slo_url: null,
+          idp_x509_cert: null,
+          sp_private_key: null,
+          name_id_format: null,
+          attribute_mapping: { email: "mail", name: "displayName" },
+        },
+      }),
+    );
+  });
+
+  it("disables submit for a SAML provider until a metadata URL or an entity ID + SSO URL pair is entered", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-kind"),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
+      }),
+    );
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
+      "Okta SAML",
+    );
+
+    const submit = within(dialog).getByTestId(
+      "super-admin-auth-provider-form-submit",
+    );
+    expect(submit).toBeDisabled();
+
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+      "https://idp.example.com/metadata",
+    );
+    expect(submit).not.toBeDisabled();
+  });
+
+  it("loads an existing SAML provider's fields into the edit form", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+    ).toHaveValue("https://idp.example.com/metadata");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-entity-id"),
+    ).toHaveValue("https://idp.example.com/entity");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
+    ).toHaveValue("https://idp.example.com/sso");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
+    ).toHaveValue("email=mail, name=displayName");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sp-private-key"),
+    ).toHaveValue("");
+  });
+
+  it("omits details (preserving the SP private key) when editing a SAML provider without touching any SAML field", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith({
+        id: 3,
+        title: "Okta SAML",
+        is_idp: true,
+      }),
+    );
+  });
+
+  it("sends details wholesale when a SAML field is changed while editing", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const ssoUrlInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-sso-url",
+    );
+    await user.clear(ssoUrlInput);
+    await user.type(ssoUrlInput, "https://idp.example.com/sso-2");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 3,
+          details: expect.objectContaining({
+            kind: "SamlProviderDetails",
+            sso_url: "https://idp.example.com/sso-2",
+            sp_private_key: null,
           }),
         }),
       ),

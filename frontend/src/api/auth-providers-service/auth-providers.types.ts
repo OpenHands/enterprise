@@ -37,11 +37,35 @@ export interface PasswordProviderDetails {
   kind: "PasswordProviderDetails";
 }
 
-/** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. SAML
- * support is a follow-up (``SamlProviderDetails`` on the backend). */
+/** The two bindings ``SamlProviderDetails.sso_binding`` accepts -- mirrors
+ * the backend's ``Literal['redirect', 'post']``. */
+export type SamlSsoBinding = "redirect" | "post";
+
+/** Mirrors ``storage.auth_provider_details.SamlProviderDetails``.
+ *
+ * ``sp_private_key`` is never returned by the server as its real value --
+ * only a masked placeholder when one is configured, or ``null`` when it
+ * isn't; the two are distinguishable, so there is no separate
+ * ``has_sp_private_key`` flag to maintain.
+ */
+export interface SamlProviderDetails {
+  kind: "SamlProviderDetails";
+  metadata_url: string | null;
+  idp_entity_id: string | null;
+  sso_url: string | null;
+  sso_binding: SamlSsoBinding;
+  slo_url: string | null;
+  idp_x509_cert: string | null;
+  sp_private_key: string | null;
+  name_id_format: string | null;
+  attribute_mapping: Record<string, string>;
+}
+
+/** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
   | OAuthProviderDetails
-  | PasswordProviderDetails;
+  | PasswordProviderDetails
+  | SamlProviderDetails;
 
 /** A single ``auth_providers`` row, as returned by the admin API. */
 export interface AuthProvider {
