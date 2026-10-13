@@ -30,6 +30,7 @@ import {
 import {
   BrandButton,
   SettingsInput,
+  SettingsTextarea,
   SuperAdminPageHeader,
   SuperAdminRowMenu,
   SuperAdminTable,
@@ -639,17 +640,15 @@ function AuthProviderFormModal({
               showOptionalTag
               autoComplete="off"
             />
-            <SettingsInput
+            <SettingsTextarea
               testId="super-admin-auth-provider-idp-x509-cert"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IDP_X509_CERT)}
-              type="text"
               value={form.idpX509Cert}
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IDP_X509_CERT_HINT)}
               onChange={(value) =>
                 setForm((prev) => ({ ...prev, idpX509Cert: value }))
               }
+              rows={8}
               showOptionalTag
-              autoComplete="off"
             />
             {form.spPublicKey ? (
               <SettingsInput

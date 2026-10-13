@@ -657,10 +657,16 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
     ).toHaveValue("https://idp.example.com/sso");
+    // A `<textarea>`, unlike a plain `<input type="text">`, preserves the
+    // certificate's embedded newlines instead of collapsing them.
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-x509-cert"),
+    ).toHaveValue(
+      "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+    );
     // Read-only: shows the key already generated for this row, never an
     // input the admin can type into. A plain `<input type="text">` can't
-    // hold newlines, same as the existing `idp-x509-cert` field -- the
-    // browser collapses them on render.
+    // hold newlines -- the browser collapses them on render.
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-sp-public-key"),
     ).toHaveValue("-----BEGIN PUBLIC KEY-----MIIB...-----END PUBLIC KEY-----");

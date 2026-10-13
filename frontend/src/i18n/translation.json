@@ -35835,23 +35835,6 @@
     "uk": "IdP x509 Certificate",
     "ca": "IdP x509 Certificate"
   },
-  "SUPER_ADMIN$AUTH_PROVIDER_IDP_X509_CERT_HINT": {
-    "en": "PEM-encoded signing certificate from the IdP.",
-    "ja": "PEM-encoded signing certificate from the IdP.",
-    "zh-CN": "PEM-encoded signing certificate from the IdP.",
-    "zh-TW": "PEM-encoded signing certificate from the IdP.",
-    "ko-KR": "PEM-encoded signing certificate from the IdP.",
-    "no": "PEM-encoded signing certificate from the IdP.",
-    "it": "PEM-encoded signing certificate from the IdP.",
-    "pt": "PEM-encoded signing certificate from the IdP.",
-    "es": "PEM-encoded signing certificate from the IdP.",
-    "ar": "PEM-encoded signing certificate from the IdP.",
-    "fr": "PEM-encoded signing certificate from the IdP.",
-    "tr": "PEM-encoded signing certificate from the IdP.",
-    "de": "PEM-encoded signing certificate from the IdP.",
-    "uk": "PEM-encoded signing certificate from the IdP.",
-    "ca": "PEM-encoded signing certificate from the IdP."
-  },
   "SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY": {
     "en": "SP Public Key",
     "ja": "SP Public Key",
