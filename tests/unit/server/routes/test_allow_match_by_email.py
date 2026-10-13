@@ -27,12 +27,12 @@ from openhands.app_server.user_auth import get_user_id
 from server.routes import oauth_v2
 from server.routes.oauth_v2 import _resolve_or_create_user
 from server.routes.super_admins import super_admin_router
-from storage.oauth_provider import OAuthProvider
+from storage.auth_provider import AuthProvider
 
 CALLER_USER_ID = str(uuid.uuid4())
 
 
-def _fake_provider(provider_id: int = 1) -> OAuthProvider:
+def _fake_provider(provider_id: int = 1) -> AuthProvider:
     p = MagicMock()
     p.id = provider_id
     return p

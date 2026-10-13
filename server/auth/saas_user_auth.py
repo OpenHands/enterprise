@@ -101,7 +101,7 @@ class SaasUserAuth(UserAuth):
     # IDP token resolution. The middleware uses it to compute the re-minted
     # cookie's ``Max-Age`` (30-day cap).
     idp_refresh_token_expires_at: datetime | None = field(default=None, repr=False)
-    # ``oauth_providers.id`` of the IDP this v2 cookie session authenticated
+    # ``auth_providers.id`` of the IDP this v2 cookie session authenticated
     # against, carried in the cookie at mint time (``oauth_v2.py`` /
     # ``idp.py``). Lets ``_v2_get_idp_access_token`` look the provider up
     # directly instead of probing every currently-configured IDP and
@@ -599,7 +599,11 @@ class SaasUserAuth(UserAuth):
         real row with a real id; ``None`` only occurs for a *legacy* cookie
         minted before this field existed, handled separately below.
         """
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            get_token_url,
+        )
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
         try:
@@ -614,12 +618,12 @@ class SaasUserAuth(UserAuth):
         if self.idp_provider_id is None:
             return None
 
-        provider = await OAuthProviderStore().get_by_id(self.idp_provider_id)
+        provider = await AuthProviderStore().get_by_id(self.idp_provider_id)
         if provider is None:
             # The provider was deleted/reconfigured since this cookie was
             # minted -- the cookie is stale, the caller should clear it.
             raise ExpiredError()
-        if not provider.token_url:
+        if not get_token_url(provider):
             # No external IDP to refresh against (the integrated/password
             # IDP never has one).
             return None
@@ -639,7 +643,7 @@ class SaasUserAuth(UserAuth):
             return result
 
         token = await store.get_valid_access_token(
-            permitted_drift_seconds=provider.permitted_drift_seconds,
+            permitted_drift_seconds=get_permitted_drift_seconds(provider),
             refresh=_refresh_cb,
         )
         if token is None:
@@ -671,10 +675,11 @@ class SaasUserAuth(UserAuth):
         ``idp_provider_id`` is set so the next re-mint upgrades the cookie to
         the direct-lookup path above.
         """
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import get_permitted_drift_seconds
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
-        idp_providers = await OAuthProviderStore().get_idp_providers()
+        idp_providers = await AuthProviderStore().get_idp_providers()
         for provider in idp_providers:
             store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
             raw = await store.get_raw()
@@ -698,7 +703,7 @@ class SaasUserAuth(UserAuth):
                 return result
 
             token = await store.get_valid_access_token(
-                permitted_drift_seconds=provider.permitted_drift_seconds,
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
                 refresh=_refresh_cb,
             )
             if token is None:
@@ -721,7 +726,7 @@ class SaasUserAuth(UserAuth):
         # authenticated by the cookie JWT alone, so return None instead of
         # raising ExpiredError. For real IDP sessions, a missing token row
         # means the cookie is stale and the caller should clear it.
-        if not await OAuthProviderStore()._has_real_idp():
+        if not await AuthProviderStore()._has_real_idp():
             return None
         raise ExpiredError()
 
@@ -734,7 +739,7 @@ class SaasUserAuth(UserAuth):
         at refresh time (see ``_v2_get_idp_access_token``); here we use the
         default 60s so the trigger fires early enough.
         """
-        from storage.oauth_provider import DEFAULT_PERMITTED_DRIFT_SECONDS
+        from storage.auth_provider_details import DEFAULT_PERMITTED_DRIFT_SECONDS
 
         if self.access_token_expires_at is None:
             return False
@@ -804,8 +809,12 @@ class SaasUserAuth(UserAuth):
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
-        from server.auth.oauth_v2_refresh import make_refresh_callback
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
         provider_tokens: dict[ProviderType, ProviderToken] = {}
@@ -816,7 +825,7 @@ class SaasUserAuth(UserAuth):
             raise AuthError('Invalid user identity') from exc
 
         try:
-            git_providers = await OAuthProviderStore().get_git_providers()
+            git_providers = await AuthProviderStore().get_git_providers()
             for provider in git_providers:
                 store = OAuthTokenStore(
                     user_id=user_uuid, oauth_provider_id=provider.id
@@ -824,8 +833,11 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
+                # Git providers (is_idp=False) are always OAuth2 -- there is
+                # no password/SAML "git integration".
+                assert isinstance(provider.details, OAuthProviderDetails)
                 try:
-                    idp_type = ProviderType(provider.provider_category)
+                    idp_type = provider.details.provider_type
 
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
@@ -836,7 +848,7 @@ class SaasUserAuth(UserAuth):
                         host = AZURE_DEVOPS_ORGANIZATION or None
 
                     token = await store.get_valid_access_token(
-                        permitted_drift_seconds=provider.permitted_drift_seconds,
+                        permitted_drift_seconds=get_permitted_drift_seconds(provider),
                         refresh=make_refresh_callback(provider),
                     )
                     if token is None:
@@ -849,7 +861,7 @@ class SaasUserAuth(UserAuth):
                         'Error refreshing v2 provider token',
                         extra={
                             'user_id': self.user_id,
-                            'provider': provider.provider_category,
+                            'provider': provider.details.provider_type.value,
                         },
                         stack_info=True,
                     )

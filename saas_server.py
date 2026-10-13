@@ -62,6 +62,9 @@ from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
+from server.routes.oauth_providers_admin import (  # noqa: E402
+    oauth_provider_admin_router,
+)
 from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
@@ -212,6 +215,9 @@ base_app.include_router(
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
+base_app.include_router(
+    oauth_provider_admin_router
+)  # Add routes for oauth_providers CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

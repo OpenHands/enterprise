@@ -33,6 +33,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from openhands.app_server.services.jwt_service import JwtService
@@ -47,12 +48,13 @@ from server.routes.idp import (
     derive_idp_user_id,
     is_idp_available,
 )
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
+from storage.auth_provider_details import PasswordProviderDetails
+from storage.instance_settings import InstanceSettings
 
 # Fixed id used in route-dispatch tests (``/oauth/{id}/login`` etc.) that
 # exercise the integrated IDP through ``oauth_v2.py``'s generic
 # provider-id-keyed routes. Not a sentinel the app recognizes specially —
-# just a stand-in DB id that ``_available()`` wires ``OAuthProviderStore``
+# just a stand-in DB id that ``_available()`` wires ``AuthProviderStore``
 # lookups to resolve to the fake integrated-idp row below.
 _TEST_IDP_PROVIDER_ID = 999001
 
@@ -61,10 +63,10 @@ def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
     """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
     provider = MagicMock()
     provider.id = provider_id
-    provider.provider_category = INTEGRATED_IDP_CATEGORY
+    provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
-    provider.token_url = None
-    provider.display_name = 'Password Login'
+    provider.details = PasswordProviderDetails()
+    provider.title = 'Password Login'
     return provider
 
 
@@ -134,7 +136,7 @@ def _available(
     Patches ``_get_integrated_idp_provider`` (the single source of truth for
     availability and the row's id, used by both ``idp.py`` and, through
     ``is_idp_available``, the web-client config) *and*
-    ``OAuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
+    ``AuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
     ``/oauth/{id}/...`` routes) so both halves of the integrated-IDP
     dispatch agree on the same fake row.
 
@@ -159,7 +161,7 @@ def _available(
         )
         stack.enter_context(
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+                'storage.auth_provider_store.AuthProviderStore.get_by_id',
                 new_callable=AsyncMock,
                 return_value=fake_provider,
             )
@@ -273,7 +275,7 @@ class TestDeriveIdpUserId:
 class TestIsIdpAvailable:
     def test_disabled_when_no_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -284,7 +286,7 @@ class TestIsIdpAvailable:
 
     def test_enabled_when_row_exists(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=_fake_integrated_idp_provider(),
         ):
@@ -295,16 +297,17 @@ class TestIsIdpAvailable:
 
     def test_queries_integrated_idp_category(self):
         """``is_idp_available`` looks up the row by
-        ``INTEGRATED_IDP_CATEGORY`` specifically -- not just "any IDP"."""
+        ``PasswordProviderDetails.__name__`` specifically -- not just "any
+        IDP"."""
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_get:
             import asyncio
 
             asyncio.run(is_idp_available())
-        mock_get.assert_awaited_once_with(INTEGRATED_IDP_CATEGORY)
+        mock_get.assert_awaited_once_with(PasswordProviderDetails.__name__)
 
     def test_enabled_even_when_real_idp_configured(self):
         """Availability is governed solely by whether the integrated IDP's
@@ -318,7 +321,7 @@ class TestIsIdpAvailable:
                 new=AsyncMock(return_value=_fake_integrated_idp_provider()),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -336,7 +339,7 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_when_available(self):
         fake = _fake_integrated_idp_provider()
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -347,7 +350,7 @@ class TestGetIntegratedIdpProvider:
 
     def test_returns_none_without_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -359,12 +362,12 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_even_when_real_idp_configured(self):
         with (
             patch(
-                'server.routes.idp.OAuthProviderStore.get_first_by_category',
+                'server.routes.idp.AuthProviderStore.get_first_by_kind',
                 new_callable=AsyncMock,
                 return_value=_fake_integrated_idp_provider(),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -385,7 +388,7 @@ class TestIdpLoginRedirect:
         integrated IDP's row."""
         fake = _fake_integrated_idp_provider()
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -395,7 +398,7 @@ class TestIdpLoginRedirect:
 
     def test_returns_404_when_no_idp_configured(self, client):
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -430,7 +433,7 @@ class TestOAuthV2LoginRedirectsIdp:
         """Not an "integrated IDP disabled" case anymore -- just the
         standard ``_get_provider`` 404 for an id with no row at all."""
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            'storage.auth_provider_store.AuthProviderStore.get_by_id',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -864,6 +867,74 @@ class TestIdpSignup:
         query = parse_qs(urlparse(location).query)
         assert query['error'] == ['superadmin_exists']
 
+    @pytest.mark.asyncio
+    async def test_first_super_admin_is_sent_to_the_install_wizard(
+        self, app, async_session_maker
+    ):
+        """On a clean install ``create_user`` records the first account as the
+        instance's setup user. Sign-up must then land on ``/install`` (the
+        first-install wizard), not on the default page (OHE-3560)."""
+        # Arrange: a brand-new account that ``create_user`` made the setup user.
+        user_id = derive_idp_user_id('dev@example.com')
+        new_user = _mock_user(user_id=user_id, email='dev@example.com')
+        async with async_session_maker() as session:
+            session.add(
+                InstanceSettings(
+                    id=1, setup_user_id=uuid.UUID(user_id), wizard_completed=False
+                )
+            )
+            await session.commit()
+
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+                return_value=new_user,
+            ),
+            patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
+            patch('server.routes.idp._accept_tos_for_idp_user', new_callable=AsyncMock),
+            patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
+            patch(
+                'server.routes.idp.DefaultOrgBootstrapService.apply_for_user',
+                new_callable=AsyncMock,
+                return_value=new_user,
+            ),
+            patch('server.routes.idp._track_idp_login', new_callable=AsyncMock),
+            patch('server.routes.idp._set_idp_cookie'),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+            # The real post-auth destination check reads ``instance_settings``.
+            patch('server.routes.auth.a_session_maker', async_session_maker),
+            patch('server.routes.auth.ENABLE_SUPER_ADMIN', True),
+        ):
+            # Act
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url='http://testserver'
+            ) as client:
+                response = await client.post(
+                    f'/oauth/{IDP_SIGNUP_PATH}',
+                    data={
+                        'email': 'dev@example.com',
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+
+        # Assert
+        assert response.status_code == 302
+        assert response.headers['location'] == 'http://testserver/install'
+
 
 # ── POST /oauth/idp/login ───────────────────────────────────────────────
 
@@ -1033,9 +1104,9 @@ class TestCompleteIdpLogin:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.idp._should_redirect_to_onboarding_idp_user',
+                'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value='http://testserver/',
             ),
             patch('server.routes.idp._set_idp_cookie'),
             patch(
@@ -1079,9 +1150,9 @@ class TestCompleteIdpLogin:
                 new_callable=AsyncMock,
             ),
             patch(
-                'server.routes.idp._should_redirect_to_onboarding_idp_user',
+                'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
-                return_value=False,
+                return_value='http://testserver/',
             ),
             patch('server.routes.idp._set_idp_cookie'),
             patch(
@@ -2360,6 +2431,51 @@ class TestCreateSignupLink:
         with _patch_jwt_service(jwt_svc):
             link = idp._verify_signup_link_token(token)
         assert link.org_id == org_id
+
+    @pytest.mark.asyncio
+    async def test_records_an_invitation_for_the_setup_guide(
+        self, app, jwt_svc, async_session_maker
+    ):
+        """Minting a link for a new address stamps ``instance_settings``, which
+        the setup guide's "Invite users" step reads. A link for an address
+        that already has an account is a password reset and leaves it alone.
+        """
+        async with async_session_maker() as session:
+            session.add(InstanceSettings(id=1))
+            await session.commit()
+
+        async def mint(existing_user):
+            with (
+                _available(),
+                _authenticated_as(app, 'admin-1'),
+                _superadmin(),
+                _patch_jwt_service(jwt_svc),
+                patch('storage.database.a_session_maker', async_session_maker),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=existing_user,
+                ),
+            ):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url='http://testserver'
+                ) as client:
+                    return await client.post(
+                        '/api/idp/signup-links', json={'email': 'invitee@example.com'}
+                    )
+
+        async def minted_at():
+            async with async_session_maker() as session:
+                settings = await session.get(InstanceSettings, 1)
+                return settings.signup_link_minted_at
+
+        # Act + Assert: an existing account means a password reset.
+        assert (await mint(_mock_user())).status_code == 201
+        assert await minted_at() is None
+
+        # Act + Assert: a new address means an invitation.
+        assert (await mint(None)).status_code == 201
+        assert await minted_at() is not None
 
     def test_404_when_org_id_not_found(self, app, client, jwt_svc):
         with (

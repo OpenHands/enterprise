@@ -6,6 +6,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { CopyInviteLinkButton } from "#/components/features/org/copy-invite-link-button";
 import { useCreateSignupLink } from "#/hooks/mutation/use-create-signup-link";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { SignupLinkRole } from "#/api/idp-service/idp.types";
 import {
   formControlInlineInputClassName,
@@ -114,7 +115,10 @@ export function MintSignupLinkModal({
           role === "superadmin" ? undefined : (effectiveOrgId ?? undefined),
       },
       {
-        onSuccess: (data) => setLink({ email: trimmedEmail, url: data.url }),
+        onSuccess: (data) => {
+          setLink({ email: trimmedEmail, url: data.url });
+          notifySuperAdminSetupStep("invite-users");
+        },
       },
     );
   };

@@ -38,11 +38,12 @@ from server.routes.org_models import (
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
 from storage.lite_llm_manager import LiteLlmManager
-from storage.oauth_provider import OAuthProvider
 from storage.oauth_token import OAuthToken
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
@@ -874,12 +875,29 @@ async def _user_has_automation_git_account(
     )
     if keycloak_token is not None:
         return True
+
+    # ``provider_type`` lives inside the encrypted ``details`` blob, not a
+    # plain column, so this can no longer be a single joined/filtered query
+    # -- resolve the matching provider ids in Python first (the provider
+    # table is tiny: one row per configured provider, not per user). Not
+    # filtered by ``is_idp``: a git provider configured as the sign-in IDP
+    # still counts, matching the pre-refactor query (which had no such
+    # filter either).
+    git_providers = await session.scalars(select(AuthProvider))
+    automation_provider_ids = [
+        provider.id
+        for provider in git_providers
+        if isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type.value in _AUTOMATION_GIT_PROVIDERS
+    ]
+    if not automation_provider_ids:
+        return False
+
     oauth_v2_token = await session.scalar(
         select(OAuthToken.id)
-        .join(OAuthProvider, OAuthProvider.id == OAuthToken.oauth_provider_id)
         .where(
             OAuthToken.user_id == user_id,
-            OAuthProvider.provider_category.in_(_AUTOMATION_GIT_PROVIDERS),
+            OAuthToken.oauth_provider_id.in_(automation_provider_ids),
         )
         .limit(1)
     )
@@ -887,7 +905,10 @@ async def _user_has_automation_git_account(
 
 
 async def _guide_steps(
-    org_id: UUID, setup_user_id: UUID, request: Request
+    org_id: UUID,
+    setup_user_id: UUID,
+    request: Request,
+    signup_link_minted_at: datetime | None,
 ) -> SetupGuideSteps:
     """Derive the guide's progress from what the organization really has."""
     # Pending invitations only expire when someone touches them, so check the
@@ -927,7 +948,11 @@ async def _guide_steps(
         # A GitHub, GitLab or Bitbucket account already gives the setup user
         # that provider's built-in issue-to-PR workflow.
         automation=has_git_account or await _org_has_automation(org_id, request),
-        invite=(member_count or 0) > 1 or (pending_invitations or 0) > 0,
+        # A sign-up link minted for a new address is an invitation too; it
+        # has no row of its own, so ``create_signup_link`` stamps the instance.
+        invite=(member_count or 0) > 1
+        or (pending_invitations or 0) > 0
+        or signup_link_minted_at is not None,
     )
 
 
@@ -938,7 +963,12 @@ async def _setup_state_response(
         return SetupStateResponse()
     guide_steps = None
     if settings.guide_org_id and not settings.guide_dismissed:
-        guide_steps = await _guide_steps(settings.guide_org_id, UUID(user_id), request)
+        guide_steps = await _guide_steps(
+            settings.guide_org_id,
+            UUID(user_id),
+            request,
+            settings.signup_link_minted_at,
+        )
     return SetupStateResponse(
         wizard_pending=not settings.wizard_completed,
         guide_org_id=str(settings.guide_org_id) if settings.guide_org_id else None,

@@ -1005,7 +1005,11 @@ class TestLiveStatusAppConversationService:
             get_instance=AsyncMock(return_value=store)
         )
 
-        def managed_llm_key_config_from_model(model, base_url):
+        def managed_llm_key_config_from_model(
+            model, base_url, provider_connection_id=None
+        ):
+            if provider_connection_id:
+                return None
             is_openhands = bool(model and model.startswith('openhands/'))
             is_managed_url = bool(base_url and 'all-hands.dev' in base_url.lower())
             if is_openhands and (base_url is None or is_managed_url):

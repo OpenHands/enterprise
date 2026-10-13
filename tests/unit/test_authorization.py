@@ -1493,6 +1493,7 @@ class TestSuperRolePermissions:
                 Permission.INVITE_USER_TO_ORGANIZATION,
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
+                Permission.MANAGE_OAUTH_PROVIDERS,
                 Permission.MANAGE_ORG_QUOTA,
                 Permission.CREATE_SIGNUP_LINK,
             ]

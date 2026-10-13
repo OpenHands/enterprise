@@ -30,13 +30,13 @@ from server.verified_models.verified_model_service import (
 # Imported for their side effect: SQLAlchemy can only configure mappers once
 # every model a relationship refers to has been imported.
 from storage.api_key import ApiKey  # noqa: F401
+from storage.auth_provider import AuthProvider  # noqa: F401
 from storage.billing_session import BillingSession
 from storage.conversation_work import ConversationWork
 from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
-from storage.oauth_provider import OAuthProvider  # noqa: F401
 from storage.oauth_provider_user import OAuthProviderUser  # noqa: F401
 from storage.oauth_token import OAuthToken  # noqa: F401
 from storage.org import Org

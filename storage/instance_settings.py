@@ -37,6 +37,12 @@ class InstanceSettings(Base):
     guide_dismissed: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default='false'
     )
+    # When a Super Admin last minted a sign-up link for an address with no
+    # account. A link is a signed token with no row of its own, so this is
+    # what the setup guide's "Invite users" step reads.
+    signup_link_minted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

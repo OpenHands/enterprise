@@ -39,6 +39,18 @@ vi.mock("react-i18next", async () => {
   };
 });
 
+const mockUseConfig = vi.fn(() => ({
+  data: {
+    slack_enabled: true,
+    email_enabled: true,
+    feature_flags: { enable_litellm: true },
+  },
+}));
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => mockUseConfig(),
+}));
+
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({
     organizationId: "org-123",
@@ -134,6 +146,36 @@ describe("Budgets", () => {
       budgetResponse.users[0],
     );
     vi.mocked(organizationService.deleteBudgetOverride).mockResolvedValue();
+    mockUseConfig.mockReturnValue({
+      data: {
+        slack_enabled: true,
+        email_enabled: true,
+        feature_flags: { enable_litellm: true },
+      },
+    });
+  });
+
+  it("shows a 'please enable LiteLLM' placeholder and skips the fetch when the feature flag is off", async () => {
+    mockUseConfig.mockReturnValue({
+      data: {
+        slack_enabled: true,
+        email_enabled: true,
+        feature_flags: { enable_litellm: false },
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <Budgets />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Please enable LiteLLM to use this feature.");
+    expect(organizationService.getBudgetSettings).not.toHaveBeenCalled();
   });
 
   it("keeps a rejected settings edit through refetch and retries the draft", async () => {
@@ -437,23 +479,30 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(
-      screen.getByText(/Spend data is temporarily unavailable/i),
+      screen.getByRole("button", { name: "Degraded" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Spend data is temporarily unavailable/i,
+    );
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
   it("explains governed SDK usage and unmapped LiteLLM identities", async () => {
+    const user = userEvent.setup();
     await renderBudgets();
 
-    expect(
-      screen.getByText(/SDK requests routed through this deployment/i),
-    ).toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /SDK requests routed through this deployment/i,
+    );
     expect(
       screen.getByText(/1 LiteLLM identity is not mapped/i),
     ).toHaveTextContent("$12.50 of this cycle's spend");
   });
 
   it("shows reconciliation errors without replacing authoritative spend", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       litellm_last_sync_status: "error",
@@ -465,15 +514,17 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Degraded — The last budget update could not be completed or verified.",
-    );
-    expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
+    );
+    await user.hover(screen.getByRole("button", { name: "Degraded" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Degraded — The last budget update could not be completed or verified.",
     );
     expect(screen.getByText("$200.00")).toBeInTheDocument();
   });
 
   it("explains a team cap that includes spend recorded before the cycle started", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       desired_team_max_budget: 1770,
@@ -481,28 +532,28 @@ describe("Budgets", () => {
     });
 
     await renderBudgets();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
 
-    expect(
-      screen.getByText(
-        "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
+    );
   });
 
   it("explains the team cap without an amount when it equals the monthly limit", async () => {
+    const user = userEvent.setup();
     await renderBudgets();
 
-    expect(
-      screen.getByText(
-        "The team cap includes any spend already recorded before this cycle started.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/team cap includes the \$/),
-    ).not.toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "The team cap includes any spend already recorded before this cycle started.",
+    );
+    expect(tooltip).not.toHaveTextContent(/team cap includes the \$/);
   });
 
   it("omits the team cap explanation when no organization budget is enforced", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       enabled: false,
@@ -512,10 +563,37 @@ describe("Budgets", () => {
     });
 
     await renderBudgets();
+    await user.hover(screen.getByRole("button", { name: "Inactive" }));
 
+    expect(await screen.findByRole("tooltip")).not.toHaveTextContent(
+      /already recorded before this cycle started/,
+    );
+  });
+
+  it("moves the LiteLLM explanation behind a keyboard-reachable status badge", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    expect(screen.queryByText(/LiteLLM has verified/)).not.toBeInTheDocument();
     expect(
-      screen.queryByText(/already recorded before this cycle started/),
+      screen.queryByText(/Spend reported by LiteLLM/),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    screen.getByRole("button", { name: "User overrides" }).focus();
+    await user.tab();
+
+    const badge = screen.getByRole("button", { name: "Healthy" });
+    expect(badge).toHaveFocus();
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "Healthy — LiteLLM has verified the desired budget policy. Desired team cap: $1,000. Applied team cap: $1,000.",
+    );
+    expect(tooltip).toHaveTextContent(/Spend reported by LiteLLM from/);
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
+    );
   });
 
   it("refetches budget state after a failed settings write", async () => {
