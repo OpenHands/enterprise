@@ -18,6 +18,7 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
         order: str = 'desc',
         public: bool = False,
         app_mode: AppMode = AppMode.OPENHANDS,
+        page: int = 1,
     ) -> list[Repository]:
         """Search for repositories in Azure DevOps."""
         # Get all repositories across all projects in the organization
@@ -32,8 +33,9 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
                 repo for repo in repos if query.lower() in repo.get('name', '').lower()
             ]
 
-        # Limit to per_page
-        repos = repos[:per_page]
+        # The API returns every repository, so take the requested page here
+        start = (page - 1) * per_page
+        repos = repos[start : start + per_page]
 
         return [
             Repository(

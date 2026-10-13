@@ -120,3 +120,15 @@ async def test_search_branches_gitlab_uses_search_param():
             protected=True,
             last_push_date='2024-01-05T00:00:00Z',
         )
+
+
+@pytest.mark.asyncio
+async def test_search_branches_gitlab_passes_page():
+    service = GitLabService(token=SecretStr('t'))
+
+    with patch.object(service, '_make_request', return_value=([], {})) as m:
+        await service.search_branches('group/repo', query='feat', per_page=50, page=3)
+
+        params = m.call_args[0][1]
+        assert params['page'] == '3'
+        assert params['per_page'] == '50'

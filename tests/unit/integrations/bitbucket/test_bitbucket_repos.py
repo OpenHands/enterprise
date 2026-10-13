@@ -136,3 +136,50 @@ async def test_search_repositories_url_parsing_insufficient_path_segments(
         # Should return empty list for insufficient path segments and not call API
         assert len(repositories) == 0
         mock_get_repo.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_passes_page_to_each_workspace(bitbucket_service):
+    """A search across workspaces takes the same page from each workspace."""
+    with (
+        patch.object(
+            bitbucket_service, 'get_installations', return_value=['ws1', 'ws2']
+        ),
+        patch.object(
+            bitbucket_service, 'get_paginated_repos', return_value=[]
+        ) as mock_paginated,
+    ):
+        await bitbucket_service.search_repositories(
+            query='repo',
+            per_page=10,
+            sort='updated',
+            order='desc',
+            public=False,
+            app_mode=AppMode.OPENHANDS,
+            page=2,
+        )
+
+    pages = {call.args[0] for call in mock_paginated.call_args_list}
+    workspaces = {call.args[3] for call in mock_paginated.call_args_list}
+    assert pages == {2}
+    assert workspaces == {'ws1', 'ws2'}
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_url_has_no_later_page(bitbucket_service):
+    """A repository URL names one repository, so a later page is empty."""
+    with patch.object(
+        bitbucket_service, 'get_repository_details_from_repo_name'
+    ) as mock_get_repo:
+        repositories = await bitbucket_service.search_repositories(
+            query='https://bitbucket.org/workspace/repo',
+            per_page=10,
+            sort='updated',
+            order='desc',
+            public=True,
+            app_mode=AppMode.OPENHANDS,
+            page=2,
+        )
+
+    assert repositories == []
+    mock_get_repo.assert_not_called()

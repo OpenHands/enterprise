@@ -527,3 +527,34 @@ class TestGitLabHostEnvVar:
             assert reloaded.GITLAB_HOST == expected
         finally:
             importlib.reload(gitlab_constants_module)
+
+
+@pytest.mark.asyncio
+async def test_gitlab_search_repositories_passes_page():
+    """Search sends the requested page to the projects API."""
+    service = GitLabService(token=SecretStr('test-token'))
+
+    with patch.object(service, '_make_request') as mock_request:
+        mock_request.return_value = ([], {})
+
+        await service.search_repositories(
+            query='test-query', per_page=30, sort='updated', order='desc', page=3
+        )
+
+        params = mock_request.call_args[0][1]
+        assert params['page'] == '3'
+        assert params['search'] == 'test-query'
+
+
+@pytest.mark.asyncio
+async def test_gitlab_search_repositories_url_has_no_later_page():
+    """A repository URL names one repository, so a later page is empty."""
+    service = GitLabService(token=SecretStr('test-token'))
+
+    with patch.object(service, '_make_request') as mock_request:
+        repositories = await service.search_repositories(
+            query='https://gitlab.com/group/repo', per_page=30, public=True, page=2
+        )
+
+        assert repositories == []
+        mock_request.assert_not_called()

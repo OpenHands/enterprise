@@ -338,3 +338,39 @@ async def _make_parsed_repo(svc, repo_dict):
     """Helper to create a parsed Repository from a repo dict (with mocked default branch)."""
     with patch.object(svc, '_make_request', return_value=({'displayId': 'main'}, {})):
         return await svc._parse_repository(repo_dict, fetch_default_branch=True)
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_across_projects_returns_requested_page():
+    """Search filters the repositories of every project, then takes the page."""
+    svc = make_service()
+    proj_a = [_repo_dict('A', slug=f'repo-a{i}', name=f'repo a{i}') for i in (1, 2)]
+    proj_b = [_repo_dict('B', slug=f'repo-b{i}', name=f'repo b{i}') for i in (1, 2)]
+    other = [_repo_dict('B', slug='other', name='other')]
+
+    with (
+        patch.object(svc, 'get_installations', new=AsyncMock(return_value=['A', 'B'])),
+        patch.object(
+            svc,
+            '_fetch_paginated_data',
+            new=AsyncMock(side_effect=[proj_a, proj_b + other]),
+        ),
+    ):
+        repos = await svc.search_repositories(
+            'repo', 3, 'name', 'asc', False, AppMode.SAAS, page=2
+        )
+
+    assert [r.full_name for r in repos] == ['B/repo-b2']
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_slash_query_returns_requested_page():
+    svc = make_service()
+    raw = [_repo_dict('PROJ', slug=f'myrepo{i}', name=f'My Repo {i}') for i in range(5)]
+
+    with patch.object(svc, '_fetch_paginated_data', new=AsyncMock(return_value=raw)):
+        repos = await svc.search_repositories(
+            'PROJ/myrepo', 2, 'name', 'asc', False, AppMode.SAAS, page=3
+        )
+
+    assert [r.full_name for r in repos] == ['PROJ/myrepo4']

@@ -582,3 +582,42 @@ async def test_github_service_graphql_url_github_com():
 
         # This should be correct for GitHub.com
         assert actual_url == 'https://api.github.com/graphql'
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_passes_page_to_each_search():
+    """Every search call takes the same page. The top repos of a matching org come only with page 1."""
+    service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
+    mock_user = User(
+        id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
+    )
+
+    with (
+        patch.object(service, 'get_user', return_value=mock_user),
+        patch.object(
+            service,
+            'get_organizations_from_installations',
+            return_value=['openhands-org'],
+        ),
+        patch.object(
+            service, '_make_request', return_value=({'items': []}, {})
+        ) as mock_request,
+    ):
+        await service.search_repositories(
+            query='openhands',
+            per_page=10,
+            sort='stars',
+            order='desc',
+            public=False,
+            app_mode=AppMode.SAAS,
+            page=2,
+        )
+
+    # User search + org search; no top-repos search for the matching org name
+    queries = [call[0][1]['q'] for call in mock_request.call_args_list]
+    pages = {call[0][1]['page'] for call in mock_request.call_args_list}
+    assert queries == [
+        'in:name openhands user:testuser',
+        'openhands org:openhands-org',
+    ]
+    assert pages == {2}
