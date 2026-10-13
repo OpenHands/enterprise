@@ -83,6 +83,8 @@ def test_has_exact_mention():
         is False
     )
     assert has_exact_mention('@openhands%2Ftypescript-client', '@openhands') is False
+    assert has_exact_mention('@openhands%2etest', '@openhands') is False
+    assert has_exact_mention('?q=@openhands%20help', '@openhands') is False
 
 
 def test_markdown_to_jira_markup():

@@ -149,7 +149,8 @@ def has_exact_mention(text: str, mention: str) -> bool:
 
     The mention must not be part of a larger word, a scoped package name
     (@openhands/pkg), a package glob (@openhands/*), a URL-encoded scoped
-    package name (@openhands%2fpkg) or a domain (@openhands.com).
+    package name (@openhands%2fpkg), a domain (@openhands.com) or a URL
+    query parameter (@openhands%20help).
 
     Args:
         text: The text to check for mentions
@@ -170,6 +171,7 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("see @openhands.com", "@openhands")  # False
         >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
         >>> has_exact_mention("npmjs.org/@openhands%2fpkg", "@openhands")  # False
+        >>> has_exact_mention("?q=@openhands%20help", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
@@ -182,10 +184,10 @@ def has_exact_mention(text: str, mention: str) -> bool:
     # '.' ends the mention only when no word character or '-' follows it, so
     # domains (@openhands.com) and @openhands.Please do not match, but a
     # sentence end (Thanks @openhands.) and a sentence end inside emphasis
-    # (*Thanks @openhands.*) do. A URL-encoded '/' (@openhands%2fpkg) does not
-    # match either; the text is lowercase, so '%2f' also covers '%2F'.
+    # (*Thanks @openhands.*) do. A URL-encoded character (@openhands%2fpkg,
+    # @openhands%20help) does not match either.
     return bool(
-        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|/[\w*-]|\.[\w-]|%2f)', text_lower)
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|/[\w*-]|\.[\w-]|%\w)', text_lower)
     )
 
 
