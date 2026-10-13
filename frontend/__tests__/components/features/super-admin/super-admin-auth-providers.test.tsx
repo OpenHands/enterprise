@@ -13,41 +13,55 @@ import {
   it,
   vi,
 } from "vitest";
-import { oauthProvidersService } from "#/api/oauth-providers-service/oauth-providers-service.api";
-import type { OAuthProvider } from "#/api/oauth-providers-service/oauth-providers.types";
-import { SuperAdminOAuthProviders } from "#/components/features/super-admin/super-admin-oauth-providers";
+import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
+import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
+import { SuperAdminAuthProviders } from "#/components/features/super-admin/super-admin-auth-providers";
 import translations from "#/i18n/translation.json";
 
-const GITHUB_PROVIDER: OAuthProvider = {
+const GITHUB_PROVIDER: AuthProvider = {
   id: 1,
-  provider_category: "github",
-  display_name: "GitHub",
+  kind: "OAuthProviderDetails",
+  title: "GitHub",
   is_idp: false,
-  client_id: "github-client-id",
-  has_client_secret: true,
-  authorization_url: null,
-  token_url: null,
-  userinfo_url: null,
-  scopes: ["repo"],
-  permitted_drift_seconds: 60,
+  details: {
+    kind: "OAuthProviderDetails",
+    provider_type: "github",
+    client_id: "github-client-id",
+    client_secret: "**********",
+    authorization_url: null,
+    token_url: null,
+    userinfo_url: null,
+    scopes: ["repo"],
+    permitted_drift_seconds: 60,
+  },
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
 };
 
-function renderOAuthProvidersPage() {
+const PASSWORD_PROVIDER: AuthProvider = {
+  id: 2,
+  kind: "PasswordProviderDetails",
+  title: "Password Login",
+  is_idp: true,
+  details: { kind: "PasswordProviderDetails" },
+  created_at: "2024-01-02T00:00:00Z",
+  updated_at: "2024-01-02T00:00:00Z",
+};
+
+function renderAuthProvidersPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const RouterStub = createRoutesStub([
     {
-      path: "/super-admin/oauth-providers",
-      Component: SuperAdminOAuthProviders,
+      path: "/super-admin/auth-providers",
+      Component: SuperAdminAuthProviders,
     },
   ]);
   render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
-        <RouterStub initialEntries={["/super-admin/oauth-providers"]} />
+        <RouterStub initialEntries={["/super-admin/auth-providers"]} />
       </QueryClientProvider>
     </I18nextProvider>,
   );
@@ -61,8 +75,8 @@ beforeAll(async () => {
     resources: {
       en: {
         translation: {
-          SUPER_ADMIN$DELETE_OAUTH_PROVIDER_CONFIRM:
-            translations.SUPER_ADMIN$DELETE_OAUTH_PROVIDER_CONFIRM.en,
+          SUPER_ADMIN$DELETE_AUTH_PROVIDER_CONFIRM:
+            translations.SUPER_ADMIN$DELETE_AUTH_PROVIDER_CONFIRM.en,
         },
       },
     },
@@ -70,9 +84,9 @@ beforeAll(async () => {
   });
 });
 
-describe("Super Admin OAuth Providers page", () => {
+describe("Super Admin Auth Providers page", () => {
   beforeEach(() => {
-    vi.spyOn(oauthProvidersService, "listOAuthProviders").mockResolvedValue([
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
       GITHUB_PROVIDER,
     ]);
   });
@@ -81,205 +95,248 @@ describe("Super Admin OAuth Providers page", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists configured OAuth providers", async () => {
-    renderOAuthProvidersPage();
+  it("lists configured auth providers by title, without category/client id/secret columns", async () => {
+    renderAuthProvidersPage();
 
     expect(await screen.findByText("GitHub")).toBeInTheDocument();
-    expect(screen.getByText("github-client-id")).toBeInTheDocument();
+    expect(screen.queryByText("github-client-id")).not.toBeInTheDocument();
     expect(
-      screen.getByText("SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET"),
-    ).toBeInTheDocument();
+      screen.queryByText("SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET"),
+    ).not.toBeInTheDocument();
   });
 
-  it("defaults the category dropdown to Enterprise SSO when adding a provider", async () => {
+  it("defaults the type dropdown to OAuth and the provider dropdown to Enterprise SSO when adding a provider", async () => {
     const user = userEvent.setup();
-    renderOAuthProvidersPage();
+    renderAuthProvidersPage();
     await screen.findByText("GitHub");
 
     await user.click(
-      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
     );
-    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
 
     expect(
-      within(dialog).getByTestId("super-admin-oauth-provider-category"),
+      within(dialog).getByTestId("super-admin-auth-provider-kind"),
+    ).toHaveValue("SUPER_ADMIN$AUTH_PROVIDER_KIND_OAUTH");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-brand"),
     ).toHaveValue("Enterprise SSO");
   });
 
   it("creates a new OAuth provider from the form", async () => {
     const user = userEvent.setup();
-    const createOAuthProvider = vi
-      .spyOn(oauthProvidersService, "createOAuthProvider")
-      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 2, display_name: "GitLab" });
-    renderOAuthProvidersPage();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 3, title: "GitLab" });
+    renderAuthProvidersPage();
     await screen.findByText("GitHub");
 
     await user.click(
-      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
     );
-    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
-    const categoryInput = within(dialog).getByTestId(
-      "super-admin-oauth-provider-category",
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const brandInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-brand",
     );
-    await user.clear(categoryInput);
-    await user.type(categoryInput, "gitlab");
+    await user.click(brandInput);
+    await user.click(await screen.findByRole("option", { name: "GitLab" }));
     await user.type(
-      within(dialog).getByTestId("super-admin-oauth-provider-display-name"),
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
       "GitLab",
     );
     await user.type(
-      within(dialog).getByTestId("super-admin-oauth-provider-client-id"),
+      within(dialog).getByTestId("super-admin-auth-provider-client-id"),
       "gitlab-client-id",
     );
     await user.click(
-      within(dialog).getByTestId("super-admin-oauth-provider-form-submit"),
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
     );
 
     await waitFor(() =>
-      expect(createOAuthProvider).toHaveBeenCalledWith(
+      expect(createAuthProvider).toHaveBeenCalledWith(
         expect.objectContaining({
-          provider_category: "gitlab",
-          display_name: "GitLab",
-          client_id: "gitlab-client-id",
+          title: "GitLab",
+          details: expect.objectContaining({
+            kind: "OAuthProviderDetails",
+            provider_type: "gitlab",
+            client_id: "gitlab-client-id",
+          }),
         }),
       ),
     );
     await waitFor(() =>
       expect(
-        screen.queryByTestId("super-admin-oauth-provider-form"),
+        screen.queryByTestId("super-admin-auth-provider-form"),
       ).not.toBeInTheDocument(),
     );
   });
 
-  it("sends the provider_category key, not its label, when picked from the dropdown", async () => {
+  it("only shows the title field, and always sends is_idp=true, for the Integrated Password type", async () => {
     const user = userEvent.setup();
-    const createOAuthProvider = vi
-      .spyOn(oauthProvidersService, "createOAuthProvider")
-      .mockResolvedValue({
-        ...GITHUB_PROVIDER,
-        id: 2,
-        provider_category: "integrated_idp",
-        display_name: "Password Login",
-        is_idp: true,
-      });
-    renderOAuthProvidersPage();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue(PASSWORD_PROVIDER);
+    renderAuthProvidersPage();
     await screen.findByText("GitHub");
 
     await user.click(
-      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_OAUTH_PROVIDER" }),
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
     );
-    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
-    const categoryInput = within(dialog).getByTestId(
-      "super-admin-oauth-provider-category",
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const kindInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-kind",
     );
-    // Open the list and click the option by its visible label, exactly as a
-    // user would -- this is what previously left `provider_category` set to
-    // the English label ("Integrated (password) IDP") instead of the
-    // "integrated_idp" key, because the autocomplete syncs its input text to
-    // the selected item's label after selection.
-    await user.click(categoryInput);
+    await user.click(kindInput);
     await user.click(
       await screen.findByRole("option", {
-        name: "Integrated (password) IDP",
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
       }),
     );
+
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-brand"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-client-id"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-client-secret"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-is-idp"),
+    ).not.toBeInTheDocument();
+
     await user.type(
-      within(dialog).getByTestId("super-admin-oauth-provider-display-name"),
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
       "Password Login",
     );
-    await user.type(
-      within(dialog).getByTestId("super-admin-oauth-provider-client-id"),
-      "integrated-idp",
-    );
     await user.click(
-      within(dialog).getByTestId("super-admin-oauth-provider-form-submit"),
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
     );
 
     await waitFor(() =>
-      expect(createOAuthProvider).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider_category: "integrated_idp",
-        }),
-      ),
+      expect(createAuthProvider).toHaveBeenCalledWith({
+        title: "Password Login",
+        is_idp: true,
+        details: { kind: "PasswordProviderDetails" },
+      }),
     );
   });
 
-  it("keeps the existing provider_category key when editing without touching the dropdown", async () => {
+  it("omits details (preserving the secret) when editing without touching any OAuth field", async () => {
     const user = userEvent.setup();
-    const updateOAuthProvider = vi
-      .spyOn(oauthProvidersService, "updateOAuthProvider")
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
       .mockResolvedValue(GITHUB_PROVIDER);
-    renderOAuthProvidersPage();
+    renderAuthProvidersPage();
 
     await user.click(
-      await screen.findByTestId("super-admin-oauth-provider-actions-1"),
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
     );
-    await user.click(screen.getByTestId("super-admin-oauth-provider-edit-1"));
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-1"));
 
-    const dialog = screen.getByTestId("super-admin-oauth-provider-form");
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
     expect(
-      within(dialog).getByTestId("super-admin-oauth-provider-category"),
+      within(dialog).getByTestId("super-admin-auth-provider-brand"),
     ).toHaveValue("GitHub");
 
     await user.click(
-      within(dialog).getByTestId("super-admin-oauth-provider-form-submit"),
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
     );
 
     await waitFor(() =>
-      expect(updateOAuthProvider).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 1, provider_category: "github" }),
+      expect(updateAuthProvider).toHaveBeenCalledWith({
+        id: 1,
+        title: "GitHub",
+        is_idp: false,
+      }),
+    );
+  });
+
+  it("sends details wholesale when an OAuth field is changed while editing", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-1"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const clientIdInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-client-id",
+    );
+    await user.clear(clientIdInput);
+    await user.type(clientIdInput, "github-client-id-2");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({
+            kind: "OAuthProviderDetails",
+            client_id: "github-client-id-2",
+            client_secret: null,
+          }),
+        }),
       ),
     );
   });
 
   it("asks for confirmation naming the provider before deleting it", async () => {
     const user = userEvent.setup();
-    const deleteOAuthProvider = vi
-      .spyOn(oauthProvidersService, "deleteOAuthProvider")
+    const deleteAuthProvider = vi
+      .spyOn(authProvidersService, "deleteAuthProvider")
       .mockResolvedValue(undefined);
-    renderOAuthProvidersPage();
+    renderAuthProvidersPage();
 
     await user.click(
-      await screen.findByTestId("super-admin-oauth-provider-actions-1"),
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
     );
-    await user.click(screen.getByTestId("super-admin-oauth-provider-delete-1"));
+    await user.click(screen.getByTestId("super-admin-auth-provider-delete-1"));
 
     const dialog = screen.getByTestId(
-      "super-admin-oauth-provider-delete-confirm",
+      "super-admin-auth-provider-delete-confirm",
     );
     expect(dialog).toHaveTextContent("GitHub");
-    expect(deleteOAuthProvider).not.toHaveBeenCalled();
+    expect(deleteAuthProvider).not.toHaveBeenCalled();
 
     await user.click(
       within(dialog).getByTestId(
-        "super-admin-oauth-provider-delete-confirm-submit",
+        "super-admin-auth-provider-delete-confirm-submit",
       ),
     );
 
     await waitFor(() =>
-      expect(deleteOAuthProvider).toHaveBeenCalledWith({ id: 1 }),
+      expect(deleteAuthProvider).toHaveBeenCalledWith({ id: 1 }),
     );
   });
 
   it("keeps the provider when the delete is cancelled", async () => {
     const user = userEvent.setup();
-    const deleteOAuthProvider = vi
-      .spyOn(oauthProvidersService, "deleteOAuthProvider")
+    const deleteAuthProvider = vi
+      .spyOn(authProvidersService, "deleteAuthProvider")
       .mockResolvedValue(undefined);
-    renderOAuthProvidersPage();
+    renderAuthProvidersPage();
 
     await user.click(
-      await screen.findByTestId("super-admin-oauth-provider-actions-1"),
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
     );
-    await user.click(screen.getByTestId("super-admin-oauth-provider-delete-1"));
+    await user.click(screen.getByTestId("super-admin-auth-provider-delete-1"));
     await user.click(
-      screen.getByTestId("super-admin-oauth-provider-delete-confirm-cancel"),
+      screen.getByTestId("super-admin-auth-provider-delete-confirm-cancel"),
     );
 
     expect(
-      screen.queryByTestId("super-admin-oauth-provider-delete-confirm"),
+      screen.queryByTestId("super-admin-auth-provider-delete-confirm"),
     ).not.toBeInTheDocument();
-    expect(deleteOAuthProvider).not.toHaveBeenCalled();
+    expect(deleteAuthProvider).not.toHaveBeenCalled();
     expect(screen.getByText("GitHub")).toBeInTheDocument();
   });
 });

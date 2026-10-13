@@ -1,5 +1,5 @@
-import { SuperAdminOAuthProviders } from "#/components/features/super-admin/super-admin-oauth-providers";
+import { SuperAdminAuthProviders } from "#/components/features/super-admin/super-admin-auth-providers";
 
 export const handle = { hideTitle: true };
 
-export default SuperAdminOAuthProviders;
+export default SuperAdminAuthProviders;

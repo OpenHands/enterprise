@@ -76,7 +76,7 @@ def make_provider(async_session_maker, jwt_svc):
 
     ``category=INTEGRATED_IDP_KIND`` (or passing ``PasswordProviderDetails``
     directly) builds the integrated/password IDP row instead of an OAuth2
-    one -- it has no brand/client/URLs, mirroring migration 185's seed.
+    one -- it has no brand/client/URLs, mirroring migration 186's seed.
     """
 
     async def _make(
@@ -165,16 +165,21 @@ class TestAuthProviderStore:
         """``get_first_by_kind`` is ``server.routes.idp``'s protocol lookup
         for the integrated/password IDP row -- not a brand lookup (that was
         ``get_first_by_category``, deleted along with
-        ``GET /oauth/{provider_type}-login`` in migration 185's rework)."""
+        ``GET /oauth/{provider_type}-login`` in migration 186's rework).
+
+        Only one row (created here) -- migration 186's
+        ``uq_auth_providers_one_password_provider`` partial unique index
+        makes a second ``PasswordProviderDetails`` row impossible to create,
+        so there is no "picks the lowest id among duplicates" case to cover.
+        """
         await make_provider(category=ProviderType.GITHUB, is_idp=False)
-        first = await make_provider(category=INTEGRATED_IDP_KIND, is_idp=True)
-        await make_provider(category=INTEGRATED_IDP_KIND, is_idp=True)
+        only = await make_provider(category=INTEGRATED_IDP_KIND, is_idp=True)
 
         got = await AuthProviderStore().get_first_by_kind(
             PasswordProviderDetails.__name__
         )
         assert got is not None
-        assert got.id == first.id
+        assert got.id == only.id
         assert isinstance(got.details, PasswordProviderDetails)
 
     @pytest.mark.asyncio
@@ -300,12 +305,18 @@ class TestAuthProviderStore:
     @pytest.mark.asyncio
     async def test_update_syncs_kind_from_details(self, patched_session, make_provider):
         """``kind`` can never drift from ``details`` -- reassigning ``details``
-        (e.g. reconfiguring a row from OAuth2 to password) re-derives it."""
+        (e.g. reconfiguring a row from OAuth2 to password) re-derives it.
+
+        ``is_idp=True`` is passed alongside ``details`` here because
+        migration 186's ``ck_auth_providers_password_provider_is_idp`` check
+        constraint requires it for any ``PasswordProviderDetails`` row --
+        the fixture's default ``is_idp=False`` would otherwise violate it.
+        """
         provider = await make_provider(category=ProviderType.GITHUB)
         assert provider.kind == OAuthProviderDetails.__name__
 
         updated = await AuthProviderStore().update(
-            provider.id, details=PasswordProviderDetails()
+            provider.id, details=PasswordProviderDetails(), is_idp=True
         )
         assert updated is not None
         assert updated.kind == PasswordProviderDetails.__name__

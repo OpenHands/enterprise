@@ -1,38 +1,40 @@
 import { openHands } from "../open-hands-axios";
 import type {
-  CreateOAuthProviderParams,
-  OAuthProvider,
-  UpdateOAuthProviderParams,
-} from "./oauth-providers.types";
+  AuthProvider,
+  CreateAuthProviderParams,
+  UpdateAuthProviderParams,
+} from "./auth-providers.types";
 
-export const oauthProvidersService = {
-  listOAuthProviders: async () => {
-    const { data } = await openHands.get<OAuthProvider[]>(
+// The REST path itself stays `/api/admin/oauth-providers` -- it is the
+// backend's route, unrelated to this rename.
+export const authProvidersService = {
+  listAuthProviders: async () => {
+    const { data } = await openHands.get<AuthProvider[]>(
       "/api/admin/oauth-providers",
     );
     return data;
   },
 
-  createOAuthProvider: async (params: CreateOAuthProviderParams) => {
-    const { data } = await openHands.post<OAuthProvider>(
+  createAuthProvider: async (params: CreateAuthProviderParams) => {
+    const { data } = await openHands.post<AuthProvider>(
       "/api/admin/oauth-providers",
       params,
     );
     return data;
   },
 
-  updateOAuthProvider: async ({
+  updateAuthProvider: async ({
     id,
     ...params
-  }: { id: number } & UpdateOAuthProviderParams) => {
-    const { data } = await openHands.patch<OAuthProvider>(
+  }: { id: number } & UpdateAuthProviderParams) => {
+    const { data } = await openHands.patch<AuthProvider>(
       `/api/admin/oauth-providers/${id}`,
       params,
     );
     return data;
   },
 
-  deleteOAuthProvider: async ({ id }: { id: number }) => {
+  deleteAuthProvider: async ({ id }: { id: number }) => {
     await openHands.delete(`/api/admin/oauth-providers/${id}`);
   },
 };

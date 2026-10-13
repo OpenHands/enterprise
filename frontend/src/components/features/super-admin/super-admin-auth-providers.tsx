@@ -5,12 +5,18 @@ import { OrgModal } from "#/components/shared/modals/org-modal";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
 import {
-  useCreateOAuthProvider,
-  useDeleteOAuthProvider,
-  useUpdateOAuthProvider,
-} from "#/hooks/mutation/use-oauth-provider-mutations";
-import { useOAuthProviders } from "#/hooks/query/use-oauth-providers";
-import type { OAuthProvider } from "#/api/oauth-providers-service/oauth-providers.types";
+  useCreateAuthProvider,
+  useDeleteAuthProvider,
+  useUpdateAuthProvider,
+} from "#/hooks/mutation/use-auth-provider-mutations";
+import { useAuthProviders } from "#/hooks/query/use-auth-providers";
+import type {
+  AuthProvider,
+  AuthProviderDetails,
+  CreateAuthProviderParams,
+  OAuthProviderBrand,
+  UpdateAuthProviderParams,
+} from "#/api/auth-providers-service/auth-providers.types";
 import { I18nKey } from "#/i18n/declaration";
 import {
   SUPER_ADMIN_NAV_ITEMS,
@@ -31,8 +37,14 @@ function navCopy(path: string) {
   );
 }
 
-/** Reuses the ProviderType enum values plus the built-in password IDP. */
-const PROVIDER_CATEGORY_OPTIONS = [
+/** Mirrors ``storage.auth_provider_details.AuthProviderDetails.kind`` for
+ * the two kinds the form supports today -- SAML is a follow-up. */
+const KIND_OAUTH = "OAuthProviderDetails" as const;
+const KIND_PASSWORD = "PasswordProviderDetails" as const;
+
+/** Reuses the ``ProviderType`` enum values -- the built-in password IDP is
+ * no longer one of these (it is its own top-level ``kind`` now). */
+const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] = [
   { key: "github", label: "GitHub" },
   { key: "gitlab", label: "GitLab" },
   { key: "bitbucket", label: "Bitbucket" },
@@ -40,7 +52,6 @@ const PROVIDER_CATEGORY_OPTIONS = [
   { key: "forgejo", label: "Forgejo" },
   { key: "azure_devops", label: "Azure DevOps" },
   { key: "enterprise_sso", label: "Enterprise SSO" },
-  { key: "integrated_idp", label: "Integrated (password) IDP" },
 ];
 
 function parseScopes(value: string): string[] | null {
@@ -51,10 +62,13 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-interface OAuthProviderFormState {
-  providerCategory: string;
-  displayName: string;
+const DEFAULT_PERMITTED_DRIFT_SECONDS = "60";
+
+interface AuthProviderFormState {
+  kind: typeof KIND_OAUTH | typeof KIND_PASSWORD;
+  title: string;
   isIdp: boolean;
+  providerType: OAuthProviderBrand;
   clientId: string;
   clientSecret: string;
   authorizationUrl: string;
@@ -64,229 +78,322 @@ interface OAuthProviderFormState {
   permittedDriftSeconds: string;
 }
 
-const EMPTY_FORM: OAuthProviderFormState = {
-  providerCategory: "enterprise_sso",
-  displayName: "",
+const EMPTY_FORM: AuthProviderFormState = {
+  kind: KIND_OAUTH,
+  title: "",
   isIdp: true,
+  providerType: "enterprise_sso",
   clientId: "",
   clientSecret: "",
   authorizationUrl: "",
   tokenUrl: "",
   userinfoUrl: "",
   scopes: "",
-  permittedDriftSeconds: "60",
+  permittedDriftSeconds: DEFAULT_PERMITTED_DRIFT_SECONDS,
 };
 
-function toFormState(provider: OAuthProvider): OAuthProviderFormState {
+function toFormState(provider: AuthProvider): AuthProviderFormState {
+  if (provider.details.kind === KIND_OAUTH) {
+    const { details } = provider;
+    return {
+      kind: KIND_OAUTH,
+      title: provider.title,
+      isIdp: provider.is_idp,
+      providerType: details.provider_type,
+      clientId: details.client_id,
+      clientSecret: "",
+      authorizationUrl: details.authorization_url ?? "",
+      tokenUrl: details.token_url ?? "",
+      userinfoUrl: details.userinfo_url ?? "",
+      scopes: details.scopes?.join(" ") ?? "",
+      permittedDriftSeconds: String(details.permitted_drift_seconds),
+    };
+  }
   return {
-    providerCategory: provider.provider_category,
-    displayName: provider.display_name,
-    isIdp: provider.is_idp,
-    clientId: provider.client_id,
-    clientSecret: "",
-    authorizationUrl: provider.authorization_url ?? "",
-    tokenUrl: provider.token_url ?? "",
-    userinfoUrl: provider.userinfo_url ?? "",
-    scopes: provider.scopes?.join(" ") ?? "",
-    permittedDriftSeconds: String(provider.permitted_drift_seconds),
+    ...EMPTY_FORM,
+    kind: KIND_PASSWORD,
+    title: provider.title,
+    isIdp: true,
   };
 }
 
-interface OAuthProviderFormModalProps {
-  mode: "create" | "edit";
-  initial: OAuthProviderFormState;
-  isLoading: boolean;
-  onClose: () => void;
-  onSubmit: (form: OAuthProviderFormState) => void;
+/** Whether every OAuth-specific field (everything except the secret, which
+ * has its own clear-vs-keep handling) is unchanged from ``initial`` --
+ * see ``buildUpdatePayload`` for why this matters. */
+function oauthDetailsUnchanged(
+  form: AuthProviderFormState,
+  initial: AuthProviderFormState,
+): boolean {
+  return (
+    form.providerType === initial.providerType &&
+    form.clientId.trim() === initial.clientId.trim() &&
+    form.authorizationUrl.trim() === initial.authorizationUrl.trim() &&
+    form.tokenUrl.trim() === initial.tokenUrl.trim() &&
+    form.userinfoUrl.trim() === initial.userinfoUrl.trim() &&
+    form.scopes.trim() === initial.scopes.trim() &&
+    form.permittedDriftSeconds.trim() === initial.permittedDriftSeconds.trim()
+  );
 }
 
-function OAuthProviderFormModal({
+function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
+  if (form.kind === KIND_PASSWORD) {
+    return { kind: KIND_PASSWORD };
+  }
+  return {
+    kind: KIND_OAUTH,
+    provider_type: form.providerType,
+    client_id: form.clientId.trim(),
+    client_secret: form.clientSecret ? form.clientSecret : null,
+    authorization_url: form.authorizationUrl.trim() || null,
+    token_url: form.tokenUrl.trim() || null,
+    userinfo_url: form.userinfoUrl.trim() || null,
+    scopes: parseScopes(form.scopes),
+    permitted_drift_seconds: form.permittedDriftSeconds
+      ? Number(form.permittedDriftSeconds)
+      : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
+  };
+}
+
+interface AuthProviderFormModalProps {
+  mode: "create" | "edit";
+  initial: AuthProviderFormState;
+  isLoading: boolean;
+  onClose: () => void;
+  onSubmit: (
+    form: AuthProviderFormState,
+    initial: AuthProviderFormState,
+  ) => void;
+}
+
+function AuthProviderFormModal({
   mode,
   initial,
   isLoading,
   onClose,
   onSubmit,
-}: OAuthProviderFormModalProps) {
+}: AuthProviderFormModalProps) {
   const { t } = useTranslation();
-  const [form, setForm] = useState<OAuthProviderFormState>(initial);
+  const [form, setForm] = useState<AuthProviderFormState>(initial);
+
+  const kindOptions = [
+    {
+      key: KIND_OAUTH,
+      label: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND_OAUTH),
+    },
+    {
+      key: KIND_PASSWORD,
+      label: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD),
+    },
+  ];
 
   const canSubmit =
-    form.providerCategory.trim() !== "" &&
-    form.displayName.trim() !== "" &&
-    form.clientId.trim() !== "";
+    form.title.trim() !== "" &&
+    (form.kind === KIND_PASSWORD || form.clientId.trim() !== "");
 
   return (
     <OrgModal
-      testId="super-admin-oauth-provider-form"
+      testId="super-admin-auth-provider-form"
       title={t(
         mode === "create"
-          ? I18nKey.SUPER_ADMIN$ADD_OAUTH_PROVIDER
-          : I18nKey.SUPER_ADMIN$EDIT_OAUTH_PROVIDER,
+          ? I18nKey.SUPER_ADMIN$ADD_AUTH_PROVIDER
+          : I18nKey.SUPER_ADMIN$EDIT_AUTH_PROVIDER,
       )}
       primaryButtonText={t(
         mode === "create" ? I18nKey.BUTTON$CREATE : I18nKey.BUTTON$SAVE,
       )}
       secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
-      primaryButtonTestId="super-admin-oauth-provider-form-submit"
+      primaryButtonTestId="super-admin-auth-provider-form-submit"
       isPrimaryDisabled={!canSubmit}
       isLoading={isLoading}
-      onPrimaryClick={() => onSubmit(form)}
+      onPrimaryClick={() => onSubmit(form, initial)}
       onClose={onClose}
       className="w-md max-w-full"
     >
       <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto pr-1">
         <SettingsDropdownInput
-          testId="super-admin-oauth-provider-category"
-          name="provider_category"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CATEGORY)}
-          items={PROVIDER_CATEGORY_OPTIONS}
-          defaultSelectedKey={form.providerCategory || undefined}
-          allowsCustomValue
+          testId="super-admin-auth-provider-kind"
+          name="kind"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_KIND)}
+          items={kindOptions}
+          selectedKey={form.kind}
           onSelectionChange={(key) => {
-            // The underlying Autocomplete also fires `onSelectionChange(null)`
-            // on blur once its displayed text no longer matches the selected
-            // item's label (see `onInputChange` below) -- that is an internal
-            // deselect, not the user clearing the field (there's no clear
-            // button here), so it must not wipe out a value we already set.
             if (key) {
-              setForm((prev) => ({ ...prev, providerCategory: String(key) }));
+              setForm((prev) => ({
+                ...prev,
+                kind: key as typeof KIND_OAUTH | typeof KIND_PASSWORD,
+                isIdp: key === KIND_PASSWORD ? true : prev.isIdp,
+              }));
             }
-          }}
-          onInputChange={(value) => {
-            // The underlying Autocomplete also fires `onInputChange` to sync
-            // its displayed text to the selected item's *label* right after
-            // `onSelectionChange` already set the real key -- that sync is
-            // undone here by mapping a known label back to its key. A value
-            // that matches no label is real custom text.
-            const matched = PROVIDER_CATEGORY_OPTIONS.find(
-              (option) => option.label === value,
-            );
-            setForm((prev) => ({
-              ...prev,
-              providerCategory: matched ? matched.key : value,
-            }));
           }}
           required
         />
         <SettingsInput
-          testId="super-admin-oauth-provider-display-name"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_DISPLAY_NAME)}
+          testId="super-admin-auth-provider-title"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TITLE)}
           type="text"
-          value={form.displayName}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, displayName: value }))
-          }
+          value={form.title}
+          onChange={(value) => setForm((prev) => ({ ...prev, title: value }))}
           showRequiredTag
           autoComplete="off"
         />
-        <SettingsSwitch
-          testId="super-admin-oauth-provider-is-idp"
-          isToggled={form.isIdp}
-          onToggle={(value) => setForm((prev) => ({ ...prev, isIdp: value }))}
-        >
-          {t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_IS_IDP)}
-        </SettingsSwitch>
-        <SettingsInput
-          testId="super-admin-oauth-provider-client-id"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CLIENT_ID)}
-          type="text"
-          value={form.clientId}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, clientId: value }))
-          }
-          showRequiredTag
-          autoComplete="off"
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-client-secret"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CLIENT_SECRET)}
-          type="password"
-          value={form.clientSecret}
-          placeholder={
-            mode === "edit"
-              ? t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CLIENT_SECRET_PLACEHOLDER)
-              : undefined
-          }
-          hint={
-            mode === "edit"
-              ? t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CLIENT_SECRET_HINT)
-              : undefined
-          }
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, clientSecret: value }))
-          }
-          showOptionalTag
-          autoComplete="new-password"
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-authorization-url"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_AUTH_URL)}
-          type="text"
-          value={form.authorizationUrl}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, authorizationUrl: value }))
-          }
-          showOptionalTag
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-token-url"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_TOKEN_URL)}
-          type="text"
-          value={form.tokenUrl}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, tokenUrl: value }))
-          }
-          showOptionalTag
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-userinfo-url"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_USERINFO_URL)}
-          type="text"
-          value={form.userinfoUrl}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, userinfoUrl: value }))
-          }
-          showOptionalTag
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-scopes"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_SCOPES)}
-          type="text"
-          value={form.scopes}
-          hint={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_SCOPES_HINT)}
-          onChange={(value) => setForm((prev) => ({ ...prev, scopes: value }))}
-          showOptionalTag
-        />
-        <SettingsInput
-          testId="super-admin-oauth-provider-drift"
-          label={t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_DRIFT)}
-          type="number"
-          min={0}
-          value={form.permittedDriftSeconds}
-          onChange={(value) =>
-            setForm((prev) => ({ ...prev, permittedDriftSeconds: value }))
-          }
-          showOptionalTag
-        />
+        {form.kind === KIND_OAUTH ? (
+          <>
+            <SettingsSwitch
+              testId="super-admin-auth-provider-is-idp"
+              isToggled={form.isIdp}
+              onToggle={(value) =>
+                setForm((prev) => ({ ...prev, isIdp: value }))
+              }
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP)}
+            </SettingsSwitch>
+            <SettingsDropdownInput
+              testId="super-admin-auth-provider-brand"
+              name="provider_type"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_BRAND)}
+              items={OAUTH_BRAND_OPTIONS}
+              selectedKey={form.providerType}
+              onSelectionChange={(key) => {
+                if (key) {
+                  setForm((prev) => ({
+                    ...prev,
+                    providerType: key as OAuthProviderBrand,
+                  }));
+                }
+              }}
+              required
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-client-id"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_ID)}
+              type="text"
+              value={form.clientId}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, clientId: value }))
+              }
+              showRequiredTag
+              autoComplete="off"
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-client-secret"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_SECRET)}
+              type="password"
+              value={form.clientSecret}
+              placeholder={
+                mode === "edit"
+                  ? t(
+                      I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_SECRET_PLACEHOLDER,
+                    )
+                  : undefined
+              }
+              hint={
+                mode === "edit"
+                  ? t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_SECRET_HINT)
+                  : undefined
+              }
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, clientSecret: value }))
+              }
+              showOptionalTag
+              autoComplete="new-password"
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-authorization-url"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_AUTH_URL)}
+              type="text"
+              value={form.authorizationUrl}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, authorizationUrl: value }))
+              }
+              showOptionalTag
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-token-url"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TOKEN_URL)}
+              type="text"
+              value={form.tokenUrl}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, tokenUrl: value }))
+              }
+              showOptionalTag
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-userinfo-url"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USERINFO_URL)}
+              type="text"
+              value={form.userinfoUrl}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, userinfoUrl: value }))
+              }
+              showOptionalTag
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-scopes"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SCOPES)}
+              type="text"
+              value={form.scopes}
+              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SCOPES_HINT)}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, scopes: value }))
+              }
+              showOptionalTag
+            />
+            <SettingsInput
+              testId="super-admin-auth-provider-drift"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DRIFT)}
+              type="number"
+              min={0}
+              value={form.permittedDriftSeconds}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, permittedDriftSeconds: value }))
+              }
+              showOptionalTag
+            />
+          </>
+        ) : null}
       </div>
     </OrgModal>
   );
 }
 
-export function SuperAdminOAuthProviders() {
+/** ``details`` is replaced wholesale when present at all -- see
+ * ``server.routes.oauth_providers_admin.UpdateAuthProviderRequest``. So,
+ * for an edit, ``details`` is only sent if something about it actually
+ * changed (the kind, an OAuth field, or a newly-typed secret); a pure
+ * title/is_idp edit omits it entirely, which is what preserves the
+ * existing (never-exposed) secret. */
+function buildUpdatePayload(
+  form: AuthProviderFormState,
+  initial: AuthProviderFormState,
+): UpdateAuthProviderParams {
+  const kindChanged = form.kind !== initial.kind;
+  const secretTyped = form.kind === KIND_OAUTH && form.clientSecret !== "";
+  const oauthFieldsChanged =
+    form.kind === KIND_OAUTH && !oauthDetailsUnchanged(form, initial);
+  const detailsChanged = kindChanged || secretTyped || oauthFieldsChanged;
+
+  return {
+    title: form.title.trim(),
+    is_idp: form.isIdp,
+    ...(detailsChanged && { details: buildDetails(form) }),
+  };
+}
+
+export function SuperAdminAuthProviders() {
   const { t } = useTranslation();
-  const copy = navCopy(SUPER_ADMIN_PATHS.oauthProviders);
-  const { data, isLoading, isError } = useOAuthProviders();
-  const createProvider = useCreateOAuthProvider();
-  const updateProvider = useUpdateOAuthProvider();
-  const deleteProvider = useDeleteOAuthProvider();
+  const copy = navCopy(SUPER_ADMIN_PATHS.authProviders);
+  const { data, isLoading, isError } = useAuthProviders();
+  const createProvider = useCreateAuthProvider();
+  const updateProvider = useUpdateAuthProvider();
+  const deleteProvider = useDeleteAuthProvider();
 
   const [formMode, setFormMode] = useState<"create" | "edit" | null>(null);
-  const [editingProvider, setEditingProvider] = useState<OAuthProvider | null>(
+  const [editingProvider, setEditingProvider] = useState<AuthProvider | null>(
     null,
   );
-  const [providerToDelete, setProviderToDelete] =
-    useState<OAuthProvider | null>(null);
+  const [providerToDelete, setProviderToDelete] = useState<AuthProvider | null>(
+    null,
+  );
 
   const providers = useMemo(() => data ?? [], [data]);
 
@@ -295,7 +402,7 @@ export function SuperAdminOAuthProviders() {
     setFormMode("create");
   };
 
-  const openEdit = (provider: OAuthProvider) => {
+  const openEdit = (provider: AuthProvider) => {
     setEditingProvider(provider);
     setFormMode("edit");
   };
@@ -305,28 +412,21 @@ export function SuperAdminOAuthProviders() {
     setEditingProvider(null);
   };
 
-  const handleSubmit = (form: OAuthProviderFormState) => {
-    const payload = {
-      provider_category: form.providerCategory.trim(),
-      display_name: form.displayName.trim(),
-      is_idp: form.isIdp,
-      client_id: form.clientId.trim(),
-      client_secret: form.clientSecret ? form.clientSecret : undefined,
-      authorization_url: form.authorizationUrl.trim() || null,
-      token_url: form.tokenUrl.trim() || null,
-      userinfo_url: form.userinfoUrl.trim() || null,
-      scopes: parseScopes(form.scopes),
-      permitted_drift_seconds: form.permittedDriftSeconds
-        ? Number(form.permittedDriftSeconds)
-        : undefined,
-    };
-
+  const handleSubmit = (
+    form: AuthProviderFormState,
+    initial: AuthProviderFormState,
+  ) => {
     if (formMode === "edit" && editingProvider) {
       updateProvider.mutate(
-        { id: editingProvider.id, ...payload },
+        { id: editingProvider.id, ...buildUpdatePayload(form, initial) },
         { onSuccess: closeForm },
       );
     } else {
+      const payload: CreateAuthProviderParams = {
+        title: form.title.trim(),
+        is_idp: form.isIdp,
+        details: buildDetails(form),
+      };
       createProvider.mutate(payload, { onSuccess: closeForm });
     }
   };
@@ -344,7 +444,7 @@ export function SuperAdminOAuthProviders() {
   return (
     <div
       className="flex flex-col gap-4"
-      data-testid="super-admin-oauth-providers"
+      data-testid="super-admin-auth-providers"
     >
       <SuperAdminPageHeader
         title={t(copy.text)}
@@ -353,11 +453,11 @@ export function SuperAdminOAuthProviders() {
           <BrandButton
             type="button"
             variant="primary"
-            testId="super-admin-add-oauth-provider"
+            testId="super-admin-add-auth-provider"
             startContent={<Plus className="h-4 w-4" />}
             onClick={openCreate}
           >
-            {t(I18nKey.SUPER_ADMIN$ADD_OAUTH_PROVIDER)}
+            {t(I18nKey.SUPER_ADMIN$ADD_AUTH_PROVIDER)}
           </BrandButton>
         }
       />
@@ -371,53 +471,28 @@ export function SuperAdminOAuthProviders() {
           {t(I18nKey.SUPER_ADMIN$LOAD_ERROR)}
         </p>
       ) : null}
-      <SuperAdminTable<OAuthProvider>
-        testId="super-admin-oauth-providers-table"
+      <SuperAdminTable<AuthProvider>
+        testId="super-admin-auth-providers-table"
         rows={providers}
         getRowKey={(row) => String(row.id)}
-        empty={t(I18nKey.SUPER_ADMIN$EMPTY_OAUTH_PROVIDERS)}
+        empty={t(I18nKey.SUPER_ADMIN$EMPTY_AUTH_PROVIDERS)}
         columns={[
           {
-            key: "display_name",
-            header: t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_DISPLAY_NAME),
-            className: "w-[22%]",
+            key: "title",
+            header: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TITLE),
+            className: "w-[60%]",
             render: (row) => (
-              <span className="block truncate">{row.display_name}</span>
-            ),
-          },
-          {
-            key: "provider_category",
-            header: t(I18nKey.SUPER_ADMIN$COL_PROVIDER),
-            className: "w-[18%]",
-            render: (row) => (
-              <span className="block truncate">{row.provider_category}</span>
+              <span className="block truncate">{row.title}</span>
             ),
           },
           {
             key: "type",
             header: t(I18nKey.SUPER_ADMIN$COL_TYPE),
-            className: "w-[14%]",
+            className: "w-[28%]",
             render: (row) =>
               row.is_idp
-                ? t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_TYPE_IDP)
-                : t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_TYPE_GIT),
-          },
-          {
-            key: "client_id",
-            header: t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CLIENT_ID),
-            className: "w-[22%]",
-            render: (row) => (
-              <span className="block truncate">{row.client_id}</span>
-            ),
-          },
-          {
-            key: "secret",
-            header: t(I18nKey.SUPER_ADMIN$COL_SECRET),
-            className: "w-[14%]",
-            render: (row) =>
-              row.has_client_secret
-                ? t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET)
-                : t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_SECRET_UNSET),
+                ? t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TYPE_IDP)
+                : t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TYPE_GIT),
           },
           {
             key: "actions",
@@ -425,17 +500,17 @@ export function SuperAdminOAuthProviders() {
             className: "w-12 min-w-12 text-right",
             render: (row) => (
               <SuperAdminRowMenu
-                testId={`super-admin-oauth-provider-actions-${row.id}`}
+                testId={`super-admin-auth-provider-actions-${row.id}`}
                 ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
                 items={[
                   {
                     label: t(I18nKey.BUTTON$EDIT),
-                    testId: `super-admin-oauth-provider-edit-${row.id}`,
+                    testId: `super-admin-auth-provider-edit-${row.id}`,
                     onSelect: () => openEdit(row),
                   },
                   {
                     label: t(I18nKey.BUTTON$DELETE),
-                    testId: `super-admin-oauth-provider-delete-${row.id}`,
+                    testId: `super-admin-auth-provider-delete-${row.id}`,
                     destructive: true,
                     onSelect: () => setProviderToDelete(row),
                   },
@@ -446,7 +521,7 @@ export function SuperAdminOAuthProviders() {
         ]}
       />
       {formMode ? (
-        <OAuthProviderFormModal
+        <AuthProviderFormModal
           mode={formMode}
           initial={editingProvider ? toFormState(editingProvider) : EMPTY_FORM}
           isLoading={createProvider.isPending || updateProvider.isPending}
@@ -456,19 +531,19 @@ export function SuperAdminOAuthProviders() {
       ) : null}
       {providerToDelete ? (
         <OrgModal
-          testId="super-admin-oauth-provider-delete-confirm"
-          title={t(I18nKey.SUPER_ADMIN$DELETE_OAUTH_PROVIDER_TITLE)}
+          testId="super-admin-auth-provider-delete-confirm"
+          title={t(I18nKey.SUPER_ADMIN$DELETE_AUTH_PROVIDER_TITLE)}
           description={
             <Trans
-              i18nKey={I18nKey.SUPER_ADMIN$DELETE_OAUTH_PROVIDER_CONFIRM}
-              values={{ name: providerToDelete.display_name }}
+              i18nKey={I18nKey.SUPER_ADMIN$DELETE_AUTH_PROVIDER_CONFIRM}
+              values={{ name: providerToDelete.title }}
               components={{ name: <span className="text-white" /> }}
             />
           }
           primaryButtonText={t(I18nKey.BUTTON$CONFIRM)}
           secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
-          primaryButtonTestId="super-admin-oauth-provider-delete-confirm-submit"
-          secondaryButtonTestId="super-admin-oauth-provider-delete-confirm-cancel"
+          primaryButtonTestId="super-admin-auth-provider-delete-confirm-submit"
+          secondaryButtonTestId="super-admin-auth-provider-delete-confirm-cancel"
           onPrimaryClick={confirmDelete}
           onClose={() => setProviderToDelete(null)}
           isLoading={deleteProvider.isPending}

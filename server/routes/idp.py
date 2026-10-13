@@ -6,7 +6,7 @@ no real IDP configured yet, with their first administrator account bootstrapped
 directly, instead of standing up an external IDP just to get started.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
-regular IDP provider, and (since migration 179, reshaped by migration 185)
+regular IDP provider, and (since migration 179, reshaped by migration 186)
 *is* one: a real row in ``auth_providers`` (``kind='PasswordProviderDetails'``)
 seeded once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an
 in-memory sentinel re-checked on every request. This removes the need to

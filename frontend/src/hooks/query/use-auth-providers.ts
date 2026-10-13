@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { oauthProvidersService } from "#/api/oauth-providers-service/oauth-providers-service.api";
+import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
 
-export const OAUTH_PROVIDERS_QUERY_KEY = ["super-admin", "oauth-providers"];
+export const AUTH_PROVIDERS_QUERY_KEY = ["super-admin", "auth-providers"];
 
-export const useOAuthProviders = () =>
+export const useAuthProviders = () =>
   useQuery({
-    queryKey: OAUTH_PROVIDERS_QUERY_KEY,
-    queryFn: () => oauthProvidersService.listOAuthProviders(),
+    queryKey: AUTH_PROVIDERS_QUERY_KEY,
+    queryFn: () => authProvidersService.listAuthProviders(),
   });

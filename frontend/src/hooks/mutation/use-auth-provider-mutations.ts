@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { oauthProvidersService } from "#/api/oauth-providers-service/oauth-providers-service.api";
+import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
 import type {
-  CreateOAuthProviderParams,
-  UpdateOAuthProviderParams,
-} from "#/api/oauth-providers-service/oauth-providers.types";
-import { OAUTH_PROVIDERS_QUERY_KEY } from "#/hooks/query/use-oauth-providers";
+  CreateAuthProviderParams,
+  UpdateAuthProviderParams,
+} from "#/api/auth-providers-service/auth-providers.types";
+import { AUTH_PROVIDERS_QUERY_KEY } from "#/hooks/query/use-auth-providers";
 import { I18nKey } from "#/i18n/declaration";
 import {
   displayErrorToast,
@@ -13,27 +13,27 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
-export const useCreateOAuthProvider = () => {
+export const useCreateAuthProvider = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (params: CreateOAuthProviderParams) =>
-      oauthProvidersService.createOAuthProvider(params),
+    mutationFn: (params: CreateAuthProviderParams) =>
+      authProvidersService.createAuthProvider(params),
     onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CREATE_SUCCESS));
-      queryClient.invalidateQueries({ queryKey: OAUTH_PROVIDERS_QUERY_KEY });
+      displaySuccessToast(t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CREATE_SUCCESS));
+      queryClient.invalidateQueries({ queryKey: AUTH_PROVIDERS_QUERY_KEY });
     },
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_CREATE_ERROR),
+          t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CREATE_ERROR),
       );
     },
   });
 };
 
-export const useUpdateOAuthProvider = () => {
+export const useUpdateAuthProvider = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -41,36 +41,36 @@ export const useUpdateOAuthProvider = () => {
     mutationFn: ({
       id,
       ...params
-    }: { id: number } & UpdateOAuthProviderParams) =>
-      oauthProvidersService.updateOAuthProvider({ id, ...params }),
+    }: { id: number } & UpdateAuthProviderParams) =>
+      authProvidersService.updateAuthProvider({ id, ...params }),
     onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_UPDATE_SUCCESS));
-      queryClient.invalidateQueries({ queryKey: OAUTH_PROVIDERS_QUERY_KEY });
+      displaySuccessToast(t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_UPDATE_SUCCESS));
+      queryClient.invalidateQueries({ queryKey: AUTH_PROVIDERS_QUERY_KEY });
     },
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_UPDATE_ERROR),
+          t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_UPDATE_ERROR),
       );
     },
   });
 };
 
-export const useDeleteOAuthProvider = () => {
+export const useDeleteAuthProvider = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation({
     mutationFn: ({ id }: { id: number }) =>
-      oauthProvidersService.deleteOAuthProvider({ id }),
+      authProvidersService.deleteAuthProvider({ id }),
     onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_DELETE_SUCCESS));
-      queryClient.invalidateQueries({ queryKey: OAUTH_PROVIDERS_QUERY_KEY });
+      displaySuccessToast(t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DELETE_SUCCESS));
+      queryClient.invalidateQueries({ queryKey: AUTH_PROVIDERS_QUERY_KEY });
     },
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||
-          t(I18nKey.SUPER_ADMIN$OAUTH_PROVIDER_DELETE_ERROR),
+          t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DELETE_ERROR),
       );
     },
   });

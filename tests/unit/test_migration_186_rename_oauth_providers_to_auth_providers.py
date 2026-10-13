@@ -1,6 +1,6 @@
-"""Real-DB tests for migration 185 (``oauth_providers`` -> ``auth_providers``).
+"""Real-DB tests for migration 186 (``oauth_providers`` -> ``auth_providers``).
 
-Unlike the lighter migrations (168/178/179), 185 reshapes column-for-column
+Unlike the lighter migrations (168/178/179), 186 reshapes column-for-column
 data (flat OAuth2 columns -> polymorphic ``details`` with its secret
 field(s) individually encrypted), so these tests run the real migration
 against a real database (via ``postgres_testdb.run_alembic``) rather than
@@ -86,7 +86,7 @@ def test_upgrade_reshapes_oauth2_row_into_encrypted_details(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
     github_id = _insert_legacy_provider(
         engine,
@@ -102,7 +102,7 @@ def test_upgrade_reshapes_oauth2_row_into_encrypted_details(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '185'
+        test_database.server, test_database.name, 'upgrade', '186'
     )
 
     with engine.connect() as conn:
@@ -141,7 +141,7 @@ def test_upgrade_reshapes_integrated_idp_row_into_password_details(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
     integrated_id = _insert_legacy_provider(
         engine,
@@ -152,7 +152,7 @@ def test_upgrade_reshapes_integrated_idp_row_into_password_details(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '185'
+        test_database.server, test_database.name, 'upgrade', '186'
     )
 
     with engine.connect() as conn:
@@ -179,9 +179,9 @@ def test_upgrade_preserves_ids_so_foreign_keys_still_resolve(
 ):
     """Renaming the table must not renumber rows: ``oauth_provider_users``/
     ``oauth_tokens`` reference it by id, created against whatever id this row
-    had before migration 185 ran."""
+    had before migration 186 ran."""
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
     provider_id = _insert_legacy_provider(
         engine,
@@ -192,7 +192,7 @@ def test_upgrade_preserves_ids_so_foreign_keys_still_resolve(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '185'
+        test_database.server, test_database.name, 'upgrade', '186'
     )
 
     with engine.connect() as conn:
@@ -207,7 +207,7 @@ def test_downgrade_restores_flat_oauth2_columns(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
     github_id = _insert_legacy_provider(
         engine,
@@ -222,11 +222,11 @@ def test_downgrade_restores_flat_oauth2_columns(
         scopes=['repo'],
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '185'
+        test_database.server, test_database.name, 'upgrade', '186'
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
 
     with engine.connect() as conn:
@@ -265,7 +265,7 @@ def test_downgrade_restores_integrated_idp_row(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
     integrated_id = _insert_legacy_provider(
         engine,
@@ -275,11 +275,11 @@ def test_downgrade_restores_integrated_idp_row(
         client_id='integrated-idp',
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '185'
+        test_database.server, test_database.name, 'upgrade', '186'
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '184'
+        test_database.server, test_database.name, 'downgrade', '185'
     )
 
     with engine.connect() as conn:

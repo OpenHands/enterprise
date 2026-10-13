@@ -41,7 +41,7 @@ from storage.encrypt_utils import create_json_with_encrypted_secrets_type_decora
 class AuthProvider(Base):
     """Per-provider login/integration configuration.
 
-    Seeded by migration 185 (renamed+reshaped from the earlier
+    Seeded by migration 186 (renamed+reshaped from the earlier
     ``oauth_providers`` table) from environment variables / existing rows.
     Runtime config changes go through ``AuthProviderStore``.
     """

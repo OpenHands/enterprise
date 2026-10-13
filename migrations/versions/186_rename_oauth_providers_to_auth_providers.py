@@ -64,8 +64,19 @@ per OHE-3608 no such rows exist outside dev/eval installs with the feature
 flag on, which is what makes this rename-in-place viable instead of a slower
 additive migration.
 
-Revision ID: 185
-Revises: 184
+Migration 185's "at most one integrated/password IDP row, and it is always
+an IDP" guard (``uq_oauth_providers_one_integrated_idp`` /
+``ck_oauth_providers_integrated_idp_is_idp``, both defined on
+``provider_category``) is implicitly dropped by this migration's
+``DROP COLUMN provider_category`` (Postgres auto-drops indexes/constraints
+that involve a dropped column) and re-created here on the new ``kind``/
+``is_idp`` columns as ``uq_auth_providers_one_password_provider`` /
+``ck_auth_providers_password_provider_is_idp`` -- same invariant, same
+rationale, just keyed off ``kind == 'PasswordProviderDetails'`` instead of
+``provider_category == 'integrated_idp'``.
+
+Revision ID: 186
+Revises: 185
 Create Date: 2026-10-12 00:00:00.000000
 """
 
@@ -75,8 +86,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '185'
-down_revision: str | None = '184'
+revision: str = '186'
+down_revision: str | None = '185'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -88,6 +99,15 @@ depends_on: str | Sequence[str] | None = None
 _OAUTH_KIND = 'OAuthProviderDetails'
 _PASSWORD_KIND = 'PasswordProviderDetails'
 _INTEGRATED_IDP_CATEGORY = 'integrated_idp'
+
+# Migration 185's guard on the old flat schema, re-created here on `kind`/
+# `is_idp` -- see the comment in `upgrade()` below.
+UNIQUE_PASSWORD_PROVIDER_INDEX_NAME = 'uq_auth_providers_one_password_provider'
+PASSWORD_PROVIDER_IS_IDP_CHECK_NAME = 'ck_auth_providers_password_provider_is_idp'
+
+# Migration 185's original names, for the downgrade path.
+_OLD_UNIQUE_INDEX_NAME = 'uq_oauth_providers_one_integrated_idp'
+_OLD_CHECK_CONSTRAINT_NAME = 'ck_oauth_providers_integrated_idp_is_idp'
 
 
 def _dump_details(details) -> str:
@@ -228,6 +248,26 @@ def upgrade() -> None:
 
     op.create_index('ix_auth_providers_kind', 'auth_providers', ['kind'])
 
+    # Dropping `provider_category` above auto-dropped migration 185's
+    # `uq_oauth_providers_one_integrated_idp` / `ck_oauth_providers_
+    # integrated_idp_is_idp` (Postgres drops indexes/constraints involving a
+    # dropped column). Re-establish the same invariant -- at most one
+    # password-IDP row, and it is always an IDP -- on the new `kind`/`is_idp`
+    # columns so the DB keeps enforcing it independently of the admin API's
+    # own `_validate_password_idp_invariant` check.
+    op.create_index(
+        UNIQUE_PASSWORD_PROVIDER_INDEX_NAME,
+        'auth_providers',
+        ['kind'],
+        unique=True,
+        postgresql_where=sa.text(f"kind = '{_PASSWORD_KIND}'"),
+    )
+    op.create_check_constraint(
+        PASSWORD_PROVIDER_IS_IDP_CHECK_NAME,
+        'auth_providers',
+        f"kind <> '{_PASSWORD_KIND}' OR is_idp",
+    )
+
 
 def _restore_flat_columns(bind) -> None:
     rows = (
@@ -309,6 +349,10 @@ def _encrypt_legacy_client_secret(plaintext: str) -> str:
 def downgrade() -> None:
     bind = op.get_bind()
 
+    op.drop_constraint(
+        PASSWORD_PROVIDER_IS_IDP_CHECK_NAME, 'auth_providers', type_='check'
+    )
+    op.drop_index(UNIQUE_PASSWORD_PROVIDER_INDEX_NAME, table_name='auth_providers')
     op.drop_index('ix_auth_providers_kind', table_name='auth_providers')
 
     op.add_column(
@@ -355,4 +399,20 @@ def downgrade() -> None:
         'ix_oauth_providers_provider_category',
         'oauth_providers',
         ['provider_category'],
+    )
+    # Restore migration 185's guard exactly as it existed before this
+    # migration's `upgrade()` ran (dropping `provider_category` there
+    # auto-dropped these, same as any other index/constraint on a dropped
+    # column).
+    op.create_index(
+        _OLD_UNIQUE_INDEX_NAME,
+        'oauth_providers',
+        ['provider_category'],
+        unique=True,
+        postgresql_where=sa.text(f"provider_category = '{_INTEGRATED_IDP_CATEGORY}'"),
+    )
+    op.create_check_constraint(
+        _OLD_CHECK_CONSTRAINT_NAME,
+        'oauth_providers',
+        f"provider_category <> '{_INTEGRATED_IDP_CATEGORY}' OR is_idp",
     )
