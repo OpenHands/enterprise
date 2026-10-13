@@ -43,10 +43,18 @@ export type SamlSsoBinding = "redirect" | "post";
 
 /** Mirrors ``storage.auth_provider_details.SamlProviderDetails``.
  *
- * ``sp_private_key`` is never returned by the server as its real value --
- * only a masked placeholder when one is configured, or ``null`` when it
- * isn't; the two are distinguishable, so there is no separate
- * ``has_sp_private_key`` flag to maintain.
+ * ``sp_private_key`` is never admin-supplied and never returned by the
+ * server as its real value -- the admin API always sends ``null`` for it on
+ * create/update (the server auto-generates/carries one forward regardless,
+ * see ``server.routes.oauth_providers_admin._ensure_sp_keypair``), and
+ * responses only ever echo a masked placeholder when one is configured, or
+ * ``null`` when it isn't.
+ *
+ * ``sp_public_key`` is the PEM-encoded public half of that key, derived
+ * fresh on every read (a Pydantic ``computed_field``, not its own stored
+ * column) -- it is what the admin copies into the IdP's trusted-SP/ACS
+ * signing-certificate configuration. ``null`` until a key has been
+ * generated, i.e. until the row has been saved at least once as SAML.
  */
 export interface SamlProviderDetails {
   kind: "SamlProviderDetails";
@@ -57,6 +65,7 @@ export interface SamlProviderDetails {
   slo_url: string | null;
   idp_x509_cert: string | null;
   sp_private_key: string | null;
+  sp_public_key: string | null;
   name_id_format: string | null;
   attribute_mapping: Record<string, string>;
 }

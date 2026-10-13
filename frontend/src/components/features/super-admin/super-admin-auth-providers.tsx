@@ -133,7 +133,12 @@ interface AuthProviderFormState {
   ssoBinding: SamlSsoBinding;
   sloUrl: string;
   idpX509Cert: string;
-  spPrivateKey: string;
+  /** Read-only: the SP's auto-generated signing public key, for the admin
+   * to copy into the IdP's trusted-SP configuration. Empty until the row
+   * has been saved at least once -- ``sp_private_key``/its derived public
+   * half are never typed, only generated server-side (see
+   * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
+  spPublicKey: string;
   nameIdFormat: string;
   attributeMapping: string;
 }
@@ -156,7 +161,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   ssoBinding: DEFAULT_SSO_BINDING,
   sloUrl: "",
   idpX509Cert: "",
-  spPrivateKey: "",
+  spPublicKey: "",
   nameIdFormat: "",
   attributeMapping: "",
 };
@@ -191,6 +196,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       ssoBinding: details.sso_binding,
       sloUrl: details.slo_url ?? "",
       idpX509Cert: details.idp_x509_cert ?? "",
+      spPublicKey: details.sp_public_key ?? "",
       nameIdFormat: details.name_id_format ?? "",
       attributeMapping: formatAttributeMapping(details.attribute_mapping),
     };
@@ -253,7 +259,13 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       sso_binding: form.ssoBinding,
       slo_url: form.sloUrl.trim() || null,
       idp_x509_cert: form.idpX509Cert.trim() || null,
-      sp_private_key: form.spPrivateKey ? form.spPrivateKey : null,
+      // Never admin-supplied -- auto-generated server-side the first time
+      // this row becomes SAML, then carried forward on every later edit
+      // (see ``server.routes.oauth_providers_admin._ensure_sp_keypair``).
+      sp_private_key: null,
+      // Derived server-side from ``sp_private_key`` -- never client-supplied,
+      // and ignored by the server if sent (see type doc comment).
+      sp_public_key: null,
       name_id_format: form.nameIdFormat.trim() || null,
       attribute_mapping: parseAttributeMapping(form.attributeMapping),
     };
@@ -499,7 +511,14 @@ function AuthProviderFormModal({
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL)}
               type="text"
               value={form.metadataUrl}
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL_HINT)}
+              description={
+                <p
+                  data-testid="super-admin-auth-provider-metadata-url-hint"
+                  className="text-xs text-tertiary-alt"
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL_HINT)}
+                </p>
+              }
               onChange={(value) =>
                 setForm((prev) => ({ ...prev, metadataUrl: value }))
               }
@@ -567,29 +586,31 @@ function AuthProviderFormModal({
               showOptionalTag
               autoComplete="off"
             />
-            <SettingsInput
-              testId="super-admin-auth-provider-sp-private-key"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PRIVATE_KEY)}
-              type="password"
-              value={form.spPrivateKey}
-              placeholder={
-                mode === "edit"
-                  ? t(
-                      I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PRIVATE_KEY_PLACEHOLDER,
-                    )
-                  : undefined
-              }
-              hint={
-                mode === "edit"
-                  ? t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PRIVATE_KEY_HINT)
-                  : undefined
-              }
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, spPrivateKey: value }))
-              }
-              showOptionalTag
-              autoComplete="new-password"
-            />
+            {form.spPublicKey ? (
+              <SettingsInput
+                testId="super-admin-auth-provider-sp-public-key"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY)}
+                type="text"
+                value={form.spPublicKey}
+                description={
+                  <p
+                    data-testid="super-admin-auth-provider-sp-public-key-hint"
+                    className="text-xs text-tertiary-alt"
+                  >
+                    {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_HINT)}
+                  </p>
+                }
+                isReadOnly
+                onChange={() => {}}
+              />
+            ) : (
+              <p
+                data-testid="super-admin-auth-provider-sp-public-key-pending"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_PENDING)}
+              </p>
+            )}
             <SettingsInput
               testId="super-admin-auth-provider-name-id-format"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAME_ID_FORMAT)}
@@ -630,9 +651,10 @@ function buildUpdatePayload(
   initial: AuthProviderFormState,
 ): UpdateAuthProviderParams {
   const kindChanged = form.kind !== initial.kind;
-  const secretTyped =
-    (form.kind === KIND_OAUTH && form.clientSecret !== "") ||
-    (form.kind === KIND_SAML && form.spPrivateKey !== "");
+  // SAML has no equivalent: the SP key is never admin-typed, so there is
+  // nothing here that mirrors the OAuth client secret's "blank means keep,
+  // non-blank means replace" contract.
+  const secretTyped = form.kind === KIND_OAUTH && form.clientSecret !== "";
   const oauthFieldsChanged =
     form.kind === KIND_OAUTH && !oauthDetailsUnchanged(form, initial);
   const samlFieldsChanged =

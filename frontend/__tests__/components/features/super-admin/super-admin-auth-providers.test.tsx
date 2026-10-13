@@ -63,6 +63,8 @@ const SAML_PROVIDER: AuthProvider = {
     idp_x509_cert:
       "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
     sp_private_key: "**********",
+    sp_public_key:
+      "-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----",
     name_id_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
     attribute_mapping: { email: "mail", name: "displayName" },
   },
@@ -399,8 +401,16 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-idp-x509-cert"),
     ).toBeInTheDocument();
+    // No key exists yet on a brand-new row -- the SP public key (and the
+    // "SP Private Key" field that used to live here) are never
+    // admin-typed, see `_ensure_sp_keypair`.
     expect(
-      within(dialog).getByTestId("super-admin-auth-provider-sp-private-key"),
+      within(dialog).queryByTestId("super-admin-auth-provider-sp-public-key"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-sp-public-key-pending",
+      ),
     ).toBeInTheDocument();
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
@@ -442,6 +452,7 @@ describe("Super Admin Auth Providers page", () => {
           slo_url: null,
           idp_x509_cert: null,
           sp_private_key: null,
+          sp_public_key: null,
           name_id_format: null,
           attribute_mapping: { email: "mail", name: "displayName" },
         },
@@ -508,9 +519,13 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
     ).toHaveValue("email=mail, name=displayName");
+    // Read-only: shows the key already generated for this row, never an
+    // input the admin can type into. A plain `<input type="text">` can't
+    // hold newlines, same as the existing `idp-x509-cert` field -- the
+    // browser collapses them on render.
     expect(
-      within(dialog).getByTestId("super-admin-auth-provider-sp-private-key"),
-    ).toHaveValue("");
+      within(dialog).getByTestId("super-admin-auth-provider-sp-public-key"),
+    ).toHaveValue("-----BEGIN PUBLIC KEY-----MIIB...-----END PUBLIC KEY-----");
   });
 
   it("omits details (preserving the SP private key) when editing a SAML provider without touching any SAML field", async () => {
@@ -573,10 +588,69 @@ describe("Super Admin Auth Providers page", () => {
             kind: "SamlProviderDetails",
             sso_url: "https://idp.example.com/sso-2",
             sp_private_key: null,
+            sp_public_key: null,
           }),
         }),
       ),
     );
+  });
+
+  it("renders the metadata URL help text on its own line below the label, not crowded next to it", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-kind"),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
+      }),
+    );
+
+    const hint = within(dialog).getByTestId(
+      "super-admin-auth-provider-metadata-url-hint",
+    );
+    expect(hint).toBeInTheDocument();
+    // `description` renders as its own block between the label row and the
+    // `<input>`, so the hint and the label are siblings in different rows
+    // (the label's row has no knowledge of the hint at all) rather than
+    // the hint being squeezed into the label's own row as `hint` would do.
+    const labelRow = within(dialog)
+      .getByText("SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL")
+      .closest("div");
+    expect(labelRow).not.toContainElement(hint);
+  });
+
+  it("shows a read-only SP public key once a SAML provider has been saved, with no way to type a private key", async () => {
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sp-public-key"),
+    ).toHaveAttribute("readonly");
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-sp-private-key"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId(
+        "super-admin-auth-provider-sp-public-key-pending",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("asks for confirmation naming the provider before deleting it", async () => {
