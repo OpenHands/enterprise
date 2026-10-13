@@ -518,6 +518,123 @@ describe("Super Admin Auth Providers page", () => {
     );
   });
 
+  it("auto-fills the IdP fields from the metadata URL once it's entered", async () => {
+    const previewSamlMetadata = vi
+      .spyOn(authProvidersService, "previewSamlMetadata")
+      .mockResolvedValue({
+        idp_entity_id: "https://idp.example.com/entity",
+        sso_url: "https://idp.example.com/sso",
+        sso_binding: "post",
+        slo_url: "https://idp.example.com/slo",
+        idp_x509_cert:
+          "-----BEGIN CERTIFICATE-----MIIB...-----END CERTIFICATE-----",
+        name_id_format: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
+      });
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-kind"),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
+      }),
+    );
+
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+      "https://idp.example.com/metadata",
+    );
+    await user.tab();
+
+    await waitFor(() =>
+      expect(previewSamlMetadata).toHaveBeenCalledWith(
+        "https://idp.example.com/metadata",
+      ),
+    );
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-entity-id"),
+    ).toHaveValue("https://idp.example.com/entity");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
+    ).toHaveValue("https://idp.example.com/sso");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-sso-binding"),
+    ).toHaveValue("SUPER_ADMIN$AUTH_PROVIDER_SSO_BINDING_POST");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-slo-url"),
+    ).toHaveValue("https://idp.example.com/slo");
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-idp-x509-cert"),
+    ).toHaveValue(
+      "-----BEGIN CERTIFICATE-----MIIB...-----END CERTIFICATE-----",
+    );
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
+    ).toHaveValue("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent");
+
+    // Blurring again without changing the URL shouldn't re-fetch.
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+    );
+    await user.tab();
+    expect(previewSamlMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an inline error when the metadata URL can't be fetched, without blocking manual entry", async () => {
+    const previewSamlMetadata = vi
+      .spyOn(authProvidersService, "previewSamlMetadata")
+      .mockRejectedValue(new Error("Failed to fetch metadata URL: 404"));
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await screen.findByText("GitHub");
+
+    await user.click(
+      screen.getByRole("button", { name: "SUPER_ADMIN$ADD_AUTH_PROVIDER" }),
+    );
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-kind"),
+    );
+    await user.click(
+      await screen.findByRole("option", {
+        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
+      }),
+    );
+
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
+      "https://idp.example.com/metadata",
+    );
+    await user.tab();
+
+    await waitFor(() => expect(previewSamlMetadata).toHaveBeenCalled());
+    // The real backend error message is shown when there is one (just like
+    // every other mutation in this form) -- the generic
+    // METADATA_FETCH_ERROR copy is only a fallback.
+    expect(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-metadata-url-error",
+      ),
+    ).toHaveTextContent("Failed to fetch metadata URL: 404");
+
+    // Still fillable/submittable by hand -- the title is the only hard
+    // requirement for a SAML row.
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
+      "Okta SAML",
+    );
+    expect(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    ).not.toBeDisabled();
+  });
+
   it("loads an existing SAML provider's fields into the edit form", async () => {
     const user = userEvent.setup();
     vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([

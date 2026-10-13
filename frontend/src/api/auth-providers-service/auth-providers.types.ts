@@ -70,6 +70,19 @@ export interface SamlProviderDetails {
   attribute_mapping: Record<string, string>;
 }
 
+/** Mirrors ``server.services.saml_metadata.SamlIdpMetadata`` -- the
+ * ``POST /api/admin/oauth-providers/saml-metadata-preview`` response, used
+ * to prefill the rest of the SAML form from a metadata URL. Any field may
+ * be ``null`` if the IdP's metadata document didn't declare it. */
+export interface SamlIdpMetadata {
+  idp_entity_id: string | null;
+  sso_url: string | null;
+  sso_binding: SamlSsoBinding | null;
+  slo_url: string | null;
+  idp_x509_cert: string | null;
+  name_id_format: string | null;
+}
+
 /** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
   | OAuthProviderDetails

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import { OrgModal } from "#/components/shared/modals/org-modal";
@@ -8,6 +8,7 @@ import { SettingsDropdownInput } from "#/components/features/settings/settings-d
 import {
   useCreateAuthProvider,
   useDeleteAuthProvider,
+  usePreviewSamlMetadata,
   useUpdateAuthProvider,
 } from "#/hooks/mutation/use-auth-provider-mutations";
 import { useAuthProviders } from "#/hooks/query/use-auth-providers";
@@ -16,9 +17,11 @@ import type {
   AuthProviderDetails,
   CreateAuthProviderParams,
   OAuthProviderBrand,
+  SamlIdpMetadata,
   SamlSsoBinding,
   UpdateAuthProviderParams,
 } from "#/api/auth-providers-service/auth-providers.types";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { I18nKey } from "#/i18n/declaration";
 import {
   SUPER_ADMIN_NAV_ITEMS,
@@ -309,6 +312,45 @@ function AuthProviderFormModal({
 }: AuthProviderFormModalProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<AuthProviderFormState>(initial);
+  const [metadataFetchError, setMetadataFetchError] = useState<string | null>(
+    null,
+  );
+  const previewSamlMetadata = usePreviewSamlMetadata();
+  // Guards against re-fetching on every blur (e.g. tabbing through the form
+  // without touching this field again) -- only a URL not yet fetched
+  // triggers a request.
+  const lastFetchedMetadataUrl = useRef<string | null>(null);
+
+  const handleMetadataUrlBlur = () => {
+    const metadataUrl = form.metadataUrl.trim();
+    if (!metadataUrl || metadataUrl === lastFetchedMetadataUrl.current) {
+      return;
+    }
+    lastFetchedMetadataUrl.current = metadataUrl;
+    setMetadataFetchError(null);
+    previewSamlMetadata.mutate(metadataUrl, {
+      onSuccess: (data: SamlIdpMetadata) => {
+        setForm((prev) => ({
+          ...prev,
+          idpEntityId: data.idp_entity_id ?? prev.idpEntityId,
+          ssoUrl: data.sso_url ?? prev.ssoUrl,
+          ssoBinding: data.sso_binding ?? prev.ssoBinding,
+          sloUrl: data.slo_url ?? prev.sloUrl,
+          idpX509Cert: data.idp_x509_cert ?? prev.idpX509Cert,
+          nameIdFormat: data.name_id_format ?? prev.nameIdFormat,
+        }));
+      },
+      onError: (error) => {
+        // Let the admin retry the same URL (e.g. once their IdP's metadata
+        // endpoint is live) instead of silently no-op'ing on the next blur.
+        lastFetchedMetadataUrl.current = null;
+        setMetadataFetchError(
+          retrieveAxiosErrorMessage(error) ||
+            t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_FETCH_ERROR),
+        );
+      },
+    });
+  };
 
   const kindOptions = [
     {
@@ -531,12 +573,23 @@ function AuthProviderFormModal({
                   {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL_HINT)}
                 </p>
               }
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, metadataUrl: value }))
-              }
+              onChange={(value) => {
+                setForm((prev) => ({ ...prev, metadataUrl: value }));
+                setMetadataFetchError(null);
+              }}
+              onBlur={handleMetadataUrlBlur}
+              error={metadataFetchError ?? undefined}
               showOptionalTag
               autoComplete="off"
             />
+            {previewSamlMetadata.isPending ? (
+              <p
+                data-testid="super-admin-auth-provider-metadata-url-loading"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_FETCHING)}
+              </p>
+            ) : null}
             <SettingsInput
               testId="super-admin-auth-provider-idp-entity-id"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IDP_ENTITY_ID)}

@@ -56,6 +56,20 @@ export const useUpdateAuthProvider = () => {
   });
 };
 
+/** Backs the SAML form's "Metadata URL" field -- fetches/parses the IdP's
+ * metadata document (``authProvidersService.previewSamlMetadata``) so the
+ * caller can prefill the rest of the form from it. A failed/invalid URL is
+ * an expected, recoverable state here (the admin may still be typing, or
+ * their IdP may not have the metadata endpoint live yet), not shown as a
+ * toast -- callers handle success/error inline via ``mutate(url, { onSuccess,
+ * onError })``. */
+export const usePreviewSamlMetadata = () =>
+  useMutation({
+    meta: { disableToast: true },
+    mutationFn: (metadataUrl: string) =>
+      authProvidersService.previewSamlMetadata(metadataUrl),
+  });
+
 export const useDeleteAuthProvider = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
