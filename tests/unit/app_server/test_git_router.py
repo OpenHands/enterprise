@@ -836,6 +836,48 @@ class TestSearchBranches:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_listing_short_page_has_no_next_page_id(self, mock_handler_cls):
+        """A page with fewer than limit branches is the last page.
+
+        The router does not use the provider's has_next_page, which GitLab
+        sets for any Link header, also on the last page.
+        """
+        # Arrange
+        mock_handler = MagicMock()
+        mock_handler.get_branches = AsyncMock(
+            return_value=PaginatedBranchesResponse(
+                branches=[Branch(name='last', commit_sha='abc', protected=False)],
+                has_next_page=True,
+                current_page=2,
+                per_page=30,
+                total_count=None,
+            )
+        )
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        result = await search_branches(
+            provider=ProviderType.GITLAB,
+            repository='group/repo',
+            query='',
+            page_id=encode_page_id(2),
+            limit=30,
+            user_context=mock_context,
+        )
+
+        # Assert
+        assert [branch.name for branch in result.items] == ['last']
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
     async def test_listing_pagination_works_across_pages(self, mock_handler_cls):
         """Following next_page_id with an empty query must show every branch once.
 

@@ -282,7 +282,9 @@ async def search_branches(
         page=page,
         per_page=limit,
     )
-    next_page_id = encode_page_id(page + 1) if current_page.has_next_page else None
+    next_page_id = (
+        encode_page_id(page + 1) if len(current_page.branches) >= limit else None
+    )
 
     return BranchPage(items=current_page.branches, next_page_id=next_page_id)
 
