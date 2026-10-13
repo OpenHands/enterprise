@@ -14,11 +14,13 @@ import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import { I18nKey } from "#/i18n/declaration";
 import {
+  LiteLlmStatusBadge,
   PillBadge,
   SpendMeter,
   StatusPill,
   UserProgressBar,
 } from "./budgets-components";
+import type { LiteLlmStatus } from "./budgets-components";
 import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
 import {
@@ -159,13 +161,6 @@ export function OrganizationBudgetTab({
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
-  const reconciliationStyle = {
-    healthy: "border-green-500/30 bg-green-500/10 text-green-300",
-    inactive: "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]",
-    pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-    degraded: "border-red-500/30 bg-red-500/10 text-red-300",
-    failed: "border-red-500/30 bg-red-500/10 text-red-300",
-  }[reconciliationState];
   const reconciliationMessage = {
     inactive: "Inactive — no organization budget is being enforced.",
     pending:
@@ -176,6 +171,61 @@ export function OrganizationBudgetTab({
     failed:
       "Failed — the applied LiteLLM policy could not be read or verified.",
   }[reconciliationState];
+  const reconciliationDetail = [
+    reconciliationMessage,
+    desiredTeamMaxBudget !== null
+      ? `Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`
+      : null,
+    appliedTeamMaxBudget !== null
+      ? `Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`
+      : null,
+    reconciliationError,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const syncNote =
+    syncStatus === "error" && !reconciliationError
+      ? `Budget enforcement reconciliation needs attention. Existing caps are preserved until a verified synchronization succeeds.${
+          syncError ? ` ${syncError}` : ""
+        }`
+      : null;
+  let spendMessage =
+    "Spend data is temporarily unavailable. LiteLLM remains the enforcement point, but this page cannot confirm current usage.";
+  if (spendStatus !== "unavailable") {
+    spendMessage = `${
+      spendStatus === "stale"
+        ? "Showing the last successful LiteLLM snapshot"
+        : "Spend reported by LiteLLM"
+    }${observedAtLabel ? ` from ${observedAtLabel}.` : "."} LiteLLM performs final request admission, so the latest request may not appear here yet.`;
+  }
+  let teamCapHelper: string | null = null;
+  if (desiredTeamMaxBudget !== null) {
+    teamCapHelper =
+      cycleStartSpend !== null && cycleStartSpend > 0
+        ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+            cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+            priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`,
+          })
+        : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER);
+  }
+  // A stale or unavailable spend means the live LiteLLM read failed, even
+  // when the policy was verified from a cached snapshot.
+  const litellmStatus: LiteLlmStatus =
+    reconciliationState === "degraded" ||
+    reconciliationState === "failed" ||
+    spendStatus !== "live"
+      ? "degraded"
+      : reconciliationState;
+  let degradedDetail = reconciliationError ?? syncError;
+  if (degradedDetail === null) {
+    degradedDetail =
+      reconciliationState === "degraded" || reconciliationState === "failed"
+        ? reconciliationMessage
+        : spendMessage;
+  }
 
   return (
     <div className="space-y-6">
@@ -190,78 +240,33 @@ export function OrganizationBudgetTab({
               : "Track total spend across your organization against its monthly cap."}
           </p>
         </div>
+        <LiteLlmStatusBadge
+          status={litellmStatus}
+          tooltip={
+            <div className="space-y-2 p-1">
+              <p>{reconciliationDetail}</p>
+              {syncNote && <p>{syncNote}</p>}
+              <p>{spendMessage}</p>
+              {teamCapHelper && <p>{teamCapHelper}</p>}
+              <p>
+                Includes app, automation, and SDK requests routed through this
+                deployment&apos;s LiteLLM proxy. Requests sent directly to an
+                external provider are outside this budget.
+              </p>
+            </div>
+          }
+        />
       </div>
 
       <div className="rounded-lg border border-border-subtle bg-base-secondary p-6">
-        <div
-          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
-            spendStatus === "live"
-              ? "border-[var(--oh-border)] bg-tertiary text-muted"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-300"
-          }`}
-        >
-          {spendStatus === "unavailable" ? (
-            <span>
-              Spend data is temporarily unavailable. LiteLLM remains the
-              enforcement point, but this page cannot confirm current usage.
-            </span>
-          ) : (
-            <span>
-              {spendStatus === "stale"
-                ? "Showing the last successful LiteLLM snapshot"
-                : "Spend reported by LiteLLM"}
-              {observedAtLabel ? ` from ${observedAtLabel}.` : "."} LiteLLM
-              performs final request admission, so the latest request may not
-              appear here yet.
-            </span>
-          )}
-        </div>
-        <div
-          role={
-            reconciliationState === "healthy" ||
-            reconciliationState === "inactive"
-              ? "status"
-              : "alert"
-          }
-          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${reconciliationStyle}`}
-        >
-          <span>{reconciliationMessage}</span>
-          {desiredTeamMaxBudget !== null && (
-            <span>{` Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`}</span>
-          )}
-          {appliedTeamMaxBudget !== null && (
-            <span>{` Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`}</span>
-          )}
-          {reconciliationError ? ` ${reconciliationError}` : ""}
-        </div>
-        {desiredTeamMaxBudget !== null && (
-          <p className="mb-4 text-xs text-[var(--oh-muted)]">
-            {cycleStartSpend !== null && cycleStartSpend > 0
-              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
-                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
-                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}`,
-                })
-              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
-          </p>
-        )}
-        {syncStatus === "error" && !reconciliationError && (
+        {litellmStatus === "degraded" && (
           <div
             role="alert"
             className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
           >
-            Budget enforcement reconciliation needs attention. Existing caps are
-            preserved until a verified synchronization succeeds.
-            {syncError ? ` ${syncError}` : ""}
+            {degradedDetail}
           </div>
         )}
-        <p className="mb-4 text-xs text-[var(--oh-muted)]">
-          Includes app, automation, and SDK requests routed through this
-          deployment&apos;s LiteLLM proxy. Requests sent directly to an external
-          provider are outside this budget.
-        </p>
         {unmappedMemberCount !== null && unmappedMemberCount > 0 && (
           <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
             {`${unmappedMemberCount} LiteLLM ${
