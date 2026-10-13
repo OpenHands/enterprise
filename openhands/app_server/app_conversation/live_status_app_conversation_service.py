@@ -2321,7 +2321,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 and provider_type in named_oauth_secrets.linked_provider_types
             ):
                 continue
-            secret_name = f'{provider_type.name}_TOKEN'
+            secret_name = ProviderHandler.get_provider_env_key(provider_type)
             description = f'{provider_type.name} authentication token'
             if lookup_url:
                 secrets[secret_name] = self._lookup_secret(
