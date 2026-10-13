@@ -12,6 +12,7 @@ from openhands.app_server.integrations.service_types import (
     Branch,
     PaginatedBranchesResponse,
 )
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 def make_service():
@@ -112,9 +113,8 @@ async def test_search_branches_uses_filter_text():
     with patch.object(
         svc, '_make_request', return_value=(mock_response, {})
     ) as mock_req:
-        branches = await svc.search_branches(
-            'PROJ/myrepo', query='my-thing', per_page=15
-        )
+        result = await svc.search_branches('PROJ/myrepo', query='my-thing', per_page=15)
+    branches = result.branches
 
     call_url, call_params = mock_req.call_args[0]
     assert 'filterText' in call_params
@@ -149,7 +149,9 @@ async def test_search_branches_uses_start_offset_for_page():
     with patch.object(
         svc, '_make_request', return_value=({'values': []}, {})
     ) as mock_req:
-        await svc.search_branches('PROJ/myrepo', query='my', per_page=15, page=3)
+        await svc.search_branches(
+            'PROJ/myrepo', query='my', per_page=15, page_id=encode_page_id(3)
+        )
 
     call_params = mock_req.call_args[0][1]
     assert call_params['start'] == 30

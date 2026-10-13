@@ -20,7 +20,6 @@ from openhands.app_server.git.git_models import (
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import (
-    Branch,
     ProviderType,
     Repository,
     SuggestedTask,
@@ -242,22 +241,23 @@ async def search_branches(
         external_auth_id=user_id,
     )
 
-    page = 1
-    decoded_page_id = decode_page_id(page_id)
-    if decoded_page_id is not None:
-        page = decoded_page_id
-
     if query:
-        branches: list[Branch] = await client.search_branches(
+        # Each provider makes its own page_id (a page number or a cursor)
+        search_page = await client.search_branches(
             selected_provider=provider,
             repository=repository,
             query=query,
             per_page=limit,
-            page=page,
+            page_id=page_id,
         )
-        # A full page can have more results after it
-        next_page_id = encode_page_id(page + 1) if len(branches) >= limit else None
-        return BranchPage(items=branches, next_page_id=next_page_id)
+        return BranchPage(
+            items=search_page.branches, next_page_id=search_page.next_page_id
+        )
+
+    page = 1
+    decoded_page_id = decode_page_id(page_id)
+    if decoded_page_id is not None:
+        page = decoded_page_id
 
     # The providers use page-number pagination, so per_page must be equal to
     # limit. A larger per_page moves each page window and skips items.

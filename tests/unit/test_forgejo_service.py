@@ -12,6 +12,7 @@ from openhands.app_server.integrations.service_types import (
     User,
 )
 from openhands.app_server.types import AppMode
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 @pytest.fixture
@@ -299,8 +300,13 @@ async def test_search_branches_returns_requested_page(forgejo_service):
     ] + [Branch(name='main', commit_sha='m', protected=False)]
     forgejo_service.get_branches = AsyncMock(return_value=branches)
 
-    page2 = await forgejo_service.search_branches('o/r', 'feat', per_page=2, page=2)
-    page3 = await forgejo_service.search_branches('o/r', 'feat', per_page=2, page=3)
+    page2 = await forgejo_service.search_branches(
+        'o/r', 'feat', per_page=2, page_id=encode_page_id(2)
+    )
+    page3 = await forgejo_service.search_branches(
+        'o/r', 'feat', per_page=2, page_id=page2.next_page_id
+    )
 
-    assert [b.name for b in page2] == ['feat-3', 'feat-4']
-    assert [b.name for b in page3] == ['feat-5']
+    assert [b.name for b in page2.branches] == ['feat-3', 'feat-4']
+    assert [b.name for b in page3.branches] == ['feat-5']
+    assert page3.next_page_id is None
