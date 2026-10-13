@@ -85,9 +85,7 @@ export interface SamlIdpMetadata {
 
 /** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
-  | OAuthProviderDetails
-  | PasswordProviderDetails
-  | SamlProviderDetails;
+  OAuthProviderDetails | PasswordProviderDetails | SamlProviderDetails;
 
 /** A single ``auth_providers`` row, as returned by the admin API. */
 export interface AuthProvider {

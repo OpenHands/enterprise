@@ -420,9 +420,7 @@ function AuthProviderFormModal({
               setForm((prev) => ({
                 ...prev,
                 kind: key as
-                  | typeof KIND_OAUTH
-                  | typeof KIND_PASSWORD
-                  | typeof KIND_SAML,
+                  typeof KIND_OAUTH | typeof KIND_PASSWORD | typeof KIND_SAML,
                 isIdp: key === KIND_OAUTH ? prev.isIdp : true,
               }));
             }
