@@ -1,0 +1,127 @@
+# Local/evaluation Docker Compose stack for OpenHands Enterprise (OHE).
+#
+# `docker compose up` is meant to be the entire setup: the app migrates its
+# own database on startup (RUN_MIGRATIONS_ON_STARTUP), uses the built-in
+# password-based admin login instead of Keycloak (ENABLE_INTEGRATED_IDP +
+# OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN), and lets each user
+# configure their own LLM in Settings instead of requiring a LiteLLM proxy
+# (OH_LLM_MODEL_KIND). See OHE-3376.
+#
+# First run: open http://localhost:3000/oauth/idp/signup to create the admin
+# account, then add an LLM under Settings.
+#
+# Known gaps, tracked separately rather than worked around here:
+#   * Redis-backed features (MCP OAuth connections, conversation-export
+#     locking) are not wired up for Compose. Redis-backed *rate limiting* is
+#     explicitly disabled below (RATE_LIMITING_ENABLED=false) since it adds no
+#     value in a single-evaluator environment with no Redis.
+#   * The remaining Helm CronJobs (maintenance-tasks, budget-maintenance,
+#     resend-sync, install-gitlab-webhooks, enrich-user-interaction) are not
+#     included: they are standalone script entrypoints, not yet ported to the
+#     Postgres-backed Procrastinate worker (`worker`, below, only runs the
+#     sandbox-lifecycle and task-queue housekeeping jobs that have been
+#     migrated so far). Tracked by OHE-3425 / OHE-3451; skip until that work
+#     produces something Compose-suitable instead of reimplementing
+#     Kubernetes-style scheduling here.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DB_USER:-openhands}
+      POSTGRES_PASSWORD: ${DB_PASS:-openhands}
+      POSTGRES_DB: ${DB_NAME:-openhands}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: containers/app/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '${APP_PORT:-3000}:3000'
+    # The Docker sandbox backend creates sibling containers via the host's
+    # Docker daemon (same pattern as containers/dev/compose.yml), so the app
+    # container needs the socket -- not `privileged: true`, since the image
+    # already runs as root (SANDBOX_USER_ID=0, baked into
+    # containers/app/Dockerfile) and root can always reach the socket.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - app-filestore:/.openhands
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    environment:
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: ${DB_NAME:-openhands}
+      DB_USER: ${DB_USER:-openhands}
+      DB_PASS: ${DB_PASS:-openhands}
+
+      # The app migrates itself on startup -- no separate `alembic upgrade
+      # head` step, per OHE-3376's "one command" requirement.
+      RUN_MIGRATIONS_ON_STARTUP: 'true'
+
+      # New password-based admin login (no Keycloak). With this set and no
+      # KEYCLOAK_* vars configured, the old Keycloak-coupled login path is
+      # simply never exercised.
+      ENABLE_INTEGRATED_IDP: 'true'
+      OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
+
+      # No managed LiteLLM proxy -- fall back to the OSS default, which lets
+      # each user configure their own LLM under Settings. This overrides the
+      # LiteLLM-proxy default ``ENV OH_LLM_MODEL_KIND=...`` baked into
+      # containers/app/Dockerfile.
+      OH_LLM_MODEL_KIND: openhands.app_server.config_api.default_llm_model_service.DefaultLLMModelServiceInjector
+
+      # No billing/Stripe in this stack.
+      ENABLE_BILLING: 'false'
+
+      # Redis-backed rate limiting adds no value without Redis in a
+      # single-evaluator environment; see server/utils/rate_limit_utils.py.
+      # (Everything else that touches Redis already fails open with a log
+      # warning when Redis is unreachable -- this flag just avoids the
+      # doomed connection attempt and its log noise.)
+      RATE_LIMITING_ENABLED: 'false'
+
+      # Optional: telemetry is already force-disabled for self-hosted
+      # installs regardless of this value (see server/config.py), so leaving
+      # it unset opts out cleanly. Set a real key here to make the field
+      # available to a future opt-in, if you want one.
+      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
+
+      # RUNTIME is intentionally left unset: the Docker sandbox backend is
+      # the default (see openhands/app_server/config.py) and needs nothing
+      # else beyond the socket mount above.
+    restart: unless-stopped
+
+  # Runs the Postgres-backed Procrastinate tasks that have already been
+  # migrated off Kubernetes CronJobs: sandbox-lifecycle cleanup and
+  # Procrastinate's own housekeeping. See openhands/app_server/worker/app.py.
+  worker:
+    build:
+      context: .
+      dockerfile: containers/app/Dockerfile
+    command: ['python', '-m', 'openhands.app_server.worker']
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: ${DB_NAME:-openhands}
+      DB_USER: ${DB_USER:-openhands}
+      DB_PASS: ${DB_PASS:-openhands}
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  app-filestore:

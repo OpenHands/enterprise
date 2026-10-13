@@ -185,6 +185,42 @@ class TestDeploymentModeInConfig:
             assert config['FEATURE_FLAGS']['DEPLOYMENT_MODE'] == 'self_hosted'
 
 
+class TestVerifyConfigPosthogOptOut:
+    """Self-hosted installs (incl. Docker Compose) may opt out of setting
+    POSTHOG_CLIENT_KEY -- telemetry is already force-disabled for them
+    elsewhere (SaasAppLifespanService, PostHogWrapper), so the key is unused.
+    Cloud still requires it, since it actually drives telemetry there.
+    """
+
+    def test_self_hosted_does_not_require_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'self_hosted'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            config.verify_config()  # must not raise
+
+    def test_cloud_still_requires_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            with pytest.raises(ValueError, match='Missing posthog client key'):
+                config.verify_config()
+
+    def test_cloud_passes_with_posthog_key_set(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = 'phc_real_key'
+            config.verify_config()  # must not raise
+
+
 class TestEnableAutomationsInConfig:
     """Tests for enable_automations flag in SaaSServerConfig and get_config()."""
 
