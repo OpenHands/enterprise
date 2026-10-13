@@ -204,7 +204,7 @@ async def test_email_match_no_opted_in_user_falls_through_to_create():
             oauth_v2.UserStore,
             'create_user',
             new=AsyncMock(return_value=new_user),
-        ),
+        ) as create,
         patch.object(oauth_v2.OAuthProviderUserStore, 'link', new=AsyncMock()) as link,
     ):
         result = await _resolve_or_create_user(
@@ -220,6 +220,12 @@ async def test_email_match_no_opted_in_user_falls_through_to_create():
     # New user link, not the email-match link path.
     link.assert_awaited_once()
     assert link.call_args.kwargs['user_id'] == new_user.id
+    # 'new-idp-sub' is not a UUID -- UserStore.create_user requires one (it
+    # derives Org.id from it too), so the external subject must never be
+    # passed through as the internal User.id.
+    created_user_id = create.await_args.args[0]
+    uuid.UUID(created_user_id)
+    assert created_user_id != 'new-idp-sub'
 
 
 @pytest.mark.asyncio

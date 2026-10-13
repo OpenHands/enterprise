@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -369,7 +369,7 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
             oauth_v2.UserStore,
             'create_user',
             new=AsyncMock(return_value=fake_user),
-        ),
+        ) as create_user,
         patch.object(
             oauth_v2.UserStore,
             'get_user_by_id',
@@ -398,6 +398,12 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
 
     assert response.status_code == 302
     assert response.headers['location'] == '/done'
+    # 'ext-sub-1' is not a UUID -- the external sub must never be passed
+    # through as the internal User.id (UserStore.create_user requires a
+    # real UUID and derives Org.id from it).
+    created_user_id = create_user.await_args.args[0]
+    UUID(created_user_id)
+    assert created_user_id != 'ext-sub-1'
     # Cookie set on login flow.
     assert 'openhands_auth' in response.cookies
     # Token pair persisted.

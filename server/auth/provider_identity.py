@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from datetime import datetime
 
 from fastapi import HTTPException, Request, Response, status
@@ -82,6 +83,15 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     Looks up ``oauth_provider_users`` by ``external_subject_id``. If found,
     returns the linked user id. Otherwise creates the user and links it.
 
+    The external ``subject`` is never used as the internal ``User.id`` --
+    it's an IDP-controlled opaque string with no guaranteed shape (a
+    Keycloak pairwise NameID like ``G-<uuid>``, a GitHub numeric id, ...),
+    whereas ``UserStore.create_user`` requires a real UUID and derives
+    ``Org.id`` from it (see that docstring). A fresh ``uuid.uuid4()`` is
+    minted for every new user here instead; ``subject`` only ever lives in
+    ``oauth_provider_users.external_subject_id``, which is what every
+    subsequent login looks up by.
+
     IDP swap-over seeding (ALL-5978): when the sub lookup misses, and the
     new IDP reports ``email_verified`` is true, attempt an opted-in email
     match via ``UserStore.get_user_by_email_opted_in``. On a unique hit,
@@ -140,7 +150,8 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
         'email': email,
         'email_verified': email_verified,
     }
-    user = await UserStore.create_user(subject, user_info_dict)
+    new_user_id = str(uuid.uuid4())
+    user = await UserStore.create_user(new_user_id, user_info_dict)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

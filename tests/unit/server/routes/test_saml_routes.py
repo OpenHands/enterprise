@@ -18,7 +18,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -419,7 +419,13 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         assert response.headers['location'] == '/dashboard'
         assert 'openhands_auth' in response.cookies
 
-        assert create_user_mock.await_args.args[0] == 'ext-1'
+        created_user_id = create_user_mock.await_args.args[0]
+        # The external NameID/sub is never used as the internal User.id --
+        # UserStore.create_user requires a real UUID (and derives Org.id
+        # from it); a SAML NameID has no guaranteed shape ('ext-1' here
+        # isn't one). This must not raise.
+        UUID(created_user_id)
+        assert created_user_id != 'ext-1'
         userinfo = create_user_mock.await_args.args[1]
         assert userinfo['email'] == 'user@example.com'
         assert userinfo['email_verified'] is True
