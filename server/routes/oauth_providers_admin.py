@@ -37,12 +37,22 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.services.saml_metadata import (
+    SamlIdpMetadata,
+    SamlMetadataFetchError,
+    fetch_saml_idp_metadata,
+)
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import AuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_details import (
+    AuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+    generate_sp_keypair,
+)
 from storage.auth_provider_store import AuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 
@@ -132,12 +142,76 @@ async def _validate_password_idp_invariant(
         )
 
 
+def _ensure_sp_keypair(
+    details: AuthProviderDetails | None, existing_details: AuthProviderDetails | None
+) -> None:
+    """Auto-generate the SAML SP signing key the first time it's needed.
+
+    Admins never submit ``sp_private_key`` (there is no form field for it --
+    see ``SamlProviderDetails.sp_public_key``), so it is always ``None`` on
+    the incoming ``details``. Mutates ``details`` in place:
+
+    * If the row already has a key (``existing_details`` is itself
+      ``SamlProviderDetails`` with a key set), carry it forward -- otherwise
+      every unrelated edit (e.g. changing the SSO URL) would silently mint a
+      new key and invalidate whatever the admin configured at the IdP.
+    * Otherwise (brand new row, or a row just switched to the SAML kind)
+      generate a fresh key pair.
+
+    No-op for every ``details`` kind except ``SamlProviderDetails``, and for
+    a ``SamlProviderDetails`` that somehow already carries a key (defensive;
+    not reachable through the current form, which has no field for it).
+    """
+    if not isinstance(details, SamlProviderDetails) or details.sp_private_key:
+        return
+    if (
+        isinstance(existing_details, SamlProviderDetails)
+        and existing_details.sp_private_key
+    ):
+        details.sp_private_key = existing_details.sp_private_key
+        return
+    private_key_pem, _ = generate_sp_keypair()
+    details.sp_private_key = SecretStr(private_key_pem)
+
+
 @oauth_provider_admin_router.get('', response_model=list[AuthProviderResponse])
 async def list_oauth_providers(
     _: str = Depends(require_permission(Permission.MANAGE_OAUTH_PROVIDERS)),
 ) -> list[AuthProvider]:
     """List every configured login/integration provider row."""
     return await AuthProviderStore().list_all()
+
+
+class SamlMetadataPreviewRequest(BaseModel):
+    metadata_url: str = Field(..., min_length=1)
+
+
+@oauth_provider_admin_router.post(
+    '/saml-metadata-preview', response_model=SamlIdpMetadata
+)
+async def preview_saml_metadata(
+    body: SamlMetadataPreviewRequest,
+    _: str = Depends(require_permission(Permission.MANAGE_OAUTH_PROVIDERS)),
+) -> SamlIdpMetadata:
+    """Fetch and parse a SAML IdP's metadata document server-side.
+
+    Backs the SAML form's "Metadata URL" field: instead of an admin copying
+    the entity ID, SSO/SLO URLs, and signing certificate out of the IdP's
+    metadata XML by hand, the frontend calls this with the metadata URL and
+    prefills the rest of the form from the response. Does not persist
+    anything -- the admin still saves the provider via the regular
+    create/update endpoints.
+
+    Registered ahead of ``GET /{provider_id}`` so this static path can't be
+    shadowed by the dynamic one (Starlette falls back to it on a method
+    mismatch regardless of order, but a literal path should still win first).
+    """
+    try:
+        return await fetch_saml_idp_metadata(body.metadata_url)
+    except SamlMetadataFetchError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
 
 
 @oauth_provider_admin_router.get('/{provider_id}', response_model=AuthProviderResponse)
@@ -168,6 +242,7 @@ async def create_oauth_provider(
     await _validate_password_idp_invariant(
         store, body.details, body.is_idp, exclude_id=None
     )
+    _ensure_sp_keypair(body.details, existing_details=None)
     provider = AuthProvider(
         title=body.title,
         is_idp=body.is_idp,
@@ -209,6 +284,7 @@ async def update_oauth_provider(
     fields = body.model_dump(exclude_unset=True, exclude={'details'})
     if 'details' in body.model_fields_set:
         fields['details'] = body.details
+        _ensure_sp_keypair(body.details, existing_details=existing.details)
 
     resulting_details = fields.get('details', existing.details)
     resulting_is_idp = fields.get('is_idp', existing.is_idp)

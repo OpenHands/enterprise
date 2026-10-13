@@ -15,12 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from server.routes.oauth_providers_admin import oauth_provider_admin_router
+from server.services.saml_metadata import SamlIdpMetadata, SamlMetadataFetchError
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_details import (
+    OAuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+    generate_sp_keypair,
+)
 
 CALLER_USER_ID = str(uuid.uuid4())
 
@@ -683,3 +690,196 @@ async def test_update_provider_rejects_retargeting_kind_to_integrated_idp(
     assert resp.status_code == 409
     assert 'id=3' in resp.json()['detail']
     update_mock.assert_not_awaited()
+
+
+def _fake_saml_provider(
+    provider_id: int = 1,
+    title: str = 'Corp SAML',
+    is_idp: bool = True,
+    sp_private_key: str | None = None,
+    **saml_fields,
+) -> AuthProvider:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    provider = AuthProvider(
+        title=title,
+        is_idp=is_idp,
+        details=SamlProviderDetails(
+            sp_private_key=SecretStr(sp_private_key) if sp_private_key else None,
+            **saml_fields,
+        ),
+    )
+    provider.id = provider_id
+    provider.created_at = now
+    provider.updated_at = now
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_create_saml_provider_generates_sp_keypair(
+    mock_app, grant_manage_oauth_providers
+):
+    """Admins never submit ``sp_private_key`` -- the route must mint one."""
+    private_key_pem, _ = generate_sp_keypair()
+    created = _fake_saml_provider(
+        sp_private_key=private_key_pem,
+        idp_entity_id='https://idp.example.com',
+        sso_url='https://idp.example.com/sso',
+    )
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'Corp SAML',
+                    'is_idp': True,
+                    'details': {
+                        'kind': 'SamlProviderDetails',
+                        'idp_entity_id': 'https://idp.example.com',
+                        'sso_url': 'https://idp.example.com/sso',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body['details']['idp_entity_id'] == 'https://idp.example.com'
+    # The private key is never echoed back, but its derived public half is.
+    assert body['details']['sp_private_key'] not in (None, private_key_pem)
+    assert body['details']['sp_public_key'] is not None
+    assert body['details']['sp_public_key'].startswith('-----BEGIN PUBLIC KEY-----')
+
+    (persisted,), _ = create_mock.call_args
+    assert isinstance(persisted.details, SamlProviderDetails)
+    assert persisted.details.sp_private_key is not None
+    assert persisted.details.sp_private_key.get_secret_value().startswith(
+        '-----BEGIN PRIVATE KEY-----'
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_saml_provider_preserves_existing_sp_keypair(
+    mock_app, grant_manage_oauth_providers
+):
+    """Editing an unrelated field must not rotate the existing SP key."""
+    private_key_pem, _ = generate_sp_keypair()
+    existing = _fake_saml_provider(sp_private_key=private_key_pem)
+    updated = _fake_saml_provider(sso_url='https://idp.example.com/sso/new')
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=existing),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=updated),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={
+                    'details': {
+                        'kind': 'SamlProviderDetails',
+                        'sso_url': 'https://idp.example.com/sso/new',
+                    }
+                },
+            )
+
+    assert resp.status_code == 200
+    _, kwargs = update_mock.call_args
+    assert kwargs['details'].sp_private_key.get_secret_value() == private_key_pem
+
+
+@pytest.mark.asyncio
+async def test_update_provider_generates_sp_keypair_when_switching_kind(
+    mock_app, grant_manage_oauth_providers
+):
+    """Retargeting an OAuth row onto ``SamlProviderDetails`` mints a fresh key
+    -- there is no previous SAML key to carry forward."""
+    existing = _fake_provider(1, 'github')
+    updated = _fake_saml_provider()
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=existing),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=updated),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={
+                    'details': {
+                        'kind': 'SamlProviderDetails',
+                        'idp_entity_id': 'https://idp.example.com',
+                    }
+                },
+            )
+
+    assert resp.status_code == 200
+    _, kwargs = update_mock.call_args
+    assert kwargs['details'].sp_private_key is not None
+
+
+@pytest.mark.asyncio
+async def test_preview_saml_metadata_success(mock_app, grant_manage_oauth_providers):
+    parsed = SamlIdpMetadata(
+        idp_entity_id='https://idp.example.com',
+        sso_url='https://idp.example.com/sso',
+        sso_binding='redirect',
+        slo_url=None,
+        idp_x509_cert='-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----',
+        name_id_format=None,
+    )
+    with patch(
+        'server.routes.oauth_providers_admin.fetch_saml_idp_metadata',
+        AsyncMock(return_value=parsed),
+    ) as fetch_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers/saml-metadata-preview',
+                json={'metadata_url': 'https://idp.example.com/metadata'},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()['idp_entity_id'] == 'https://idp.example.com'
+    fetch_mock.assert_awaited_once_with('https://idp.example.com/metadata')
+
+
+@pytest.mark.asyncio
+async def test_preview_saml_metadata_fetch_error_returns_400(
+    mock_app, grant_manage_oauth_providers
+):
+    with patch(
+        'server.routes.oauth_providers_admin.fetch_saml_idp_metadata',
+        AsyncMock(side_effect=SamlMetadataFetchError('Metadata URL must be https')),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers/saml-metadata-preview',
+                json={'metadata_url': 'http://idp.example.com/metadata'},
+            )
+
+    assert resp.status_code == 400
+    assert 'https' in resp.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_preview_saml_metadata_forbidden_without_permission(mock_app):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers/saml-metadata-preview',
+                json={'metadata_url': 'https://idp.example.com/metadata'},
+            )
+
+    assert resp.status_code == 403

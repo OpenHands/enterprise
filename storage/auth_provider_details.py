@@ -40,18 +40,53 @@ from __future__ import annotations
 from abc import ABC
 from typing import Any, Literal
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import (
     Field,
     SecretStr,
     SerializationInfo,
     ValidationInfo,
+    computed_field,
     field_serializer,
     field_validator,
 )
 
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from storage.encrypt_utils import decrypt_value, encrypt_value
+
+# RSA key size for auto-generated SAML SP signing keys -- 2048 bits is the
+# minimum most IdPs accept and matches what Keycloak/Okta/Auth0 generate by
+# default for their own SP integrations.
+SP_KEY_SIZE_BITS = 2048
+
+
+def generate_sp_keypair() -> tuple[str, str]:
+    """Generate a new RSA key pair for a SAML SP, PEM-encoded.
+
+    Returns ``(private_key_pem, public_key_pem)``. Called by
+    ``server.routes.oauth_providers_admin`` the first time a row becomes (or
+    is created as) ``SamlProviderDetails`` with no key yet -- admins never
+    type an SP private key themselves, see ``SamlProviderDetails.sp_public_key``.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=SP_KEY_SIZE_BITS)
+    private_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    return private_pem, public_pem
+
 
 # Default clock-drift margin (seconds). Expired access tokens are still
 # refreshable via the refresh token; this margin only controls how early we
@@ -133,7 +168,16 @@ class PasswordProviderDetails(AuthProviderDetails):
 
 
 class SamlProviderDetails(AuthProviderDetails):
-    """SAML 2.0 IDP configuration."""
+    """SAML 2.0 IDP configuration.
+
+    ``sp_private_key`` is never admin-supplied -- ``generate_sp_keypair`` auto-
+    generates it (see ``server.routes.oauth_providers_admin._ensure_sp_keypair``)
+    the first time a row becomes SAML with no key yet, so it can't be entered
+    wrong/mismatched and never needs rotating by hand. ``sp_public_key`` is
+    derived from it on the fly rather than stored separately, so the two can
+    never drift out of sync; it is what an admin copies into the IdP's SP
+    metadata/ACS signing-certificate configuration.
+    """
 
     metadata_url: str | None = None
     idp_entity_id: str | None = None
@@ -155,3 +199,28 @@ class SamlProviderDetails(AuthProviderDetails):
         self, value: SecretStr | None, info: SerializationInfo
     ) -> str | None:
         return _serialize_secret_field(value, info)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def sp_public_key(self) -> str | None:
+        """The public half of ``sp_private_key``, PEM-encoded -- ``None``
+        until a key has been generated. Read-only: setting it directly has
+        no effect since it is never stored, only derived at read time.
+        """
+        if self.sp_private_key is None:
+            return None
+        try:
+            private_key = serialization.load_pem_private_key(
+                self.sp_private_key.get_secret_value().encode(), password=None
+            )
+        except ValueError:
+            logger.warning('auth_provider_details:unparseable_sp_private_key')
+            return None
+        return (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
