@@ -165,6 +165,7 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("user@openhands.com", "@openhands")  # False
         >>> has_exact_mention("Hello @OpenHands!", "@openhands")  # True (case-insensitive)
         >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
+        >>> has_exact_mention("*Thanks @openhands.*", "@openhands")  # True
         >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
         >>> has_exact_mention("see @openhands.com", "@openhands")  # False
         >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
@@ -175,14 +176,16 @@ def has_exact_mention(text: str, mention: str) -> bool:
     mention_lower = mention.lower()
 
     pattern = re.escape(mention_lower)
-    # Match mention that is not part of a larger word. A '/' or '.' ends the
-    # mention only when no word character, '-' or '*' follows it, so scoped
-    # package names (@openhands/pkg), package globs (@openhands/*) and domains
-    # (@openhands.com) do not match, but a sentence end (Thanks @openhands.)
-    # does. A URL-encoded '/' (@openhands%2fpkg) does not match either; the
-    # text is lowercase, so '%2f' also covers '%2F'.
+    # Match mention that is not part of a larger word. A '/' ends the mention
+    # only when no word character, '-' or '*' follows it, so scoped package
+    # names (@openhands/pkg) and package globs (@openhands/*) do not match. A
+    # '.' ends the mention only when no word character or '-' follows it, so
+    # domains (@openhands.com) and @openhands.Please do not match, but a
+    # sentence end (Thanks @openhands.) and a sentence end inside emphasis
+    # (*Thanks @openhands.*) do. A URL-encoded '/' (@openhands%2fpkg) does not
+    # match either; the text is lowercase, so '%2f' also covers '%2F'.
     return bool(
-        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|[./][\w*-]|%2f)', text_lower)
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|/[\w*-]|\.[\w-]|%2f)', text_lower)
     )
 
 

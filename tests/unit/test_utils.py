@@ -48,6 +48,8 @@ def test_has_exact_mention():
     assert has_exact_mention('@openhands? yes', '@openhands') is True
     assert has_exact_mention('Thanks @openhands.', '@openhands') is True
     assert has_exact_mention('Thanks @openhands. Next line', '@openhands') is True
+    assert has_exact_mention('*Thanks @openhands.*', '@openhands') is True
+    assert has_exact_mention('**cc @openhands.**', '@openhands') is True
     assert has_exact_mention('Wait @openhands...', '@openhands') is True
     assert has_exact_mention('@openhands\nplease fix', '@openhands') is True
 
