@@ -140,17 +140,3 @@ async def test_get_branches_returns_all_pages():
     assert len(branches) == 2
     assert branches[0].name == 'main'
     assert branches[1].name == 'dev'
-
-
-@pytest.mark.asyncio
-async def test_search_branches_uses_start_offset_for_page():
-    svc = make_service()
-
-    with patch.object(
-        svc, '_make_request', return_value=({'values': []}, {})
-    ) as mock_req:
-        await svc.search_branches('PROJ/myrepo', query='my', per_page=15, page=3)
-
-    call_params = mock_req.call_args[0][1]
-    assert call_params['start'] == 30
-    assert call_params['limit'] == 15

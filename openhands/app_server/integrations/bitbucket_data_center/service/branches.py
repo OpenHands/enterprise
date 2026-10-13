@@ -72,7 +72,7 @@ class BitbucketDCBranchesMixin(BitbucketDCMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30, page: int = 1
+        self, repository: str, query: str, per_page: int = 30
     ) -> list[Branch]:
         """Search branches by name using Bitbucket data center API with `q` param."""
         owner, repo = self._extract_owner_and_repo(repository)
@@ -80,7 +80,6 @@ class BitbucketDCBranchesMixin(BitbucketDCMixinBase):
         url = f'{self._repo_api_base(owner, repo)}/branches'
         params = {
             'limit': per_page,
-            'start': (page - 1) * per_page,  # Bitbucket Server uses a 0-based offset
             'filterText': query,
             'orderBy': 'MODIFICATION',
         }

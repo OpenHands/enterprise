@@ -7,7 +7,7 @@ focusing on pagination and error handling.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
 from openhands.app_server.git.git_models import SortOrder
@@ -588,11 +588,12 @@ class TestSearchRepositories:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_search_full_page_gives_next_page_id(self, mock_handler_cls):
-        """Search with a query returns every result, and a next_page_id after a full page.
+    async def test_search_results_are_a_single_page(self, mock_handler_cls):
+        """Search with a query returns every result and no next_page_id.
 
-        Providers that search in several places (user and orgs) can return more
-        than limit results; none are cut.
+        search_repositories takes no page number, so a next page would only
+        repeat the first page. Providers that search in several places (user
+        and orgs) can return more than limit results; none are cut.
         """
         # Arrange
         mock_handler = MagicMock()
@@ -639,24 +640,18 @@ class TestSearchRepositories:
 
         # Assert
         assert [repo.id for repo in result.items] == ['1', '2', '3']
-        assert result.next_page_id == encode_page_id(2)
+        assert result.next_page_id is None
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_search_passes_page_to_provider(self, mock_handler_cls):
-        """Search with a query sends the page from page_id to the provider."""
+    async def test_search_with_query_rejects_non_first_page(self, mock_handler_cls):
+        """Search with a query returns 400 for a page after the first.
+
+        search_repositories takes no page number, so it cannot return a later page.
+        """
         # Arrange
         mock_handler = MagicMock()
-        mock_handler.search_repositories = AsyncMock(
-            return_value=[
-                Repository(
-                    id='3',
-                    full_name='user/repo3',
-                    git_provider=ProviderType.GITHUB,
-                    is_public=True,
-                )
-            ]
-        )
+        mock_handler.search_repositories = AsyncMock(return_value=[])
         mock_handler_cls.return_value = mock_handler
 
         mock_context = _make_mock_user_context(
@@ -667,20 +662,20 @@ class TestSearchRepositories:
         )
 
         # Act
-        result = await search_repositories(
-            provider=ProviderType.GITHUB,
-            query='test',
-            installation_id=None,
-            page_id=encode_page_id(2),
-            limit=2,
-            sort_order=None,
-            user_context=mock_context,
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await search_repositories(
+                provider=ProviderType.GITHUB,
+                query='test',
+                installation_id=None,
+                page_id=encode_page_id(2),
+                limit=2,
+                sort_order=None,
+                user_context=mock_context,
+            )
 
         # Assert
-        assert mock_handler.search_repositories.call_args.kwargs['page'] == 2
-        assert [repo.id for repo in result.items] == ['3']
-        assert result.next_page_id is None
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        mock_handler.search_repositories.assert_not_called()
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
@@ -763,8 +758,12 @@ class TestSearchBranches:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_search_full_page_gives_next_page_id(self, mock_handler_cls):
-        """Branch search with a query returns a next_page_id after a full page."""
+    async def test_search_results_are_a_single_page(self, mock_handler_cls):
+        """Branch search with a query returns every result and no next_page_id.
+
+        Branch search returns 400 for a page after the first, so a next page
+        must not be advertised.
+        """
         # Arrange
         mock_handler = MagicMock()
         mock_handler.search_branches = AsyncMock(
@@ -799,39 +798,6 @@ class TestSearchBranches:
             'develop',
             'feature-branch',
         ]
-        assert result.next_page_id == encode_page_id(2)
-
-    @pytest.mark.asyncio
-    @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_search_passes_page_to_provider(self, mock_handler_cls):
-        """Branch search with a query sends the page from page_id to the provider."""
-        # Arrange
-        mock_handler = MagicMock()
-        mock_handler.search_branches = AsyncMock(
-            return_value=[Branch(name='main', commit_sha='abc123', protected=False)]
-        )
-        mock_handler_cls.return_value = mock_handler
-
-        mock_context = _make_mock_user_context(
-            provider_tokens={
-                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
-            },
-            user_id='user-123',
-        )
-
-        # Act
-        result = await search_branches(
-            provider=ProviderType.GITHUB,
-            repository='user/repo',
-            query='main',
-            page_id=encode_page_id(3),
-            limit=2,
-            user_context=mock_context,
-        )
-
-        # Assert
-        assert mock_handler.search_branches.call_args.kwargs['page'] == 3
-        assert [branch.name for branch in result.items] == ['main']
         assert result.next_page_id is None
 
     @pytest.mark.asyncio

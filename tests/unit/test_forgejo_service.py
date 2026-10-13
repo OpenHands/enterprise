@@ -95,7 +95,6 @@ async def test_search_repositories(forgejo_service):
         f'{forgejo_service.BASE_URL}/repos/search',
         {
             'q': 'test',
-            'page': 1,
             'limit': 10,
             'sort': 'updated',
             'order': 'desc',
@@ -272,35 +271,3 @@ async def test_request_reviewers_empty_list(forgejo_service):
     await forgejo_service.request_reviewers('org/project', 5, [])
 
     forgejo_service._make_request.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_search_repositories_passes_page(forgejo_service):
-    """Search sends the requested page to the repos search API."""
-    forgejo_service._make_request = AsyncMock(return_value=({'data': []}, {}))
-
-    await forgejo_service.search_repositories(
-        'test', 10, 'updated', 'desc', public=False, app_mode=AppMode.OPENHANDS, page=4
-    )
-
-    params = forgejo_service._make_request.call_args[0][1]
-    assert params['page'] == 4
-    assert params['limit'] == 10
-
-
-@pytest.mark.asyncio
-async def test_search_branches_returns_requested_page(forgejo_service):
-    """Search filters all branches, then takes the requested page."""
-    from openhands.app_server.integrations.service_types import Branch
-
-    branches = [
-        Branch(name=f'feat-{i}', commit_sha=f'sha{i}', protected=False)
-        for i in range(1, 6)
-    ] + [Branch(name='main', commit_sha='m', protected=False)]
-    forgejo_service.get_branches = AsyncMock(return_value=branches)
-
-    page2 = await forgejo_service.search_branches('o/r', 'feat', per_page=2, page=2)
-    page3 = await forgejo_service.search_branches('o/r', 'feat', per_page=2, page=3)
-
-    assert [b.name for b in page2] == ['feat-3', 'feat-4']
-    assert [b.name for b in page3] == ['feat-5']

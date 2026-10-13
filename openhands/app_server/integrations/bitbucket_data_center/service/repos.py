@@ -21,19 +21,11 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
         order: str,
         public: bool,
         app_mode: AppMode,
-        page: int = 1,
     ) -> list[Repository]:
-        """Search for repositories.
-
-        The API cannot filter by name, so this gets the repositories, filters
-        them here, and returns the requested page of the matches.
-        """
+        """Search for repositories."""
         repositories = []
 
         if public:
-            # The URL names one repository, so only the first page has a result
-            if page > 1:
-                return []
             try:
                 parsed_url = urlparse(query)
                 path_segments = [
@@ -73,43 +65,34 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
 
             return repositories
 
-        MAX_REPOS = 1000  # Per project
-        PER_PAGE = 100  # Maximum allowed by Bitbucket data center API
+        MAX_REPOS = 1000
         # Search for repos once project prefix exists
         if '/' in query:
             project_slug, repo_query = query.split('/', 1)
-            project_keys = [project_slug]
-        else:
-            # No '/' in query, search across all projects
-            repo_query = query
-            project_keys = await self.get_installations()
+            project_repos_url = f'{self.BASE_URL}/projects/{project_slug}/repos'
+            raw_repos = await self._fetch_paginated_data(
+                project_repos_url, {'limit': per_page}, MAX_REPOS
+            )
+            if repo_query:
+                raw_repos = [
+                    r
+                    for r in raw_repos
+                    if repo_query.lower() in r.get('slug', '').lower()
+                    or repo_query.lower() in r.get('name', '').lower()
+                ]
+            return [await self._parse_repository(repo) for repo in raw_repos]
 
-        raw_repos: list[dict] = []
-        for project_key in project_keys:
-            project_repos_url = f'{self.BASE_URL}/projects/{project_key}/repos'
+        # No '/' in query, search across all projects
+        all_projects = await self.get_installations()
+        for project_key in all_projects:
             try:
-                raw_repos.extend(
-                    await self._fetch_paginated_data(
-                        project_repos_url, {'limit': PER_PAGE}, MAX_REPOS
-                    )
+                repos = await self.get_paginated_repos(
+                    1, per_page, sort, project_key, query
                 )
+                repositories.extend(repos)
             except Exception:
-                if '/' in query:
-                    raise
                 continue
-
-        if repo_query:
-            raw_repos = [
-                r
-                for r in raw_repos
-                if repo_query.lower() in r.get('slug', '').lower()
-                or repo_query.lower() in r.get('name', '').lower()
-            ]
-        start = (page - 1) * per_page
-        return [
-            await self._parse_repository(repo)
-            for repo in raw_repos[start : start + per_page]
-        ]
+        return repositories
 
     async def _get_user_projects(self) -> list[dict[str, Any]]:
         """Get all projects the user has access to"""

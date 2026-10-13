@@ -20,18 +20,11 @@ class BitBucketReposMixin(BitBucketMixinBase):
         order: str,
         public: bool,
         app_mode: AppMode,
-        page: int = 1,
     ) -> list[Repository]:
-        """Search for repositories.
-
-        A search across workspaces takes the same page from each workspace.
-        """
+        """Search for repositories."""
         repositories = []
 
         if public:
-            # The URL names one repository, so only the first page has a result
-            if page > 1:
-                return []
             # Extract workspace and repo from URL using robust URL parsing
             # URL format: https://{domain}/{workspace}/{repo}/{additional_params}
             try:
@@ -61,7 +54,7 @@ class BitBucketReposMixin(BitBucketMixinBase):
         if '/' in query:
             workspace_slug, repo_query = query.split('/', 1)
             return await self.get_paginated_repos(
-                page, per_page, sort, workspace_slug, repo_query
+                1, per_page, sort, workspace_slug, repo_query
             )
 
         all_installations = await self.get_installations()
@@ -74,7 +67,7 @@ class BitBucketReposMixin(BitBucketMixinBase):
             # Get repositories where query matches workspace name
             try:
                 repos = await self.get_paginated_repos(
-                    page, per_page, sort, workspace_slug
+                    1, per_page, sort, workspace_slug
                 )
                 repositories.extend(repos)
             except Exception:
@@ -84,7 +77,7 @@ class BitBucketReposMixin(BitBucketMixinBase):
             # Get repositories in all workspaces where query matches repo name
             try:
                 repos = await self.get_paginated_repos(
-                    page, per_page, sort, workspace_slug, query
+                    1, per_page, sort, workspace_slug, query
                 )
                 repositories.extend(repos)
             except Exception:

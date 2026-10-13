@@ -103,12 +103,9 @@ class GitHubBranchesMixin(GitHubMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30, page: int = 1
+        self, repository: str, query: str, per_page: int = 30
     ) -> list[Branch]:
-        """Search branches by name using GitHub GraphQL with a partial query.
-
-        GraphQL pages by cursor, so a later page follows the cursor from page 1.
-        """
+        """Search branches by name using GitHub GraphQL with a partial query."""
         # Require a non-empty query
         if not query:
             return []
@@ -129,25 +126,18 @@ class GitHubBranchesMixin(GitHubMixinBase):
             'perPage': per_page,
         }
 
-        after: str | None = None
-        for current_page in range(1, page + 1):
-            try:
-                result = await self.execute_graphql_query(
-                    search_branches_graphql_query, {**variables, 'after': after}
-                )
-            except Exception as e:
-                logger.warning(f'Failed to search for branches: {e}')
-                # Fallback to empty result on any GraphQL error
-                return []
+        try:
+            result = await self.execute_graphql_query(
+                search_branches_graphql_query, variables
+            )
+        except Exception as e:
+            logger.warning(f'Failed to search for branches: {e}')
+            # Fallback to empty result on any GraphQL error
+            return []
 
-            repo = result.get('data', {}).get('repository')
-            if not repo or not repo.get('refs'):
-                return []
-            if current_page < page:
-                page_info = repo['refs'].get('pageInfo') or {}
-                if not page_info.get('hasNextPage'):
-                    return []
-                after = page_info.get('endCursor')
+        repo = result.get('data', {}).get('repository')
+        if not repo or not repo.get('refs'):
+            return []
 
         branches: list[Branch] = []
         for node in repo['refs'].get('nodes', []):
