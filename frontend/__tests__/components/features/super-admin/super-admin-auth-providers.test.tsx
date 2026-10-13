@@ -415,9 +415,13 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
     ).toBeInTheDocument();
+    // Left out of the UI for now -- see
+    // ``AuthProviderFormState.attributeMapping``.
     expect(
-      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
-    ).toBeInTheDocument();
+      within(dialog).queryByTestId(
+        "super-admin-auth-provider-attribute-mapping",
+      ),
+    ).not.toBeInTheDocument();
 
     await user.type(
       within(dialog).getByTestId("super-admin-auth-provider-title"),
@@ -430,10 +434,6 @@ describe("Super Admin Auth Providers page", () => {
     await user.type(
       within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
       "https://idp.example.com/sso",
-    );
-    await user.type(
-      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
-      "email=mail, name=displayName",
     );
     await user.click(
       within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
@@ -454,14 +454,21 @@ describe("Super Admin Auth Providers page", () => {
           sp_private_key: null,
           sp_public_key: null,
           name_id_format: null,
-          attribute_mapping: { email: "mail", name: "displayName" },
+          attribute_mapping: {},
         },
       }),
     );
   });
 
-  it("disables submit for a SAML provider until a metadata URL or an entity ID + SSO URL pair is entered", async () => {
+  it("lets a SAML provider be created with just a title, with no IdP details yet", async () => {
+    // Plenty of IdPs need this provider's generated SP public key and URLs
+    // *before* they'll hand over their own entity ID/SSO URL/cert -- the
+    // row has to be creatable (to mint that key) first. See
+    // SUPER_ADMIN$AUTH_PROVIDER_SAML_FIELDS_OPTIONAL_HINT.
     const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
     renderAuthProvidersPage();
     await screen.findByText("GitHub");
 
@@ -477,10 +484,11 @@ describe("Super Admin Auth Providers page", () => {
         name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_SAML",
       }),
     );
-    await user.type(
-      within(dialog).getByTestId("super-admin-auth-provider-title"),
-      "Okta SAML",
-    );
+    expect(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-saml-fields-optional-hint",
+      ),
+    ).toBeInTheDocument();
 
     const submit = within(dialog).getByTestId(
       "super-admin-auth-provider-form-submit",
@@ -488,10 +496,26 @@ describe("Super Admin Auth Providers page", () => {
     expect(submit).toBeDisabled();
 
     await user.type(
-      within(dialog).getByTestId("super-admin-auth-provider-metadata-url"),
-      "https://idp.example.com/metadata",
+      within(dialog).getByTestId("super-admin-auth-provider-title"),
+      "Okta SAML",
     );
     expect(submit).not.toBeDisabled();
+
+    await user.click(submit);
+
+    await waitFor(() =>
+      expect(createAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Okta SAML",
+          details: expect.objectContaining({
+            kind: "SamlProviderDetails",
+            metadata_url: null,
+            idp_entity_id: null,
+            sso_url: null,
+          }),
+        }),
+      ),
+    );
   });
 
   it("loads an existing SAML provider's fields into the edit form", async () => {
@@ -516,9 +540,6 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
     ).toHaveValue("https://idp.example.com/sso");
-    expect(
-      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
-    ).toHaveValue("email=mail, name=displayName");
     // Read-only: shows the key already generated for this row, never an
     // input the admin can type into. A plain `<input type="text">` can't
     // hold newlines, same as the existing `idp-x509-cert` field -- the
@@ -553,6 +574,42 @@ describe("Super Admin Auth Providers page", () => {
         title: "Okta SAML",
         is_idp: true,
       }),
+    );
+  });
+
+  it("preserves an existing attribute mapping on edit, even though it has no field in the form", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    const sloUrlInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-slo-url",
+    );
+    await user.clear(sloUrlInput);
+    await user.type(sloUrlInput, "https://idp.example.com/slo-2");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 3,
+          details: expect.objectContaining({
+            attribute_mapping: { email: "mail", name: "displayName" },
+          }),
+        }),
+      ),
     );
   });
 

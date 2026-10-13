@@ -140,6 +140,10 @@ interface AuthProviderFormState {
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
   spPublicKey: string;
   nameIdFormat: string;
+  /** Not rendered in the form (see ``SUPER_ADMIN$AUTH_PROVIDER_...``
+   * fields below) -- kept here only so an existing row's mapping, if any
+   * was set directly via the API, round-trips through an edit untouched
+   * instead of being silently cleared to ``{}``. */
   attributeMapping: string;
 }
 
@@ -332,13 +336,15 @@ function AuthProviderFormModal({
     },
   ];
 
+  // SAML has no required field beyond the title: the IdP fields below are
+  // all optional at creation time (see the hint rendered above them) --
+  // plenty of IdPs won't hand over their entity ID/SSO URL/cert until
+  // *after* they've been given this row's SP public key and URLs, so the
+  // row has to be creatable (to generate that key) before any of them are
+  // known.
   const canSubmit =
     form.title.trim() !== "" &&
-    (form.kind === KIND_OAUTH ? form.clientId.trim() !== "" : true) &&
-    (form.kind === KIND_SAML
-      ? form.metadataUrl.trim() !== "" ||
-        (form.idpEntityId.trim() !== "" && form.ssoUrl.trim() !== "")
-      : true);
+    (form.kind === KIND_OAUTH ? form.clientId.trim() !== "" : true);
 
   return (
     <OrgModal
@@ -506,6 +512,12 @@ function AuthProviderFormModal({
         ) : null}
         {form.kind === KIND_SAML ? (
           <>
+            <p
+              data-testid="super-admin-auth-provider-saml-fields-optional-hint"
+              className="text-xs text-tertiary-alt"
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SAML_FIELDS_OPTIONAL_HINT)}
+            </p>
             <SettingsInput
               testId="super-admin-auth-provider-metadata-url"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL)}
@@ -621,17 +633,6 @@ function AuthProviderFormModal({
               }
               showOptionalTag
               autoComplete="off"
-            />
-            <SettingsInput
-              testId="super-admin-auth-provider-attribute-mapping"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
-              type="text"
-              value={form.attributeMapping}
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING_HINT)}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, attributeMapping: value }))
-              }
-              showOptionalTag
             />
           </>
         ) : null}

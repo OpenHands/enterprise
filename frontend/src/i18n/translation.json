@@ -35631,6 +35631,23 @@
     "uk": "Clock drift tolerance (seconds)",
     "ca": "Clock drift tolerance (seconds)"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_SAML_FIELDS_OPTIONAL_HINT": {
+    "en": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "ja": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "zh-CN": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "zh-TW": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "ko-KR": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "no": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "it": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "pt": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "es": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "ar": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "fr": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "tr": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "de": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "uk": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you.",
+    "ca": "All IdP fields below are optional for now -- many IdPs need this provider's SP public key and URLs before they'll hand over their own details. Save with just a title, then come back and fill these in once your IdP gives them to you."
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_METADATA_URL": {
     "en": "Metadata URL",
     "ja": "Metadata URL",
