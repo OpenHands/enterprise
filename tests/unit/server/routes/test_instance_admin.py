@@ -12,17 +12,16 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from pydantic import SecretStr
 from sqlalchemy import text
 
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
-from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
 from server.routes.org_models import OrgNotFoundError
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
 from storage.auth_tokens import AuthTokens
 from storage.instance_settings import InstanceSettings
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
 from storage.oauth_token import OAuthToken
 from storage.oauth_token_store import wrap_token
 from storage.org import Org
@@ -1711,30 +1710,40 @@ async def _add_keycloak_account(
 
 
 async def _add_oauth_v2_account(
-    async_session_maker, provider_category: str, is_idp: bool
+    async_session_maker, provider_category: str | None, is_idp: bool
 ) -> None:
-    """A provider account from OAuth v2 sign-in (``is_idp``) or linking."""
-    jwt_service = JwtService(
-        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
-    )
-    with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_service):
-        async with async_session_maker() as session:
-            provider = OAuthProvider(
-                provider_category=provider_category,
-                display_name=provider_category,
-                is_idp=is_idp,
+    """A provider account from OAuth v2 sign-in (``is_idp``) or linking.
+
+    ``provider_category=None`` builds the integrated/password IDP row
+    instead of an OAuth2 git-provider one.
+
+    Deliberately does not patch ``get_jwt_service`` to a locally-built
+    service: ``details`` is encrypted on write and decrypted again by
+    ``_user_has_automation_git_account`` on the subsequent request, which
+    must see the same key -- the module-level default (cached once per
+    process by ``storage.encrypt_utils.get_jwt_service``) already is.
+    """
+    async with async_session_maker() as session:
+        if provider_category is None:
+            details = PasswordProviderDetails()
+            title = 'Integrated IDP'
+        else:
+            details = OAuthProviderDetails(
+                provider_type=ProviderType(provider_category),
                 client_id=f'client-{provider_category}',
             )
-            session.add(provider)
-            await session.flush()
-            session.add(
-                OAuthToken(
-                    user_id=uuid.UUID(CALLER_USER_ID),
-                    oauth_provider_id=provider.id,
-                    access_token=wrap_token('access'),
-                )
+            title = provider_category
+        provider = AuthProvider(title=title, is_idp=is_idp, details=details)
+        session.add(provider)
+        await session.flush()
+        session.add(
+            OAuthToken(
+                user_id=uuid.UUID(CALLER_USER_ID),
+                oauth_provider_id=provider.id,
+                access_token=wrap_token('access'),
             )
-            await session.commit()
+        )
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -1788,9 +1797,7 @@ async def test_a_git_account_completes_the_automation_step(
             id='keycloak-enterprise-sso',
         ),
         pytest.param(
-            lambda sessions: _add_oauth_v2_account(
-                sessions, INTEGRATED_IDP_CATEGORY, is_idp=True
-            ),
+            lambda sessions: _add_oauth_v2_account(sessions, None, is_idp=True),
             id='oauth-v2-integrated-idp',
         ),
         pytest.param(

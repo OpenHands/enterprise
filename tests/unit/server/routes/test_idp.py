@@ -48,13 +48,13 @@ from server.routes.idp import (
     derive_idp_user_id,
     is_idp_available,
 )
+from storage.auth_provider_details import PasswordProviderDetails
 from storage.instance_settings import InstanceSettings
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
 
 # Fixed id used in route-dispatch tests (``/oauth/{id}/login`` etc.) that
 # exercise the integrated IDP through ``oauth_v2.py``'s generic
 # provider-id-keyed routes. Not a sentinel the app recognizes specially —
-# just a stand-in DB id that ``_available()`` wires ``OAuthProviderStore``
+# just a stand-in DB id that ``_available()`` wires ``AuthProviderStore``
 # lookups to resolve to the fake integrated-idp row below.
 _TEST_IDP_PROVIDER_ID = 999001
 
@@ -63,10 +63,10 @@ def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
     """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
     provider = MagicMock()
     provider.id = provider_id
-    provider.provider_category = INTEGRATED_IDP_CATEGORY
+    provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
-    provider.token_url = None
-    provider.display_name = 'Password Login'
+    provider.details = PasswordProviderDetails()
+    provider.title = 'Password Login'
     return provider
 
 
@@ -136,7 +136,7 @@ def _available(
     Patches ``_get_integrated_idp_provider`` (the single source of truth for
     availability and the row's id, used by both ``idp.py`` and, through
     ``is_idp_available``, the web-client config) *and*
-    ``OAuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
+    ``AuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
     ``/oauth/{id}/...`` routes) so both halves of the integrated-IDP
     dispatch agree on the same fake row.
 
@@ -161,7 +161,7 @@ def _available(
         )
         stack.enter_context(
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+                'storage.auth_provider_store.AuthProviderStore.get_by_id',
                 new_callable=AsyncMock,
                 return_value=fake_provider,
             )
@@ -275,7 +275,7 @@ class TestDeriveIdpUserId:
 class TestIsIdpAvailable:
     def test_disabled_when_no_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -286,7 +286,7 @@ class TestIsIdpAvailable:
 
     def test_enabled_when_row_exists(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=_fake_integrated_idp_provider(),
         ):
@@ -297,16 +297,17 @@ class TestIsIdpAvailable:
 
     def test_queries_integrated_idp_category(self):
         """``is_idp_available`` looks up the row by
-        ``INTEGRATED_IDP_CATEGORY`` specifically -- not just "any IDP"."""
+        ``PasswordProviderDetails.__name__`` specifically -- not just "any
+        IDP"."""
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_get:
             import asyncio
 
             asyncio.run(is_idp_available())
-        mock_get.assert_awaited_once_with(INTEGRATED_IDP_CATEGORY)
+        mock_get.assert_awaited_once_with(PasswordProviderDetails.__name__)
 
     def test_enabled_even_when_real_idp_configured(self):
         """Availability is governed solely by whether the integrated IDP's
@@ -320,7 +321,7 @@ class TestIsIdpAvailable:
                 new=AsyncMock(return_value=_fake_integrated_idp_provider()),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -338,7 +339,7 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_when_available(self):
         fake = _fake_integrated_idp_provider()
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -349,7 +350,7 @@ class TestGetIntegratedIdpProvider:
 
     def test_returns_none_without_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -361,12 +362,12 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_even_when_real_idp_configured(self):
         with (
             patch(
-                'server.routes.idp.OAuthProviderStore.get_first_by_category',
+                'server.routes.idp.AuthProviderStore.get_first_by_kind',
                 new_callable=AsyncMock,
                 return_value=_fake_integrated_idp_provider(),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -387,7 +388,7 @@ class TestIdpLoginRedirect:
         integrated IDP's row."""
         fake = _fake_integrated_idp_provider()
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -397,7 +398,7 @@ class TestIdpLoginRedirect:
 
     def test_returns_404_when_no_idp_configured(self, client):
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -432,7 +433,7 @@ class TestOAuthV2LoginRedirectsIdp:
         """Not an "integrated IDP disabled" case anymore -- just the
         standard ``_get_provider`` 404 for an id with no row at all."""
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            'storage.auth_provider_store.AuthProviderStore.get_by_id',
             new_callable=AsyncMock,
             return_value=None,
         ):

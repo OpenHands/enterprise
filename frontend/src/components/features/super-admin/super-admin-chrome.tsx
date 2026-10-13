@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
+import { SettingsTextarea } from "#/components/features/settings/settings-textarea";
 import { SuperAdminSearchField as SuperAdminSearchInput } from "#/components/features/super-admin/super-admin-search-field";
 import { ContextMenuListItem } from "#/components/features/context-menu/context-menu-list-item";
 import { ContextMenu } from "#/ui/context-menu";
@@ -374,4 +375,9 @@ export function SuperAdminStatusLabel({ status }: { status: string }) {
   );
 }
 
-export { BrandButton, SettingsInput, USER_TABLE_CELL_CLASS_NAME };
+export {
+  BrandButton,
+  SettingsInput,
+  SettingsTextarea,
+  USER_TABLE_CELL_CLASS_NAME,
+};

@@ -6,23 +6,24 @@ no real IDP configured yet, with their first administrator account bootstrapped
 directly, instead of standing up an external IDP just to get started.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
-regular IDP provider, and (since migration 179) *is* one: a real row in
-``oauth_providers`` (``provider_category=INTEGRATED_IDP_CATEGORY``) seeded
-once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an in-memory
-sentinel re-checked on every request. This removes the need to special-case
-it anywhere: whether it is "available" is simply whether that row exists
-(``_get_integrated_idp_provider``), and every session authenticated through
-it carries the row's real id wherever a provider id is needed, including the
-``openhands_auth`` cookie — the same as a real external IDP. Subsequent
-enable/disable is expected to go through a future ``oauth_providers`` CRUD
-API, not this env var (which is only read by the migration).
+regular IDP provider, and (since migration 179, reshaped by migration 186)
+*is* one: a real row in ``auth_providers`` (``kind='PasswordProviderDetails'``)
+seeded once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an
+in-memory sentinel re-checked on every request. This removes the need to
+special-case it anywhere: whether it is "available" is simply whether that
+row exists (``_get_integrated_idp_provider``), and every session
+authenticated through it carries the row's real id wherever a provider id is
+needed, including the ``openhands_auth`` cookie — the same as a real
+external IDP. Subsequent enable/disable goes through the ``auth_providers``
+CRUD API (``server.routes.oauth_providers_admin``), not this env var (which
+is only read by the migration).
 
-* ``OAuthProviderStore.get_first_idp()`` picks whichever ``is_idp`` row was
+* ``AuthProviderStore.get_first_idp()`` picks whichever ``is_idp`` row was
   created most recently — no special-casing of the integrated IDP vs. a
   configured real IDP.
 * ``GET /oauth/idp-login`` redirects to ``/oauth/{id}/login`` for that row,
-  which ``oauth_v2`` intercepts (by ``provider_category``, not by id) and
-  redirects to the fixed ``/oauth/idp/login`` page served by this module.
+  which ``oauth_v2`` intercepts (by ``kind``, not by id) and redirects to
+  the fixed ``/oauth/idp/login`` page served by this module.
 * Unlike a real IDP, this one requires a **password**: ``GET
   /oauth/idp/login`` and ``GET /oauth/idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
@@ -121,9 +122,10 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import PasswordProviderDetails
+from storage.auth_provider_store import AuthProviderStore
 from storage.default_org_service import DefaultOrgBootstrapService
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
-from storage.oauth_provider_store import OAuthProviderStore
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -135,7 +137,7 @@ idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
 # the provider's DB id. ``server.routes.oauth_v2`` redirects here once it
-# intercepts a login/callback for the ``INTEGRATED_IDP_CATEGORY`` row. Named
+# intercepts a login/callback for the ``PasswordProviderDetails`` row. Named
 # "idp" rather than "dev-idp" because this is an integrated IDP offered to
 # customers who are evaluating the product or have no real IDP of their own,
 # not merely a developer-only tool.
@@ -273,8 +275,8 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
 
 
-async def _get_integrated_idp_provider() -> OAuthProvider | None:
-    """Return the integrated/password IDP's ``oauth_providers`` row, if any.
+async def _get_integrated_idp_provider() -> AuthProvider | None:
+    """Return the integrated/password IDP's ``auth_providers`` row, if any.
 
     The single source of truth for whether the integrated IDP is available
     and, when it is, which row backs it: used both to gate every route in
@@ -282,13 +284,13 @@ async def _get_integrated_idp_provider() -> OAuthProvider | None:
     resolve the id baked into the ``openhands_auth`` cookie at login
     (``_complete_idp_login``), so the two can never disagree.
     """
-    return await OAuthProviderStore().get_first_by_category(INTEGRATED_IDP_CATEGORY)
+    return await AuthProviderStore().get_first_by_kind(PasswordProviderDetails.__name__)
 
 
 async def is_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
-    Governed solely by whether migration 179 seeded an ``oauth_providers``
+    Governed solely by whether migration 179 seeded an ``auth_providers``
     row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
     migration time). Whether a real IDP is *also* configured does not affect
     availability.
@@ -1305,7 +1307,7 @@ def _set_idp_cookie(
     Mirrors ``_set_oauth_v2_cookie`` from ``oauth_v2.py`` but with no IDP
     token expiry (the integrated IDP has no external token to refresh).
     ``idp_provider_id`` is still baked in (the integrated IDP's real
-    ``oauth_providers.id``, resolved by the caller) so IDP-token refresh can
+    ``auth_providers.id``, resolved by the caller) so IDP-token refresh can
     identify this session the same uniform way as a real external IDP.
     """
     from server.auth.oauth_v2_refresh import COOKIE_MAX_AGE_CAP_SECONDS

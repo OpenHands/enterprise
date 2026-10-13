@@ -1,0 +1,81 @@
+"""Auth provider configuration model.
+
+A row describes a single login/integration endpoint: an OAuth2/OIDC provider
+(IDP or git provider), the built-in password login, or a SAML IDP. Unlike the
+earlier ``oauth_providers`` table (one flat set of OAuth2-only columns, with
+non-OAuth rows like the integrated/password IDP leaving most of them ``NULL``
+and a ``provider_category`` sentinel string standing in for "this isn't
+really OAuth2"), the protocol-specific configuration lives in ``details`` --
+a ``storage.auth_provider_details.AuthProviderDetails`` discriminated union
+-- so each row only ever carries the fields its protocol actually needs.
+
+``kind`` mirrors ``type(details).__name__`` (``"OAuthProviderDetails"`` /
+``"PasswordProviderDetails"`` / ``"SamlProviderDetails"``) as a plain,
+unencrypted SQL column purely so rows can be filtered by protocol
+(``WHERE kind = ...``) without decrypting ``details`` -- see ``_sync_kind``.
+It is never set independently of ``details``.
+
+``details`` is stored as a plain (unencrypted, human-readable) JSON column --
+unlike ``EncryptedJSON``/``LLMProfiles``/``ProviderConnections``, the column
+itself is *not* the encryption boundary. Only the handful of secret fields
+inside ``details`` (e.g. ``OAuthProviderDetails.client_secret``,
+``SamlProviderDetails.sp_private_key``) are encrypted, each on its own, via
+the ``field_serializer``/``field_validator`` pair defined right on those
+fields in ``storage.auth_provider_details`` -- see
+``storage.encrypt_utils.create_json_with_encrypted_secrets_type_decorator``
+for how binding/reading the column drives that. Reading the column back
+validates the JSON into the correct ``AuthProviderDetails`` subclass, so
+``provider.details`` is always a real typed object, never a bare ``dict``.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Identity, String
+from sqlalchemy.orm import Mapped, mapped_column, validates
+
+from storage.auth_provider_details import AuthProviderDetails
+from storage.base import Base
+from storage.encrypt_utils import create_json_with_encrypted_secrets_type_decorator
+
+
+class AuthProvider(Base):
+    """Per-provider login/integration configuration.
+
+    Seeded by migration 186 (renamed+reshaped from the earlier
+    ``oauth_providers`` table) from environment variables / existing rows.
+    Runtime config changes go through ``AuthProviderStore``.
+    """
+
+    __tablename__ = 'auth_providers'
+
+    id: Mapped[int] = mapped_column(Identity(), primary_key=True)
+    # Mirrors type(details).__name__ -- see _sync_kind below. Never set
+    # directly; always derived from whatever is assigned to `details`.
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    # True for login IDPs, False for git providers.
+    is_idp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    details: Mapped[AuthProviderDetails] = mapped_column(
+        create_json_with_encrypted_secrets_type_decorator(AuthProviderDetails),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    @validates('details')
+    def _sync_kind(self, key: str, details: AuthProviderDetails) -> AuthProviderDetails:
+        """Keep ``kind`` in lockstep with ``details`` -- the only source of truth.
+
+        Fires on every assignment (construction *and* later mutation, e.g.
+        the admin API's ``AuthProviderStore.update``), so ``kind`` can never
+        drift from the type of the object actually stored in ``details``.
+        """
+        self.kind = type(details).__name__
+        return details
