@@ -218,6 +218,10 @@ class GitHubReposMixin(GitHubMixinBase):
         page: int = 1,
     ) -> list[Repository]:
         """Search repositories. Every search call below takes the same page."""
+        # GitHub search returns at most the first 1000 results
+        if (page - 1) * per_page >= 1000:
+            return []
+
         url = f'{self.BASE_URL}/search/repositories'
         params = {
             'per_page': per_page,
