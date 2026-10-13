@@ -73,7 +73,8 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
 
             return repositories
 
-        MAX_REPOS = 1000
+        MAX_REPOS = 1000  # Per project
+        PER_PAGE = 100  # Maximum allowed by Bitbucket data center API
         # Search for repos once project prefix exists
         if '/' in query:
             project_slug, repo_query = query.split('/', 1)
@@ -89,17 +90,13 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
             try:
                 raw_repos.extend(
                     await self._fetch_paginated_data(
-                        project_repos_url,
-                        {'limit': per_page},
-                        MAX_REPOS - len(raw_repos),
+                        project_repos_url, {'limit': PER_PAGE}, MAX_REPOS
                     )
                 )
             except Exception:
                 if '/' in query:
                     raise
                 continue
-            if len(raw_repos) >= MAX_REPOS:
-                break
 
         if repo_query:
             raw_repos = [

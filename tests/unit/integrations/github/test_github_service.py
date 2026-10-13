@@ -621,3 +621,60 @@ async def test_github_search_repositories_passes_page_to_each_search():
         'openhands org:openhands-org',
     ]
     assert pages == {2}
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_adds_matching_org_top_repos_on_page_1():
+    """Page 1 also asks for the top repos of an org whose name matches the query."""
+    service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
+    mock_user = User(
+        id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
+    )
+
+    with (
+        patch.object(service, 'get_user', return_value=mock_user),
+        patch.object(
+            service,
+            'get_organizations_from_installations',
+            return_value=['openhands-org'],
+        ),
+        patch.object(
+            service, '_make_request', return_value=({'items': []}, {})
+        ) as mock_request,
+    ):
+        await service.search_repositories(
+            query='openhands',
+            per_page=10,
+            sort='stars',
+            order='desc',
+            public=False,
+            app_mode=AppMode.SAAS,
+            page=1,
+        )
+
+    queries = [call[0][1]['q'] for call in mock_request.call_args_list]
+    assert queries == [
+        'in:name openhands user:testuser',
+        'openhands org:openhands-org',
+        'org:openhands-org',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_page_past_1000_results_is_empty():
+    """GitHub search returns at most 1000 results, so a later page makes no call."""
+    service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
+
+    with patch.object(service, '_make_request') as mock_request:
+        repositories = await service.search_repositories(
+            query='bigorg/',
+            per_page=100,
+            sort='stars',
+            order='desc',
+            public=False,
+            app_mode=AppMode.SAAS,
+            page=11,
+        )
+
+    assert repositories == []
+    mock_request.assert_not_called()
