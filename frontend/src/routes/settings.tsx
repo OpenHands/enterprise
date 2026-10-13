@@ -36,6 +36,7 @@ import { useMe } from "#/hooks/query/use-me";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
 const SAAS_ONLY_PATHS = [
+  "/settings/agents",
   "/settings/agent-context",
   "/settings/user",
   "/settings/billing",
@@ -109,6 +110,12 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
+  // On SaaS the personal Agent page is superseded by Agent Profiles
+  // (OHE-3456); keep the old URL working for bookmarks and in-app links.
+  if (isSaas && pathname === "/settings/agent") {
+    return replace("/settings/agents");
+  }
+
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
     return replace("/settings");
@@ -126,7 +133,8 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   // Step 3b: ACP guard. The LLM / Condenser / MCP personal-settings screens
   // have no useful content while an external ACP subprocess is driving
   // conversations (the sub-agent owns its own tools, LLM, condenser, MCP),
-  // so bounce them to ``/settings/agent``. Driven by the nav-item
+  // so bounce them to the agent page (``/settings/agents`` on SaaS,
+  // ``/settings/agent`` on OSS). Driven by the nav-item
   // ``disabledByAcp`` flag so this list and the greyed-out nav state
   // ([`use-settings-nav-items.ts`]) come from the same source of truth.
   //
@@ -150,7 +158,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
           staleTime: 1000 * 60 * 5,
         });
         if (personalSettings?.agent_settings?.agent_kind === "acp") {
-          return replace("/settings/agent");
+          return replace(isSaas ? "/settings/agents" : "/settings/agent");
         }
       } catch {
         // Settings unfetchable (unauthed, no org, network) — let the

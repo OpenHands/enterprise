@@ -28,7 +28,8 @@ export interface SettingsNavItem {
   subtitle: string;
   section?: SettingsNavSection;
   // When true, this item is greyed out (and its route redirects to
-  // ``/settings/agent``) while the personal-scope active agent is ACP.
+  // ``/settings/agents`` on SaaS, ``/settings/agent`` on OSS) while the
+  // personal-scope active agent is ACP.
   // The ACP sub-agent manages its own LLM and condenser, so those
   // OpenHands-side surfaces have no useful content. (MCP is intentionally
   // NOT flagged: MCP servers configured here are forwarded to the ACP
@@ -101,9 +102,9 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
   },
   {
     icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/agent",
-    text: "SETTINGS$AGENT",
-    subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
+    to: "/settings/agents",
+    text: "SETTINGS$NAV_AGENT_PROFILES",
+    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
     section: "personal",
   },
   {

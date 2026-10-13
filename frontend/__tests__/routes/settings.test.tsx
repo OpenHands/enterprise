@@ -279,7 +279,7 @@ describe("Settings Screen", () => {
     ).toBeInTheDocument();
   });
 
-  it("should not link to the Agent Profiles library in the saas navbar", async () => {
+  it("should link to the Agent Profiles page in the saas navbar", async () => {
     // Arrange
     mockQueryClient.clear();
     mockQueryClient.setQueryData(["web-client-config"], { app_mode: "saas" });
@@ -290,7 +290,13 @@ describe("Settings Screen", () => {
 
     // Assert
     const navbar = await screen.findByTestId("settings-navbar");
-    await within(navbar).findByText("SETTINGS$AGENT");
+    await within(navbar).findByText("SETTINGS$NAV_AGENT_PROFILES");
+    expect(
+      within(navbar).queryByText("SETTINGS$AGENT"),
+    ).not.toBeInTheDocument();
+    expect(
+      navbar.querySelector('a[href="/settings/agents"]'),
+    ).toBeInTheDocument();
     expect(
       navbar.querySelector('a[href="/canvas/settings/agents"]'),
     ).not.toBeInTheDocument();
