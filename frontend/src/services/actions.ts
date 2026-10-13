@@ -44,10 +44,7 @@ export function handleActionMessage(message: ActionMessage) {
         security_risk: message.args
           .security_risk as unknown as ActionSecurityRisk,
         confirmation_state: message.args.confirmation_state as
-          | "awaiting_confirmation"
-          | "confirmed"
-          | "rejected"
-          | undefined,
+          "awaiting_confirmation" | "confirmed" | "rejected" | undefined,
       },
       message: message.message,
     });
