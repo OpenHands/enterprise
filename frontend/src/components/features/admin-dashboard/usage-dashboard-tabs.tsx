@@ -652,8 +652,11 @@ export function ConversationsTab({
                   </tr>
                 )}
               {conversationsData?.items.map((conversation) => {
+                // The stored execution status goes stale when a runtime is
+                // paused or reaped, so also require a live RUNNING sandbox.
                 const isRunning =
-                  conversation.execution_status?.toLowerCase() === "running";
+                  conversation.execution_status?.toLowerCase() === "running" &&
+                  conversation.sandbox_status === "RUNNING";
                 return (
                   <tr
                     key={conversation.id}
