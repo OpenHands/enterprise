@@ -92,7 +92,7 @@ import html
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -820,8 +820,8 @@ async def idp_invite_accept(
     invite that was never completed, or an ordinary existing user who needs
     their password reset by an admin). A genuinely new email instead
     creates a brand-new account via ``UserStore.create_user``, exactly like
-    the bootstrap sign-up form, including default-org bootstrap and TOS
-    auto-acceptance in ``_complete_idp_login``. Whether the recipient ends
+    the bootstrap sign-up form, including default-org bootstrap and the TOS
+    detour in ``_complete_idp_login``. Whether the recipient ends
     up with an org membership or the instance-level super-admin role
     depends on the token's ``role`` claim, set at mint time by the super
     admin who called ``create_signup_link``: an org-scoped role (with
@@ -1101,13 +1101,7 @@ async def _complete_idp_login(
         )
 
     user_id = str(user.id)
-
-    # Auto-accept TOS in dev mode — the dev IDP is for trial/dev only and
-    # requiring TOS acceptance adds friction without security value.
     has_accepted_tos = user.accepted_tos is not None
-    if not has_accepted_tos:
-        await _accept_tos_for_idp_user(user_id)
-        has_accepted_tos = True
 
     await UserStore.record_login(user_id)
 
@@ -1133,13 +1127,22 @@ async def _complete_idp_login(
     web_url = get_web_url(request)
     final_redirect_url = redirect_url or '/'
 
-    from server.routes.auth import _get_post_auth_redirect
+    if has_accepted_tos:
+        from server.routes.auth import _get_post_auth_redirect
 
-    # Same destination rules as the Keycloak callbacks: the first Super
-    # Admin's install wizard, then onboarding, then the requested page.
-    final_redirect_url = await _get_post_auth_redirect(
-        user_id, final_redirect_url, web_url, user
-    )
+        # Same destination rules as the Keycloak callbacks: the first Super
+        # Admin's install wizard, then onboarding, then the requested page.
+        final_redirect_url = await _get_post_auth_redirect(
+            user_id, final_redirect_url, web_url, user
+        )
+    else:
+        # Mirror oauth_v2_callback / saml_acs: detour through the TOS page
+        # when it hasn't been accepted yet. Onboarding/install-wizard
+        # redirects are deferred to ``/api/accept_tos`` (via
+        # ``_get_post_auth_redirect``), which only runs once TOS is
+        # actually accepted.
+        encoded_redirect_url = quote(final_redirect_url, safe='')
+        final_redirect_url = f'{web_url}/accept-tos?redirect_url={encoded_redirect_url}'
 
     response = RedirectResponse(final_redirect_url, status_code=302)
 
@@ -1345,25 +1348,6 @@ async def _set_password_hash(user_id: str, password_hash: str) -> None:
         if user is None:
             return
         user.password_hash = password_hash
-        await session.commit()
-
-
-async def _accept_tos_for_idp_user(user_id: str) -> None:
-    """Auto-accept TOS for a dev IDP user (dev mode only)."""
-    from sqlalchemy import select
-
-    from storage.database import a_session_maker
-
-    accepted_tos = datetime.now(timezone.utc).replace(tzinfo=None)
-    async with a_session_maker() as session:
-        result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        if user is None:
-            return
-        user.accepted_tos = accepted_tos
-        user.user_consents_to_analytics = True
         await session.commit()
 
 

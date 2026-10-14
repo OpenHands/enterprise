@@ -466,6 +466,20 @@ describe("Budgets", () => {
     });
   });
 
+  it("shows the email local part as the name when the user has no Git name", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [{ ...budgetResponse.users[0], user_name: null }],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    const row = (await screen.findByText("user")).closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("user@example.com")).toHaveLength(1);
+  });
+
   it("presents an exempted user as Unlimited rather than Disabled", async () => {
     const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({

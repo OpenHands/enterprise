@@ -697,6 +697,7 @@ def _fake_saml_provider(
     title: str = 'Corp SAML',
     is_idp: bool = True,
     sp_private_key: str | None = None,
+    sp_x509_cert: str | None = None,
     **saml_fields,
 ) -> AuthProvider:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -705,6 +706,7 @@ def _fake_saml_provider(
         is_idp=is_idp,
         details=SamlProviderDetails(
             sp_private_key=SecretStr(sp_private_key) if sp_private_key else None,
+            sp_x509_cert=sp_x509_cert,
             **saml_fields,
         ),
     )
@@ -718,10 +720,12 @@ def _fake_saml_provider(
 async def test_create_saml_provider_generates_sp_keypair(
     mock_app, grant_manage_oauth_providers
 ):
-    """Admins never submit ``sp_private_key`` -- the route must mint one."""
-    private_key_pem, _ = generate_sp_keypair()
+    """Admins never submit ``sp_private_key``/``sp_x509_cert`` -- the route
+    must mint both."""
+    private_key_pem, cert_pem = generate_sp_keypair()
     created = _fake_saml_provider(
         sp_private_key=private_key_pem,
+        sp_x509_cert=cert_pem,
         idp_entity_id='https://idp.example.com',
         sso_url='https://idp.example.com/sso',
     )
@@ -746,10 +750,10 @@ async def test_create_saml_provider_generates_sp_keypair(
     assert resp.status_code == 201
     body = resp.json()
     assert body['details']['idp_entity_id'] == 'https://idp.example.com'
-    # The private key is never echoed back, but its derived public half is.
+    # The private key is never echoed back, but the (public) cert is.
     assert body['details']['sp_private_key'] not in (None, private_key_pem)
-    assert body['details']['sp_public_key'] is not None
-    assert body['details']['sp_public_key'].startswith('-----BEGIN PUBLIC KEY-----')
+    assert body['details']['sp_x509_cert'] is not None
+    assert body['details']['sp_x509_cert'].startswith('-----BEGIN CERTIFICATE-----')
 
     (persisted,), _ = create_mock.call_args
     assert isinstance(persisted.details, SamlProviderDetails)
@@ -757,15 +761,19 @@ async def test_create_saml_provider_generates_sp_keypair(
     assert persisted.details.sp_private_key.get_secret_value().startswith(
         '-----BEGIN PRIVATE KEY-----'
     )
+    assert persisted.details.sp_x509_cert is not None
+    assert persisted.details.sp_x509_cert.startswith('-----BEGIN CERTIFICATE-----')
 
 
 @pytest.mark.asyncio
 async def test_update_saml_provider_preserves_existing_sp_keypair(
     mock_app, grant_manage_oauth_providers
 ):
-    """Editing an unrelated field must not rotate the existing SP key."""
-    private_key_pem, _ = generate_sp_keypair()
-    existing = _fake_saml_provider(sp_private_key=private_key_pem)
+    """Editing an unrelated field must not rotate the existing SP key+cert."""
+    private_key_pem, cert_pem = generate_sp_keypair()
+    existing = _fake_saml_provider(
+        sp_private_key=private_key_pem, sp_x509_cert=cert_pem
+    )
     updated = _fake_saml_provider(sso_url='https://idp.example.com/sso/new')
     with (
         patch(
@@ -791,14 +799,15 @@ async def test_update_saml_provider_preserves_existing_sp_keypair(
     assert resp.status_code == 200
     _, kwargs = update_mock.call_args
     assert kwargs['details'].sp_private_key.get_secret_value() == private_key_pem
+    assert kwargs['details'].sp_x509_cert == cert_pem
 
 
 @pytest.mark.asyncio
 async def test_update_provider_generates_sp_keypair_when_switching_kind(
     mock_app, grant_manage_oauth_providers
 ):
-    """Retargeting an OAuth row onto ``SamlProviderDetails`` mints a fresh key
-    -- there is no previous SAML key to carry forward."""
+    """Retargeting an OAuth row onto ``SamlProviderDetails`` mints a fresh
+    key+cert pair -- there is no previous SAML pair to carry forward."""
     existing = _fake_provider(1, 'github')
     updated = _fake_saml_provider()
     with (
@@ -825,6 +834,7 @@ async def test_update_provider_generates_sp_keypair_when_switching_kind(
     assert resp.status_code == 200
     _, kwargs = update_mock.call_args
     assert kwargs['details'].sp_private_key is not None
+    assert kwargs['details'].sp_x509_cert is not None
 
 
 @pytest.mark.asyncio
