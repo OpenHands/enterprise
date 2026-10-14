@@ -34,7 +34,7 @@ from storage.auth_provider import AuthProvider  # noqa: F401
 from storage.auth_provider_user import AuthProviderUser  # noqa: F401
 from storage.billing_session import BillingSession
 from storage.conversation_work import ConversationWork
-from storage.daily_conversation_usage import DailyConversationUsage  # noqa: F401
+from storage.daily_sandbox_usage import DailySandboxUsage  # noqa: F401
 from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation

@@ -26,7 +26,7 @@ from server.constants import (
     get_default_llm_model,
 )
 from server.logger import logger
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
     decrypt_legacy_model,
@@ -1350,7 +1350,7 @@ class UserStore:
                 """,
                 'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
                 'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
-                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
+                'DELETE FROM daily_sandbox_usage WHERE user_id = :user_id',
                 'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
                 'DELETE FROM quota_increase_request WHERE user_id = :user_id',
                 'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
@@ -1470,8 +1470,8 @@ class UserStore:
                     )
                 )
                 await session.execute(
-                    delete(DailyConversationUsage).where(
-                        DailyConversationUsage.user_id == target_uuid
+                    delete(DailySandboxUsage).where(
+                        DailySandboxUsage.user_id == target_uuid
                     )
                 )
                 await session.execute(

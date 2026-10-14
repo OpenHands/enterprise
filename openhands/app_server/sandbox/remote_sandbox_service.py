@@ -416,10 +416,57 @@ class RemoteSandboxService(SandboxService):
             created_by_user_id=stored_sandbox.created_by_user_id,
         )
 
+    async def _reserve_daily_sandbox_quota(
+        self, user_id: str | None
+    ) -> bool:
+        """Reserve one slot of the user's daily sandbox quota.
+
+        Returns True when a reservation was consumed (and must be released if
+        the start fails). Raises HTTP 429 when the user is at their limit.
+        No-ops outside SaaS mode, for unattributed (system/warm) sandboxes,
+        and in OSS builds where the enterprise quota service is not importable.
+        """
+        if not user_id:
+            return False
+        try:
+            from openhands.app_server.shared import server_config
+            from server.services.daily_sandbox_quota_service import (
+                DailySandboxQuotaService,
+            )
+            from storage.database import a_session_maker
+        except ImportError:
+            return False
+        if server_config.app_mode.value != 'saas':
+            return False
+        get_effective_org_id = getattr(
+            self.user_context, 'get_effective_org_id', None
+        )
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        async with a_session_maker() as session:
+            return await DailySandboxQuotaService(session).reserve(user_id, org_id)
+
+    async def _release_daily_sandbox_quota(self, user_id: str | None) -> None:
+        """Best-effort release of a quota reservation after a failed start."""
+        if not user_id:
+            return
+        try:
+            from server.services.daily_sandbox_quota_service import (
+                DailySandboxQuotaService,
+            )
+            from storage.database import a_session_maker
+
+            async with a_session_maker() as session:
+                await DailySandboxQuotaService(session).release(user_id)
+        except Exception:
+            _logger.exception('Failed to release daily sandbox quota reservation')
+
     async def start_sandbox(
         self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
+        # get user id (also the quota attribution identity)
+        user_id = await self.user_context.get_user_id()
+        quota_reserved = await self._reserve_daily_sandbox_quota(user_id)
         try:
             # Enforce sandbox limits by cleaning up old sandboxes
             await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
@@ -435,9 +482,6 @@ class RemoteSandboxService(SandboxService):
 
             if sandbox_id is None:
                 sandbox_id = base62.encodebytes(os.urandom(16))
-
-            # get user id
-            user_id = await self.user_context.get_user_id()
 
             # Store the sandbox
             stored_sandbox = StoredSandbox(
@@ -480,8 +524,14 @@ class RemoteSandboxService(SandboxService):
             return self._to_sandbox_info(stored_sandbox, runtime_data)
 
         except httpx.HTTPError as e:
+            if quota_reserved:
+                await self._release_daily_sandbox_quota(user_id)
             _logger.exception('Failed to start sandbox', stack_info=True)
             raise SandboxError('Failed to start sandbox') from e
+        except BaseException:
+            if quota_reserved:
+                await self._release_daily_sandbox_quota(user_id)
+            raise
 
     async def build_sandbox_start_request(
         self,
