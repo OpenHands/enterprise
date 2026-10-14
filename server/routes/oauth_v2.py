@@ -67,7 +67,7 @@ from storage.auth_provider_details import (
     SamlProviderDetails,
 )
 from storage.auth_provider_store import AuthProviderStore
-from storage.oauth_provider_user_store import OAuthProviderUserStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_store import UserStore
 
@@ -403,7 +403,7 @@ async def oauth_v2_callback(
             subject = str(userinfo.get('sub') or userinfo.get('id') or user_id)
         except HTTPException:
             subject = user_id
-        await OAuthProviderUserStore().link(
+        await AuthProviderUserStore().link(
             oauth_provider_id=provider.id,
             user_id=uuid.UUID(user_id),
             external_subject_id=subject,
@@ -502,7 +502,7 @@ async def oauth_v2_unlink(
 ):
     """Unlink a provider from the signed-in user.
 
-    Removes the ``oauth_provider_users`` link and the stored ``oauth_tokens``
+    Removes the ``auth_provider_users`` link and the stored ``oauth_tokens``
     row. The v2 replacement for ``kc_action=idp_link`` / ``unlink_idp``.
     """
     if not user_id:
@@ -518,7 +518,7 @@ async def oauth_v2_unlink(
         )
 
     user_uuid = uuid.UUID(user_id)
-    link_store = OAuthProviderUserStore()
+    link_store = AuthProviderUserStore()
     link = await link_store.get_by_user(user_uuid, provider.id)
     if link is not None:
         await link_store.unlink(provider.id, link.external_subject_id)

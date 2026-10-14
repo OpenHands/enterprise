@@ -54,7 +54,7 @@ from storage.auth_provider_details import (
     generate_sp_keypair,
 )
 from storage.auth_provider_store import AuthProviderStore
-from storage.oauth_provider_user_store import OAuthProviderUserStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 
 oauth_provider_admin_router = APIRouter(
     prefix='/api/admin/oauth-providers', tags=['Admin']
@@ -325,7 +325,7 @@ async def delete_oauth_provider(
 
     Refuses with ``409 Conflict`` if the caller themselves signed in (or
     linked a git identity) through this provider: ``auth_providers`` rows
-    cascade-delete their ``oauth_provider_users``/``oauth_tokens`` rows, so
+    cascade-delete their ``auth_provider_users``/``oauth_tokens`` rows, so
     deleting the provider the caller is currently authenticated through
     would sever their own login/connection -- possibly locking them out of
     the instance entirely. Ask another super admin to delete it instead.
@@ -335,7 +335,7 @@ async def delete_oauth_provider(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
         )
-    caller_link = await OAuthProviderUserStore().get_by_user(
+    caller_link = await AuthProviderUserStore().get_by_user(
         UUID(caller_user_id), provider_id
     )
     if caller_link is not None:
