@@ -25,6 +25,7 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.skills_router import (
     GLOBAL_SKILLS_DIR,
+    _bearer_auth_git_env,
     _clone_marketplace_repo,
     get_marketplace_skills,
 )
@@ -500,6 +501,7 @@ class TestMarketplaceSkillsCloneFailures:
             return_value=handler.provider_tokens
         )
         mock_user_context.get_provider_handler = AsyncMock(return_value=handler)
+        mock_user_context.get_latest_token = AsyncMock(return_value='pat')
 
         marketplace = MarketplaceRegistration(
             name='azure',
@@ -524,6 +526,64 @@ class TestMarketplaceSkillsCloneFailures:
         assert clone_argv[3] == (
             'https://acme:pat@dev.azure.com/acme/Web%20Apps/_git/skills'
         )
+        # PATs are already in the URL; no extra header is configured.
+        assert mock_run.call_args.kwargs['env'] is None
+
+    @pytest.mark.asyncio
+    async def test_clone_azure_devops_entra_token_sent_as_header_not_url(self):
+        """An Entra token reaches git as a Bearer header, never in argv or URL."""
+        token = 'header.payload.signature'
+        service = AsyncMock()
+        service.get_repository_details_from_repo_name.return_value = Repository(
+            id='1',
+            full_name='acme/Web Apps/skills',
+            git_provider=ProviderType.AZURE_DEVOPS,
+            is_public=False,
+        )
+        handler = ProviderHandler(
+            provider_tokens=MappingProxyType(
+                {ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr(token))}
+            )
+        )
+
+        mock_user_context = MagicMock()
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value=handler.provider_tokens
+        )
+        mock_user_context.get_provider_handler = AsyncMock(return_value=handler)
+        mock_user_context.get_latest_token = AsyncMock(return_value=token)
+
+        marketplace = MarketplaceRegistration(
+            name='azure',
+            source='https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+        )
+
+        mock_clone = MagicMock(returncode=0)
+        with (
+            patch.object(handler, 'get_service', return_value=service),
+            patch(
+                'openhands.app_server.user.skills_router.subprocess.run',
+                return_value=mock_clone,
+            ) as mock_run,
+            patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+        ):
+            await _clone_marketplace_repo(marketplace, mock_user_context)
+
+        clone_argv = mock_run.call_args[0][0]
+        assert clone_argv[3] == 'https://dev.azure.com/acme/Web%20Apps/_git/skills'
+        assert not any(token in arg for arg in clone_argv)
+        env = mock_run.call_args.kwargs['env']
+        assert env['GIT_CONFIG_COUNT'] == '1'
+        assert env['GIT_CONFIG_KEY_0'] == 'http.https://dev.azure.com/.extraheader'
+        assert env['GIT_CONFIG_VALUE_0'] == f'Authorization: Bearer {token}'
+
+    def test_bearer_auth_git_env_scopes_header_to_clone_origin(self):
+        """The header is scoped to the clone URL's origin, including its port."""
+        env = _bearer_auth_git_env('http://127.0.0.1:8080/o/p/_git/r', 'tok')
+
+        assert env is not None
+        assert env['GIT_CONFIG_KEY_0'] == 'http.http://127.0.0.1:8080/.extraheader'
+        assert _bearer_auth_git_env('https://dev.azure.com/o/p/_git/r', None) is None
 
     @pytest.mark.asyncio
     async def test_clone_refuses_unmatched_custom_host_url(self):

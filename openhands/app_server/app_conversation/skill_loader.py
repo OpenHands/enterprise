@@ -25,6 +25,7 @@ from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
@@ -512,6 +513,40 @@ async def _match_url_source_to_provider(
                 return None
             return provider_type, repo_path
     return None
+
+
+async def get_azure_devops_bearer_token(user_context: UserContext) -> str | None:
+    """Return the user's Azure DevOps token when it is an Entra (JWT) token.
+
+    PATs are embedded in authenticated git URLs; Entra tokens are not, so git
+    callers must send them as a Bearer header or through a credential helper.
+    """
+    try:
+        token = await user_context.get_latest_token(ProviderType.AZURE_DEVOPS)
+    except Exception as exc:
+        _logger.warning(f'Failed to get Azure DevOps token for git: {exc}')
+        return None
+    if token and looks_like_jwt(token):
+        return token
+    return None
+
+
+async def azure_devops_marketplace_orgs(
+    registered_marketplaces: list[MarketplaceRegistration] | None,
+    user_context: UserContext,
+) -> list[str]:
+    """Return the Azure DevOps organizations of auto-load marketplace sources."""
+    orgs: list[str] = []
+    for reg in registered_marketplaces or []:
+        if not reg.auto_load:
+            continue
+        matched = await _match_url_source_to_provider(reg.source, user_context)
+        if matched is None or matched[0] != ProviderType.AZURE_DEVOPS:
+            continue
+        org = matched[1].split('/')[0]
+        if org not in orgs:
+            orgs.append(org)
+    return orgs
 
 
 async def authenticate_marketplace_sources(

@@ -22,8 +22,10 @@ from openhands.app_server.app_conversation.skill_loader import (
     _is_azure_devops_repository,
     _is_gitlab_repository,
     authenticate_marketplace_sources,
+    azure_devops_marketplace_orgs,
     build_org_configs,
     build_sandbox_config,
+    get_azure_devops_bearer_token,
     load_skills_from_agent_server,
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
@@ -1344,3 +1346,54 @@ class TestAuthenticateMarketplaceSources:
         # Assert
         assert result is registrations
         mock_user_context.get_authenticated_git_url.assert_not_awaited()
+
+
+class TestAzureDevOpsMarketplaceCredentials:
+    """Helpers that let Entra-authenticated users clone Azure marketplaces."""
+
+    @pytest.mark.asyncio
+    async def test_bearer_token_returns_entra_jwt_only(self):
+        """Only JWT (Entra) tokens need a header; PATs ride in the URL."""
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_latest_token.return_value = 'header.payload.signature'
+        assert (
+            await get_azure_devops_bearer_token(mock_user_context)
+            == 'header.payload.signature'
+        )
+
+        mock_user_context.get_latest_token.return_value = 'plain-pat'
+        assert await get_azure_devops_bearer_token(mock_user_context) is None
+
+        mock_user_context.get_latest_token.side_effect = Exception('no token')
+        assert await get_azure_devops_bearer_token(mock_user_context) is None
+
+    @pytest.mark.asyncio
+    async def test_marketplace_orgs_lists_auto_load_azure_sources(self):
+        """Only auto-load sources on the Azure DevOps host contribute an org."""
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_provider_tokens.return_value = {
+            ProviderType.AZURE_DEVOPS: ProviderToken(),
+            ProviderType.GITHUB: ProviderToken(),
+        }
+        registrations = [
+            _make_registration(
+                name='azure',
+                source='https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+            ),
+            _make_registration(
+                name='azure-again',
+                source='https://dev.azure.com/acme/Other/_git/more',
+            ),
+            _make_registration(
+                name='not-loaded',
+                source='https://dev.azure.com/other/p/_git/r',
+                auto_load=False,
+            ),
+            _make_registration(
+                name='github', source='https://github.com/OpenHands/skills.git'
+            ),
+        ]
+
+        orgs = await azure_devops_marketplace_orgs(registrations, mock_user_context)
+
+        assert orgs == ['acme']
