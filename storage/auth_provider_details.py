@@ -38,22 +38,23 @@ encryption boundary -- so each secret field here (``client_secret``,
 from __future__ import annotations
 
 from abc import ABC
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from pydantic import (
     Field,
     SecretStr,
     SerializationInfo,
     ValidationInfo,
-    computed_field,
     field_serializer,
     field_validator,
 )
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from storage.encrypt_utils import decrypt_value, encrypt_value
 
@@ -62,14 +63,43 @@ from storage.encrypt_utils import decrypt_value, encrypt_value
 # default for their own SP integrations.
 SP_KEY_SIZE_BITS = 2048
 
+# Validity window for the auto-generated, self-signed SP certificate.
+#
+# SAML does not validate this cert against a CA chain -- the IdP admin
+# imports the exact bytes we give them and trusts that directly (the same
+# model Okta/Auth0/Keycloak use for their own SP certs), so there is no
+# browser-style "renew before it expires or the padlock breaks" pressure.
+# What *is* expensive is rotation: every IdP an admin has connected this
+# provider to needs its trust store updated by hand when the cert changes.
+# A long validity window (10 years) means rotation is a deliberate admin
+# action (not yet built -- would need to replace both fields together, see
+# ``server.routes.oauth_providers_admin._ensure_sp_keypair``), never a
+# surprise expiry.
+SP_CERT_VALID_DAYS = 3650
+# Backdated slightly so a freshly generated cert is never rejected as
+# "not yet valid" by an IdP whose clock is a few seconds ahead of ours.
+SP_CERT_VALID_FROM_SKEW = timedelta(minutes=5)
+# Purely a label on the self-signed cert -- SAML has no hostname/identity
+# validation against it (unlike a TLS cert), so this is cosmetic, not
+# security relevant. Not derived from ``sp_entity_id`` since the cert is
+# generated at row-creation time, before an admin may have set one.
+SP_CERT_COMMON_NAME = 'openhands-saml-sp'
+
 
 def generate_sp_keypair() -> tuple[str, str]:
-    """Generate a new RSA key pair for a SAML SP, PEM-encoded.
+    """Generate a new RSA key pair and self-signed X.509 cert for a SAML SP.
 
-    Returns ``(private_key_pem, public_key_pem)``. Called by
+    Returns ``(private_key_pem, certificate_pem)``. Called by
     ``server.routes.oauth_providers_admin`` the first time a row becomes (or
     is created as) ``SamlProviderDetails`` with no key yet -- admins never
-    type an SP private key themselves, see ``SamlProviderDetails.sp_public_key``.
+    type an SP private key themselves, see ``SamlProviderDetails.sp_x509_cert``.
+
+    A bare public key is not sufficient here: the SP metadata document's
+    ``<ds:X509Certificate>`` element, and most IdPs' "upload your SP cert"
+    forms, want an actual X.509 certificate (subject/issuer/serial/validity
+    wrapped around the key), not a ``SubjectPublicKeyInfo`` blob. The cert is
+    self-signed -- see ``SP_CERT_VALID_DAYS`` for why that's the norm here,
+    not a shortcut.
     """
     key = rsa.generate_private_key(public_exponent=65537, key_size=SP_KEY_SIZE_BITS)
     private_pem = key.private_bytes(
@@ -77,15 +107,23 @@ def generate_sp_keypair() -> tuple[str, str]:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    public_pem = (
-        key.public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        .decode()
+
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, SP_CERT_COMMON_NAME)]
     )
-    return private_pem, public_pem
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - SP_CERT_VALID_FROM_SKEW)
+        .not_valid_after(now + timedelta(days=SP_CERT_VALID_DAYS))
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    return private_pem, cert_pem
 
 
 # Default clock-drift margin (seconds). Expired access tokens are still
@@ -170,13 +208,16 @@ class PasswordProviderDetails(AuthProviderDetails):
 class SamlProviderDetails(AuthProviderDetails):
     """SAML 2.0 IDP configuration.
 
-    ``sp_private_key`` is never admin-supplied -- ``generate_sp_keypair`` auto-
-    generates it (see ``server.routes.oauth_providers_admin._ensure_sp_keypair``)
-    the first time a row becomes SAML with no key yet, so it can't be entered
-    wrong/mismatched and never needs rotating by hand. ``sp_public_key`` is
-    derived from it on the fly rather than stored separately, so the two can
-    never drift out of sync; it is what an admin copies into the IdP's SP
-    metadata/ACS signing-certificate configuration.
+    ``sp_private_key``/``sp_x509_cert`` are never admin-supplied --
+    ``generate_sp_keypair`` auto-generates them as a pair (see
+    ``server.routes.oauth_providers_admin._ensure_sp_keypair``) the first
+    time a row becomes SAML with no key yet, so they can't be entered
+    wrong/mismatched and never need rotating by hand. ``sp_x509_cert`` is
+    public by construction (it is served back from the unauthenticated SP
+    metadata endpoint), so unlike ``sp_private_key`` it is stored and
+    transmitted in the clear -- it is also what an admin copies into an IdP
+    that wants the SP cert configured out of band (most read it from our
+    metadata URL instead).
     """
 
     metadata_url: str | None = None
@@ -186,6 +227,7 @@ class SamlProviderDetails(AuthProviderDetails):
     slo_url: str | None = None
     idp_x509_cert: str | None = None
     sp_private_key: SecretStr | None = None
+    sp_x509_cert: str | None = None
     name_id_format: str | None = None
     attribute_mapping: dict[str, str] = Field(default_factory=dict)
 
@@ -199,28 +241,3 @@ class SamlProviderDetails(AuthProviderDetails):
         self, value: SecretStr | None, info: SerializationInfo
     ) -> str | None:
         return _serialize_secret_field(value, info)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def sp_public_key(self) -> str | None:
-        """The public half of ``sp_private_key``, PEM-encoded -- ``None``
-        until a key has been generated. Read-only: setting it directly has
-        no effect since it is never stored, only derived at read time.
-        """
-        if self.sp_private_key is None:
-            return None
-        try:
-            private_key = serialization.load_pem_private_key(
-                self.sp_private_key.get_secret_value().encode(), password=None
-            )
-        except ValueError:
-            logger.warning('auth_provider_details:unparseable_sp_private_key')
-            return None
-        return (
-            private_key.public_key()
-            .public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )

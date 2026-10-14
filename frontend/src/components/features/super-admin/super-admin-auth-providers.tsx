@@ -85,9 +85,12 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-/** Parses the attribute-mapping field's ``saml_attr=openhands_field``
- * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``.
- * Blank entries and entries missing a ``=`` are dropped. */
+/** Parses the attribute-mapping field's ``openhands_field=saml_attr``
+ * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``
+ * (keyed by ``openhands_field`` -- see ``server.routes.saml
+ * ._extract_mapped_attribute``, which looks up ``attribute_mapping[field]``
+ * to get the SAML attribute name to read). Blank entries and entries
+ * missing a ``=`` are dropped. */
 function parseAttributeMapping(value: string): Record<string, string> {
   const mapping: Record<string, string> = {};
   value
@@ -137,17 +140,18 @@ interface AuthProviderFormState {
   ssoBinding: SamlSsoBinding;
   sloUrl: string;
   idpX509Cert: string;
-  /** Read-only: the SP's auto-generated signing public key, for the admin
-   * to copy into the IdP's trusted-SP configuration. Empty until the row
-   * has been saved at least once -- ``sp_private_key``/its derived public
-   * half are never typed, only generated server-side (see
+  /** Read-only: the SP's auto-generated, self-signed signing certificate,
+   * for the admin to copy into the IdP's trusted-SP configuration (or to
+   * hand out alongside the SP metadata URL). Empty until the row has been
+   * saved at least once -- ``sp_private_key``/``sp_x509_cert`` are never
+   * typed, only generated server-side as a pair (see
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
-  spPublicKey: string;
+  spX509Cert: string;
   nameIdFormat: string;
-  /** Not rendered in the form (see ``SUPER_ADMIN$AUTH_PROVIDER_...``
-   * fields below) -- kept here only so an existing row's mapping, if any
-   * was set directly via the API, round-trips through an edit untouched
-   * instead of being silently cleared to ``{}``. */
+  /** ``openhands_field=saml_attr`` pairs, comma/newline-separated -- see
+   * ``parseAttributeMapping``. Only the ``email`` key currently has any
+   * effect server-side (``server.routes.saml._extract_mapped_attribute``
+   * is only ever called for ``'email'``). */
   attributeMapping: string;
 }
 
@@ -169,7 +173,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   ssoBinding: DEFAULT_SSO_BINDING,
   sloUrl: "",
   idpX509Cert: "",
-  spPublicKey: "",
+  spX509Cert: "",
   nameIdFormat: "",
   attributeMapping: "",
 };
@@ -204,7 +208,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       ssoBinding: details.sso_binding,
       sloUrl: details.slo_url ?? "",
       idpX509Cert: details.idp_x509_cert ?? "",
-      spPublicKey: details.sp_public_key ?? "",
+      spX509Cert: details.sp_x509_cert ?? "",
       nameIdFormat: details.name_id_format ?? "",
       attributeMapping: formatAttributeMapping(details.attribute_mapping),
     };
@@ -271,9 +275,10 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       // this row becomes SAML, then carried forward on every later edit
       // (see ``server.routes.oauth_providers_admin._ensure_sp_keypair``).
       sp_private_key: null,
-      // Derived server-side from ``sp_private_key`` -- never client-supplied,
-      // and ignored by the server if sent (see type doc comment).
-      sp_public_key: null,
+      // Generated server-side alongside ``sp_private_key`` -- never
+      // client-supplied, and ignored by the server if sent (see type doc
+      // comment).
+      sp_x509_cert: null,
       name_id_format: form.nameIdFormat.trim() || null,
       attribute_mapping: parseAttributeMapping(form.attributeMapping),
     };
@@ -382,8 +387,8 @@ function AuthProviderFormModal({
   // SAML has no required field beyond the title: the IdP fields below are
   // all optional at creation time (see the hint rendered above them) --
   // plenty of IdPs won't hand over their entity ID/SSO URL/cert until
-  // *after* they've been given this row's SP public key and URLs, so the
-  // row has to be creatable (to generate that key) before any of them are
+  // *after* they've been given this row's SP certificate and URLs, so the
+  // row has to be creatable (to generate that cert) before any of them are
   // known.
   const canSubmit =
     form.title.trim() !== "" &&
@@ -650,29 +655,29 @@ function AuthProviderFormModal({
               rows={8}
               showOptionalTag
             />
-            {form.spPublicKey ? (
-              <SettingsInput
-                testId="super-admin-auth-provider-sp-public-key"
-                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY)}
-                type="text"
-                value={form.spPublicKey}
+            {form.spX509Cert ? (
+              <SettingsTextarea
+                testId="super-admin-auth-provider-sp-x509-cert"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT)}
+                value={form.spX509Cert}
                 description={
                   <p
-                    data-testid="super-admin-auth-provider-sp-public-key-hint"
+                    data-testid="super-admin-auth-provider-sp-x509-cert-hint"
                     className="text-xs text-tertiary-alt"
                   >
-                    {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_HINT)}
+                    {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_HINT)}
                   </p>
                 }
+                rows={8}
                 isReadOnly
                 onChange={() => {}}
               />
             ) : (
               <p
-                data-testid="super-admin-auth-provider-sp-public-key-pending"
+                data-testid="super-admin-auth-provider-sp-x509-cert-pending"
                 className="text-xs text-tertiary-alt"
               >
-                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_PENDING)}
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_PENDING)}
               </p>
             )}
             <SettingsInput
@@ -685,6 +690,24 @@ function AuthProviderFormModal({
               }
               showOptionalTag
               autoComplete="off"
+            />
+            <SettingsTextarea
+              testId="super-admin-auth-provider-attribute-mapping"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
+              value={form.attributeMapping}
+              description={
+                <p
+                  data-testid="super-admin-auth-provider-attribute-mapping-hint"
+                  className="text-xs text-tertiary-alt"
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING_HINT)}
+                </p>
+              }
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, attributeMapping: value }))
+              }
+              rows={3}
+              showOptionalTag
             />
           </>
         ) : null}
