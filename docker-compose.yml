@@ -7,7 +7,7 @@
 # configure their own LLM in Settings instead of requiring a LiteLLM proxy
 # (OH_LLM_MODEL_KIND). See OHE-3376.
 #
-# First run: open http://localhost:3000/oauth/idp/signup to create the admin
+# First run: open http://localhost:3100/oauth/idp/signup to create the admin
 # account, then add an LLM under Settings.
 #
 # Known gaps, tracked separately rather than worked around here:
@@ -56,7 +56,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - '${APP_PORT:-3000}:3000'
+      - '${APP_PORT:-3100}:3000'
     # The Docker sandbox backend creates sibling containers via the host's
     # Docker daemon (same pattern as containers/dev/compose.yml), so the app
     # container needs the socket -- not `privileged: true`, since it runs as
@@ -113,7 +113,7 @@ services:
       # host.docker.internal at this port -- it must match whatever
       # APP_PORT is published as (see `ports`, above), or sandboxes won't
       # be able to reach the app.
-      OH_SANDBOX_HOST_PORT: ${APP_PORT:-3000}
+      OH_SANDBOX_HOST_PORT: ${APP_PORT:-3100}
     restart: unless-stopped
 
   # Runs the Postgres-backed Procrastinate tasks that have already been
