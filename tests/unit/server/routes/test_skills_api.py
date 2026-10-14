@@ -566,6 +566,7 @@ class TestMarketplaceSkillsCloneFailures:
                 return_value=mock_clone,
             ) as mock_run,
             patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+            patch.dict(os.environ, {'GIT_CONFIG_COUNT': '0'}),
         ):
             await _clone_marketplace_repo(marketplace, mock_user_context)
 
@@ -579,11 +580,28 @@ class TestMarketplaceSkillsCloneFailures:
 
     def test_bearer_auth_git_env_scopes_header_to_clone_origin(self):
         """The header is scoped to the clone URL's origin, including its port."""
-        env = _bearer_auth_git_env('http://127.0.0.1:8080/o/p/_git/r', 'tok')
+        with patch.dict(os.environ, {'GIT_CONFIG_COUNT': '0'}):
+            env = _bearer_auth_git_env('http://127.0.0.1:8080/o/p/_git/r', 'tok')
 
         assert env is not None
         assert env['GIT_CONFIG_KEY_0'] == 'http.http://127.0.0.1:8080/.extraheader'
         assert _bearer_auth_git_env('https://dev.azure.com/o/p/_git/r', None) is None
+
+    def test_bearer_auth_git_env_appends_to_inherited_git_config(self):
+        """Inherited GIT_CONFIG_* entries are kept; the header is appended."""
+        inherited = {
+            'GIT_CONFIG_COUNT': '1',
+            'GIT_CONFIG_KEY_0': 'http.sslCAInfo',
+            'GIT_CONFIG_VALUE_0': '/etc/ca.pem',
+        }
+        with patch.dict(os.environ, inherited):
+            env = _bearer_auth_git_env('https://dev.azure.com/o/p/_git/r', 'tok')
+
+        assert env is not None
+        assert env['GIT_CONFIG_COUNT'] == '2'
+        assert env['GIT_CONFIG_KEY_0'] == 'http.sslCAInfo'
+        assert env['GIT_CONFIG_KEY_1'] == 'http.https://dev.azure.com/.extraheader'
+        assert env['GIT_CONFIG_VALUE_1'] == 'Authorization: Bearer tok'
 
     @pytest.mark.asyncio
     async def test_clone_refuses_unmatched_custom_host_url(self):

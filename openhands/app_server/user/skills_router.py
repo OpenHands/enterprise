@@ -286,11 +286,13 @@ def _bearer_auth_git_env(
     origin = f'{parsed.scheme}://{parsed.hostname}'
     if parsed.port:
         origin += f':{parsed.port}'
+    # Append after any GIT_CONFIG_* entries the server already inherits.
+    n = int(os.environ.get('GIT_CONFIG_COUNT') or 0)
     return {
         **os.environ,
-        'GIT_CONFIG_COUNT': '1',
-        'GIT_CONFIG_KEY_0': f'http.{origin}/.extraheader',
-        'GIT_CONFIG_VALUE_0': f'Authorization: Bearer {bearer_token}',
+        'GIT_CONFIG_COUNT': str(n + 1),
+        f'GIT_CONFIG_KEY_{n}': f'http.{origin}/.extraheader',
+        f'GIT_CONFIG_VALUE_{n}': f'Authorization: Bearer {bearer_token}',
     }
 
 

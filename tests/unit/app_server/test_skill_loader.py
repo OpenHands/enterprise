@@ -1252,8 +1252,8 @@ class TestAuthenticateMarketplaceSources:
         )
 
     @pytest.mark.asyncio
-    async def test_rewrites_encoded_url_with_decoded_repo_for_any_provider(self):
-        """Escapes are decoded before resolution on non-Azure hosts too."""
+    async def test_keeps_escapes_in_non_azure_url_path(self):
+        """Only Azure paths are decoded; '%23' must not truncate a GitHub repo name."""
         # Arrange
         mock_user_context = AsyncMock(spec=UserContext)
         mock_user_context.get_provider_tokens.return_value = {
@@ -1263,9 +1263,7 @@ class TestAuthenticateMarketplaceSources:
         handler.get_authenticated_git_url.return_value = AUTHENTICATED_URL
         mock_user_context.get_provider_handler.return_value = handler
         registrations = [
-            _make_registration(
-                source='https://github.com/OpenHands/extensions%2Dprivate.git'
-            )
+            _make_registration(source='https://github.com/acme/skills%23x.git')
         ]
 
         # Act
@@ -1273,7 +1271,7 @@ class TestAuthenticateMarketplaceSources:
 
         # Assert
         handler.get_authenticated_git_url.assert_awaited_once_with(
-            'OpenHands/extensions-private',
+            'acme/skills%23x',
             is_optional=True,
             specified_provider=ProviderType.GITHUB,
         )

@@ -1911,6 +1911,7 @@ class TestMarketplaceGitCredentials:
             'git config --global credential.https://dev.azure.com.useHttpPath true'
             in command
         )
+        workspace.reset_client.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_helper_for_pat(self):

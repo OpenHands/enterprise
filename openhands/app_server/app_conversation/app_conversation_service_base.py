@@ -100,11 +100,14 @@ def get_project_dir(
     return working_dir
 
 
-def _azure_devops_credential_helper_script(sandbox_id: str, app_base_url: str) -> str:
+def _azure_devops_credential_helper_script(sandbox_id: str, web_url: str | None) -> str:
     """Git credential helper fetching the sandbox's Azure DevOps token on demand.
 
     The token is never written to disk; only this script and its config are.
+    It needs the session key from the git process environment, so it only works
+    for git run with the agent-server's full (unsanitized) environment.
     """
+    app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
     secret_path = f'/api/v1/sandboxes/{sandbox_id}/settings/secrets/azure_devops_token'
     return f"""#!/bin/sh
 if [ "$1" != "get" ]; then
@@ -752,8 +755,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'Azure DevOps git credential helper has no configured web_url; '
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
-        app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
-        helper_script = _azure_devops_credential_helper_script(sandbox.id, app_base_url)
+        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
         helper_path_quoted = shlex.quote(str(helper_path))
         helper_value = shlex.quote(f'!{shlex.quote(str(helper_path))}')
         extraheader_key = shlex.quote(f'http.https://dev.azure.com/{org}/.extraheader')
@@ -788,6 +790,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         PATs ride in the authenticated source URL; Entra tokens cannot, so the
         repository credential helper is installed globally for each org instead.
+        This relies on the agent-server running marketplace git commands with its
+        full environment (the SDK's ``_run_git_subprocess``, not ``sanitized_env``).
         """
         orgs = await azure_devops_marketplace_orgs(
             registered_marketplaces, self.user_context
@@ -796,8 +800,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             return
 
         web_url = getattr(self, 'web_url', None)
-        app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
-        helper_script = _azure_devops_credential_helper_script(sandbox.id, app_base_url)
+        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
         commands = [
             'helper="$HOME/.openhands/azure-devops-credential-helper"',
             'mkdir -p "$HOME/.openhands"',
@@ -818,7 +821,10 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 api_key=sandbox.session_api_key,
                 working_dir=working_dir,
             )
-            result = await workspace.execute_command(' && '.join(commands), '/')
+            try:
+                result = await workspace.execute_command(' && '.join(commands), '/')
+            finally:
+                await workspace.reset_client()
             if result.exit_code:
                 _logger.warning(
                     'Azure DevOps marketplace credential helper setup failed: '
