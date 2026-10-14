@@ -401,11 +401,21 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-idp-x509-cert"),
     ).toBeInTheDocument();
+    // No row id exists yet on a brand-new row, so there's nothing to build
+    // an SP metadata URL out of (see `_sp_entity_id`).
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-sp-metadata-url"),
+    ).not.toBeInTheDocument();
     // No key exists yet on a brand-new row -- the SP certificate (and the
     // "SP Private Key" field that used to live here) are never
     // admin-typed, see `_ensure_sp_keypair`.
     expect(
       within(dialog).queryByTestId("super-admin-auth-provider-sp-x509-cert"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByTestId(
+        "super-admin-auth-provider-sp-x509-cert-download",
+      ),
     ).not.toBeInTheDocument();
     expect(
       within(dialog).getByTestId(
@@ -678,6 +688,69 @@ describe("Super Admin Auth Providers page", () => {
     ).toHaveValue(
       "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
     );
+  });
+
+  it("shows the SP metadata URL for an existing SAML provider, copyable to the clipboard", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+
+    const spMetadataUrlInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-sp-metadata-url",
+    );
+    expect(spMetadataUrlInput).toHaveValue(
+      `${window.location.origin}/saml/3/metadata`,
+    );
+    expect(spMetadataUrlInput).toHaveAttribute("readonly");
+
+    await user.click(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-sp-metadata-url-copy",
+      ),
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/saml/3/metadata`,
+    );
+  });
+
+  it("downloads the SP certificate as a PEM file", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SAML_PROVIDER,
+    ]);
+    const createObjectURL = vi.fn().mockReturnValue("blob:mock-sp-certificate");
+    const revokeObjectURL = vi.fn();
+    Object.assign(window.URL, { createObjectURL, revokeObjectURL });
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-3"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+
+    await user.click(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-sp-x509-cert-download",
+      ),
+    );
+
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-sp-certificate");
   });
 
   it("omits details (preserving the SP private key) when editing a SAML provider without touching any SAML field", async () => {

@@ -22,6 +22,7 @@ import type {
   UpdateAuthProviderParams,
 } from "#/api/auth-providers-service/auth-providers.types";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
+import { downloadBlob } from "#/utils/utils";
 import { I18nKey } from "#/i18n/declaration";
 import {
   SUPER_ADMIN_NAV_ITEMS,
@@ -301,6 +302,11 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
 interface AuthProviderFormModalProps {
   mode: "create" | "edit";
   initial: AuthProviderFormState;
+  /** The row's id -- only set in ``edit`` mode, once the row (and, for
+   * SAML, its SP keypair) already exists server-side. Used to build the
+   * per-row SP metadata URL (``server.routes.saml._sp_entity_id``), which
+   * doesn't exist until then. */
+  providerId?: number;
   isLoading: boolean;
   onClose: () => void;
   onSubmit: (
@@ -312,6 +318,7 @@ interface AuthProviderFormModalProps {
 function AuthProviderFormModal({
   mode,
   initial,
+  providerId,
   isLoading,
   onClose,
   onSubmit,
@@ -326,6 +333,33 @@ function AuthProviderFormModal({
   // without touching this field again) -- only a URL not yet fetched
   // triggers a request.
   const lastFetchedMetadataUrl = useRef<string | null>(null);
+  const [spMetadataUrlCopied, setSpMetadataUrlCopied] = useState(false);
+
+  // Mirrors `_sp_entity_id` in `server.routes.saml` -- same origin as this
+  // admin page, since the SAML routes are served by this same app.
+  const spMetadataUrl =
+    providerId !== undefined
+      ? `${window.location.origin}/saml/${providerId}/metadata`
+      : null;
+
+  const handleCopySpMetadataUrl = () => {
+    if (!spMetadataUrl) {
+      return;
+    }
+    navigator.clipboard.writeText(spMetadataUrl);
+    setSpMetadataUrlCopied(true);
+    setTimeout(() => setSpMetadataUrlCopied(false), 2000);
+  };
+
+  const handleDownloadSpCert = () => {
+    if (!form.spX509Cert) {
+      return;
+    }
+    downloadBlob(
+      new Blob([form.spX509Cert], { type: "application/x-pem-file" }),
+      `sp-certificate-${providerId ?? "new"}.pem`,
+    );
+  };
 
   const handleMetadataUrlBlur = () => {
     const metadataUrl = form.metadataUrl.trim();
@@ -655,23 +689,69 @@ function AuthProviderFormModal({
               rows={8}
               showOptionalTag
             />
+            {spMetadataUrl ? (
+              <div className="flex items-end gap-2">
+                <SettingsInput
+                  testId="super-admin-auth-provider-sp-metadata-url"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL)}
+                  type="text"
+                  value={spMetadataUrl}
+                  description={
+                    <p
+                      data-testid="super-admin-auth-provider-sp-metadata-url-hint"
+                      className="text-xs text-tertiary-alt"
+                    >
+                      {t(
+                        I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL_HINT,
+                      )}
+                    </p>
+                  }
+                  isReadOnly
+                  onChange={() => {}}
+                  className="min-w-0 flex-1"
+                />
+                <BrandButton
+                  testId="super-admin-auth-provider-sp-metadata-url-copy"
+                  type="button"
+                  variant="secondary"
+                  onClick={handleCopySpMetadataUrl}
+                >
+                  {t(
+                    spMetadataUrlCopied
+                      ? I18nKey.BUTTON$COPIED
+                      : I18nKey.BUTTON$COPY,
+                  )}
+                </BrandButton>
+              </div>
+            ) : null}
             {form.spX509Cert ? (
-              <SettingsTextarea
-                testId="super-admin-auth-provider-sp-x509-cert"
-                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT)}
-                value={form.spX509Cert}
-                description={
-                  <p
-                    data-testid="super-admin-auth-provider-sp-x509-cert-hint"
-                    className="text-xs text-tertiary-alt"
-                  >
-                    {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_HINT)}
-                  </p>
-                }
-                rows={8}
-                isReadOnly
-                onChange={() => {}}
-              />
+              <>
+                <SettingsTextarea
+                  testId="super-admin-auth-provider-sp-x509-cert"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT)}
+                  value={form.spX509Cert}
+                  description={
+                    <p
+                      data-testid="super-admin-auth-provider-sp-x509-cert-hint"
+                      className="text-xs text-tertiary-alt"
+                    >
+                      {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_HINT)}
+                    </p>
+                  }
+                  rows={8}
+                  isReadOnly
+                  onChange={() => {}}
+                />
+                <BrandButton
+                  testId="super-admin-auth-provider-sp-x509-cert-download"
+                  type="button"
+                  variant="secondary"
+                  className="self-start"
+                  onClick={handleDownloadSpCert}
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DOWNLOAD_CERT_PEM)}
+                </BrandButton>
+              </>
             ) : (
               <p
                 data-testid="super-admin-auth-provider-sp-x509-cert-pending"
@@ -899,6 +979,15 @@ export function SuperAdminAuthProviders() {
         <AuthProviderFormModal
           mode={formMode}
           initial={editingProvider ? toFormState(editingProvider) : EMPTY_FORM}
+          // Only set once this row already exists server-side as SAML --
+          // the SP metadata URL doesn't exist for a row that's still being
+          // created, or that hasn't been saved as SAML yet (e.g. mid-edit,
+          // switching kind from OAuth).
+          providerId={
+            editingProvider?.details.kind === KIND_SAML
+              ? editingProvider.id
+              : undefined
+          }
           isLoading={createProvider.isPending || updateProvider.isPending}
           onClose={closeForm}
           onSubmit={handleSubmit}
