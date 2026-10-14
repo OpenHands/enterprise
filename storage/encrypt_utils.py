@@ -5,8 +5,8 @@ from base64 import b64decode, b64encode
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, SecretStr
-from sqlalchemy import String, TypeDecorator
+from pydantic import BaseModel, SecretStr, TypeAdapter
+from sqlalchemy import JSON, String, TypeDecorator
 from sqlalchemy.engine.interfaces import Dialect
 
 _jwt_service = None
@@ -123,3 +123,47 @@ class EncryptedJSON(TypeDecorator[dict[str, Any]]):
         if value is None:
             return None
         return json.loads(decrypt_value(value))
+
+
+def create_json_with_encrypted_secrets_type_decorator(object_type: type):
+    """Create a plain (unencrypted) JSON column for a ``DiscriminatedUnionMixin``
+    whose secret fields encrypt *themselves*, rather than the whole blob.
+
+    Unlike ``EncryptedJSON``/the ``StoredSecretStr`` pattern, this does not
+    make the column itself the encryption boundary -- the row is readable
+    JSON in the database, with only its individual secret fields (e.g.
+    ``AuthProvider.details``'s ``OAuthProviderDetails.client_secret``) turned
+    into ciphertext. That split only works if the model's own
+    ``field_serializer``/``field_validator`` pair does the encrypting --
+    see ``storage.auth_provider_details`` -- which this decorator drives via
+    two dedicated contexts:
+
+    * Binding (write): dumps with ``context={'for_storage': True}``, which
+      those field serializers use to swap each secret's real value for its
+      own JWE ciphertext (``encrypt_value``). Every other field is plain
+      JSON.
+    * Reading (load): validates with ``context={'from_storage': True}``,
+      which the matching field validators use to decrypt that ciphertext
+      back into the real value. ``TypeAdapter.validate_python`` also
+      re-hydrates the correct concrete subclass, so the mapped attribute is
+      always a real ``object_type`` instance, never a bare ``dict``.
+    """
+    type_adapter: TypeAdapter = TypeAdapter(object_type)
+
+    class JSONWithEncryptedSecrets(TypeDecorator):
+        impl = JSON
+        cache_ok = True
+
+        def process_bind_param(self, value, dialect):
+            if value is None:
+                return None
+            return type_adapter.dump_python(
+                value, mode='json', context={'for_storage': True}
+            )
+
+        def process_result_value(self, value, dialect):
+            if value is None:
+                return None
+            return type_adapter.validate_python(value, context={'from_storage': True})
+
+    return JSONWithEncryptedSecrets

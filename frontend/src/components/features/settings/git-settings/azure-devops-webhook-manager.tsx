@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import type { AzureDevOpsWebhookStatus } from "#/api/integration-service/integration-service.types";
 import { useAzureDevOpsResources } from "#/hooks/query/use-azure-devops-resources-list";
 import { useReinstallAzureDevOpsWebhook } from "#/hooks/mutation/use-reinstall-azure-devops-webhook";
@@ -10,6 +11,7 @@ import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
 import {
   settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
 } from "#/utils/settings-list-classes";
@@ -120,62 +122,69 @@ export function AzureDevOpsWebhookManager({
         {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
 
-      <div className={settingsListContainerClassName}>
-        <table className="w-full">
-          <thead className={settingsListTableHeadClassName}>
-            <tr>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_ORGANIZATION)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_STATUS)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_ACTION)}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-700">
-            <tr className="hover:bg-neutral-800/50 transition-colors align-top">
-              <td className="px-4 py-3">
-                <Typography.Text className="text-sm font-medium text-white">
-                  {status.organization}
-                </Typography.Text>
-              </td>
-              <td className="px-4 py-3">
-                <StatusBadge status={status} />
-              </td>
-              <td className="px-4 py-3">
-                <div className="flex gap-2">
-                  <BrandButton
-                    type="button"
-                    variant="primary"
-                    onClick={handleReinstall}
-                    isDisabled={installDisabled}
-                    className="cursor-pointer"
-                    testId="azure-devops-install-webhook"
-                  >
-                    {installLabel}
-                  </BrandButton>
-                  {status.webhook_installed && (
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          settingsListScrollFadeFromClassName,
+        )}
+      >
+        <HorizontalScrollFade>
+          <table className="w-full">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_ORGANIZATION)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_STATUS)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.AZURE_DEVOPS$WEBHOOK_COLUMN_ACTION)}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-700">
+              <tr className="hover:bg-neutral-800/50 transition-colors align-top">
+                <td className="px-4 py-3">
+                  <Typography.Text className="text-sm font-medium text-white">
+                    {status.organization}
+                  </Typography.Text>
+                </td>
+                <td className="px-4 py-3">
+                  <StatusBadge status={status} />
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex gap-2">
                     <BrandButton
                       type="button"
-                      variant="secondary"
-                      onClick={handleUninstall}
-                      isDisabled={anyMutationPending}
+                      variant="primary"
+                      onClick={handleReinstall}
+                      isDisabled={installDisabled}
                       className="cursor-pointer"
-                      testId="azure-devops-uninstall-webhook"
+                      testId="azure-devops-install-webhook"
                     >
-                      {isUninstalling
-                        ? t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALLING)
-                        : t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL)}
+                      {installLabel}
                     </BrandButton>
-                  )}
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+                    {status.webhook_installed && (
+                      <BrandButton
+                        type="button"
+                        variant="secondary"
+                        onClick={handleUninstall}
+                        isDisabled={anyMutationPending}
+                        className="cursor-pointer"
+                        testId="azure-devops-uninstall-webhook"
+                      >
+                        {isUninstalling
+                          ? t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALLING)
+                          : t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL)}
+                      </BrandButton>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

@@ -75,6 +75,22 @@ def _get_maintenance_start_time() -> datetime | None:
         return None
 
 
+def _get_provider_default_hosts() -> dict[str, str]:
+    """Return the deployment's default host for each git provider.
+
+    Bitbucket Data Center has no public host, so it is included only when
+    BITBUCKET_DATA_CENTER_HOST is set.
+    """
+    hosts = {
+        provider.value: host
+        for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
+    }
+    bitbucket_dc_host = os.getenv('BITBUCKET_DATA_CENTER_HOST', '').strip()
+    if bitbucket_dc_host:
+        hosts[ProviderType.BITBUCKET_DATA_CENTER.value] = bitbucket_dc_host
+    return hosts
+
+
 def _is_gitlab_enabled() -> bool:
     """Return whether GitLab OAuth is configured for the web client."""
     return bool(os.getenv('GITLAB_APP_CLIENT_ID', '').strip())
@@ -138,6 +154,13 @@ def _get_email_enabled() -> bool:
     return smtp_enabled or resend_enabled
 
 
+def _get_user_provisioning_enabled() -> bool:
+    """Return whether the admin provision-user route is registered."""
+    from server.constants import USER_PROVISIONING_ENABLED
+
+    return USER_PROVISIONING_ENABLED
+
+
 def _get_jira_dc_oauth_host() -> str | None:
     """Hostname of the Jira Data Center server when DC OAuth is configured.
 
@@ -188,7 +211,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    ENABLE_BYOR_EXPORT, and ENABLE_OAUTH_V2_LOGIN from environment.
+    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, and ENABLE_OAUTH_V2_LOGIN from
+    environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -223,7 +247,9 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
+        enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
+        enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
     )
 
 
@@ -310,14 +336,14 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     github_app_slug: str | None = Field(default_factory=_get_github_app_slug)
     gitlab_enabled: bool = Field(default_factory=_is_gitlab_enabled)
     provider_default_hosts: dict[str, str] = Field(
-        default_factory=lambda: {
-            provider.value: host
-            for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
-        }
+        default_factory=_get_provider_default_hosts
     )
     slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
     email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
+    user_provisioning_enabled: bool = Field(
+        default_factory=_get_user_provisioning_enabled
+    )
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -351,6 +377,11 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
+        # Structured OH_WEB_CLIENT_FEATURE_FLAGS_* env builds feature_flags without
+        # reading ENABLE_LEGACY_LITELLM, so check the env var here too.
+        enable_litellm = self.feature_flags.enable_litellm and _env_flag_enabled(
+            'ENABLE_LEGACY_LITELLM', 'true'
+        )
         # enable_billing is a registered default flag (ENABLE_BILLING): the
         # database overlay wins, the env var baked into self.feature_flags at
         # init is the fallback. enable_integrated_idp depends on whether a
@@ -362,6 +393,13 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                     'ENABLE_BILLING', self.feature_flags.enable_billing
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
+                'enable_litellm': enable_litellm,
+                # LiteLLM off means BYOK is the only LLM source; force it on
+                # regardless of OH_ALLOW_USER_LLM_CONFIGURATION.
+                'allow_user_llm_configuration': (
+                    self.feature_flags.allow_user_llm_configuration
+                    or not enable_litellm
+                ),
             }
         )
         result = WebClientConfig(
@@ -382,6 +420,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             slack_enabled=self.slack_enabled,
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
+            user_provisioning_enabled=self.user_provisioning_enabled,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

@@ -13,6 +13,8 @@ import {
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
 import { SpendMeter } from "#/components/features/budgets/budgets-components";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
+import { FeatureDisabledScreen } from "#/components/shared/feature-disabled-screen";
+import { useConfig } from "#/hooks/query/use-config";
 import { useMyBudget } from "#/hooks/query/use-my-budget";
 import { useMyUsage } from "#/hooks/query/use-my-usage";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
@@ -609,10 +611,24 @@ function UsageBreakdown({ timeWindow }: { timeWindow: TimeWindow }) {
 export function YourBudget() {
   const { t } = useTranslation();
   const { selectedOrg } = useOrgTypeAndAccess();
-  const { data: budget, isLoading, isError } = useMyBudget();
+  const { data: config } = useConfig();
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
+  const {
+    data: budget,
+    isLoading,
+    isError,
+  } = useMyBudget({
+    enabled: litellmEnabled,
+  });
   const [timeWindow, setTimeWindow] = React.useState<TimeWindow>(
     TIME_WINDOWS[1],
   );
+
+  if (!litellmEnabled) {
+    return (
+      <FeatureDisabledScreen title={t(I18nKey.SETTINGS$NAV_YOUR_BUDGET)} />
+    );
+  }
 
   let content = <Spinner testId="your-budget-loading" />;
   if (isError) {

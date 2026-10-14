@@ -242,9 +242,27 @@ class OrgMemberService:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
+        if not await OrgMemberService.remove_member_with_cleanup(
+            org_id, target_user_id
+        ):
+            return False, 'removal_failed'
+
+        return True, None
+
+    @staticmethod
+    async def remove_member_with_cleanup(org_id: UUID, target_user_id: UUID) -> bool:
+        """Remove a membership and the state that depends on it.
+
+        Resets the user's current organization to their personal workspace when
+        it pointed at ``org_id``, and removes them from the org's LiteLLM team.
+        Callers are responsible for authorization.
+
+        Returns:
+            bool: False if there was no membership to remove, True otherwise.
+        """
         success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
         if not success:
-            return False, 'removal_failed'
+            return False
 
         user = await UserStore.get_user_by_id(str(target_user_id))
         if user and user.current_org_id == org_id:
@@ -271,7 +289,7 @@ class OrgMemberService:
                 },
             )
 
-        return True, None
+        return True
 
     @staticmethod
     async def update_org_member(

@@ -350,6 +350,10 @@ describe("Manage Org Route", () => {
 
       expect(deleteButton).toBeInTheDocument();
       expect(deleteButton).not.toBeDisabled();
+      const deleteBar = screen.getByTestId("delete-org-bar");
+      expect(deleteBar).toContainElement(deleteButton);
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE");
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE_DELETE_BAR");
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Admin' role)", async () => {
@@ -375,6 +379,7 @@ describe("Manage Org Route", () => {
       });
 
       expect(deleteButton).not.toBeInTheDocument();
+      expect(screen.queryByTestId("delete-org-bar")).not.toBeInTheDocument();
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Member' role)", async () => {
@@ -467,6 +472,18 @@ describe("Manage Org Route", () => {
           screen.getByTestId("git-conversation-routing"),
         ).toBeInTheDocument();
       });
+
+      const screenRoot = screen.getByTestId("manage-org-screen");
+      const gitSection = screen.getByTestId("git-conversation-routing");
+      const deleteBar = await screen.findByTestId("delete-org-bar");
+      expect(
+        screenRoot.compareDocumentPosition(gitSection) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        gitSection.compareDocumentPosition(deleteBar) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
     });
 
     it("should hide the section in org-only installs with a single team org", async () => {

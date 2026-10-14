@@ -31,7 +31,7 @@ class OAuthToken(Base):
         ForeignKey('user.id', ondelete='CASCADE'), nullable=False
     )
     oauth_provider_id: Mapped[int] = mapped_column(
-        ForeignKey('oauth_providers.id', ondelete='CASCADE'), nullable=False
+        ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=False
     )
     access_token: Mapped[dict[str, str] | None] = mapped_column(
         EncryptedJSON, nullable=False

@@ -18,6 +18,7 @@ from fastapi import Request
 from pydantic import Field
 
 from openhands.app_server.config import get_app_conversation_info_service
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
 from openhands.app_server.event.event_service_base import (
     INDEX_FILENAME,
@@ -66,8 +67,7 @@ class AwsEventService(EventServiceBase):
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=str(path))
             with response['Body'] as stream:
                 json_data = stream.read().decode('utf-8')
-            event = Event.model_validate_json(json_data)
-            return event
+            return parse_event_json(json_data)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
                 return None
