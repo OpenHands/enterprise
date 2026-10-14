@@ -101,20 +101,38 @@ services:
       # verify_config() require POSTHOG_CLIENT_KEY (fine for actual cloud,
       # pointless for this stack), and defaults PERMITTED_CORS_ORIGINS to
       # https://app.all-hands.dev instead of this stack's own origin.
-      #
-      # Don't "fix" this by setting WEB_HOST instead: openhands/app_server/
-      # config.py's get_default_web_url() treats *any* WEB_HOST as "assume
-      # https, no port" (AppServerConfig.web_url = f'https://{WEB_HOST}'),
-      # which corrupts every oauth/idp redirect Location this app builds
-      # (server/utils/url_utils.py's get_web_url() only falls back to
-      # deriving scheme+host+port from the request when web_url is unset) --
-      # they'd point at https://localhost instead of http://localhost:<port>,
-      # which the browser can't reach and manifests as a redirect loop on
-      # /oauth/<id>/login. OH_DEPLOYMENT_MODE is the explicit override built
-      # for exactly this (see server/constants.py's _get_deployment_mode()),
-      # and nothing reads AppServerConfig.web_url from it.
+      # OH_DEPLOYMENT_MODE is the explicit override built for exactly this
+      # (see server/constants.py's _get_deployment_mode()).
       OH_DEPLOYMENT_MODE: self_hosted
       PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+
+      # server/utils/url_utils.py's get_web_url() only trusts
+      # AppServerConfig.web_url (OH_WEB_URL) when it's set; otherwise it
+      # falls back per-request to `'http' if request.url.hostname ==
+      # 'localhost' else 'https'`. That fallback -- not just a misconfigured
+      # WEB_HOST -- is itself the redirect-loop trap: visit this stack as
+      # http://127.0.0.1:<port> (or any LAN IP/hostname that isn't the
+      # literal string "localhost") and every oauth/idp Location this app
+      # builds, plus the `openhands_auth` cookie, gets `secure=True` even
+      # though the connection is plain HTTP. Browsers silently refuse to
+      # store or resend a Secure cookie over HTTP, so login "succeeds",
+      # bounces back to /oauth/<id>/login, and repeats forever -- with no
+      # error, just a loop. OH_WEB_URL pins web_url to a known http:// value
+      # so that heuristic is never consulted. Pair it with WEB_HOST=localhost
+      # so IS_LOCAL_ENV stays true and get_cookie_domain() keeps returning
+      # None (a host-only cookie) instead of pinning Domain=localhost, which
+      # would itself stop matching if you access via 127.0.0.1.
+      #
+      # This only covers "browser and Docker host are the same machine, and
+      # you reach it via localhost or 127.0.0.1". If you need to reach this
+      # stack from another host/VM or through a tunnel (e.g. a LAN IP or a
+      # work-host URL), override both from the shell/.env to match exactly
+      # what's in the browser's address bar, e.g.:
+      #   WEB_HOST=my-tunnel-host.example.com \
+      #   WEB_URL=https://my-tunnel-host.example.com \
+      #   docker compose up --build
+      WEB_HOST: ${WEB_HOST:-localhost}
+      OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
 
       # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
       # defaults to 'true'. With it on, storage/lite_llm_manager.py's
