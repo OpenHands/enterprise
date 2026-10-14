@@ -21,6 +21,7 @@ import type {
   SamlSsoBinding,
   UpdateAuthProviderParams,
 } from "#/api/auth-providers-service/auth-providers.types";
+import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { downloadBlob } from "#/utils/utils";
 import { I18nKey } from "#/i18n/declaration";
@@ -183,6 +184,18 @@ interface AuthProviderFormState {
   kind: typeof KIND_OAUTH | typeof KIND_PASSWORD | typeof KIND_SAML;
   title: string;
   isIdp: boolean;
+  /** Raw SVG markup for this provider's login button -- row-level, not part
+   * of ``details``, since every kind (OAuth/password/SAML) gets a button on
+   * the "Let's Get Started" screen. Empty string means "unset" (``null`` on
+   * the wire); the frontend falls back to a generic icon. */
+  icon: string;
+  /** CSS color string for this provider's login button -- defaults to
+   * ``DEFAULT_AUTH_PROVIDER_COLOR`` (black), mirroring the backend. */
+  color: string;
+  /** Whether a brand-new user may be created the first time someone
+   * authenticates through this provider, or only an already-linked account
+   * may sign in through it. */
+  allowRegistration: boolean;
   providerType: OAuthProviderBrand;
   clientId: string;
   clientSecret: string;
@@ -216,6 +229,9 @@ const EMPTY_FORM: AuthProviderFormState = {
   kind: KIND_OAUTH,
   title: "",
   isIdp: true,
+  icon: "",
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allowRegistration: true,
   providerType: "enterprise_sso",
   clientId: "",
   clientSecret: "",
@@ -243,6 +259,9 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       kind: KIND_OAUTH,
       title: provider.title,
       isIdp: provider.is_idp,
+      icon: provider.icon ?? "",
+      color: provider.color,
+      allowRegistration: provider.allow_registration,
       providerType: details.provider_type,
       clientId: details.client_id,
       authorizationUrl: details.authorization_url ?? "",
@@ -259,6 +278,9 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       kind: KIND_SAML,
       title: provider.title,
       isIdp: true,
+      icon: provider.icon ?? "",
+      color: provider.color,
+      allowRegistration: provider.allow_registration,
       metadataUrl: details.metadata_url ?? "",
       idpEntityId: details.idp_entity_id ?? "",
       ssoUrl: details.sso_url ?? "",
@@ -275,6 +297,9 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
     kind: KIND_PASSWORD,
     title: provider.title,
     isIdp: true,
+    icon: provider.icon ?? "",
+    color: provider.color,
+    allowRegistration: provider.allow_registration,
   };
 }
 
@@ -532,6 +557,39 @@ function AuthProviderFormModal({
           showRequiredTag
           autoComplete="off"
         />
+        <SettingsInput
+          testId="super-admin-auth-provider-color"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_COLOR)}
+          type="color"
+          value={form.color || DEFAULT_AUTH_PROVIDER_COLOR}
+          onChange={(value) => setForm((prev) => ({ ...prev, color: value }))}
+          showOptionalTag
+        />
+        <SettingsTextarea
+          testId="super-admin-auth-provider-icon"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ICON)}
+          value={form.icon}
+          description={
+            <p
+              data-testid="super-admin-auth-provider-icon-hint"
+              className="text-xs text-tertiary-alt"
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ICON_HINT)}
+            </p>
+          }
+          onChange={(value) => setForm((prev) => ({ ...prev, icon: value }))}
+          rows={3}
+          showOptionalTag
+        />
+        <SettingsSwitch
+          testId="super-admin-auth-provider-allow-registration"
+          isToggled={form.allowRegistration}
+          onToggle={(value) =>
+            setForm((prev) => ({ ...prev, allowRegistration: value }))
+          }
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
+        </SettingsSwitch>
         {form.kind === KIND_OAUTH ? (
           <>
             <SettingsSwitch
@@ -861,6 +919,9 @@ function buildUpdatePayload(
   return {
     title: form.title.trim(),
     is_idp: form.isIdp,
+    icon: form.icon.trim() || null,
+    color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+    allow_registration: form.allowRegistration,
     ...(detailsChanged && { details: buildDetails(form) }),
   };
 }
@@ -911,6 +972,9 @@ export function SuperAdminAuthProviders() {
       const payload: CreateAuthProviderParams = {
         title: form.title.trim(),
         is_idp: form.isIdp,
+        icon: form.icon.trim() || null,
+        color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: form.allowRegistration,
         details: buildDetails(form),
       };
       createProvider.mutate(payload, { onSuccess: closeForm });

@@ -114,6 +114,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -495,6 +496,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._inherit_configuration_from_parent(request, parent_info)
 
         self._apply_suggested_task(request)
+        self._apply_default_trigger(request)
 
         # Resolved once: validation, the build and provenance must see one revision.
         user = await self.user_context.get_user_info(
@@ -1236,6 +1238,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Inherit LLM model from parent if not provided
         if not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
+
+    def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
+        """Default the trigger when the caller did not supply one.
+
+        Mirrors the V0 endpoint: bearer (API key) auth is ``REMOTE_API_KEY``,
+        everything else is ``GUI``.
+        """
+        if request.trigger is not None:
+            return
+        user_auth = getattr(self.user_context, 'user_auth', None)
+        auth_type = user_auth.get_auth_type() if user_auth is not None else None
+        if auth_type == AuthType.BEARER:
+            request.trigger = ConversationTrigger.REMOTE_API_KEY
+        else:
+            request.trigger = ConversationTrigger.GUI
 
     def _apply_suggested_task(self, request: AppConversationStartRequest) -> None:
         """Apply suggested task defaults to the start request."""
