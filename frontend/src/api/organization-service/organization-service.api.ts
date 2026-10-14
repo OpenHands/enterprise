@@ -11,6 +11,7 @@ import {
 } from "#/types/org";
 import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
 import { openHands } from "../open-hands-axios";
+import { CustomSecretPage } from "#/api/secrets-service.types";
 
 type OrganizationSettingsResponse = Pick<
   Settings,
@@ -563,6 +564,13 @@ export const organizationService = {
   // Org-shared secrets are usable by all org members but can only be
   // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
   // value is write-once and never read back by anyone.
+  getOrgSecrets: async (orgId: string) => {
+    const { data } = await openHands.get<CustomSecretPage>(
+      `/api/organizations/${orgId}/secrets`,
+    );
+    return data;
+  },
+
   createOrgSecret: async (
     orgId: string,
     payload: { name: string; value: string; description?: string },

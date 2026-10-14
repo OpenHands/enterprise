@@ -67,14 +67,17 @@ const BILLING_CYCLE_ITEMS = [
   { key: "15th", label: "15th of each month" },
 ];
 
-const STATUS_FILTER_ITEMS = [
+const STATUS_FILTER_ITEMS: (
+  | { key: string; label: string }
+  | { key: string; labelKey: I18nKey }
+)[] = [
   { key: "all", label: "All statuses" },
   { key: "over80", label: "Over 80%" },
   { key: "over90", label: "Over 90%" },
   { key: "overCap", label: "Over cap" },
   { key: "onTrack", label: "On track" },
   { key: "noCap", label: "No cap" },
-  { key: "disabled", label: "Disabled" },
+  { key: "disabled", labelKey: I18nKey.SETTINGS$BUDGETS_UNLIMITED },
 ];
 
 interface OrganizationBudgetTabProps {
@@ -702,6 +705,7 @@ export function UserOverridesTab({
   isLoading,
   onPageChange,
 }: UserOverridesTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
@@ -709,8 +713,7 @@ export function UserOverridesTab({
           User budget overrides
         </h2>
         <p className="text-sm text-muted">
-          Override the default for individual users — increase, decrease, or
-          disable.
+          {t(I18nKey.SETTINGS$BUDGETS_USER_OVERRIDES_DESCRIPTION)}
         </p>
       </div>
 
@@ -731,7 +734,10 @@ export function UserOverridesTab({
           <SettingsDropdownInput
             testId="budget-status-filter"
             name="budget-status-filter"
-            items={STATUS_FILTER_ITEMS}
+            items={STATUS_FILTER_ITEMS.map((item) => ({
+              key: item.key,
+              label: "labelKey" in item ? t(item.labelKey) : item.label,
+            }))}
             selectedKey={statusFilter}
             isClearable={false}
             onSelectionChange={(key) => {
@@ -842,8 +848,25 @@ export function UserOverridesTab({
                               }
                               className="accent-primary"
                             />
-                            Disable budget for this user
+                            {t(I18nKey.SETTINGS$BUDGETS_UNLIMITED_FOR_USER)}
                           </label>
+                          <div className="flex items-center gap-2">
+                            <BrandButton
+                              type="button"
+                              variant="primary"
+                              onClick={() => onSaveOverride(user.user_id)}
+                              isDisabled={!canSaveOverride || isSavingOverride}
+                            >
+                              Save
+                            </BrandButton>
+                            <BrandButton
+                              type="button"
+                              variant="secondary"
+                              onClick={onCancelEditing}
+                            >
+                              Cancel
+                            </BrandButton>
+                          </div>
                         </div>
                       ) : (
                         <>
@@ -881,25 +904,7 @@ export function UserOverridesTab({
                         "h-auto py-3 text-right",
                       )}
                     >
-                      {isEditing ? (
-                        <div className="flex items-center justify-end gap-2">
-                          <BrandButton
-                            type="button"
-                            variant="primary"
-                            onClick={() => onSaveOverride(user.user_id)}
-                            isDisabled={!canSaveOverride || isSavingOverride}
-                          >
-                            Save
-                          </BrandButton>
-                          <BrandButton
-                            type="button"
-                            variant="secondary"
-                            onClick={onCancelEditing}
-                          >
-                            Cancel
-                          </BrandButton>
-                        </div>
-                      ) : (
+                      {!isEditing && (
                         <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
                           <button
                             type="button"

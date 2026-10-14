@@ -21,7 +21,9 @@ import type {
   SamlSsoBinding,
   UpdateAuthProviderParams,
 } from "#/api/auth-providers-service/auth-providers.types";
+import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
+import { downloadBlob } from "#/utils/utils";
 import { I18nKey } from "#/i18n/declaration";
 import {
   SUPER_ADMIN_NAV_ITEMS,
@@ -35,6 +37,62 @@ import {
   SuperAdminRowMenu,
   SuperAdminTable,
 } from "./super-admin-chrome";
+
+/** A read-only URL field with a Copy button -- used for the per-row URLs
+ * (OAuth redirect URL, SAML SP metadata URL) that only exist once a row has
+ * been saved, and that an admin needs to copy into a third-party provider's
+ * own configuration. */
+function CopyableUrlField({
+  testId,
+  label,
+  value,
+  hint,
+  hintTestId,
+  copyTestId,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  hint: string;
+  hintTestId: string;
+  copyTestId: string;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex items-end gap-2">
+      <SettingsInput
+        testId={testId}
+        label={label}
+        type="text"
+        value={value}
+        description={
+          <p data-testid={hintTestId} className="text-xs text-tertiary-alt">
+            {hint}
+          </p>
+        }
+        isReadOnly
+        onChange={() => {}}
+        className="min-w-0 flex-1"
+      />
+      <BrandButton
+        testId={copyTestId}
+        type="button"
+        variant="secondary"
+        onClick={handleCopy}
+      >
+        {t(copied ? I18nKey.BUTTON$COPIED : I18nKey.BUTTON$COPY)}
+      </BrandButton>
+    </div>
+  );
+}
 
 function navCopy(path: string) {
   return (
@@ -85,9 +143,12 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-/** Parses the attribute-mapping field's ``saml_attr=openhands_field``
- * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``.
- * Blank entries and entries missing a ``=`` are dropped. */
+/** Parses the attribute-mapping field's ``openhands_field=saml_attr``
+ * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``
+ * (keyed by ``openhands_field`` -- see ``server.routes.saml
+ * ._extract_mapped_attribute``, which looks up ``attribute_mapping[field]``
+ * to get the SAML attribute name to read). Blank entries and entries
+ * missing a ``=`` are dropped. */
 function parseAttributeMapping(value: string): Record<string, string> {
   const mapping: Record<string, string> = {};
   value
@@ -123,6 +184,18 @@ interface AuthProviderFormState {
   kind: typeof KIND_OAUTH | typeof KIND_PASSWORD | typeof KIND_SAML;
   title: string;
   isIdp: boolean;
+  /** Raw SVG markup for this provider's login button -- row-level, not part
+   * of ``details``, since every kind (OAuth/password/SAML) gets a button on
+   * the "Let's Get Started" screen. Empty string means "unset" (``null`` on
+   * the wire); the frontend falls back to a generic icon. */
+  icon: string;
+  /** CSS color string for this provider's login button -- defaults to
+   * ``DEFAULT_AUTH_PROVIDER_COLOR`` (black), mirroring the backend. */
+  color: string;
+  /** Whether a brand-new user may be created the first time someone
+   * authenticates through this provider, or only an already-linked account
+   * may sign in through it. */
+  allowRegistration: boolean;
   providerType: OAuthProviderBrand;
   clientId: string;
   clientSecret: string;
@@ -137,17 +210,18 @@ interface AuthProviderFormState {
   ssoBinding: SamlSsoBinding;
   sloUrl: string;
   idpX509Cert: string;
-  /** Read-only: the SP's auto-generated signing public key, for the admin
-   * to copy into the IdP's trusted-SP configuration. Empty until the row
-   * has been saved at least once -- ``sp_private_key``/its derived public
-   * half are never typed, only generated server-side (see
+  /** Read-only: the SP's auto-generated, self-signed signing certificate,
+   * for the admin to copy into the IdP's trusted-SP configuration (or to
+   * hand out alongside the SP metadata URL). Empty until the row has been
+   * saved at least once -- ``sp_private_key``/``sp_x509_cert`` are never
+   * typed, only generated server-side as a pair (see
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
-  spPublicKey: string;
+  spX509Cert: string;
   nameIdFormat: string;
-  /** Not rendered in the form (see ``SUPER_ADMIN$AUTH_PROVIDER_...``
-   * fields below) -- kept here only so an existing row's mapping, if any
-   * was set directly via the API, round-trips through an edit untouched
-   * instead of being silently cleared to ``{}``. */
+  /** ``openhands_field=saml_attr`` pairs, comma/newline-separated -- see
+   * ``parseAttributeMapping``. Only the ``email`` key currently has any
+   * effect server-side (``server.routes.saml._extract_mapped_attribute``
+   * is only ever called for ``'email'``). */
   attributeMapping: string;
 }
 
@@ -155,6 +229,9 @@ const EMPTY_FORM: AuthProviderFormState = {
   kind: KIND_OAUTH,
   title: "",
   isIdp: true,
+  icon: "",
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allowRegistration: true,
   providerType: "enterprise_sso",
   clientId: "",
   clientSecret: "",
@@ -169,7 +246,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   ssoBinding: DEFAULT_SSO_BINDING,
   sloUrl: "",
   idpX509Cert: "",
-  spPublicKey: "",
+  spX509Cert: "",
   nameIdFormat: "",
   attributeMapping: "",
 };
@@ -182,6 +259,9 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       kind: KIND_OAUTH,
       title: provider.title,
       isIdp: provider.is_idp,
+      icon: provider.icon ?? "",
+      color: provider.color,
+      allowRegistration: provider.allow_registration,
       providerType: details.provider_type,
       clientId: details.client_id,
       authorizationUrl: details.authorization_url ?? "",
@@ -198,13 +278,16 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       kind: KIND_SAML,
       title: provider.title,
       isIdp: true,
+      icon: provider.icon ?? "",
+      color: provider.color,
+      allowRegistration: provider.allow_registration,
       metadataUrl: details.metadata_url ?? "",
       idpEntityId: details.idp_entity_id ?? "",
       ssoUrl: details.sso_url ?? "",
       ssoBinding: details.sso_binding,
       sloUrl: details.slo_url ?? "",
       idpX509Cert: details.idp_x509_cert ?? "",
-      spPublicKey: details.sp_public_key ?? "",
+      spX509Cert: details.sp_x509_cert ?? "",
       nameIdFormat: details.name_id_format ?? "",
       attributeMapping: formatAttributeMapping(details.attribute_mapping),
     };
@@ -214,6 +297,9 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
     kind: KIND_PASSWORD,
     title: provider.title,
     isIdp: true,
+    icon: provider.icon ?? "",
+    color: provider.color,
+    allowRegistration: provider.allow_registration,
   };
 }
 
@@ -271,9 +357,10 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       // this row becomes SAML, then carried forward on every later edit
       // (see ``server.routes.oauth_providers_admin._ensure_sp_keypair``).
       sp_private_key: null,
-      // Derived server-side from ``sp_private_key`` -- never client-supplied,
-      // and ignored by the server if sent (see type doc comment).
-      sp_public_key: null,
+      // Generated server-side alongside ``sp_private_key`` -- never
+      // client-supplied, and ignored by the server if sent (see type doc
+      // comment).
+      sp_x509_cert: null,
       name_id_format: form.nameIdFormat.trim() || null,
       attribute_mapping: parseAttributeMapping(form.attributeMapping),
     };
@@ -296,6 +383,11 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
 interface AuthProviderFormModalProps {
   mode: "create" | "edit";
   initial: AuthProviderFormState;
+  /** The row's id -- only set in ``edit`` mode, once the row (and, for
+   * SAML, its SP keypair) already exists server-side. Used to build the
+   * per-row SP metadata URL (``server.routes.saml._sp_entity_id``), which
+   * doesn't exist until then. */
+  providerId?: number;
   isLoading: boolean;
   onClose: () => void;
   onSubmit: (
@@ -307,6 +399,7 @@ interface AuthProviderFormModalProps {
 function AuthProviderFormModal({
   mode,
   initial,
+  providerId,
   isLoading,
   onClose,
   onSubmit,
@@ -321,6 +414,32 @@ function AuthProviderFormModal({
   // without touching this field again) -- only a URL not yet fetched
   // triggers a request.
   const lastFetchedMetadataUrl = useRef<string | null>(null);
+
+  // Both URLs are built client-side rather than fetched, same origin as
+  // this admin page (the OAuth/SAML routes are served by this same app).
+  // Only shown once the row already exists server-side *as that kind* --
+  // `initial` (not `form`) reflects what's actually persisted, so a kind
+  // switch mid-edit (not yet saved) doesn't show a URL for a route that
+  // doesn't 200 yet (`server.routes.oauth_v2`/`server.routes.saml` 404 a
+  // mismatched kind).
+  const oauthRedirectUrl =
+    providerId !== undefined && initial.kind === KIND_OAUTH
+      ? `${window.location.origin}/oauth/${providerId}/callback`
+      : null;
+  const spMetadataUrl =
+    providerId !== undefined && initial.kind === KIND_SAML
+      ? `${window.location.origin}/saml/${providerId}/metadata`
+      : null;
+
+  const handleDownloadSpCert = () => {
+    if (!form.spX509Cert) {
+      return;
+    }
+    downloadBlob(
+      new Blob([form.spX509Cert], { type: "application/x-pem-file" }),
+      `sp-certificate-${providerId ?? "new"}.pem`,
+    );
+  };
 
   const handleMetadataUrlBlur = () => {
     const metadataUrl = form.metadataUrl.trim();
@@ -382,8 +501,8 @@ function AuthProviderFormModal({
   // SAML has no required field beyond the title: the IdP fields below are
   // all optional at creation time (see the hint rendered above them) --
   // plenty of IdPs won't hand over their entity ID/SSO URL/cert until
-  // *after* they've been given this row's SP public key and URLs, so the
-  // row has to be creatable (to generate that key) before any of them are
+  // *after* they've been given this row's SP certificate and URLs, so the
+  // row has to be creatable (to generate that cert) before any of them are
   // known.
   const canSubmit =
     form.title.trim() !== "" &&
@@ -438,6 +557,39 @@ function AuthProviderFormModal({
           showRequiredTag
           autoComplete="off"
         />
+        <SettingsInput
+          testId="super-admin-auth-provider-color"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_COLOR)}
+          type="color"
+          value={form.color || DEFAULT_AUTH_PROVIDER_COLOR}
+          onChange={(value) => setForm((prev) => ({ ...prev, color: value }))}
+          showOptionalTag
+        />
+        <SettingsTextarea
+          testId="super-admin-auth-provider-icon"
+          label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ICON)}
+          value={form.icon}
+          description={
+            <p
+              data-testid="super-admin-auth-provider-icon-hint"
+              className="text-xs text-tertiary-alt"
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ICON_HINT)}
+            </p>
+          }
+          onChange={(value) => setForm((prev) => ({ ...prev, icon: value }))}
+          rows={3}
+          showOptionalTag
+        />
+        <SettingsSwitch
+          testId="super-admin-auth-provider-allow-registration"
+          isToggled={form.allowRegistration}
+          onToggle={(value) =>
+            setForm((prev) => ({ ...prev, allowRegistration: value }))
+          }
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
+        </SettingsSwitch>
         {form.kind === KIND_OAUTH ? (
           <>
             <SettingsSwitch
@@ -465,6 +617,16 @@ function AuthProviderFormModal({
               }}
               required
             />
+            {oauthRedirectUrl ? (
+              <CopyableUrlField
+                testId="super-admin-auth-provider-redirect-url"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL)}
+                value={oauthRedirectUrl}
+                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL_HINT)}
+                hintTestId="super-admin-auth-provider-redirect-url-hint"
+                copyTestId="super-admin-auth-provider-redirect-url-copy"
+              />
+            ) : null}
             <SettingsInput
               testId="super-admin-auth-provider-client-id"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_ID)}
@@ -650,29 +812,50 @@ function AuthProviderFormModal({
               rows={8}
               showOptionalTag
             />
-            {form.spPublicKey ? (
-              <SettingsInput
-                testId="super-admin-auth-provider-sp-public-key"
-                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY)}
-                type="text"
-                value={form.spPublicKey}
-                description={
-                  <p
-                    data-testid="super-admin-auth-provider-sp-public-key-hint"
-                    className="text-xs text-tertiary-alt"
-                  >
-                    {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_HINT)}
-                  </p>
-                }
-                isReadOnly
-                onChange={() => {}}
+            {spMetadataUrl ? (
+              <CopyableUrlField
+                testId="super-admin-auth-provider-sp-metadata-url"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL)}
+                value={spMetadataUrl}
+                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL_HINT)}
+                hintTestId="super-admin-auth-provider-sp-metadata-url-hint"
+                copyTestId="super-admin-auth-provider-sp-metadata-url-copy"
               />
+            ) : null}
+            {form.spX509Cert ? (
+              <>
+                <SettingsTextarea
+                  testId="super-admin-auth-provider-sp-x509-cert"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT)}
+                  value={form.spX509Cert}
+                  description={
+                    <p
+                      data-testid="super-admin-auth-provider-sp-x509-cert-hint"
+                      className="text-xs text-tertiary-alt"
+                    >
+                      {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_HINT)}
+                    </p>
+                  }
+                  rows={8}
+                  isReadOnly
+                  onChange={() => {}}
+                />
+                <BrandButton
+                  testId="super-admin-auth-provider-sp-x509-cert-download"
+                  type="button"
+                  variant="secondary"
+                  className="self-start"
+                  onClick={handleDownloadSpCert}
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DOWNLOAD_CERT_PEM)}
+                </BrandButton>
+              </>
             ) : (
               <p
-                data-testid="super-admin-auth-provider-sp-public-key-pending"
+                data-testid="super-admin-auth-provider-sp-x509-cert-pending"
                 className="text-xs text-tertiary-alt"
               >
-                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_PUBLIC_KEY_PENDING)}
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_X509_CERT_PENDING)}
               </p>
             )}
             <SettingsInput
@@ -685,6 +868,24 @@ function AuthProviderFormModal({
               }
               showOptionalTag
               autoComplete="off"
+            />
+            <SettingsTextarea
+              testId="super-admin-auth-provider-attribute-mapping"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
+              value={form.attributeMapping}
+              description={
+                <p
+                  data-testid="super-admin-auth-provider-attribute-mapping-hint"
+                  className="text-xs text-tertiary-alt"
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING_HINT)}
+                </p>
+              }
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, attributeMapping: value }))
+              }
+              rows={3}
+              showOptionalTag
             />
           </>
         ) : null}
@@ -718,6 +919,9 @@ function buildUpdatePayload(
   return {
     title: form.title.trim(),
     is_idp: form.isIdp,
+    icon: form.icon.trim() || null,
+    color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+    allow_registration: form.allowRegistration,
     ...(detailsChanged && { details: buildDetails(form) }),
   };
 }
@@ -768,6 +972,9 @@ export function SuperAdminAuthProviders() {
       const payload: CreateAuthProviderParams = {
         title: form.title.trim(),
         is_idp: form.isIdp,
+        icon: form.icon.trim() || null,
+        color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: form.allowRegistration,
         details: buildDetails(form),
       };
       createProvider.mutate(payload, { onSuccess: closeForm });
@@ -876,6 +1083,11 @@ export function SuperAdminAuthProviders() {
         <AuthProviderFormModal
           mode={formMode}
           initial={editingProvider ? toFormState(editingProvider) : EMPTY_FORM}
+          // Only set once this row already exists server-side -- the
+          // OAuth redirect/SAML SP metadata URLs don't exist for a row
+          // that's still being created (see the per-kind gating above
+          // `oauthRedirectUrl`/`spMetadataUrl`).
+          providerId={editingProvider?.id}
           isLoading={createProvider.isPending || updateProvider.isPending}
           onClose={closeForm}
           onSubmit={handleSubmit}

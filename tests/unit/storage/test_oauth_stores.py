@@ -3,7 +3,7 @@
 Covers:
 - ``AuthProviderStore`` CRUD + ``get_idp_providers`` / ``get_git_providers`` /
   ``get_first_by_kind``.
-- ``OAuthProviderUserStore`` lookup + link/unlink.
+- ``AuthProviderUserStore`` lookup + link/unlink.
 - ``OAuthTokenStore``:
   - drift math (``_is_expired`` with ``None`` == never expires),
   - fast path (valid token, no refresh, no lock),
@@ -27,7 +27,7 @@ from openhands.app_server.utils.encryption_key import EncryptionKey
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
 from storage.auth_provider_store import AuthProviderStore
-from storage.oauth_provider_user_store import OAuthProviderUserStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.oauth_token import OAuthToken
 from storage.oauth_token_store import (
     OAuthTokenStore,
@@ -59,7 +59,7 @@ def patched_session(async_session_maker, jwt_svc):
     """Patch the module-level ``a_session_maker`` AND encryption lookups."""
     patches = [
         patch('storage.auth_provider_store.a_session_maker', async_session_maker),
-        patch('storage.oauth_provider_user_store.a_session_maker', async_session_maker),
+        patch('storage.auth_provider_user_store.a_session_maker', async_session_maker),
         patch('storage.oauth_token_store.a_session_maker', async_session_maker),
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
     ]
@@ -332,21 +332,21 @@ class TestAuthProviderStore:
         assert await AuthProviderStore().get_by_id(provider.id) is None
 
 
-# ── OAuthProviderUserStore ──────────────────────────────────────────────
+# ── AuthProviderUserStore ──────────────────────────────────────────────
 
 
-class TestOAuthProviderUserStore:
+class TestAuthProviderUserStore:
     @pytest.mark.asyncio
     async def test_link_then_get(self, patched_session, make_provider, create_user):
         provider = await make_provider()
         user_id = create_user().id
-        row = await OAuthProviderUserStore().link(
+        row = await AuthProviderUserStore().link(
             oauth_provider_id=provider.id,
             user_id=user_id,
             external_subject_id='ext-123',
             external_email='a@b.com',
         )
-        fetched = await OAuthProviderUserStore().get(provider.id, 'ext-123')
+        fetched = await AuthProviderUserStore().get(provider.id, 'ext-123')
         assert fetched is not None
         assert fetched.user_id == user_id
         assert fetched.external_email == 'a@b.com'
@@ -359,9 +359,9 @@ class TestOAuthProviderUserStore:
         provider = await make_provider()
         first = create_user().id
         second = create_user().id
-        await OAuthProviderUserStore().link(provider.id, first, 'ext-1', 'a@b.com')
-        await OAuthProviderUserStore().link(provider.id, second, 'ext-1', 'c@d.com')
-        fetched = await OAuthProviderUserStore().get(provider.id, 'ext-1')
+        await AuthProviderUserStore().link(provider.id, first, 'ext-1', 'a@b.com')
+        await AuthProviderUserStore().link(provider.id, second, 'ext-1', 'c@d.com')
+        fetched = await AuthProviderUserStore().get(provider.id, 'ext-1')
         assert fetched.user_id == second
         assert fetched.external_email == 'c@d.com'
 
@@ -369,16 +369,16 @@ class TestOAuthProviderUserStore:
     async def test_unlink(self, patched_session, make_provider, create_user):
         provider = await make_provider()
         user_id = create_user().id
-        await OAuthProviderUserStore().link(provider.id, user_id, 'ext-1', 'a@b.com')
-        await OAuthProviderUserStore().unlink(provider.id, 'ext-1')
-        assert await OAuthProviderUserStore().get(provider.id, 'ext-1') is None
+        await AuthProviderUserStore().link(provider.id, user_id, 'ext-1', 'a@b.com')
+        await AuthProviderUserStore().unlink(provider.id, 'ext-1')
+        assert await AuthProviderUserStore().get(provider.id, 'ext-1') is None
 
     @pytest.mark.asyncio
     async def test_get_by_user(self, patched_session, make_provider, create_user):
         provider = await make_provider()
         user_id = create_user().id
-        await OAuthProviderUserStore().link(provider.id, user_id, 'ext-1', 'a@b.com')
-        row = await OAuthProviderUserStore().get_by_user(user_id, provider.id)
+        await AuthProviderUserStore().link(provider.id, user_id, 'ext-1', 'a@b.com')
+        row = await AuthProviderUserStore().get_by_user(user_id, provider.id)
         assert row is not None
         assert row.external_subject_id == 'ext-1'
 
