@@ -625,7 +625,7 @@ export function ConversationsTab({
                 <th className={usageTableHeaderCellClassName}>Associated PR</th>
                 <th className={usageTableHeaderCellClassName}>Merged?</th>
                 <th className={usageTableHeaderCellClassName}>Agent</th>
-                <th className={usageTableHeaderCellClassName}>Type</th>
+                <th className={usageTableHeaderCellClassName}>Source</th>
                 <th className={usageTableHeaderCellRightClassName}>Stop</th>
               </tr>
             </thead>
