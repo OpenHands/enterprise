@@ -44,6 +44,14 @@ services:
     build:
       context: .
       dockerfile: containers/app/Dockerfile
+    # containers/app/Dockerfile ends on `USER openhands` (its production,
+    # Kubernetes-oriented default), so the container itself must be told to
+    # run as root -- `ENV SANDBOX_USER_ID=0` baked into the image only
+    # affects entrypoint.sh's own branching (see containers/app/entrypoint.sh),
+    # it does not change the UID the container starts as. Without this,
+    # entrypoint.sh's `[ "$(id -u)" -ne 0 ]` check fails immediately and the
+    # container crashloops.
+    user: '0:0'
     depends_on:
       db:
         condition: service_healthy
@@ -51,9 +59,8 @@ services:
       - '${APP_PORT:-3000}:3000'
     # The Docker sandbox backend creates sibling containers via the host's
     # Docker daemon (same pattern as containers/dev/compose.yml), so the app
-    # container needs the socket -- not `privileged: true`, since the image
-    # already runs as root (SANDBOX_USER_ID=0, baked into
-    # containers/app/Dockerfile) and root can always reach the socket.
+    # container needs the socket -- not `privileged: true`, since it runs as
+    # root (via `user: '0:0'`, above) and root can always reach the socket.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - app-filestore:/.openhands
@@ -116,6 +123,9 @@ services:
     build:
       context: .
       dockerfile: containers/app/Dockerfile
+    # See the `app` service above: the image defaults to `USER openhands`,
+    # so entrypoint.sh's root check needs this override too.
+    user: '0:0'
     command: ['python', '-m', 'openhands.app_server.worker']
     depends_on:
       db:
