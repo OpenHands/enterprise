@@ -35070,6 +35070,23 @@
     "uk": "Збереження не змінює поточні витрати організації та окремих користувачів. Повний бюджет поновлюється в цю дату; цей перехід може скоротити або подовжити поточний бюджетний період.",
     "ca": "En desar es conserven les despeses actuals de l’organització i de cada usuari. El pressupost complet es renova en aquesta data; la transició pot escurçar o allargar el període pressupostari actual."
   },
+  "SETTINGS$BUDGETS_USER_OVERRIDES_DESCRIPTION": {
+    "en": "Override the default for individual users.",
+    "ja": "個々のユーザーに対してデフォルトをオーバーライドします。",
+    "zh-CN": "为个别用户覆盖默认值。",
+    "zh-TW": "為個別使用者覆寫預設值。",
+    "ko-KR": "개별 사용자에 대해 기본값을 재정의합니다.",
+    "no": "Overstyr standarden for enkeltbrukere.",
+    "it": "Esegui l'override del valore predefinito per i singoli utenti.",
+    "pt": "Substitua o padrão para usuários individuais.",
+    "es": "Anula el valor predeterminado para usuarios individuales.",
+    "ar": "تجاوز القيمة الافتراضية لكل مستخدم على حدة.",
+    "fr": "Remplacez la valeur par défaut pour des utilisateurs individuels.",
+    "tr": "Varsayılanı tek tek kullanıcılar için geçersiz kılın.",
+    "de": "Überschreiben Sie den Standard für einzelne Benutzer.",
+    "uk": "Перевизначте значення за замовчуванням для окремих користувачів.",
+    "ca": "Substituïu el valor predeterminat per a usuaris individuals."
+  },
   "SETTINGS$SKILL_NAME_CONFLICT_TITLE": {
     "en": "Skill name conflicts with a built-in skill",
     "ja": "スキル名が組み込みスキルと競合しています",
