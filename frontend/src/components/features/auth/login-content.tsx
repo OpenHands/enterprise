@@ -280,13 +280,20 @@ export function LoginContent({
   // before rendering this component at all).
   const isV2Login = v2IdpProviders != null;
 
+  // The "Bitbucket registrations disabled" copy only applies to the legacy,
+  // hard-coded-per-brand Bitbucket button below -- in v2 mode, sign-up
+  // eligibility is per-row via ``AuthProvider.allow_registration`` instead
+  // of this one Bitbucket-specific message, so it must never render
+  // alongside the v2 provider buttons.
+  const showBitbucketSignupDisabled = showBitbucket && !isV2Login;
+
   const shouldShownHelperText =
     emailVerified ||
     hasDuplicatedEmail ||
     recaptchaBlocked ||
     accountDisabled ||
     hasInvitation ||
-    showBitbucket;
+    showBitbucketSignupDisabled;
 
   return (
     <div
@@ -333,7 +340,7 @@ export function LoginContent({
                 {t(I18nKey.AUTH$INVITATION_PENDING)}
               </p>
             )}
-            {showBitbucket && (
+            {showBitbucketSignupDisabled && (
               <p className="text-sm text-white text-center max-w-125">
                 {t(I18nKey.AUTH$BITBUCKET_SIGNUP_DISABLED)}
               </p>
