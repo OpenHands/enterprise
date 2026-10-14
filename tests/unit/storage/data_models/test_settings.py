@@ -1584,6 +1584,50 @@ class TestMarketplaceRegistration:
                 source='https://user:secret@host.example.com/scm/proj/repo.git',
             )
 
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%20Apps/_git/skills',
+            'https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+            'https://dev.azure.com/acme/R%26D%2b%C3%A9/_git/skills',
+        ],
+    )
+    def test_source_validation_accepts_percent_encoded_url_path(self, source):
+        """Azure DevOps project names with spaces arrive percent-encoded."""
+        reg = MarketplaceRegistration(name='azure', source=source)
+        assert reg.source == source
+
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%2/_git/skills',  # one hex digit
+            'https://dev.azure.com/acme/Web%zzApps/_git/skills',  # not hex
+            'https://dev.azure.com/acme/Web%/_git/skills',  # bare '%'
+            'https://dev.azure.com/acme/Web Apps/_git/skills',  # raw space
+            'https://dev%2Eazure.com/acme/Web/_git/skills',  # escape in host
+            'https://ac%6De@dev.azure.com/acme/Web/_git/skills',  # in userinfo
+        ],
+    )
+    def test_source_validation_rejects_malformed_percent_encoding(self, source):
+        """Only well-formed %XX escapes in the URL path are accepted."""
+        with pytest.raises(ValidationError, match='source must be'):
+            MarketplaceRegistration(name='azure', source=source)
+
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%0aApps/_git/skills',  # newline
+            'https://dev.azure.com/acme/Web%00Apps/_git/skills',  # NUL
+            'https://dev.azure.com/acme/Web%7FApps/_git/skills',  # DEL
+            'https://dev.azure.com/acme/Web%2FApps/_git/skills',  # '/'
+            'https://dev.azure.com/acme/Web%5cApps/_git/skills',  # '\'
+        ],
+    )
+    def test_source_validation_rejects_unsafe_percent_escapes(self, source):
+        """Escapes decoding to control characters or path separators stay out."""
+        with pytest.raises(ValidationError, match='percent-encoded'):
+            MarketplaceRegistration(name='azure', source=source)
+
     def test_source_validation_rejects_tilde_local_path(self):
         """'~' stays rejected for local paths (no home-dir expansion)."""
         with pytest.raises(ValidationError, match='source must be'):

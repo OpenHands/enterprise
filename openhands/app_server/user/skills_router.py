@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, cast
+from urllib.parse import urlparse
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +16,7 @@ from pydantic import BaseModel
 import openhands
 from openhands.app_server.app_conversation.skill_loader import (
     _match_url_source_to_provider,
+    get_azure_devops_bearer_token,
 )
 from openhands.app_server.app_conversation.skill_loader import (
     parse_marketplace_source as _parse_marketplace_source,
@@ -22,6 +25,7 @@ from openhands.app_server.config import depends_user_context
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
+    ProviderType,
 )
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
@@ -268,6 +272,30 @@ async def search_skills(
     return SkillPage(items=page, next_page_id=next_page_id)
 
 
+def _bearer_auth_git_env(
+    clone_url: str, bearer_token: str | None
+) -> dict[str, str] | None:
+    """Return a git environment sending ``bearer_token`` to the clone host.
+
+    Uses GIT_CONFIG_* so the token stays out of argv, the URL and any
+    persisted git config. ``None`` keeps the inherited environment.
+    """
+    if not bearer_token:
+        return None
+    parsed = urlparse(clone_url)
+    origin = f'{parsed.scheme}://{parsed.hostname}'
+    if parsed.port:
+        origin += f':{parsed.port}'
+    # Append after any GIT_CONFIG_* entries the server already inherits.
+    n = int(os.environ.get('GIT_CONFIG_COUNT') or 0)
+    return {
+        **os.environ,
+        'GIT_CONFIG_COUNT': str(n + 1),
+        f'GIT_CONFIG_KEY_{n}': f'http.{origin}/.extraheader',
+        f'GIT_CONFIG_VALUE_{n}': f'Authorization: Bearer {bearer_token}',
+    }
+
+
 async def _clone_marketplace_repo(
     marketplace: MarketplaceRegistration,
     user_context: UserContext,
@@ -291,6 +319,7 @@ async def _clone_marketplace_repo(
     # (pinned), so private self-hosted repos (e.g. Bitbucket DC) clone with
     # credentials. Non-URL owner/repo sources fall through to the public path.
     authenticated_url = None
+    bearer_token = None
     try:
         matched = await _match_url_source_to_provider(marketplace.source, user_context)
         if matched is not None:
@@ -299,6 +328,9 @@ async def _clone_marketplace_repo(
             authenticated_url = await handler.get_authenticated_git_url(
                 matched_repo, specified_provider=matched_provider
             )
+            # Entra tokens are not embedded in the URL; send them as a header.
+            if matched_provider == ProviderType.AZURE_DEVOPS:
+                bearer_token = await get_azure_devops_bearer_token(user_context)
         elif '://' not in repo_path:
             # Bare owner/repo (or recognized public domain): resolve normally.
             provider_tokens = await user_context.get_provider_tokens()
@@ -355,6 +387,7 @@ async def _clone_marketplace_repo(
             capture_output=True,
             text=True,
             timeout=120,
+            env=_bearer_auth_git_env(clone_url, bearer_token),
         )
 
         if result.returncode != 0:
