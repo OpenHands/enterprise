@@ -50,11 +50,13 @@ export type SamlSsoBinding = "redirect" | "post";
  * responses only ever echo a masked placeholder when one is configured, or
  * ``null`` when it isn't.
  *
- * ``sp_public_key`` is the PEM-encoded public half of that key, derived
- * fresh on every read (a Pydantic ``computed_field``, not its own stored
- * column) -- it is what the admin copies into the IdP's trusted-SP/ACS
- * signing-certificate configuration. ``null`` until a key has been
- * generated, i.e. until the row has been saved at least once as SAML.
+ * ``sp_x509_cert`` is the PEM-encoded, self-signed certificate generated
+ * alongside ``sp_private_key`` (same server-side action, see
+ * ``storage.auth_provider_details.generate_sp_keypair``) -- it is what the
+ * admin copies into the IdP's trusted-SP/ACS signing-certificate
+ * configuration, and what our own SP metadata endpoint publishes. ``null``
+ * until a key pair has been generated, i.e. until the row has been saved at
+ * least once as SAML.
  */
 export interface SamlProviderDetails {
   kind: "SamlProviderDetails";
@@ -65,7 +67,7 @@ export interface SamlProviderDetails {
   slo_url: string | null;
   idp_x509_cert: string | null;
   sp_private_key: string | null;
-  sp_public_key: string | null;
+  sp_x509_cert: string | null;
   name_id_format: string | null;
   attribute_mapping: Record<string, string>;
 }

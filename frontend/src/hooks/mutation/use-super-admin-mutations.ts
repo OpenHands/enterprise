@@ -19,8 +19,8 @@ export const useGrantSuperAdmin = () => {
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: ({ email }: { email: string }) =>
-      superAdminService.grantSuperAdmin({ email }),
+    mutationFn: (params: { email: string } | { userId: string }) =>
+      superAdminService.grantSuperAdmin(params),
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_SUCCESS));
       queryClient.invalidateQueries({

@@ -54,7 +54,7 @@ from storage.auth_provider_details import (
     generate_sp_keypair,
 )
 from storage.auth_provider_store import AuthProviderStore
-from storage.oauth_provider_user_store import OAuthProviderUserStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 
 oauth_provider_admin_router = APIRouter(
     prefix='/api/admin/oauth-providers', tags=['Admin']
@@ -145,18 +145,22 @@ async def _validate_password_idp_invariant(
 def _ensure_sp_keypair(
     details: AuthProviderDetails | None, existing_details: AuthProviderDetails | None
 ) -> None:
-    """Auto-generate the SAML SP signing key the first time it's needed.
+    """Auto-generate the SAML SP signing key+cert pair the first time it's needed.
 
-    Admins never submit ``sp_private_key`` (there is no form field for it --
-    see ``SamlProviderDetails.sp_public_key``), so it is always ``None`` on
-    the incoming ``details``. Mutates ``details`` in place:
+    Admins never submit ``sp_private_key``/``sp_x509_cert`` (there is no form
+    field for either -- the form only ever displays ``sp_x509_cert`` back),
+    so both are always unset on the incoming ``details``. Mutates ``details``
+    in place:
 
-    * If the row already has a key (``existing_details`` is itself
-      ``SamlProviderDetails`` with a key set), carry it forward -- otherwise
-      every unrelated edit (e.g. changing the SSO URL) would silently mint a
-      new key and invalidate whatever the admin configured at the IdP.
+    * If the row already has a key pair (``existing_details`` is itself
+      ``SamlProviderDetails`` with ``sp_private_key`` set), carry both fields
+      forward together -- otherwise every unrelated edit (e.g. changing the
+      SSO URL) would silently mint a new key and invalidate whatever the
+      admin configured at the IdP. The key and its cert are generated as one
+      unit and must never be replaced independently (a cert for a different
+      key is not just stale, it's meaningless).
     * Otherwise (brand new row, or a row just switched to the SAML kind)
-      generate a fresh key pair.
+      generate a fresh pair.
 
     No-op for every ``details`` kind except ``SamlProviderDetails``, and for
     a ``SamlProviderDetails`` that somehow already carries a key (defensive;
@@ -169,9 +173,11 @@ def _ensure_sp_keypair(
         and existing_details.sp_private_key
     ):
         details.sp_private_key = existing_details.sp_private_key
+        details.sp_x509_cert = existing_details.sp_x509_cert
         return
-    private_key_pem, _ = generate_sp_keypair()
+    private_key_pem, cert_pem = generate_sp_keypair()
     details.sp_private_key = SecretStr(private_key_pem)
+    details.sp_x509_cert = cert_pem
 
 
 @oauth_provider_admin_router.get('', response_model=list[AuthProviderResponse])
@@ -319,7 +325,7 @@ async def delete_oauth_provider(
 
     Refuses with ``409 Conflict`` if the caller themselves signed in (or
     linked a git identity) through this provider: ``auth_providers`` rows
-    cascade-delete their ``oauth_provider_users``/``oauth_tokens`` rows, so
+    cascade-delete their ``auth_provider_users``/``oauth_tokens`` rows, so
     deleting the provider the caller is currently authenticated through
     would sever their own login/connection -- possibly locking them out of
     the instance entirely. Ask another super admin to delete it instead.
@@ -329,7 +335,7 @@ async def delete_oauth_provider(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
         )
-    caller_link = await OAuthProviderUserStore().get_by_user(
+    caller_link = await AuthProviderUserStore().get_by_user(
         UUID(caller_user_id), provider_id
     )
     if caller_link is not None:
