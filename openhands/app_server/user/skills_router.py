@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,7 +17,9 @@ from pydantic import BaseModel
 import openhands
 from openhands.app_server.app_conversation.skill_loader import (
     _match_url_source_to_provider,
+    explicit_source_provider,
     get_azure_devops_bearer_token,
+    provider_handler_with_token,
 )
 from openhands.app_server.app_conversation.skill_loader import (
     parse_marketplace_source as _parse_marketplace_source,
@@ -39,6 +42,9 @@ user_context_dependency = depends_user_context()
 # skills/ is at the repo root, two levels above the openhands package __file__
 GLOBAL_SKILLS_DIR = Path(openhands.__file__).parent.parent / 'skills'
 USER_SKILLS_DIR = Path.home() / '.openhands' / 'microagents'
+
+# Same rule as the SDK's cached clones: only a full SHA needs full history.
+_FULL_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 
 
 class SkillInfo(BaseModel):
@@ -331,8 +337,22 @@ async def _clone_marketplace_repo(
             # Entra tokens are not embedded in the URL; send them as a header.
             if matched_provider == ProviderType.AZURE_DEVOPS:
                 bearer_token = await get_azure_devops_bearer_token(user_context)
+        elif (
+            named_provider := explicit_source_provider(marketplace.source)
+        ) is not None:
+            # github:owner/repo or a public provider URL: resolve only against
+            # that provider; without its token, clone the public source.
+            named_handler = await provider_handler_with_token(
+                user_context, named_provider
+            )
+            if named_handler is not None:
+                authenticated_url = await named_handler.get_authenticated_git_url(
+                    repo_path, specified_provider=named_provider
+                )
+                if named_provider == ProviderType.AZURE_DEVOPS:
+                    bearer_token = await get_azure_devops_bearer_token(user_context)
         elif '://' not in repo_path:
-            # Bare owner/repo (or recognized public domain): resolve normally.
+            # Bare owner/repo: resolve against every provider.
             provider_tokens = await user_context.get_provider_tokens()
             if provider_tokens:
                 typed_provider_tokens = cast(PROVIDER_TOKEN_TYPE, provider_tokens)
@@ -382,8 +402,20 @@ async def _clone_marketplace_repo(
             _cleanup_clone_dir(clone_dir)
             return None, f'Invalid clone URL: {clone_url}'
 
+        ref = marketplace.ref
+        if ref and ref.startswith('-'):
+            _cleanup_clone_dir(clone_dir)
+            return None, f'Invalid ref: {ref}'
+        # Clone like the agent-server does: shallow for a branch or tag, full
+        # history only when a commit SHA must be checked out.
+        pinned_sha = ref if ref and _FULL_SHA_RE.fullmatch(ref) else None
+        clone_args = ['git', 'clone']
+        if not pinned_sha:
+            clone_args += ['--depth', '1']
+            if ref:
+                clone_args += ['--branch', ref]
         result = subprocess.run(
-            ['git', 'clone', '--', clone_url, str(clone_dir)],
+            [*clone_args, '--', clone_url, str(clone_dir)],
             capture_output=True,
             text=True,
             timeout=120,
@@ -394,13 +426,9 @@ async def _clone_marketplace_repo(
             _cleanup_clone_dir(clone_dir)
             return None, f'Git clone failed: {result.stderr}'
 
-        # Checkout ref if specified
-        if marketplace.ref:
-            if marketplace.ref.startswith('-'):
-                _cleanup_clone_dir(clone_dir)
-                return None, f'Invalid ref: {marketplace.ref}'
+        if pinned_sha:
             checkout_result = subprocess.run(
-                ['git', '-C', str(clone_dir), 'checkout', marketplace.ref],
+                ['git', '-C', str(clone_dir), 'checkout', pinned_sha],
                 capture_output=True,
                 text=True,
                 timeout=60,
