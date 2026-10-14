@@ -1216,6 +1216,67 @@ class TestAuthenticateMarketplaceSources:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%20Apps/_git/skills',
+            'https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+        ],
+    )
+    async def test_rewrites_azure_devops_encoded_url_to_decoded_repo(self, source):
+        """Azure clone URLs resolve to decoded org/project/repo without '_git'."""
+        # Arrange
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_provider_tokens.return_value = {
+            ProviderType.AZURE_DEVOPS: ProviderToken()  # host=None -> default domain
+        }
+        handler = AsyncMock()
+        handler.get_authenticated_git_url.return_value = AUTHENTICATED_URL
+        mock_user_context.get_provider_handler.return_value = handler
+        registrations = [_make_registration(source=source)]
+
+        # Act
+        result = await authenticate_marketplace_sources(
+            registrations, mock_user_context
+        )
+
+        # Assert — the provider encodes each part itself, so it gets them decoded.
+        assert result is not None
+        assert result[0].source == AUTHENTICATED_URL
+        handler.get_authenticated_git_url.assert_awaited_once_with(
+            'acme/Web Apps/skills',
+            is_optional=True,
+            specified_provider=ProviderType.AZURE_DEVOPS,
+        )
+
+    @pytest.mark.asyncio
+    async def test_rewrites_encoded_url_with_decoded_repo_for_any_provider(self):
+        """Escapes are decoded before resolution on non-Azure hosts too."""
+        # Arrange
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_provider_tokens.return_value = {
+            ProviderType.GITHUB: ProviderToken()
+        }
+        handler = AsyncMock()
+        handler.get_authenticated_git_url.return_value = AUTHENTICATED_URL
+        mock_user_context.get_provider_handler.return_value = handler
+        registrations = [
+            _make_registration(
+                source='https://github.com/OpenHands/extensions%2Dprivate.git'
+            )
+        ]
+
+        # Act
+        await authenticate_marketplace_sources(registrations, mock_user_context)
+
+        # Assert
+        handler.get_authenticated_git_url.assert_awaited_once_with(
+            'OpenHands/extensions-private',
+            is_optional=True,
+            specified_provider=ProviderType.GITHUB,
+        )
+
+    @pytest.mark.asyncio
     async def test_skips_custom_host_url_on_other_provider_host(self):
         """A URL on a host that matches no provider token is never rewritten."""
         # Arrange

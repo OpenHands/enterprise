@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,8 +12,12 @@ from pydantic import SecretStr
 
 from openhands.app_server.app import app
 from openhands.app_server.file_store.memory import InMemoryFileStore
-from openhands.app_server.integrations.provider import ProviderToken, ProviderType
-from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.integrations.provider import (
+    ProviderHandler,
+    ProviderToken,
+    ProviderType,
+)
+from openhands.app_server.integrations.service_types import Repository, UserGitInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.file_settings_store import FileSettingsStore
@@ -473,6 +478,52 @@ class TestMarketplaceSkillsCloneFailures:
         clone_argv = mock_run.call_args[0][0]
         assert clone_argv[:3] == ['git', 'clone', '--']
         assert clone_argv[3] == dc_url
+
+    @pytest.mark.asyncio
+    async def test_clone_azure_devops_encoded_url_encodes_project_once(self):
+        """An Azure URL with an encoded project name clones the same repository."""
+        service = AsyncMock()
+        service.get_repository_details_from_repo_name.return_value = Repository(
+            id='1',
+            full_name='acme/Web Apps/skills',
+            git_provider=ProviderType.AZURE_DEVOPS,
+            is_public=False,
+        )
+        handler = ProviderHandler(
+            provider_tokens=MappingProxyType(
+                {ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('pat'))}
+            )
+        )
+
+        mock_user_context = MagicMock()
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value=handler.provider_tokens
+        )
+        mock_user_context.get_provider_handler = AsyncMock(return_value=handler)
+
+        marketplace = MarketplaceRegistration(
+            name='azure',
+            source='https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+        )
+
+        mock_clone = MagicMock(returncode=0)
+        with (
+            patch.object(handler, 'get_service', return_value=service),
+            patch(
+                'openhands.app_server.user.skills_router.subprocess.run',
+                return_value=mock_clone,
+            ) as mock_run,
+            patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+        ):
+            await _clone_marketplace_repo(marketplace, mock_user_context)
+
+        service.get_repository_details_from_repo_name.assert_awaited_once_with(
+            'acme/Web Apps/skills'
+        )
+        clone_argv = mock_run.call_args[0][0]
+        assert clone_argv[3] == (
+            'https://acme:pat@dev.azure.com/acme/Web%20Apps/_git/skills'
+        )
 
     @pytest.mark.asyncio
     async def test_clone_refuses_unmatched_custom_host_url(self):

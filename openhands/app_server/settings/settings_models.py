@@ -54,12 +54,15 @@ logger = logging.getLogger(__name__)
 # - github:owner/repo format
 _GITHUB_SOURCE_PATTERN = re.compile(r'^github:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$')
 # - Git URLs (https, git, ssh protocols). '~' in paths covers Bitbucket Data
-#   Center personal repos (/scm/~user/repo); userinfo may only be a bare
-#   username — 'user:password@' forms stay rejected.
+#   Center personal repos (/scm/~user/repo); '%XX' escapes cover encoded path
+#   segments such as Azure DevOps project names with spaces (/Web%20Apps/).
+#   userinfo may only be a bare username — 'user:password@' forms stay rejected.
 _GIT_URL_PATTERN = re.compile(
     r'^(https?://(?:[a-zA-Z0-9_.-]+@)?|git@|ssh://(?:[a-zA-Z0-9_.-]+@)?|git://)'
-    r'[a-zA-Z0-9_.-]+[:/][a-zA-Z0-9_.~/-]+$'
+    r'[a-zA-Z0-9_.-]+[:/](?:[a-zA-Z0-9_.~/-]|%[0-9a-fA-F]{2})+$'
 )
+# Escapes that decode to control characters or path separators.
+_UNSAFE_PERCENT_ESCAPE = re.compile(r'%(?:[01][0-9a-fA-F]|7[fF]|2[fF]|5[cC])')
 # - Relative local paths (no absolute paths, no parent traversal)
 _LOCAL_PATH_PATTERN = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_./-]*$')
 
@@ -177,6 +180,11 @@ class MarketplaceRegistration(BaseModel):
         if _GITHUB_SOURCE_PATTERN.match(v):
             return v
         if _GIT_URL_PATTERN.match(v):
+            if _UNSAFE_PERCENT_ESCAPE.search(v):
+                raise ValueError(
+                    'source cannot contain percent-encoded control characters '
+                    'or path separators'
+                )
             return v
         # Local path: must be relative, no parent traversal
         if v.startswith('/'):

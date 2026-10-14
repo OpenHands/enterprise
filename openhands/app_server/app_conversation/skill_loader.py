@@ -15,7 +15,7 @@ import logging
 import re
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -462,7 +462,13 @@ def _repo_path_from_url_path(path: str, provider: ProviderType) -> str:
     # /scm/. Both reduce to <project>/<repo> (personal repos use ~user).
     if provider == ProviderType.BITBUCKET_DATA_CENTER and p.startswith('scm/'):
         p = p[len('scm/') :]
-    return p
+    parts = p.split('/')
+    # Azure DevOps clone URLs are /<org>/<project>/_git/<repo>.
+    if provider == ProviderType.AZURE_DEVOPS and len(parts) == 4 and parts[2] == '_git':
+        parts = [parts[0], parts[1], parts[3]]
+    # URL paths may carry %XX escapes (e.g. Azure project 'Web%20Apps'); the
+    # providers take decoded names and encode each part themselves.
+    return '/'.join(unquote(part) for part in parts)
 
 
 async def _match_url_source_to_provider(
