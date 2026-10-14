@@ -543,3 +543,54 @@ async def oauth_v2_list_providers():
             for p in providers
         ]
     }
+
+
+class PublicIdpProvider(BaseModel):
+    """A single login IDP, as shown on the unauthenticated "Let's Get
+    Started" screen -- see ``oauth_v2_list_idp_providers``. Never carries
+    anything from ``details`` beyond the OAuth brand (``provider_type``),
+    which is not sensitive and only used to pick a fallback icon client-side
+    when ``icon`` is unset.
+    """
+
+    id: int
+    title: str
+    icon: str | None
+    color: str
+    provider_type: str | None
+
+
+@oauth_v2_router.get('/idp-providers', response_model=list[PublicIdpProvider])
+async def oauth_v2_list_idp_providers() -> list[PublicIdpProvider]:
+    """Public, unauthenticated list of configured login IDPs.
+
+    Backs the "Let's Get Started" login screen when
+    ``ENABLE_OAUTH_V2_LOGIN`` is on: unlike ``GET /oauth/idp-login`` (which
+    silently picks one IDP and redirects), this lets the frontend render a
+    button per configured IDP -- using each row's own branding -- so an
+    admin who has configured more than one login IDP doesn't lose the
+    "choose how to sign in" screen the legacy (Keycloak-era) ``/login`` page
+    always had.
+
+    Deliberately distinct from ``GET /api/admin/oauth-providers`` (admin,
+    permission-gated, full ``details`` with masked secrets) and from ``GET
+    /oauth/providers`` above (unauthenticated, but a debug/introspection
+    endpoint not meant for product UI and not filtered to IDPs): this one is
+    the only "safe to point untrusted/unauthenticated UI at" shape -- no
+    secrets, no non-IDP (git provider) rows, no ``client_id``/URLs.
+    """
+    providers = await AuthProviderStore().get_idp_providers()
+    return [
+        PublicIdpProvider(
+            id=p.id,
+            title=p.title,
+            icon=p.icon,
+            color=p.color,
+            provider_type=(
+                p.details.provider_type.value
+                if isinstance(p.details, OAuthProviderDetails)
+                else None
+            ),
+        )
+        for p in providers
+    ]

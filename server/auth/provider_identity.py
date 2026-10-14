@@ -99,6 +99,14 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     ``allow_match_by_email`` flag so the window is exactly one login wide.
     Duplicate emails (>1 opted-in user) never auto-link -- the caller gets a
     409 so an operator can resolve manually.
+
+    ``AuthProvider.allow_registration`` gates only the final "mint a
+    brand-new user" fallback below -- a ``403`` there means this *specific*
+    provider does not accept new sign-ups, not that the account can never be
+    created (an admin-issued sign-up link, or a different provider with
+    ``allow_registration=True``, still can). The subject-link and
+    opted-in-email-match lookups above always run regardless of this flag,
+    since they resolve to an *existing* user rather than registering one.
     """
     subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
     if not subject:
@@ -145,6 +153,15 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
                 subject,
             )
             return str(matched.id)
+
+    if not provider.allow_registration:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'This provider does not accept new registrations; '
+                'only an already-linked account may sign in through it.'
+            ),
+        )
 
     user_info_dict = {
         'email': email,

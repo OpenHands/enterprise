@@ -21,7 +21,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from server.routes.oauth_providers_admin import oauth_provider_admin_router
 from server.services.saml_metadata import SamlIdpMetadata, SamlMetadataFetchError
-from storage.auth_provider import AuthProvider
+from storage.auth_provider import DEFAULT_AUTH_PROVIDER_COLOR, AuthProvider
 from storage.auth_provider_details import (
     OAuthProviderDetails,
     PasswordProviderDetails,
@@ -69,11 +69,17 @@ def _fake_provider(
     is_idp: bool = False,
     client_id: str = 'cid',
     client_secret: str | None = None,
+    icon: str | None = None,
+    color: str = DEFAULT_AUTH_PROVIDER_COLOR,
+    allow_registration: bool = True,
 ) -> AuthProvider:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     provider = AuthProvider(
         title=title,
         is_idp=is_idp,
+        icon=icon,
+        color=color,
+        allow_registration=allow_registration,
         details=OAuthProviderDetails(
             provider_type=ProviderType(category),
             client_id=client_id,
@@ -215,7 +221,11 @@ async def test_create_provider_without_secret(mock_app, grant_manage_oauth_provi
 async def test_create_integrated_idp_provider(mock_app, grant_manage_oauth_providers):
     """``PasswordProviderDetails`` takes no fields beyond the discriminator."""
     created = AuthProvider(
-        title='Integrated IDP', is_idp=True, details=PasswordProviderDetails()
+        title='Integrated IDP',
+        is_idp=True,
+        color=DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration=True,
+        details=PasswordProviderDetails(),
     )
     created.id = 3
     created.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -502,7 +512,13 @@ async def test_delete_provider_refuses_callers_own_provider(
 
 
 def _fake_password_provider(provider_id: int = 1, title: str = 'Password Login'):
-    provider = AuthProvider(title=title, is_idp=True, details=PasswordProviderDetails())
+    provider = AuthProvider(
+        title=title,
+        is_idp=True,
+        color=DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration=True,
+        details=PasswordProviderDetails(),
+    )
     provider.id = provider_id
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     provider.created_at = now
@@ -704,6 +720,8 @@ def _fake_saml_provider(
     provider = AuthProvider(
         title=title,
         is_idp=is_idp,
+        color=DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration=True,
         details=SamlProviderDetails(
             sp_private_key=SecretStr(sp_private_key) if sp_private_key else None,
             sp_x509_cert=sp_x509_cert,

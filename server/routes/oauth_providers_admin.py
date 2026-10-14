@@ -46,7 +46,7 @@ from server.services.saml_metadata import (
     SamlMetadataFetchError,
     fetch_saml_idp_metadata,
 )
-from storage.auth_provider import AuthProvider
+from storage.auth_provider import DEFAULT_AUTH_PROVIDER_COLOR, AuthProvider
 from storage.auth_provider_details import (
     AuthProviderDetails,
     PasswordProviderDetails,
@@ -68,6 +68,9 @@ class AuthProviderResponse(BaseModel):
     kind: str
     title: str
     is_idp: bool
+    icon: str | None
+    color: str
+    allow_registration: bool
     details: AuthProviderDetails
     created_at: datetime
     updated_at: datetime
@@ -88,6 +91,21 @@ class CreateAuthProviderRequest(BaseModel):
     is_idp: bool = Field(
         default=False, description='True for login IDPs, False for git providers.'
     )
+    icon: str | None = Field(
+        default=None, description="Raw SVG markup for this provider's login button."
+    )
+    color: str = Field(
+        default=DEFAULT_AUTH_PROVIDER_COLOR,
+        description="CSS color string for this provider's login button.",
+    )
+    allow_registration: bool = Field(
+        default=True,
+        description=(
+            'Whether a brand-new user may be created the first time someone '
+            'authenticates through this provider, or only an already-linked '
+            'account may sign in through it.'
+        ),
+    )
     details: AuthProviderDetails
 
 
@@ -102,6 +120,9 @@ class UpdateAuthProviderRequest(BaseModel):
 
     title: str | None = Field(default=None, min_length=1)
     is_idp: bool | None = None
+    icon: str | None = None
+    color: str | None = None
+    allow_registration: bool | None = None
     details: AuthProviderDetails | None = None
 
 
@@ -252,6 +273,9 @@ async def create_oauth_provider(
     provider = AuthProvider(
         title=body.title,
         is_idp=body.is_idp,
+        icon=body.icon,
+        color=body.color,
+        allow_registration=body.allow_registration,
         details=body.details,
     )
     created = await store.create(provider)

@@ -91,6 +91,10 @@ export type AuthProviderDetails =
   | PasswordProviderDetails
   | SamlProviderDetails;
 
+/** Default ``color`` for a row that hasn't been given a brand color yet --
+ * mirrors ``storage.auth_provider.DEFAULT_AUTH_PROVIDER_COLOR``. */
+export const DEFAULT_AUTH_PROVIDER_COLOR = "#000000";
+
 /** A single ``auth_providers`` row, as returned by the admin API. */
 export interface AuthProvider {
   id: number;
@@ -99,6 +103,15 @@ export interface AuthProvider {
   kind: string;
   title: string;
   is_idp: boolean;
+  /** Raw SVG markup for this provider's login button. ``null`` until an
+   * admin sets one -- the frontend falls back to a generic icon. */
+  icon: string | null;
+  /** CSS color string for this provider's login button. */
+  color: string;
+  /** Whether a brand-new user may be created the first time someone
+   * authenticates through this provider, or whether only an already-linked
+   * account may sign in through it. */
+  allow_registration: boolean;
   details: AuthProviderDetails;
   created_at: string;
   updated_at: string;
@@ -107,6 +120,9 @@ export interface AuthProvider {
 export interface CreateAuthProviderParams {
   title: string;
   is_idp?: boolean;
+  icon?: string | null;
+  color?: string;
+  allow_registration?: boolean;
   details: AuthProviderDetails;
 }
 
@@ -118,3 +134,16 @@ export interface CreateAuthProviderParams {
  * secret, untouched.
  */
 export type UpdateAuthProviderParams = Partial<CreateAuthProviderParams>;
+
+/** A single login IDP as returned by the public, unauthenticated
+ * ``GET /oauth/idp-providers`` endpoint -- backs the "Let's Get Started"
+ * login screen's provider buttons when ``ENABLE_OAUTH_V2_LOGIN`` is on.
+ * Never carries secrets, non-IDP (git provider) rows, or anything from
+ * ``details`` beyond the OAuth brand. */
+export interface PublicIdpProvider {
+  id: number;
+  title: string;
+  icon: string | null;
+  color: string;
+  provider_type: OAuthProviderBrand | null;
+}
