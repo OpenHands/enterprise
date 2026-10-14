@@ -15,6 +15,7 @@ import {
 } from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
 import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
+import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { SuperAdminAuthProviders } from "#/components/features/super-admin/super-admin-auth-providers";
 import translations from "#/i18n/translation.json";
 
@@ -23,6 +24,9 @@ const GITHUB_PROVIDER: AuthProvider = {
   kind: "OAuthProviderDetails",
   title: "GitHub",
   is_idp: false,
+  icon: null,
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allow_registration: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "github",
@@ -43,6 +47,9 @@ const PASSWORD_PROVIDER: AuthProvider = {
   kind: "PasswordProviderDetails",
   title: "Password Login",
   is_idp: true,
+  icon: null,
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allow_registration: true,
   details: { kind: "PasswordProviderDetails" },
   created_at: "2024-01-02T00:00:00Z",
   updated_at: "2024-01-02T00:00:00Z",
@@ -53,6 +60,9 @@ const SAML_PROVIDER: AuthProvider = {
   kind: "SamlProviderDetails",
   title: "Okta SAML",
   is_idp: true,
+  icon: null,
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allow_registration: true,
   details: {
     kind: "SamlProviderDetails",
     metadata_url: "https://idp.example.com/metadata",
@@ -267,6 +277,9 @@ describe("Super Admin Auth Providers page", () => {
       expect(createAuthProvider).toHaveBeenCalledWith({
         title: "Password Login",
         is_idp: true,
+        icon: null,
+        color: DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: true,
         details: { kind: "PasswordProviderDetails" },
       }),
     );
@@ -330,6 +343,9 @@ describe("Super Admin Auth Providers page", () => {
         id: 1,
         title: "GitHub",
         is_idp: false,
+        icon: null,
+        color: DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: true,
       }),
     );
   });
@@ -463,9 +479,7 @@ describe("Super Admin Auth Providers page", () => {
       within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
     ).toBeInTheDocument();
     expect(
-      within(dialog).getByTestId(
-        "super-admin-auth-provider-attribute-mapping",
-      ),
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
     ).toBeInTheDocument();
 
     await user.type(
@@ -481,9 +495,7 @@ describe("Super Admin Auth Providers page", () => {
       "https://idp.example.com/sso",
     );
     await user.type(
-      within(dialog).getByTestId(
-        "super-admin-auth-provider-attribute-mapping",
-      ),
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
       "email=urn:oid:0.9.2342.19200300.100.1.3",
     );
     await user.click(
@@ -494,6 +506,9 @@ describe("Super Admin Auth Providers page", () => {
       expect(createAuthProvider).toHaveBeenCalledWith({
         title: "Okta SAML",
         is_idp: true,
+        icon: null,
+        color: DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: true,
         details: {
           kind: "SamlProviderDetails",
           metadata_url: null,
@@ -814,6 +829,9 @@ describe("Super Admin Auth Providers page", () => {
         id: 3,
         title: "Okta SAML",
         is_idp: true,
+        icon: null,
+        color: DEFAULT_AUTH_PROVIDER_COLOR,
+        allow_registration: true,
       }),
     );
   });
@@ -834,9 +852,7 @@ describe("Super Admin Auth Providers page", () => {
     await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
     const dialog = screen.getByTestId("super-admin-auth-provider-form");
     expect(
-      within(dialog).getByTestId(
-        "super-admin-auth-provider-attribute-mapping",
-      ),
+      within(dialog).getByTestId("super-admin-auth-provider-attribute-mapping"),
     ).toHaveValue("email=mail, name=displayName");
 
     const sloUrlInput = within(dialog).getByTestId(

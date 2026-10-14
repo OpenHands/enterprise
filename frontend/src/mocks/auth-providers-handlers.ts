@@ -4,6 +4,7 @@ import type {
   CreateAuthProviderParams,
   UpdateAuthProviderParams,
 } from "#/api/auth-providers-service/auth-providers.types";
+import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 
 const MOCK_AUTH_PROVIDERS: AuthProvider[] = [
   {
@@ -11,6 +12,9 @@ const MOCK_AUTH_PROVIDERS: AuthProvider[] = [
     kind: "OAuthProviderDetails",
     title: "GitHub",
     is_idp: false,
+    icon: null,
+    color: DEFAULT_AUTH_PROVIDER_COLOR,
+    allow_registration: true,
     details: {
       kind: "OAuthProviderDetails",
       provider_type: "github",
@@ -30,6 +34,9 @@ const MOCK_AUTH_PROVIDERS: AuthProvider[] = [
     kind: "OAuthProviderDetails",
     title: "Acme SSO",
     is_idp: true,
+    icon: null,
+    color: "#2563eb",
+    allow_registration: true,
     details: {
       kind: "OAuthProviderDetails",
       provider_type: "enterprise_sso",
@@ -68,6 +75,9 @@ export const AUTH_PROVIDERS_HANDLERS = [
       kind: body.details.kind,
       title: body.title,
       is_idp: body.is_idp ?? false,
+      icon: body.icon ?? null,
+      color: body.color ?? DEFAULT_AUTH_PROVIDER_COLOR,
+      allow_registration: body.allow_registration ?? true,
       details: body.details,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -90,6 +100,11 @@ export const AUTH_PROVIDERS_HANDLERS = [
       ...existing,
       ...(body.title !== undefined && { title: body.title }),
       ...(body.is_idp !== undefined && { is_idp: body.is_idp }),
+      ...(body.icon !== undefined && { icon: body.icon }),
+      ...(body.color !== undefined && { color: body.color }),
+      ...(body.allow_registration !== undefined && {
+        allow_registration: body.allow_registration,
+      }),
       ...(body.details !== undefined && {
         details: body.details,
         kind: body.details.kind,

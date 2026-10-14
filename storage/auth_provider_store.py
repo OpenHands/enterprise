@@ -154,7 +154,14 @@ class AuthProviderStore:
                 )
                 existing = result.scalars().one_or_none()
             if existing is not None:
-                for col in ('title', 'is_idp', 'details'):
+                for col in (
+                    'title',
+                    'is_idp',
+                    'icon',
+                    'color',
+                    'allow_registration',
+                    'details',
+                ):
                     setattr(existing, col, getattr(provider, col))
                 provider = existing
             else:
