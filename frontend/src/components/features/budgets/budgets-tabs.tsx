@@ -709,8 +709,7 @@ export function UserOverridesTab({
           User budget overrides
         </h2>
         <p className="text-sm text-muted">
-          Override the default for individual users — increase, decrease, or
-          disable.
+          Override the default for individual users.
         </p>
       </div>
 
