@@ -66,6 +66,13 @@ export const SECRETS_HANDLERS = [
     return HttpResponse.json(data);
   }),
 
+  // Org-shared secrets (names + descriptions only). Empty by default so the
+  // Organization secrets section stays hidden unless a test provides data.
+  http.get("/api/organizations/:orgId/secrets", async () => {
+    const data: CustomSecretPage = { items: [], next_page_id: null };
+    return HttpResponse.json(data);
+  }),
+
   // Legacy V0 API - deprecated but kept for compatibility
   http.get("/api/secrets", async () => {
     const secretsArray = Array.from(secrets.values());

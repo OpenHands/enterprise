@@ -873,10 +873,23 @@ class TestIdpSignup:
     ):
         """On a clean install ``create_user`` records the first account as the
         instance's setup user. Sign-up must then land on ``/install`` (the
-        first-install wizard), not on the default page (OHE-3560)."""
+        first-install wizard), not on the default page (OHE-3560).
+
+        TOS acceptance is no longer auto-granted for the integrated IDP, so
+        this exercises the install-wizard redirect in isolation by giving
+        the user an already-accepted TOS -- the detour to ``/accept-tos``
+        for a not-yet-accepted user is covered separately by
+        ``test_redirects_to_accept_tos_when_not_yet_accepted``.
+        """
+        from datetime import datetime, timezone
+
         # Arrange: a brand-new account that ``create_user`` made the setup user.
         user_id = derive_idp_user_id('dev@example.com')
-        new_user = _mock_user(user_id=user_id, email='dev@example.com')
+        new_user = _mock_user(
+            user_id=user_id,
+            email='dev@example.com',
+            accepted_tos=datetime.now(timezone.utc),
+        )
         async with async_session_maker() as session:
             session.add(
                 InstanceSettings(
@@ -903,7 +916,6 @@ class TestIdpSignup:
                 return_value=new_user,
             ),
             patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-            patch('server.routes.idp._accept_tos_for_idp_user', new_callable=AsyncMock),
             patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
             patch(
                 'server.routes.idp.DefaultOrgBootstrapService.apply_for_user',
@@ -1080,16 +1092,19 @@ class TestIdpLogin:
 
 class TestCompleteIdpLogin:
     @pytest.mark.asyncio
-    async def test_tos_auto_accepted_for_new_user(self):
+    async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
+        """TOS is no longer auto-accepted for the integrated IDP: a user who
+        hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
+        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        yet -- it only runs once TOS is actually accepted, via
+        ``POST /api/accept_tos``.
+        """
         user_id = derive_idp_user_id('dev@example.com')
         mock_user = _mock_user(user_id=user_id, accepted_tos=None)
         request = MagicMock()
 
         with (
-            patch(
-                'server.routes.idp._accept_tos_for_idp_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
             patch(
                 'server.routes.idp.UserStore.record_login',
                 new_callable=AsyncMock,
@@ -1107,8 +1122,8 @@ class TestCompleteIdpLogin:
                 'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
                 return_value='http://testserver/',
-            ),
-            patch('server.routes.idp._set_idp_cookie'),
+            ) as mock_post_auth_redirect,
+            patch('server.routes.idp._set_idp_cookie') as mock_set_cookie,
             patch(
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
@@ -1125,8 +1140,12 @@ class TestCompleteIdpLogin:
                 email='dev@example.com',
                 redirect_url='',
             )
-        mock_accept_tos.assert_awaited_once_with(user_id)
+        mock_post_auth_redirect.assert_not_awaited()
         assert response.status_code == 302
+        assert response.headers['location'] == (
+            'http://testserver/accept-tos?redirect_url=%2F'
+        )
+        assert mock_set_cookie.call_args.kwargs['accepted_tos'] is False
 
     @pytest.mark.asyncio
     async def test_tos_skip_if_already_accepted(self):
@@ -1137,10 +1156,6 @@ class TestCompleteIdpLogin:
         request = MagicMock()
 
         with (
-            patch(
-                'server.routes.idp._accept_tos_for_idp_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
             patch(
                 'server.routes.idp.UserStore.record_login',
                 new_callable=AsyncMock,
@@ -1153,8 +1168,8 @@ class TestCompleteIdpLogin:
                 'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
                 return_value='http://testserver/',
-            ),
-            patch('server.routes.idp._set_idp_cookie'),
+            ) as mock_post_auth_redirect,
+            patch('server.routes.idp._set_idp_cookie') as mock_set_cookie,
             patch(
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
@@ -1164,14 +1179,16 @@ class TestCompleteIdpLogin:
                 new=AsyncMock(return_value=_fake_integrated_idp_provider()),
             ),
         ):
-            await idp._complete_idp_login(
+            response = await idp._complete_idp_login(
                 request=request,
                 user=mock_user,
                 is_new_user=False,
                 email='dev@example.com',
                 redirect_url='',
             )
-        mock_accept_tos.assert_not_called()
+        mock_post_auth_redirect.assert_awaited_once()
+        assert response.headers['location'] == 'http://testserver/'
+        assert mock_set_cookie.call_args.kwargs['accepted_tos'] is True
 
 
 # ── status endpoint ───────────────────────────────────────────────────────
