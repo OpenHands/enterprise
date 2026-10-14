@@ -9,9 +9,20 @@ the run is killed before these hooks get to run.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tests import postgres_testdb
+
+# LiteLLM fetches its model-cost catalog from the network at import time unless
+# this flag is set, so any test that relies on LiteLLM's model->provider mapping
+# would otherwise depend on a mutable remote file (e.g. the bare Bedrock id
+# ``cohere.command-r-v1:0`` was removed upstream, breaking a provider-routing
+# test). Pin to the version-locked snapshot bundled with the installed litellm
+# so the suite is deterministic and offline-safe. This runs when pytest loads
+# the root conftest, before any test module imports litellm during collection.
+os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
 
 
 def pytest_configure(config: pytest.Config) -> None:
