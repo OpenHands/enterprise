@@ -1,10 +1,12 @@
 """Replace daily conversation quota with daily sandbox quota.
 
 The metered unit for the daily quota changes from conversations to sandbox
-creations: a sandbox is what allocates infrastructure. Existing overrides are
-carried over so users/orgs keep their effective limit (including -1
-exemptions), and today's conversation usage rows are copied so nobody gains
-a fresh allowance mid-day at rollout.
+creations: a sandbox is what allocates infrastructure. The user/org limit
+columns keep their legacy DB names (``daily_conversation_limit``) — only the
+Python attributes are renamed — so pre-189 migration tests and external
+reporting referencing the columns keep working, and existing overrides
+(including -1 exemptions) carry over untouched. Today's conversation usage
+rows are copied so nobody gains a fresh allowance mid-day at rollout.
 """
 
 from typing import Sequence
@@ -22,17 +24,6 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != 'postgresql':
         raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
-
-    op.alter_column(
-        'user',
-        'daily_conversation_limit',
-        new_column_name='daily_sandbox_limit',
-    )
-    op.alter_column(
-        'org',
-        'daily_conversation_limit',
-        new_column_name='daily_sandbox_limit',
-    )
 
     op.create_table(
         'daily_sandbox_usage',
@@ -75,13 +66,3 @@ def downgrade() -> None:
         sa.UniqueConstraint('user_id', 'usage_date'),
     )
     op.drop_table('daily_sandbox_usage')
-    op.alter_column(
-        'org',
-        'daily_sandbox_limit',
-        new_column_name='daily_conversation_limit',
-    )
-    op.alter_column(
-        'user',
-        'daily_sandbox_limit',
-        new_column_name='daily_conversation_limit',
-    )

@@ -55,7 +55,12 @@ class User(Base):
         nullable=True, default=False
     )
     # NULL inherits the deployment-wide daily sandbox limit.
-    daily_sandbox_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # Attribute renamed from daily_conversation_limit; the DB column keeps
+    # its legacy name so pre-189 migration tests and external reporting
+    # that reference daily_conversation_limit keep working.
+    daily_sandbox_limit: Mapped[int | None] = mapped_column(
+        'daily_conversation_limit', nullable=True
+    )
     # Work email submitted for quota increase requests; verified via
     # signed email link before the requested limit is applied.
     work_email: Mapped[str | None] = mapped_column(String(255), nullable=True)

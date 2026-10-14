@@ -76,7 +76,12 @@ class Org(Base):
     # NULL inherits the deployment-wide daily sandbox limit.
     # Set to -1 to exempt this org from daily sandbox limits entirely
     # (for paying SaaS customers). Any other integer is the org-specific limit.
-    daily_sandbox_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # Attribute renamed from daily_conversation_limit; the DB column keeps
+    # its legacy name so pre-189 migration tests and external reporting
+    # that reference daily_conversation_limit keep working.
+    daily_sandbox_limit: Mapped[int | None] = mapped_column(
+        'daily_conversation_limit', nullable=True
+    )
     # Encrypted column for LLM profiles (contains API keys)
     llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True

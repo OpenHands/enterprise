@@ -416,9 +416,7 @@ class RemoteSandboxService(SandboxService):
             created_by_user_id=stored_sandbox.created_by_user_id,
         )
 
-    async def _reserve_daily_sandbox_quota(
-        self, user_id: str | None
-    ) -> bool:
+    async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
         """Reserve one slot of the user's daily sandbox quota.
 
         Returns True when a reservation was consumed (and must be released if
@@ -438,9 +436,7 @@ class RemoteSandboxService(SandboxService):
             return False
         if server_config.app_mode.value != 'saas':
             return False
-        get_effective_org_id = getattr(
-            self.user_context, 'get_effective_org_id', None
-        )
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
         org_id = await get_effective_org_id() if get_effective_org_id else None
         async with a_session_maker() as session:
             return await DailySandboxQuotaService(session).reserve(user_id, org_id)
