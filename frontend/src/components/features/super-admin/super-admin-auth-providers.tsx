@@ -37,6 +37,62 @@ import {
   SuperAdminTable,
 } from "./super-admin-chrome";
 
+/** A read-only URL field with a Copy button -- used for the per-row URLs
+ * (OAuth redirect URL, SAML SP metadata URL) that only exist once a row has
+ * been saved, and that an admin needs to copy into a third-party provider's
+ * own configuration. */
+function CopyableUrlField({
+  testId,
+  label,
+  value,
+  hint,
+  hintTestId,
+  copyTestId,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  hint: string;
+  hintTestId: string;
+  copyTestId: string;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex items-end gap-2">
+      <SettingsInput
+        testId={testId}
+        label={label}
+        type="text"
+        value={value}
+        description={
+          <p data-testid={hintTestId} className="text-xs text-tertiary-alt">
+            {hint}
+          </p>
+        }
+        isReadOnly
+        onChange={() => {}}
+        className="min-w-0 flex-1"
+      />
+      <BrandButton
+        testId={copyTestId}
+        type="button"
+        variant="secondary"
+        onClick={handleCopy}
+      >
+        {t(copied ? I18nKey.BUTTON$COPIED : I18nKey.BUTTON$COPY)}
+      </BrandButton>
+    </div>
+  );
+}
+
 function navCopy(path: string) {
   return (
     SUPER_ADMIN_NAV_ITEMS.find((item) => item.to === path) ??
@@ -333,23 +389,22 @@ function AuthProviderFormModal({
   // without touching this field again) -- only a URL not yet fetched
   // triggers a request.
   const lastFetchedMetadataUrl = useRef<string | null>(null);
-  const [spMetadataUrlCopied, setSpMetadataUrlCopied] = useState(false);
 
-  // Mirrors `_sp_entity_id` in `server.routes.saml` -- same origin as this
-  // admin page, since the SAML routes are served by this same app.
+  // Both URLs are built client-side rather than fetched, same origin as
+  // this admin page (the OAuth/SAML routes are served by this same app).
+  // Only shown once the row already exists server-side *as that kind* --
+  // `initial` (not `form`) reflects what's actually persisted, so a kind
+  // switch mid-edit (not yet saved) doesn't show a URL for a route that
+  // doesn't 200 yet (`server.routes.oauth_v2`/`server.routes.saml` 404 a
+  // mismatched kind).
+  const oauthRedirectUrl =
+    providerId !== undefined && initial.kind === KIND_OAUTH
+      ? `${window.location.origin}/oauth/${providerId}/callback`
+      : null;
   const spMetadataUrl =
-    providerId !== undefined
+    providerId !== undefined && initial.kind === KIND_SAML
       ? `${window.location.origin}/saml/${providerId}/metadata`
       : null;
-
-  const handleCopySpMetadataUrl = () => {
-    if (!spMetadataUrl) {
-      return;
-    }
-    navigator.clipboard.writeText(spMetadataUrl);
-    setSpMetadataUrlCopied(true);
-    setTimeout(() => setSpMetadataUrlCopied(false), 2000);
-  };
 
   const handleDownloadSpCert = () => {
     if (!form.spX509Cert) {
@@ -504,6 +559,16 @@ function AuthProviderFormModal({
               }}
               required
             />
+            {oauthRedirectUrl ? (
+              <CopyableUrlField
+                testId="super-admin-auth-provider-redirect-url"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL)}
+                value={oauthRedirectUrl}
+                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL_HINT)}
+                hintTestId="super-admin-auth-provider-redirect-url-hint"
+                copyTestId="super-admin-auth-provider-redirect-url-copy"
+              />
+            ) : null}
             <SettingsInput
               testId="super-admin-auth-provider-client-id"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_ID)}
@@ -690,39 +755,14 @@ function AuthProviderFormModal({
               showOptionalTag
             />
             {spMetadataUrl ? (
-              <div className="flex items-end gap-2">
-                <SettingsInput
-                  testId="super-admin-auth-provider-sp-metadata-url"
-                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL)}
-                  type="text"
-                  value={spMetadataUrl}
-                  description={
-                    <p
-                      data-testid="super-admin-auth-provider-sp-metadata-url-hint"
-                      className="text-xs text-tertiary-alt"
-                    >
-                      {t(
-                        I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL_HINT,
-                      )}
-                    </p>
-                  }
-                  isReadOnly
-                  onChange={() => {}}
-                  className="min-w-0 flex-1"
-                />
-                <BrandButton
-                  testId="super-admin-auth-provider-sp-metadata-url-copy"
-                  type="button"
-                  variant="secondary"
-                  onClick={handleCopySpMetadataUrl}
-                >
-                  {t(
-                    spMetadataUrlCopied
-                      ? I18nKey.BUTTON$COPIED
-                      : I18nKey.BUTTON$COPY,
-                  )}
-                </BrandButton>
-              </div>
+              <CopyableUrlField
+                testId="super-admin-auth-provider-sp-metadata-url"
+                label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL)}
+                value={spMetadataUrl}
+                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SP_METADATA_URL_HINT)}
+                hintTestId="super-admin-auth-provider-sp-metadata-url-hint"
+                copyTestId="super-admin-auth-provider-sp-metadata-url-copy"
+              />
             ) : null}
             {form.spX509Cert ? (
               <>
@@ -979,15 +1019,11 @@ export function SuperAdminAuthProviders() {
         <AuthProviderFormModal
           mode={formMode}
           initial={editingProvider ? toFormState(editingProvider) : EMPTY_FORM}
-          // Only set once this row already exists server-side as SAML --
-          // the SP metadata URL doesn't exist for a row that's still being
-          // created, or that hasn't been saved as SAML yet (e.g. mid-edit,
-          // switching kind from OAuth).
-          providerId={
-            editingProvider?.details.kind === KIND_SAML
-              ? editingProvider.id
-              : undefined
-          }
+          // Only set once this row already exists server-side -- the
+          // OAuth redirect/SAML SP metadata URLs don't exist for a row
+          // that's still being created (see the per-kind gating above
+          // `oauthRedirectUrl`/`spMetadataUrl`).
+          providerId={editingProvider?.id}
           isLoading={createProvider.isPending || updateProvider.isPending}
           onClose={closeForm}
           onSubmit={handleSubmit}

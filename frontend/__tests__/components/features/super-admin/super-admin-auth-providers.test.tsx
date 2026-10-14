@@ -165,6 +165,11 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-brand"),
     ).toHaveValue("Enterprise SSO");
+    // No row id exists yet on a brand-new row, so there's nothing to build
+    // a redirect URL out of.
+    expect(
+      within(dialog).queryByTestId("super-admin-auth-provider-redirect-url"),
+    ).not.toBeInTheDocument();
   });
 
   it("creates a new OAuth provider from the form", async () => {
@@ -264,6 +269,38 @@ describe("Super Admin Auth Providers page", () => {
         is_idp: true,
         details: { kind: "PasswordProviderDetails" },
       }),
+    );
+  });
+
+  it("shows the OAuth redirect URL for an existing provider, copyable to the clipboard", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-1"));
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+
+    const redirectUrlInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-redirect-url",
+    );
+    expect(redirectUrlInput).toHaveValue(
+      `${window.location.origin}/oauth/1/callback`,
+    );
+    expect(redirectUrlInput).toHaveAttribute("readonly");
+
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-redirect-url-copy"),
+    );
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/oauth/1/callback`,
     );
   });
 
