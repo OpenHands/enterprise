@@ -85,9 +85,12 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-/** Parses the attribute-mapping field's ``saml_attr=openhands_field``
- * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``.
- * Blank entries and entries missing a ``=`` are dropped. */
+/** Parses the attribute-mapping field's ``openhands_field=saml_attr``
+ * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``
+ * (keyed by ``openhands_field`` -- see ``server.routes.saml
+ * ._extract_mapped_attribute``, which looks up ``attribute_mapping[field]``
+ * to get the SAML attribute name to read). Blank entries and entries
+ * missing a ``=`` are dropped. */
 function parseAttributeMapping(value: string): Record<string, string> {
   const mapping: Record<string, string> = {};
   value
@@ -145,10 +148,10 @@ interface AuthProviderFormState {
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
   spX509Cert: string;
   nameIdFormat: string;
-  /** Not rendered in the form (see ``SUPER_ADMIN$AUTH_PROVIDER_...``
-   * fields below) -- kept here only so an existing row's mapping, if any
-   * was set directly via the API, round-trips through an edit untouched
-   * instead of being silently cleared to ``{}``. */
+  /** ``openhands_field=saml_attr`` pairs, comma/newline-separated -- see
+   * ``parseAttributeMapping``. Only the ``email`` key currently has any
+   * effect server-side (``server.routes.saml._extract_mapped_attribute``
+   * is only ever called for ``'email'``). */
   attributeMapping: string;
 }
 
@@ -687,6 +690,24 @@ function AuthProviderFormModal({
               }
               showOptionalTag
               autoComplete="off"
+            />
+            <SettingsTextarea
+              testId="super-admin-auth-provider-attribute-mapping"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
+              value={form.attributeMapping}
+              description={
+                <p
+                  data-testid="super-admin-auth-provider-attribute-mapping-hint"
+                  className="text-xs text-tertiary-alt"
+                >
+                  {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING_HINT)}
+                </p>
+              }
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, attributeMapping: value }))
+              }
+              rows={3}
+              showOptionalTag
             />
           </>
         ) : null}

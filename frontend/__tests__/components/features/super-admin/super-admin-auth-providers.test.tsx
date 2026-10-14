@@ -415,13 +415,11 @@ describe("Super Admin Auth Providers page", () => {
     expect(
       within(dialog).getByTestId("super-admin-auth-provider-name-id-format"),
     ).toBeInTheDocument();
-    // Left out of the UI for now -- see
-    // ``AuthProviderFormState.attributeMapping``.
     expect(
-      within(dialog).queryByTestId(
+      within(dialog).getByTestId(
         "super-admin-auth-provider-attribute-mapping",
       ),
-    ).not.toBeInTheDocument();
+    ).toBeInTheDocument();
 
     await user.type(
       within(dialog).getByTestId("super-admin-auth-provider-title"),
@@ -434,6 +432,12 @@ describe("Super Admin Auth Providers page", () => {
     await user.type(
       within(dialog).getByTestId("super-admin-auth-provider-sso-url"),
       "https://idp.example.com/sso",
+    );
+    await user.type(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-attribute-mapping",
+      ),
+      "email=urn:oid:0.9.2342.19200300.100.1.3",
     );
     await user.click(
       within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
@@ -454,7 +458,9 @@ describe("Super Admin Auth Providers page", () => {
           sp_private_key: null,
           sp_x509_cert: null,
           name_id_format: null,
-          attribute_mapping: {},
+          attribute_mapping: {
+            email: "urn:oid:0.9.2342.19200300.100.1.3",
+          },
         },
       }),
     );
@@ -702,7 +708,7 @@ describe("Super Admin Auth Providers page", () => {
     );
   });
 
-  it("preserves an existing attribute mapping on edit, even though it has no field in the form", async () => {
+  it("loads an existing attribute mapping into its form field, and preserves it when a different SAML field is edited", async () => {
     const user = userEvent.setup();
     vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
       SAML_PROVIDER,
@@ -717,6 +723,12 @@ describe("Super Admin Auth Providers page", () => {
     );
     await user.click(screen.getByTestId("super-admin-auth-provider-edit-3"));
     const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    expect(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-attribute-mapping",
+      ),
+    ).toHaveValue("email=mail, name=displayName");
+
     const sloUrlInput = within(dialog).getByTestId(
       "super-admin-auth-provider-slo-url",
     );
