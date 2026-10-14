@@ -7,6 +7,7 @@ import {
   formatShortDate,
   rowsToCsv,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
+import { I18nKey } from "#/i18n/declaration";
 
 describe("formatShortDate", () => {
   // Date-only API strings parse as UTC midnight; labels must not shift
@@ -78,7 +79,9 @@ describe("rowsToCsv", () => {
 
 describe("formatBudget", () => {
   it("labels a user whose budget override is disabled as Unlimited", () => {
-    expect(formatBudget({ budget_is_disabled: true })).toBe("Unlimited");
+    expect(formatBudget({ budget_is_disabled: true }, (key) => key)).toBe(
+      I18nKey.SETTINGS$BUDGETS_UNLIMITED,
+    );
   });
 });
 

@@ -501,7 +501,9 @@ describe("Budgets", () => {
 
     // Budget cell and status pill
     const table = screen.getByRole("table");
-    expect(within(table).getAllByText("Unlimited")).toHaveLength(2);
+    expect(
+      within(table).getAllByText("SETTINGS$BUDGETS_UNLIMITED"),
+    ).toHaveLength(2);
     expect(within(table).queryByText("Disabled")).not.toBeInTheDocument();
 
     await user.click(
@@ -509,7 +511,9 @@ describe("Budgets", () => {
     );
 
     expect(
-      screen.getByRole("checkbox", { name: "Unlimited budget for this user" }),
+      screen.getByRole("checkbox", {
+        name: "SETTINGS$BUDGETS_UNLIMITED_FOR_USER",
+      }),
     ).toBeChecked();
   });
 

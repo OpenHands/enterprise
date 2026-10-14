@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import {
   ExportIcon,
@@ -843,6 +844,7 @@ export function UsersTab({
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
 }) {
+  const { t } = useTranslation();
   const showOrgColumn =
     userUsage?.items.some((user) => Boolean(user.org_name)) === true;
   const userColumnCount = showOrgColumn ? 12 : 11;
@@ -964,7 +966,7 @@ export function UsersTab({
                     {formatCost(user.spend_lifetime)}
                   </td>
                   <td className={cn(usageTableCellClassName, "text-muted")}>
-                    {formatBudget(user)}
+                    {formatBudget(user, t)}
                   </td>
                   <td
                     className={cn(usageTableCellRightClassName, "text-muted")}
