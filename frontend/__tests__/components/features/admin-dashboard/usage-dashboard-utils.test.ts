@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   buildExportFilename,
+  formatBudget,
   formatDateTime,
   formatShortDate,
   rowsToCsv,
@@ -72,6 +73,12 @@ describe("rowsToCsv", () => {
 
   it("returns just the header row when there are no data rows", () => {
     expect(rowsToCsv(["a", "b"], [])).toBe("a,b");
+  });
+});
+
+describe("formatBudget", () => {
+  it("labels a user whose budget override is disabled as Unlimited", () => {
+    expect(formatBudget({ budget_is_disabled: true })).toBe("Unlimited");
   });
 });
 

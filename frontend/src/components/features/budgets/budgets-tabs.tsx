@@ -74,7 +74,7 @@ const STATUS_FILTER_ITEMS = [
   { key: "overCap", label: "Over cap" },
   { key: "onTrack", label: "On track" },
   { key: "noCap", label: "No cap" },
-  { key: "disabled", label: "Disabled" },
+  { key: "disabled", label: "Unlimited" },
 ];
 
 interface OrganizationBudgetTabProps {
@@ -842,7 +842,7 @@ export function UserOverridesTab({
                               }
                               className="accent-primary"
                             />
-                            Disable budget for this user
+                            Unlimited budget for this user
                           </label>
                         </div>
                       ) : (

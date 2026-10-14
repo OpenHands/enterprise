@@ -80,7 +80,7 @@ export const formatBudget = (user: {
   budget_monthly_limit?: number | null;
   budget_is_disabled?: boolean;
 }) => {
-  if (user.budget_is_disabled) return "Disabled";
+  if (user.budget_is_disabled) return "Unlimited";
   if (user.budget_monthly_limit == null) return "-";
   return formatCost(user.budget_monthly_limit);
 };

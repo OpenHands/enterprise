@@ -339,7 +339,7 @@ export function Budgets() {
           status = "Usage unavailable";
           statusColor = "yellow";
         } else if (user.is_disabled) {
-          status = "Disabled";
+          status = "Unlimited";
         } else if (hasLimit) {
           if (usagePercent > 100) {
             status = "Over cap";
@@ -358,7 +358,7 @@ export function Budgets() {
 
         let budgetLabel = "No limit";
         if (user.is_disabled) {
-          budgetLabel = "Disabled";
+          budgetLabel = "Unlimited";
         } else if (hasLimit) {
           budgetLabel = `$${limit.toLocaleString()} / month`;
         }
