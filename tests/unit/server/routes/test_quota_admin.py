@@ -211,9 +211,7 @@ async def test_meaningless_limits_are_rejected(mock_app, grant_manage_org_quota,
 async def test_malformed_org_id_is_rejected(mock_app, grant_manage_org_quota):
     """A non-UUID org id is a 422, not an unhandled 500."""
     async with _client(mock_app) as client:
-        resp = await client.put(
-            _url('not-a-uuid'), json={'daily_sandbox_limit': 5}
-        )
+        resp = await client.put(_url('not-a-uuid'), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 422
 

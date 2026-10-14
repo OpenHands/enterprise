@@ -3477,9 +3477,7 @@ async def test_delete_user_clears_other_fk_references(async_session_maker):
 
         assert (
             await session.execute(
-                select(DailySandboxUsage).filter(
-                    DailySandboxUsage.user_id == user_uuid
-                )
+                select(DailySandboxUsage).filter(DailySandboxUsage.user_id == user_uuid)
             )
         ).scalars().first() is None
 

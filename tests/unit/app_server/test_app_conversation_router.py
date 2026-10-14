@@ -5,8 +5,6 @@ focusing on UUID string parsing, validation, and error handling.
 """
 
 import json
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -49,7 +47,6 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     read_conversation_file,
     search_app_conversations,
     start_app_conversation,
-    stream_app_conversation_start,
     switch_conversation_profile,
     update_app_conversation,
 )
