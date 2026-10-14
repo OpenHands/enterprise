@@ -3,7 +3,7 @@
 Preview: https://pr-1486.staging.all-hands.dev (saas-deploy#1486, namespace `saas-deploy-pr-1486`)
 Images under test: `ghcr.io/openhands/enterprise-server:sha-7d904eb` (the code head of enterprise#786 when tested; this docs commit is the only later commit), `ghcr.io/openhands/automation:sha-78c512a` (automation#583 head)
 Test account: the preview's only user; org limit driven down to **3** in the preview DB
-(`UPDATE org SET daily_conversation_limit=3` — the legacy-named column behind `daily_sandbox_limit`)
+(`UPDATE org SET daily_conversation_limit=3` — the column since renamed to `daily_sandbox_limit` by migration 189)
 and the day's usage reset, so the sequence below starts from zero.
 
 ## 1. Quota starts at 0 of 3
