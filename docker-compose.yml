@@ -116,6 +116,20 @@ services:
       OH_DEPLOYMENT_MODE: self_hosted
       PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
 
+      # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
+      # defaults to 'true'. With it on, storage/lite_llm_manager.py's
+      # create_entries() tries to provision every new user a LiteLLM gateway
+      # key against LITE_LLM_API_URL (default: the real
+      # https://llm-proxy.app.all-hands.dev, which this stack has no
+      # credentials for), logs "LiteLLM API configuration not found", and
+      # returns None -- which idp_signup treats as a fatal failure, so even
+      # the very first admin-account signup 500s with "Failed to create
+      # user" and no user row is ever committed. Disabling it makes
+      # create_entries() skip straight to BYOK (each user configures their
+      # own LLM key in Settings), which is what a bundled-proxy-less stack
+      # like this one needs.
+      ENABLE_LEGACY_LITELLM: 'false'
+
       # The app migrates itself on startup -- no separate `alembic upgrade
       # head` step, per OHE-3376's "one command" requirement.
       RUN_MIGRATIONS_ON_STARTUP: 'true'
