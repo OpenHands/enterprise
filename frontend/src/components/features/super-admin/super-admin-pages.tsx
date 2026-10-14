@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
@@ -598,6 +599,7 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
@@ -618,7 +620,20 @@ export function SuperAdminAdmins() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
-      <SuperAdminPageHeader title={t(copy.text)} subtitle={t(copy.subtitle)} />
+      <SuperAdminPageHeader
+        title={t(copy.text)}
+        subtitle={t(copy.subtitle)}
+        action={
+          <BrandButton
+            type="button"
+            variant="secondary"
+            testId="super-admin-admins-go-to-users"
+            onClick={() => navigate(SUPER_ADMIN_PATHS.users)}
+          >
+            {t(I18nKey.SUPER_ADMIN$ADMINS_GO_TO_USERS)}
+          </BrandButton>
+        }
+      />
       <p className="text-sm text-[var(--oh-muted)]">
         {t(I18nKey.SUPER_ADMIN$ADMINS_HINT)}
       </p>
