@@ -1138,22 +1138,22 @@
     "uk": "Спільні секрети видимі всім членам вашої організації, але редагувати їх можуть лише адміністратори та власники.",
     "ca": "Els secrets compartits són visibles per a tots els membres de la vostra organització, però només els poden editar els administradors i els propietaris."
   },
-  "SECRETS$ORG_SHARED_BADGE": {
-    "en": "Shared",
-    "ja": "共有",
-    "zh-CN": "共享",
-    "zh-TW": "共享",
-    "ko-KR": "공유됨",
-    "no": "Delt",
-    "it": "Condiviso",
-    "pt": "Compartilhado",
-    "es": "Compartido",
-    "ar": "مشترك",
-    "fr": "Partagé",
-    "tr": "Paylaşılan",
-    "de": "Geteilt",
-    "uk": "Спільний",
-    "ca": "Compartit"
+  "SECRETS$ORG_SECRETS_TITLE": {
+    "en": "Organization secrets",
+    "ja": "組織のシークレット",
+    "zh-CN": "组织机密",
+    "zh-TW": "組織機密",
+    "ko-KR": "조직 비밀",
+    "no": "Organisasjonshemmeligheter",
+    "it": "Segreti dell'organizzazione",
+    "pt": "Segredos da organização",
+    "es": "Secretos de la organización",
+    "ar": "أسرار المؤسسة",
+    "fr": "Secrets de l'organisation",
+    "tr": "Kuruluş sırları",
+    "de": "Organisationsgeheimnisse",
+    "uk": "Секрети організації",
+    "ca": "Secrets de l'organització"
   },
   "SETTINGS$MCP_TITLE": {
     "en": "Model Context Protocol (MCP)",
