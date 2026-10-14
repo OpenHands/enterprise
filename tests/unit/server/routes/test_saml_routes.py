@@ -361,14 +361,14 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         )
         stack.enter_context(
             patch.object(
-                provider_identity.OAuthProviderUserStore,
+                provider_identity.AuthProviderUserStore,
                 'get',
                 new=AsyncMock(return_value=None),
             )
         )
         stack.enter_context(
             patch.object(
-                provider_identity.OAuthProviderUserStore, 'link', new=AsyncMock()
+                provider_identity.AuthProviderUserStore, 'link', new=AsyncMock()
             )
         )
         stack.enter_context(
@@ -451,7 +451,7 @@ def test_acs_disabled_user_redirects_without_cookie(client, jwt_svc):
         )
         stack.enter_context(
             patch.object(
-                provider_identity.OAuthProviderUserStore,
+                provider_identity.AuthProviderUserStore,
                 'get',
                 new=AsyncMock(return_value=link),
             )
@@ -497,7 +497,7 @@ def test_acs_no_tos_redirects_through_accept_tos(client, jwt_svc):
         )
         stack.enter_context(
             patch.object(
-                provider_identity.OAuthProviderUserStore,
+                provider_identity.AuthProviderUserStore,
                 'get',
                 new=AsyncMock(return_value=link),
             )

@@ -356,12 +356,12 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -438,12 +438,12 @@ def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -507,12 +507,12 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -565,7 +565,7 @@ def test_callback_link_flow_no_cookie(client, jwt_svc):
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ) as link,
@@ -736,12 +736,12 @@ def test_unlink_git_provider(app, client, jwt_svc):
             new=AsyncMock(return_value=provider),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get_by_user',
             new=AsyncMock(return_value=link_row),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'unlink',
             new=AsyncMock(),
         ) as unlink,

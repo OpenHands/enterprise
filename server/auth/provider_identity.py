@@ -27,8 +27,8 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.encrypt_utils import get_jwt_service
-from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.user_store import UserStore
 
 
@@ -80,7 +80,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     version of this function, since the resolution logic itself doesn't
     care which protocol produced the identity.
 
-    Looks up ``oauth_provider_users`` by ``external_subject_id``. If found,
+    Looks up ``auth_provider_users`` by ``external_subject_id``. If found,
     returns the linked user id. Otherwise creates the user and links it.
 
     The external ``subject`` is never used as the internal ``User.id`` --
@@ -89,7 +89,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     whereas ``UserStore.create_user`` requires a real UUID and derives
     ``Org.id`` from it (see that docstring). A fresh ``uuid.uuid4()`` is
     minted for every new user here instead; ``subject`` only ever lives in
-    ``oauth_provider_users.external_subject_id``, which is what every
+    ``auth_provider_users.external_subject_id``, which is what every
     subsequent login looks up by.
 
     IDP swap-over seeding (ALL-5978): when the sub lookup misses, and the
@@ -107,7 +107,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
             detail='Provider did not return a subject identifier',
         )
     subject = str(subject)
-    link_store = OAuthProviderUserStore()
+    link_store = AuthProviderUserStore()
     existing = await link_store.get(provider.id, subject)
     if existing is not None:
         return str(existing.user_id)

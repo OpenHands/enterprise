@@ -430,7 +430,7 @@ async def test_delete_provider_success(mock_app, grant_manage_oauth_providers):
             AsyncMock(return_value=_fake_provider()),
         ),
         patch(
-            'server.routes.oauth_providers_admin.OAuthProviderUserStore.get_by_user',
+            'server.routes.oauth_providers_admin.AuthProviderUserStore.get_by_user',
             AsyncMock(return_value=None),
         ) as get_by_user_mock,
         patch(
@@ -483,7 +483,7 @@ async def test_delete_provider_refuses_callers_own_provider(
             AsyncMock(return_value=_fake_provider()),
         ),
         patch(
-            'server.routes.oauth_providers_admin.OAuthProviderUserStore.get_by_user',
+            'server.routes.oauth_providers_admin.AuthProviderUserStore.get_by_user',
             AsyncMock(return_value=MagicMock()),
         ),
         patch(
