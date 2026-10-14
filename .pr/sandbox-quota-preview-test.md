@@ -1,7 +1,7 @@
 # Daily sandbox quota — feature-preview test evidence
 
 Preview: https://pr-1486.staging.all-hands.dev (saas-deploy#1486, namespace `saas-deploy-pr-1486`)
-Images under test: `ghcr.io/openhands/enterprise-server:sha-7d904eb` (enterprise#786 head), `ghcr.io/openhands/automation:sha-78c512a` (automation#583 head)
+Images under test: `ghcr.io/openhands/enterprise-server:sha-7d904eb` (the code head of enterprise#786 when tested; this docs commit is the only later commit), `ghcr.io/openhands/automation:sha-78c512a` (automation#583 head)
 Test account: the preview's only user; org limit driven down to **3** in the preview DB
 (`UPDATE org SET daily_conversation_limit=3` — the legacy-named column behind `daily_sandbox_limit`)
 and the day's usage reset, so the sequence below starts from zero.
@@ -84,9 +84,7 @@ not consume quota (nothing to release: no sandbox was created).
 ## Note on the FAILED runs
 
 The 3 non-skipped runs FAILED with `team_model_access_denied` from this
-preview's LiteLLM team (`deepseek-v4.1-flash` not on its allowlist of
-`deepseek-v4.1-flash`/`deepseek-v4.1-flash` — the preview only allows
-`deepseek-v4-flash`). This is a preview-environment model-allowlist quirk,
+preview's LiteLLM team (`deepseek-v4.1-flash` not on its allowlist — the preview team can only access `deepseek-v4-flash`). This is a preview-environment model-allowlist quirk,
 unrelated to this change; importantly, the runs still demonstrate the quota
 semantics: the sandbox (and its daily-quota slot) is allocated *before* the
 conversation's LLM call, which is exactly the resource this quota protects.
