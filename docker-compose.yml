@@ -101,6 +101,12 @@ services:
       # RUNTIME is intentionally left unset: the Docker sandbox backend is
       # the default (see openhands/app_server/config.py) and needs nothing
       # else beyond the socket mount above.
+      #
+      # Sandbox (sibling) containers call back to the app over
+      # host.docker.internal at this port -- it must match whatever
+      # APP_PORT is published as (see `ports`, above), or sandboxes won't
+      # be able to reach the app.
+      OH_SANDBOX_HOST_PORT: ${APP_PORT:-3000}
     restart: unless-stopped
 
   # Runs the Postgres-backed Procrastinate tasks that have already been
