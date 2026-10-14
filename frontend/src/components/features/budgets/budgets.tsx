@@ -372,7 +372,8 @@ export function Budgets() {
 
         return {
           ...user,
-          name: user.user_name || user.user_email || "Unknown user",
+          name:
+            user.user_name || user.user_email?.split("@")[0] || "Unknown user",
           email: user.user_email || "",
           hasLimit,
           budgetLabel,
