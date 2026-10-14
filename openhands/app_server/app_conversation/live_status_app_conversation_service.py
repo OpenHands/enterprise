@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
+import anyio
 import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
@@ -427,14 +428,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if quota_reserved:
                     if task.status == AppConversationStartTaskStatus.ERROR:
-                        await self._release_daily_conversation_quota(quota_user_id)
+                        with anyio.CancelScope(shield=True):
+                            await self._release_daily_conversation_quota(quota_user_id)
                         quota_reserved = False
                     elif task.status == AppConversationStartTaskStatus.READY:
                         quota_reserved = False
                 yield task
         except BaseException:
             if quota_reserved:
-                await self._release_daily_conversation_quota(quota_user_id)
+                with anyio.CancelScope(shield=True):
+                    await self._release_daily_conversation_quota(quota_user_id)
             raise
 
     async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
@@ -1464,7 +1467,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',

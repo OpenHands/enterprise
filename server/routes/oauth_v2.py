@@ -14,12 +14,22 @@ New endpoints:
 
 These routes are registered but do NOT replace the Keycloak login flow yet
 (Phase 2 dual-cookie middleware switches new logins over).
+
+Non-OAuth2 ``kind``s hijack ``/login``/``/callback`` by provider kind rather
+than getting their own top-level entry point, so every IDP row -- regardless
+of protocol -- stays reachable the same uniform way (``/oauth/{id}/login``,
+and the kind-agnostic ``/oauth/idp-login`` convenience redirect). The
+integrated password IDP (``server.routes.idp``) was first; SAML
+(``server.routes.saml``) follows the same pattern -- ``/login`` redirects to
+the SAML router's own SP-initiated endpoint, and ``/callback`` 404s since
+SAML's ACS is a POST, handled there instead. Identity resolution and the
+``openhands_auth`` cookie (``server.auth.provider_identity``) are shared
+across every kind; only the handshake used to reach that shared cookie-minting
+step differs.
 """
 
 from __future__ import annotations
 
-import base64
-import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -27,17 +37,36 @@ from typing import Literal
 from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
-from storage.encrypt_utils import get_jwt_service
-from storage.oauth_provider import OAuthProvider
-from storage.oauth_provider_store import OAuthProviderStore
+from server.auth.provider_identity import (
+    decrypt_state as _decrypt_state,
+)
+from server.auth.provider_identity import (
+    encrypt_state as _encrypt_state,
+)
+from server.auth.provider_identity import (
+    get_provider_or_404 as _get_provider,
+)
+from server.auth.provider_identity import (
+    resolve_or_create_user as _resolve_or_create_user,
+)
+from server.auth.provider_identity import (
+    set_oauth_v2_cookie as _set_oauth_v2_cookie,
+)
+from server.utils.url_utils import get_web_url
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import (
+    OAuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+)
+from storage.auth_provider_store import AuthProviderStore
 from storage.oauth_provider_user_store import OAuthProviderUserStore
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_store import UserStore
@@ -46,23 +75,6 @@ from storage.user_store import UserStore
 OAUTH_HTTP_TIMEOUT = 15.0
 
 oauth_v2_router = APIRouter(prefix='/oauth', tags=['OAuth v2'])
-
-
-# ── encrypted state ──────────────────────────────────────────────────────
-
-
-def _encrypt_state(payload: dict) -> str:
-    """Encrypt the OAuth state blob (JWE) and base64-encode for URL transport."""
-    raw = json.dumps(payload)
-    encrypted = get_jwt_service().encrypt_value(raw)
-    return base64.urlsafe_b64encode(encrypted.encode()).decode()
-
-
-def _decrypt_state(state: str) -> dict:
-    """Reverse of ``_encrypt_state``."""
-    encrypted = base64.urlsafe_b64decode(state.encode()).decode()
-    raw = get_jwt_service().decrypt_value(encrypted)
-    return json.loads(raw)
 
 
 class OAuthState(BaseModel):
@@ -79,27 +91,24 @@ class OAuthState(BaseModel):
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-async def _get_provider(provider_id: int) -> OAuthProvider:
-    store = OAuthProviderStore()
-    provider = await store.get_by_id(provider_id)
-    if provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'OAuth provider {provider_id} not found',
-        )
-    return provider
+def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
+    """Narrow ``provider.details`` to ``OAuthProviderDetails``.
+
+    Every caller of this helper runs after the generic OAuth2 redirect/token
+    routes have already excluded non-OAuth2 rows (see the ``kind ==
+    PasswordProviderDetails.__name__`` checks in ``oauth_v2_login`` /
+    ``oauth_v2_callback``), so this should never actually mismatch -- the
+    assertion documents that invariant instead of silently reaching into the
+    wrong subclass's fields.
+    """
+    assert isinstance(provider.details, OAuthProviderDetails)
+    return provider.details
 
 
-def _secret_str(provider: OAuthProvider) -> str | None:
-    blob = provider.client_secret
-    if blob is None:
-        return None
-    return blob.get('v') if isinstance(blob, dict) else str(blob)
-
-
-async def _exchange_code(provider: OAuthProvider, code: str, redirect_uri: str) -> dict:
+async def _exchange_code(provider: AuthProvider, code: str, redirect_uri: str) -> dict:
     """Exchange an authorization code for a token response dict."""
-    token_url = provider.token_url
+    details = _oauth_details(provider)
+    token_url = details.token_url
     if not token_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -109,9 +118,11 @@ async def _exchange_code(provider: OAuthProvider, code: str, redirect_uri: str) 
         'grant_type': 'authorization_code',
         'code': code,
         'redirect_uri': redirect_uri,
-        'client_id': provider.client_id,
+        'client_id': details.client_id,
     }
-    client_secret = _secret_str(provider)
+    client_secret = (
+        details.client_secret.get_secret_value() if details.client_secret else None
+    )
     if client_secret:
         payload['client_secret'] = client_secret
     async with httpx.AsyncClient(
@@ -173,9 +184,10 @@ def _parse_token_response(
     return access_token, refresh_token, access_expires_at, refresh_expires_at
 
 
-async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
+async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
     """Call the provider userinfo endpoint with the access token."""
-    if not provider.userinfo_url:
+    details = _oauth_details(provider)
+    if not details.userinfo_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Provider {provider.id} has no userinfo_url',
@@ -184,7 +196,7 @@ async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
         verify=httpx_verify_option(), timeout=OAUTH_HTTP_TIMEOUT
     ) as client:
         response = await client.get(
-            provider.userinfo_url,
+            details.userinfo_url,
             headers={'Authorization': f'Bearer {access_token}'},
         )
         if response.status_code >= 400:
@@ -198,126 +210,6 @@ async def _fetch_userinfo(provider: OAuthProvider, access_token: str) -> dict:
                 detail='Userinfo lookup failed at the provider',
             )
         return response.json()
-
-
-async def _resolve_or_create_user(provider: OAuthProvider, userinfo: dict) -> str:
-    """Resolve the internal user for a provider userinfo dict.
-
-    Looks up ``oauth_provider_users`` by ``external_subject_id`` (the OIDC
-    ``sub``). If found, returns the linked user id. Otherwise creates the user
-    and links it. Phase 1 additive behavior; the real user-mgmt migration
-    (Phase 3) backfills from Keycloak.
-
-    IDP swap-over seeding (ALL-5978): when the sub lookup misses, and the
-    new IDP reports ``email_verified`` is true, attempt an opted-in email
-    match via ``UserStore.get_user_by_email_opted_in``. On a unique hit,
-    link the new IDP's ``sub`` to the existing ``User`` and self-clear the
-    ``allow_match_by_email`` flag so the window is exactly one login wide.
-    Duplicate emails (>1 opted-in user) never auto-link — the caller gets a
-    409 so an operator can resolve manually.
-    """
-    subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
-    if not subject:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Provider did not return a subject identifier',
-        )
-    subject = str(subject)
-    link_store = OAuthProviderUserStore()
-    existing = await link_store.get(provider.id, subject)
-    if existing is not None:
-        return str(existing.user_id)
-
-    email = userinfo.get('email')
-    email_verified = userinfo.get('email_verified')
-    if email and email_verified:
-        dup_count = await UserStore.count_opted_in_users_with_email(email)
-        if dup_count > 1:
-            logger.warning(
-                'oauth_v2:email_match_skipped_duplicate email=%s count=%d',
-                email,
-                dup_count,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    'Multiple users share this email and have '
-                    'allow_match_by_email enabled; manual resolution required.'
-                ),
-            )
-        matched = await UserStore.get_user_by_email_opted_in(email)
-        if matched is not None:
-            await link_store.link(
-                oauth_provider_id=provider.id,
-                user_id=matched.id,
-                external_subject_id=subject,
-                external_email=email,
-            )
-            await UserStore.clear_allow_match_by_email(str(matched.id))
-            logger.info(
-                'oauth_v2:email_match_linked user_id=%s provider=%s subject=%s',
-                matched.id,
-                provider.id,
-                subject,
-            )
-            return str(matched.id)
-
-    user_info_dict = {
-        'email': email,
-        'email_verified': email_verified,
-    }
-    user = await UserStore.create_user(subject, user_info_dict)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to create user from OAuth userinfo',
-        )
-    await link_store.link(
-        oauth_provider_id=provider.id,
-        user_id=user.id,
-        external_subject_id=subject,
-        external_email=userinfo.get('email'),
-    )
-    return str(user.id)
-
-
-def _set_oauth_v2_cookie(
-    request: Request,
-    response: Response,
-    user_id: str,
-    access_token_expires_at: datetime | None,
-    accepted_tos: bool,
-    idp_provider_id: int | None,
-    refresh_token_expires_at: datetime | None = None,
-) -> None:
-    """Set the small JWT cookie for the OAuth v2 path.
-
-    The cookie carries only ``user_id``, ``access_token_expires_at``,
-    ``accepted_tos``, and ``idp_provider_id`` — not the tokens themselves.
-    ``Max-Age`` is the IDP refresh-token expiry (or a 30-day cap if
-    ``None``), per the Phase 2 spec.
-    """
-    from server.auth.oauth_v2_refresh import (
-        compute_cookie_max_age,
-        create_oauth_v2_cookie_payload,
-        sign_oauth_v2_cookie,
-    )
-
-    max_age_seconds = compute_cookie_max_age(refresh_token_expires_at)
-    payload = create_oauth_v2_cookie_payload(
-        user_id, access_token_expires_at, accepted_tos, idp_provider_id
-    )
-    signed = sign_oauth_v2_cookie(payload, max_age_seconds)
-    web_url = get_web_url(request)
-    response.set_cookie(
-        key='openhands_auth',
-        value=signed,
-        max_age=max_age_seconds,
-        domain=get_cookie_domain(),
-        secure=web_url.startswith('https'),
-        httponly=True,
-        samesite=get_cookie_samesite(),
-    )
 
 
 # ── routes ────────────────────────────────────────────────────────────────
@@ -352,36 +244,11 @@ async def oauth_v2_idp_login(
     Convenience entry point so callers do not need to know the concrete OAuth
     provider ID. Returns ``404`` when no IDP provider is configured.
     """
-    provider = await OAuthProviderStore().get_first_idp()
+    provider = await AuthProviderStore().get_first_idp()
     if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='No IDP OAuth provider is configured',
-        )
-    return RedirectResponse(
-        _login_redirect_url(request, provider.id, redirect_url, mode),
-        status_code=302,
-    )
-
-
-@oauth_v2_router.get('/{provider_type}-login')
-async def oauth_v2_provider_type_login(
-    request: Request,
-    provider_type: str,
-    redirect_url: str = '',
-    mode: str = 'login',
-):
-    """Redirect to ``/oauth/<id>/login`` of the first provider of a given type.
-
-    ``provider_type`` is the ``provider_category`` value (e.g. ``github``) taken
-    from the URL segment before ``-login`` — e.g. ``/oauth/github-login``.
-    Returns ``404`` when no matching provider exists.
-    """
-    provider = await OAuthProviderStore().get_first_by_category(provider_type)
-    if provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'No OAuth provider found for type {provider_type!r}',
         )
     return RedirectResponse(
         _login_redirect_url(request, provider.id, redirect_url, mode),
@@ -404,11 +271,9 @@ async def oauth_v2_login(
     provider = await _get_provider(provider_id)
 
     # Integrated IDP is handled by its own routes (registered before this
-    # router): intercept by category and redirect to its dedicated
-    # email+password login page instead of building an external OAuth URL.
-    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
-
-    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
+    # router): intercept by kind and redirect to its dedicated email+password
+    # login page instead of building an external OAuth URL.
+    if provider.kind == PasswordProviderDetails.__name__:
         from server.routes.idp import IDP_LOGIN_PATH
 
         web_url = get_web_url(request)
@@ -422,7 +287,21 @@ async def oauth_v2_login(
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
 
-    auth_url = provider.authorization_url
+    # SAML IDPs speak a different protocol end-to-end (signed AuthnRequest,
+    # POST-bound ACS) -- handed off to their own router (``server.routes.saml``)
+    # rather than building an OAuth2 authorization URL below.
+    if provider.kind == SamlProviderDetails.__name__:
+        web_url = get_web_url(request)
+        target = f'{web_url}/saml/{provider_id}/login'
+        params = {}
+        if redirect_url:
+            params['redirect_url'] = redirect_url
+        if params:
+            target = f'{target}?{urlencode(params)}'
+        return RedirectResponse(target, status_code=302)
+
+    details = _oauth_details(provider)
+    auth_url = details.authorization_url
     if not auth_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -440,12 +319,12 @@ async def oauth_v2_login(
     callback_uri = f'{web_url}/oauth/{provider_id}/callback'
 
     params = {
-        'client_id': provider.client_id,
+        'client_id': details.client_id,
         'redirect_uri': callback_uri,
         'response_type': 'code',
         'state': encrypted_state,
     }
-    scopes = provider.scopes or []
+    scopes = details.scopes or []
     if scopes:
         params['scope'] = ' '.join(scopes)
 
@@ -469,14 +348,19 @@ async def oauth_v2_callback(
     provider = await _get_provider(provider_id)
 
     # Integrated IDP callbacks are handled by dedicated routes -- checked
-    # first, unconditionally, so this 404s on provider category alone
-    # regardless of whatever ``code``/``state`` a caller happens to send.
-    from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
-
-    if provider.provider_category == INTEGRATED_IDP_CATEGORY:
+    # first, unconditionally, so this 404s on provider kind alone regardless
+    # of whatever ``code``/``state`` a caller happens to send.
+    if provider.kind == PasswordProviderDetails.__name__:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login callback must use POST with email field',
+        )
+    # SAML's ACS is a POST (the IdP's auto-submitting form) handled by
+    # ``server.routes.saml``, never this GET callback.
+    if provider.kind == SamlProviderDetails.__name__:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='SAML callback must use POST /saml/{provider_id}/acs',
         )
 
     if error:
@@ -646,14 +530,14 @@ async def oauth_v2_unlink(
 @oauth_v2_router.get('/providers')
 async def oauth_v2_list_providers():
     """List configured OAuth providers (Phase 1 introspection/debug)."""
-    store = OAuthProviderStore()
+    store = AuthProviderStore()
     providers = await store.list_all()
     return {
         'providers': [
             {
                 'id': p.id,
-                'provider_category': p.provider_category,
-                'display_name': p.display_name,
+                'kind': p.kind,
+                'title': p.title,
                 'is_idp': p.is_idp,
             }
             for p in providers

@@ -62,6 +62,9 @@ from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
+from server.routes.oauth_providers_admin import (  # noqa: E402
+    oauth_provider_admin_router,
+)
 from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
@@ -77,6 +80,7 @@ from server.routes.org_secrets import org_secrets_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
+from server.routes.saml import saml_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
     admin_users_router,
@@ -133,6 +137,7 @@ base_app.include_router(
 )  # Authenticated self-service set/change password
 base_app.include_router(idp_invite_router)  # Super-admin-issued, expiring sign-up links
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
+base_app.include_router(saml_router)  # SAML SP login/ACS/metadata routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
     billing_router
@@ -212,6 +217,9 @@ base_app.include_router(
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
+base_app.include_router(
+    oauth_provider_admin_router
+)  # Add routes for oauth_providers CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

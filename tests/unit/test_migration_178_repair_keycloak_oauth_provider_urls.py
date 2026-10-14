@@ -240,7 +240,7 @@ def test_upgrade_matches_by_broken_url_regardless_of_category(
     monkeypatch.setenv('AUTH_URL', 'https://auth.staging.all-hands.dev')
     monkeypatch.setenv('KEYCLOAK_REALM_NAME', 'allhands')
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
+        test_database.server, test_database.name, 'upgrade', '178'
     )
 
     rows = _provider_urls(engine)

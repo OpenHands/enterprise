@@ -14,10 +14,16 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
 from server.routes.org_models import OrgNotFoundError
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_tokens import AuthTokens
 from storage.instance_settings import InstanceSettings
+from storage.oauth_token import OAuthToken
+from storage.oauth_token_store import wrap_token
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
@@ -1591,6 +1597,14 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
     assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'mcp_server': True}
 
 
+async def _mint_signup_link(async_session_maker) -> None:
+    """What ``create_signup_link`` records for an address with no account."""
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+        settings.signup_link_minted_at = datetime.now(UTC)
+        await session.commit()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('add_teammate', 'invite_done'),
@@ -1599,6 +1613,11 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
             lambda sessions, org_id: _add_second_member(sessions, org_id),
             True,
             id='second-member',
+        ),
+        pytest.param(
+            lambda sessions, org_id: _mint_signup_link(sessions),
+            True,
+            id='signup-link-minted',
         ),
         pytest.param(
             lambda sessions, org_id: _add_invitation(
@@ -1616,7 +1635,7 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
         ),
     ],
 )
-async def test_the_invite_step_needs_a_second_member_or_a_live_invitation(
+async def test_the_invite_step_needs_a_teammate_a_live_invitation_or_a_signup_link(
     add_teammate, invite_done, mock_app, instance_settings_db, async_session_maker
 ):
     # Arrange
@@ -1669,3 +1688,139 @@ async def test_the_automation_step_stays_undone_when_the_automation_service_fail
     # Assert
     assert resp.status_code == 200
     assert resp.json()['guide_steps']['automation'] is False
+
+
+async def _add_keycloak_account(
+    async_session_maker, identity_provider: str, user_id: str = CALLER_USER_ID
+) -> None:
+    """A provider account from Keycloak sign-in or linking, as ``auth_tokens`` keeps it."""
+    async with async_session_maker() as session:
+        session.add(
+            AuthTokens(
+                keycloak_user_id=user_id,
+                identity_provider=identity_provider,
+                access_token='access',
+                refresh_token='refresh',
+                # Long expired: the guide only checks that the account exists.
+                access_token_expires_at=0,
+                refresh_token_expires_at=0,
+            )
+        )
+        await session.commit()
+
+
+async def _add_oauth_v2_account(
+    async_session_maker, provider_category: str | None, is_idp: bool
+) -> None:
+    """A provider account from OAuth v2 sign-in (``is_idp``) or linking.
+
+    ``provider_category=None`` builds the integrated/password IDP row
+    instead of an OAuth2 git-provider one.
+
+    Deliberately does not patch ``get_jwt_service`` to a locally-built
+    service: ``details`` is encrypted on write and decrypted again by
+    ``_user_has_automation_git_account`` on the subsequent request, which
+    must see the same key -- the module-level default (cached once per
+    process by ``storage.encrypt_utils.get_jwt_service``) already is.
+    """
+    async with async_session_maker() as session:
+        if provider_category is None:
+            details = PasswordProviderDetails()
+            title = 'Integrated IDP'
+        else:
+            details = OAuthProviderDetails(
+                provider_type=ProviderType(provider_category),
+                client_id=f'client-{provider_category}',
+            )
+            title = provider_category
+        provider = AuthProvider(title=title, is_idp=is_idp, details=details)
+        session.add(provider)
+        await session.flush()
+        session.add(
+            OAuthToken(
+                user_id=uuid.UUID(CALLER_USER_ID),
+                oauth_provider_id=provider.id,
+                access_token=wrap_token('access'),
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'add_account',
+    [
+        pytest.param(
+            lambda sessions, provider=provider: _add_keycloak_account(
+                sessions, provider
+            ),
+            id=f'keycloak-{provider}',
+        )
+        for provider in ('github', 'gitlab', 'bitbucket', 'bitbucket_data_center')
+    ]
+    + [
+        pytest.param(
+            lambda sessions: _add_oauth_v2_account(sessions, 'github', is_idp=True),
+            id='oauth-v2-sign-in',
+        ),
+        pytest.param(
+            lambda sessions: _add_oauth_v2_account(sessions, 'gitlab', is_idp=False),
+            id='oauth-v2-linked',
+        ),
+    ],
+)
+async def test_a_git_account_completes_the_automation_step(
+    add_account, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange: the organization has no automation yet.
+    await _add_guide_org(async_session_maker)
+    await add_account(async_session_maker)
+
+    # Act
+    response = httpx.Response(200, json={'automations': [], 'total': 0})
+    with _automation_service(response) as requests:
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/setup-state')
+
+    # Assert: the account's built-in issue-to-PR workflow counts, so the
+    # automation service is not asked.
+    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'automation': True}
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'add_account',
+    [
+        pytest.param(
+            lambda sessions: _add_keycloak_account(sessions, 'enterprise_sso'),
+            id='keycloak-enterprise-sso',
+        ),
+        pytest.param(
+            lambda sessions: _add_oauth_v2_account(sessions, None, is_idp=True),
+            id='oauth-v2-integrated-idp',
+        ),
+        pytest.param(
+            lambda sessions: _add_keycloak_account(
+                sessions, 'github', user_id=str(uuid.uuid4())
+            ),
+            id='another-users-github',
+        ),
+    ],
+)
+async def test_other_accounts_leave_the_automation_step_to_the_automation_service(
+    add_account, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker)
+    await add_account(async_session_maker)
+
+    # Act
+    response = httpx.Response(200, json={'automations': [], 'total': 0})
+    with _automation_service(response) as requests:
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps']['automation'] is False
+    assert len(requests) == 1
