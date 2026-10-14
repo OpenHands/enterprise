@@ -95,6 +95,27 @@ services:
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
 
+      # server/constants.py defaults WEB_HOST to the literal cloud hostname
+      # (app.all-hands.dev) when unset, which makes DEPLOYMENT_MODE resolve
+      # to 'cloud' here -- that in turn makes server/config.py's
+      # verify_config() require POSTHOG_CLIENT_KEY (fine for actual cloud,
+      # pointless for this stack), and defaults PERMITTED_CORS_ORIGINS to
+      # https://app.all-hands.dev instead of this stack's own origin.
+      #
+      # Don't "fix" this by setting WEB_HOST instead: openhands/app_server/
+      # config.py's get_default_web_url() treats *any* WEB_HOST as "assume
+      # https, no port" (AppServerConfig.web_url = f'https://{WEB_HOST}'),
+      # which corrupts every oauth/idp redirect Location this app builds
+      # (server/utils/url_utils.py's get_web_url() only falls back to
+      # deriving scheme+host+port from the request when web_url is unset) --
+      # they'd point at https://localhost instead of http://localhost:<port>,
+      # which the browser can't reach and manifests as a redirect loop on
+      # /oauth/<id>/login. OH_DEPLOYMENT_MODE is the explicit override built
+      # for exactly this (see server/constants.py's _get_deployment_mode()),
+      # and nothing reads AppServerConfig.web_url from it.
+      OH_DEPLOYMENT_MODE: self_hosted
+      PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+
       # The app migrates itself on startup -- no separate `alembic upgrade
       # head` step, per OHE-3376's "one command" requirement.
       RUN_MIGRATIONS_ON_STARTUP: 'true'
