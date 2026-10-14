@@ -205,8 +205,12 @@ def test_provider_handler_type_enforcement():
 
 def test_get_provider_env_key():
     """Test provider environment key generation"""
-    assert ProviderHandler.get_provider_env_key(ProviderType.GITHUB) == 'github_token'
-    assert ProviderHandler.get_provider_env_key(ProviderType.GITLAB) == 'gitlab_token'
+    assert ProviderHandler.get_provider_env_key(ProviderType.GITHUB) == 'GITHUB_TOKEN'
+    assert ProviderHandler.get_provider_env_key(ProviderType.GITLAB) == 'GITLAB_TOKEN'
+    assert (
+        ProviderHandler.get_provider_env_key(ProviderType.AZURE_DEVOPS)
+        == 'AZURE_DEVOPS_TOKEN'
+    )
 
 
 @pytest.mark.asyncio

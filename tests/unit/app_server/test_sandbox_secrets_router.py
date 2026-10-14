@@ -16,7 +16,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
+from openhands.app_server.integrations.provider import (
+    CustomSecret,
+    ProviderHandler,
+    ProviderToken,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
@@ -31,6 +35,7 @@ from openhands.app_server.sandbox.session_auth import (
     validate_session_key,
     validate_session_key_ownership,
 )
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user.user_router import get_current_user
@@ -984,3 +989,68 @@ class TestProviderTokensInEndpoints:
             )
 
         assert response.body == b'custom-override'
+
+
+@pytest.mark.asyncio
+class TestProviderTokenNames:
+    """Sandbox endpoints name provider tokens the same way conversations do."""
+
+    @staticmethod
+    def _owner_context(custom_secrets: dict[str, str] | None = None) -> AuthUserContext:
+        user_auth = AsyncMock()
+        user_auth.get_secrets = AsyncMock(
+            return_value=Secrets(
+                custom_secrets={
+                    name: CustomSecret(secret=SecretStr(value))
+                    for name, value in custom_secrets.items()
+                }
+            )
+            if custom_secrets
+            else None
+        )
+        user_auth.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh-provider-token'))
+            }
+        )
+        return AuthUserContext(user_auth=user_auth)
+
+    async def test_list_names_provider_token_github_token_uppercase(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            result = await list_secret_names(sandbox_info=_make_sandbox_info())
+
+        assert 'GITHUB_TOKEN' in {s.name for s in result.secrets}
+
+    async def test_get_value_resolves_github_token_uppercase(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            response = await get_secret_value(
+                secret_name='GITHUB_TOKEN', sandbox_info=_make_sandbox_info()
+            )
+
+        assert response.body == b'gh-provider-token'
+
+    async def test_get_value_resolves_legacy_lowercase_name(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            response = await get_secret_value(
+                secret_name='github_token', sandbox_info=_make_sandbox_info()
+            )
+
+        assert response.body == b'gh-provider-token'
+
+    async def test_custom_secret_overriding_provider_token_listed_once(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context({'GITHUB_TOKEN': 'custom-pat'})),
+        ):
+            result = await list_secret_names(sandbox_info=_make_sandbox_info())
+
+        assert [s.name for s in result.secrets] == ['GITHUB_TOKEN']

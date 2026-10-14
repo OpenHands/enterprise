@@ -86,7 +86,11 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE, ProviderType
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
@@ -1308,7 +1312,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 if not provider_token.token:
                     continue
 
-                secret_name = f'{provider_type.name}_TOKEN'
+                secret_name = ProviderHandler.get_provider_env_key(provider_type)
                 description = f'{provider_type.name} authentication token'
 
                 if self.web_url:
@@ -2582,7 +2586,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             for provider_type, provider_token in provider_tokens.items():
                 if not provider_token.token:
                     continue
-                secret_name = f'{provider_type.name}_TOKEN'
+                secret_name = ProviderHandler.get_provider_env_key(provider_type)
                 static_token = await self.user_context.get_latest_token(provider_type)
                 if static_token:
                     secrets[secret_name] = StaticSecret(
