@@ -55,7 +55,7 @@ async def test_email_match_links_to_existing_user_and_clears_flag():
 
     with (
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
@@ -70,7 +70,7 @@ async def test_email_match_links_to_existing_user_and_clears_flag():
             new=AsyncMock(return_value=existing_user),
         ) as opted_in,
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ) as link,
@@ -106,7 +106,7 @@ async def test_email_match_skipped_when_email_not_verified():
 
     with (
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
@@ -125,7 +125,7 @@ async def test_email_match_skipped_when_email_not_verified():
             'create_user',
             new=AsyncMock(return_value=new_user),
         ),
-        patch.object(oauth_v2.OAuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
     ):
         result = await _resolve_or_create_user(
             provider,
@@ -148,7 +148,7 @@ async def test_email_match_duplicate_returns_409():
 
     with (
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
@@ -186,7 +186,7 @@ async def test_email_match_no_opted_in_user_falls_through_to_create():
 
     with (
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
@@ -205,7 +205,7 @@ async def test_email_match_no_opted_in_user_falls_through_to_create():
             'create_user',
             new=AsyncMock(return_value=new_user),
         ) as create,
-        patch.object(oauth_v2.OAuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
     ):
         result = await _resolve_or_create_user(
             provider,
@@ -236,7 +236,7 @@ async def test_sub_lookup_hit_skips_email_match_entirely():
 
     with (
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=link_row),
         ),

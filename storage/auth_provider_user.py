@@ -1,4 +1,4 @@
-"""OAuth provider-user link model.
+"""Auth provider-user link model.
 
 Maps a provider's external user identity (``external_subject_id``, the OIDC
 ``sub``) to our internal ``User``. This is the identity-resolution table used
@@ -7,6 +7,10 @@ token rotation.
 
 Unique on ``(oauth_provider_id, external_subject_id)``: one external identity
 per provider maps to exactly one internal user.
+
+Renamed (migration 187) from ``oauth_provider_users`` to ``auth_provider_users``
+to match migration 186's earlier ``oauth_providers`` -> ``auth_providers``
+rename; no column/data changes.
 """
 
 from datetime import datetime
@@ -18,10 +22,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from storage.base import Base
 
 
-class OAuthProviderUser(Base):
-    """External-identity → internal-user mapping for one OAuth provider."""
+class AuthProviderUser(Base):
+    """External-identity → internal-user mapping for one auth provider."""
 
-    __tablename__ = 'oauth_provider_users'
+    __tablename__ = 'auth_provider_users'
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     oauth_provider_id: Mapped[int] = mapped_column(
@@ -45,13 +49,13 @@ class OAuthProviderUser(Base):
 
     __table_args__ = (
         Index(
-            'uq_oauth_provider_users_provider_subject',
+            'uq_auth_provider_users_provider_subject',
             'oauth_provider_id',
             'external_subject_id',
             unique=True,
         ),
         Index(
-            'ix_oauth_provider_users_user_provider',
+            'ix_auth_provider_users_user_provider',
             'user_id',
             'oauth_provider_id',
         ),
