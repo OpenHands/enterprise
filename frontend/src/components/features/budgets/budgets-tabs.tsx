@@ -702,6 +702,7 @@ export function UserOverridesTab({
   isLoading,
   onPageChange,
 }: UserOverridesTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
@@ -709,7 +710,7 @@ export function UserOverridesTab({
           User budget overrides
         </h2>
         <p className="text-sm text-muted">
-          Override the default for individual users.
+          {t(I18nKey.SETTINGS$BUDGETS_USER_OVERRIDES_DESCRIPTION)}
         </p>
       </div>
 
