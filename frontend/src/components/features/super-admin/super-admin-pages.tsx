@@ -23,7 +23,6 @@ import {
 } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import { HelpLink } from "#/ui/help-link";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_PATHS,
@@ -708,9 +707,6 @@ export function SuperAdminAdmins() {
   );
 }
 
-const SAML_SSO_DOCS_URL =
-  "https://docs.openhands.dev/enterprise/integrations/saml-sso";
-
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
@@ -748,22 +744,6 @@ export function SuperAdminInstance() {
         <p className="text-xs text-[var(--oh-muted)]">
           {t(I18nKey.SUPER_ADMIN$INSTANCE_AUTO_ORG_HINT)}
         </p>
-      </div>
-      <div
-        className="flex flex-col gap-1"
-        data-testid="super-admin-instance-sso"
-      >
-        <p className="text-sm text-white">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_SSO)}
-        </p>
-        <HelpLink
-          testId="super-admin-instance-sso-docs"
-          text={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_HINT)}
-          linkText={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_DOCS)}
-          href={SAML_SSO_DOCS_URL}
-          linkColor="white"
-          className="text-[var(--oh-muted)]"
-        />
       </div>
       {/* Only the first Super Admin has a guide to show or hide. */}
       <SettingsSwitch
