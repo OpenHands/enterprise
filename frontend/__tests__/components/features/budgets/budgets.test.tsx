@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -464,6 +464,20 @@ describe("Budgets", () => {
         userId: "user-1",
       });
     });
+  });
+
+  it("shows the email local part as the name when the user has no Git name", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [{ ...budgetResponse.users[0], user_name: null }],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    const row = (await screen.findByText("user")).closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("user@example.com")).toHaveLength(1);
   });
 
   it("shows unavailable spend instead of rendering it as zero", async () => {

@@ -7,6 +7,8 @@ import OptionService from "#/api/option-service/option-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import {
   AssociatedPrCell,
+  ConversationRow,
+  ConversationsTab,
   ModelsTab,
   OverviewTab,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
@@ -327,5 +329,87 @@ describe("AssociatedPrCell", () => {
     renderWithProviders(<AssociatedPrCell conversation={{ pr_number: [] }} />);
 
     expect(screen.getByText("-")).toBeInTheDocument();
+  });
+});
+
+describe("ConversationsTab Stop button", () => {
+  const conversation = (
+    id: string,
+    executionStatus: string,
+    sandboxStatus: string,
+  ): ConversationRow => ({
+    id,
+    title: `${id} conversation`,
+    user_email: `${id}@acme.test`,
+    total_tokens: 0,
+    accumulated_cost: 0,
+    execution_status: executionStatus,
+    sandbox_status: sandboxStatus,
+  });
+
+  const renderConversations = (
+    items: ConversationRow[],
+    onStopConversation = vi.fn(),
+  ) => {
+    renderWithProviders(
+      <ConversationsTab
+        conversationSearch=""
+        conversationStatus=""
+        conversationSortBy="updated_at"
+        conversationSortOrder="desc"
+        conversationSandboxStatus=""
+        exportUrl="#"
+        conversationPage={1}
+        conversationPerPage={20}
+        conversationTotalPages={1}
+        conversationTotalItems={items.length}
+        conversationsLoading={false}
+        conversationsData={{ items }}
+        stoppingIds={new Set()}
+        onSearchChange={vi.fn()}
+        onStatusChange={vi.fn()}
+        onSortByChange={vi.fn()}
+        onSortOrderChange={vi.fn()}
+        onSandboxStatusChange={vi.fn()}
+        onPageChange={vi.fn()}
+        onPerPageChange={vi.fn()}
+        onStopConversation={onStopConversation}
+        pendingStop={null}
+        stopConfirmationText=""
+        onConfirmStop={vi.fn()}
+        onCancelStop={vi.fn()}
+      />,
+    );
+    return onStopConversation;
+  };
+
+  it("offers Stop for a running conversation whose runtime is running", async () => {
+    const user = userEvent.setup();
+    const onStopConversation = renderConversations([
+      conversation("live", "running", "RUNNING"),
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Stop conversation" }));
+
+    expect(onStopConversation).toHaveBeenCalledWith({
+      id: "live",
+      title: "live conversation",
+      orgId: undefined,
+    });
+  });
+
+  // The stored status stays "running" after a runtime is paused or reaped, so
+  // the live runtime status decides whether there is anything to stop.
+  it("hides Stop when the runtime is not running or the agent has finished", () => {
+    renderConversations([
+      conversation("stale", "running", "PAUSED"),
+      conversation("done", "finished", "RUNNING"),
+    ]);
+
+    expect(screen.getByText("stale@acme.test")).toBeInTheDocument();
+    expect(screen.getByText("done@acme.test")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Stop conversation" }),
+    ).not.toBeInTheDocument();
   });
 });

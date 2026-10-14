@@ -844,6 +844,23 @@ export function UserOverridesTab({
                             />
                             Disable budget for this user
                           </label>
+                          <div className="flex items-center gap-2">
+                            <BrandButton
+                              type="button"
+                              variant="primary"
+                              onClick={() => onSaveOverride(user.user_id)}
+                              isDisabled={!canSaveOverride || isSavingOverride}
+                            >
+                              Save
+                            </BrandButton>
+                            <BrandButton
+                              type="button"
+                              variant="secondary"
+                              onClick={onCancelEditing}
+                            >
+                              Cancel
+                            </BrandButton>
+                          </div>
                         </div>
                       ) : (
                         <>
@@ -881,25 +898,7 @@ export function UserOverridesTab({
                         "h-auto py-3 text-right",
                       )}
                     >
-                      {isEditing ? (
-                        <div className="flex items-center justify-end gap-2">
-                          <BrandButton
-                            type="button"
-                            variant="primary"
-                            onClick={() => onSaveOverride(user.user_id)}
-                            isDisabled={!canSaveOverride || isSavingOverride}
-                          >
-                            Save
-                          </BrandButton>
-                          <BrandButton
-                            type="button"
-                            variant="secondary"
-                            onClick={onCancelEditing}
-                          >
-                            Cancel
-                          </BrandButton>
-                        </div>
-                      ) : (
+                      {!isEditing && (
                         <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
                           <button
                             type="button"

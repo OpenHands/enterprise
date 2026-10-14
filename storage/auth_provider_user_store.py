@@ -1,4 +1,4 @@
-"""Store for ``oauth_provider_users`` — external-identity → internal-user lookup.
+"""Store for ``auth_provider_users`` — external-identity → internal-user lookup.
 
 The identity-resolution table: given a provider's external subject id (the OIDC
 ``sub``), find our ``User``. Separate from ``oauth_tokens`` so it survives
@@ -13,42 +13,42 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.auth_provider_user import AuthProviderUser
 from storage.database import a_session_maker
-from storage.oauth_provider_user import OAuthProviderUser
 
 
 @dataclass
-class OAuthProviderUserStore:
+class AuthProviderUserStore:
     """Lookup/link by ``(oauth_provider_id, external_subject_id)``."""
 
     async def get(
         self, oauth_provider_id: int, external_subject_id: str
-    ) -> OAuthProviderUser | None:
+    ) -> AuthProviderUser | None:
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProviderUser).where(
-                    OAuthProviderUser.oauth_provider_id == oauth_provider_id,
-                    OAuthProviderUser.external_subject_id == external_subject_id,
+                select(AuthProviderUser).where(
+                    AuthProviderUser.oauth_provider_id == oauth_provider_id,
+                    AuthProviderUser.external_subject_id == external_subject_id,
                 )
             )
             return result.scalars().one_or_none()
 
     async def get_by_user(
         self, user_id: UUID, oauth_provider_id: int
-    ) -> OAuthProviderUser | None:
+    ) -> AuthProviderUser | None:
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProviderUser).where(
-                    OAuthProviderUser.user_id == user_id,
-                    OAuthProviderUser.oauth_provider_id == oauth_provider_id,
+                select(AuthProviderUser).where(
+                    AuthProviderUser.user_id == user_id,
+                    AuthProviderUser.oauth_provider_id == oauth_provider_id,
                 )
             )
             return result.scalars().one_or_none()
 
-    async def list_for_user(self, user_id: UUID) -> list[OAuthProviderUser]:
+    async def list_for_user(self, user_id: UUID) -> list[AuthProviderUser]:
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProviderUser).where(OAuthProviderUser.user_id == user_id)
+                select(AuthProviderUser).where(AuthProviderUser.user_id == user_id)
             )
             return list(result.scalars().all())
 
@@ -58,7 +58,7 @@ class OAuthProviderUserStore:
         user_id: UUID,
         external_subject_id: str,
         external_email: str | None = None,
-    ) -> OAuthProviderUser:
+    ) -> AuthProviderUser:
         """Create or update the link for ``(provider, external_subject)``.
 
         Returns the persisted row. If a link already exists for this provider
@@ -66,9 +66,9 @@ class OAuthProviderUserStore:
         """
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProviderUser).where(
-                    OAuthProviderUser.oauth_provider_id == oauth_provider_id,
-                    OAuthProviderUser.external_subject_id == external_subject_id,
+                select(AuthProviderUser).where(
+                    AuthProviderUser.oauth_provider_id == oauth_provider_id,
+                    AuthProviderUser.external_subject_id == external_subject_id,
                 )
             )
             row = result.scalars().one_or_none()
@@ -76,7 +76,7 @@ class OAuthProviderUserStore:
                 row.user_id = user_id
                 row.external_email = external_email
             else:
-                row = OAuthProviderUser(
+                row = AuthProviderUser(
                     oauth_provider_id=oauth_provider_id,
                     user_id=user_id,
                     external_subject_id=external_subject_id,
@@ -90,9 +90,9 @@ class OAuthProviderUserStore:
     async def unlink(self, oauth_provider_id: int, external_subject_id: str) -> None:
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OAuthProviderUser).where(
-                    OAuthProviderUser.oauth_provider_id == oauth_provider_id,
-                    OAuthProviderUser.external_subject_id == external_subject_id,
+                select(AuthProviderUser).where(
+                    AuthProviderUser.oauth_provider_id == oauth_provider_id,
+                    AuthProviderUser.external_subject_id == external_subject_id,
                 )
             )
             row = result.scalars().one_or_none()
@@ -113,11 +113,11 @@ class _ScopedProviderUserStore:
 
     async def get(
         self, oauth_provider_id: int, external_subject_id: str
-    ) -> OAuthProviderUser | None:
+    ) -> AuthProviderUser | None:
         result = await self._session.execute(
-            select(OAuthProviderUser).where(
-                OAuthProviderUser.oauth_provider_id == oauth_provider_id,
-                OAuthProviderUser.external_subject_id == external_subject_id,
+            select(AuthProviderUser).where(
+                AuthProviderUser.oauth_provider_id == oauth_provider_id,
+                AuthProviderUser.external_subject_id == external_subject_id,
             )
         )
         return result.scalars().one_or_none()
@@ -128,11 +128,11 @@ class _ScopedProviderUserStore:
         user_id: UUID,
         external_subject_id: str,
         external_email: str | None = None,
-    ) -> OAuthProviderUser:
+    ) -> AuthProviderUser:
         result = await self._session.execute(
-            select(OAuthProviderUser).where(
-                OAuthProviderUser.oauth_provider_id == oauth_provider_id,
-                OAuthProviderUser.external_subject_id == external_subject_id,
+            select(AuthProviderUser).where(
+                AuthProviderUser.oauth_provider_id == oauth_provider_id,
+                AuthProviderUser.external_subject_id == external_subject_id,
             )
         )
         row = result.scalars().one_or_none()
@@ -140,7 +140,7 @@ class _ScopedProviderUserStore:
             row.user_id = user_id
             row.external_email = external_email
         else:
-            row = OAuthProviderUser(
+            row = AuthProviderUser(
                 oauth_provider_id=oauth_provider_id,
                 user_id=user_id,
                 external_subject_id=external_subject_id,
