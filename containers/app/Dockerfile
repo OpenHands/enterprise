@@ -15,6 +15,36 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend ./
+
+# Agent Canvas (OpenHands/OpenHands) is NOT built here by default: building it
+# clones a second repository over the network (scripts/build-agent-canvas.sh),
+# which cloud doesn't need (it serves /canvas from a separate service behind
+# an ingress rule) and which would add a network dependency to every image
+# build otherwise. Opt in with `--build-arg AGENT_CANVAS=1`, which
+# docker-compose.yml's local stack does, since it has no ingress and instead
+# bakes /canvas into this image, served by the app.py/saas_server.py static
+# mount at /canvas once frontend/build/canvas exists.
+ARG AGENT_CANVAS=
+# Same-origin URL (scheme + host + port) the browser will use to reach this
+# app, e.g. http://localhost:3100. Passed through to
+# scripts/build-agent-canvas.sh as AGENT_CANVAS_LOCK_TO_CLOUD, which bakes it
+# into the Canvas bundle as VITE_LOCK_TO_CLOUD -- this is what lets Canvas
+# skip its own onboarding and authenticate via this app's existing session
+# cookie (POST /api/authenticate) instead of prompting to connect to
+# OpenHands Cloud. Must match exactly what the compose stack's APP_PORT
+# publishes, or cookie auth won't engage.
+ARG AGENT_CANVAS_LOCK_TO_CLOUD=
+# Fail-soft, same as the `build-agent-canvas` Makefile target: Canvas is
+# scaffolding over a still-working OSS frontend, so a failed clone/build
+# (e.g. no network) must not fail the whole image build.
+RUN if [ -n "$AGENT_CANVAS" ]; then \
+        (apt-get update -y \
+            && apt-get install -y --no-install-recommends git ca-certificates \
+            && rm -rf /var/lib/apt/lists/* \
+            && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" npm run build:agent-canvas) \
+        || echo "Agent Canvas build failed; continuing without /canvas."; \
+    fi
+
 RUN npm run build
 
 FROM python:3.13.13-slim-trixie AS base
