@@ -23,7 +23,6 @@ const checkResult = (
 ): MarketplaceCheckResponse => ({
   status: "ok",
   reason: null,
-  github_repo: null,
   plugin_count: 1,
   skill_count: 0,
   ...overrides,
@@ -329,13 +328,9 @@ describe("MarketplaceModal", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it("suggests the GitHub repository for an owner/repo read as a sandbox folder", async () => {
+  it("explains that a bare owner/repo would be read as a sandbox folder", async () => {
     checkSpy.mockResolvedValue(
-      checkResult({
-        status: "unchecked",
-        reason: "sandbox_folder",
-        github_repo: "acme/skills",
-      }),
+      checkResult({ status: "unchecked", reason: "sandbox_folder" }),
     );
     render(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
@@ -344,7 +339,7 @@ describe("MarketplaceModal", () => {
 
     expect(
       await screen.findByTestId("marketplace-check-message"),
-    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER_GITHUB");
+    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER");
     expect(onSave).not.toHaveBeenCalled();
   });
 

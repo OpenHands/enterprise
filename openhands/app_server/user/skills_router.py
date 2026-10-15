@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -117,9 +116,6 @@ class MarketplaceCheckResponse(BaseModel):
         ]
         | None
     ) = None
-    # For a sandbox folder source shaped like 'owner/repo': the GitHub
-    # repository the user may have meant.
-    github_repo: str | None = None
     plugin_count: int = 0
     skill_count: int = 0
 
@@ -638,7 +634,6 @@ async def get_marketplace_skills(
 
 # Hosts the preview clones without a connected provider.
 _PUBLIC_GIT_HOSTS = frozenset({'github.com', 'gitlab.com', 'bitbucket.org'})
-_OWNER_REPO_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$')
 
 
 def _check_failure(error: str) -> MarketplaceCheckResponse:
@@ -684,15 +679,7 @@ async def check_marketplace(
     if not is_agent_server_repository_source(resolved_source):
         if '://' in resolved_source:
             return MarketplaceCheckResponse(status='error', reason='unsupported')
-        return MarketplaceCheckResponse(
-            status='unchecked',
-            reason='sandbox_folder',
-            github_repo=(
-                marketplace.source
-                if _OWNER_REPO_PATTERN.match(marketplace.source)
-                else None
-            ),
-        )
+        return MarketplaceCheckResponse(status='unchecked', reason='sandbox_folder')
 
     split = _split_git_url_source(marketplace.source)
     if (

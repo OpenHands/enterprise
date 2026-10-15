@@ -31,9 +31,6 @@ export interface MarketplaceCheckResponse {
     | "unknown_host"
     | "failed"
     | null;
-  // For a sandbox folder shaped like owner/repo: the GitHub repository the
-  // user may have meant.
-  github_repo: string | null;
   plugin_count: number;
   skill_count: number;
 }

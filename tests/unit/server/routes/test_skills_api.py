@@ -870,27 +870,15 @@ class TestMarketplaceCheck:
         assert (result.status, result.reason) == ('error', 'empty')
 
     @pytest.mark.asyncio
-    async def test_unresolved_owner_repo_is_a_sandbox_folder(self):
-        """A bare owner/repo no connected provider resolves loads nothing."""
-        result, preview = await _check('OpenHands/extensions')
-
-        assert (result.status, result.reason, result.github_repo) == (
-            'unchecked',
-            'sandbox_folder',
-            'OpenHands/extensions',
-        )
-        preview.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize('source', ['marketplaces/team/internal', 'skills'])
-    async def test_other_sandbox_folders_have_no_github_suggestion(self, source):
+    @pytest.mark.parametrize(
+        'source', ['OpenHands/extensions', 'marketplaces/team/internal', 'skills']
+    )
+    async def test_source_read_as_a_sandbox_folder_is_unchecked(self, source):
+        """A source no connected provider resolves is read as a folder, so it
+        loads nothing from a repository."""
         result, preview = await _check(source)
 
-        assert (result.status, result.reason, result.github_repo) == (
-            'unchecked',
-            'sandbox_folder',
-            None,
-        )
+        assert (result.status, result.reason) == ('unchecked', 'sandbox_folder')
         preview.assert_not_awaited()
 
     @pytest.mark.asyncio

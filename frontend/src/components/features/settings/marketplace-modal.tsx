@@ -182,7 +182,6 @@ export function MarketplaceModal({
       result = {
         status: "unchecked",
         reason: "failed",
-        github_repo: null,
         plugin_count: 0,
         skill_count: 0,
       };
@@ -215,11 +214,7 @@ export function MarketplaceModal({
       case "unsupported":
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNSUPPORTED);
       case "sandbox_folder":
-        return result.github_repo
-          ? t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER_GITHUB, {
-              repo: result.github_repo,
-            })
-          : t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER);
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER);
       case "unknown_host":
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST);
       default:

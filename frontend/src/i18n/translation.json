@@ -30854,23 +30854,6 @@
     "tr": "Konuşmalar bunu bir depo olarak değil, sanal alanlarındaki bir klasör olarak okur. Deponun https:// adresini veya github:owner/repo girin.",
     "uk": "Розмови прочитають це як теку у своїй пісочниці, а не як репозиторій. Введіть адресу репозиторію https:// або github:owner/repo."
   },
-  "SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER_GITHUB": {
-    "en": "Conversations would read this as a folder in their sandbox, not as a repository. To use the GitHub repository, enter github:{{repo}}.",
-    "ja": "会話ではこれはリポジトリではなく、サンドボックス内のフォルダとして読み込まれます。GitHub リポジトリを使用するには、github:{{repo}} と入力してください。",
-    "zh-CN": "对话会将其视为沙盒中的文件夹，而不是仓库。要使用该 GitHub 仓库，请输入 github:{{repo}}。",
-    "zh-TW": "對話會將其視為沙箱中的資料夾，而不是儲存庫。若要使用該 GitHub 儲存庫，請輸入 github:{{repo}}。",
-    "ko-KR": "대화에서는 이 항목을 저장소가 아닌 샌드박스 안의 폴더로 읽습니다. GitHub 저장소를 사용하려면 github:{{repo}}를 입력하세요.",
-    "no": "Samtaler vil lese dette som en mappe i sandkassen sin, ikke som et repository. For å bruke GitHub-repositoryet, skriv github:{{repo}}.",
-    "ar": "ستقرأ المحادثات هذا كمجلد داخل بيئتها المعزولة، وليس كمستودع. لاستخدام مستودع GitHub، أدخل github:{{repo}}.",
-    "de": "Unterhaltungen würden dies als Ordner in ihrer Sandbox lesen, nicht als Repository. Um das GitHub-Repository zu verwenden, geben Sie github:{{repo}} ein.",
-    "fr": "Les conversations liraient ceci comme un dossier de leur bac à sable, et non comme un dépôt. Pour utiliser le dépôt GitHub, saisissez github:{{repo}}.",
-    "it": "Le conversazioni lo leggerebbero come una cartella nella loro sandbox, non come un repository. Per usare il repository GitHub, inserisci github:{{repo}}.",
-    "pt": "As conversas leriam isto como uma pasta no sandbox delas, não como um repositório. Para usar o repositório do GitHub, digite github:{{repo}}.",
-    "es": "Las conversaciones leerían esto como una carpeta de su sandbox, no como un repositorio. Para usar el repositorio de GitHub, escribe github:{{repo}}.",
-    "ca": "Les converses ho llegirien com una carpeta del seu sandbox, no com un repositori. Per fer servir el repositori de GitHub, escriu github:{{repo}}.",
-    "tr": "Konuşmalar bunu bir depo olarak değil, sanal alanlarındaki bir klasör olarak okur. GitHub deposunu kullanmak için github:{{repo}} girin.",
-    "uk": "Розмови прочитають це як теку у своїй пісочниці, а не як репозиторій. Щоб використати репозиторій GitHub, введіть github:{{repo}}."
-  },
   "SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST": {
     "en": "Only repositories on github.com, gitlab.com, bitbucket.org or one of your connected git providers can be added.",
     "ja": "追加できるのは、github.com、gitlab.com、bitbucket.org、または接続済みの Git プロバイダー上のリポジトリのみです。",
