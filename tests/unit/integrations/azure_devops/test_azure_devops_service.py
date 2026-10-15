@@ -7,7 +7,14 @@ import pytest
 from pydantic import SecretStr
 
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
-from openhands.app_server.integrations.service_types import ProviderType, RequestMethod
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+)
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+    RequestMethod,
+)
 
 
 @pytest.mark.asyncio
@@ -157,6 +164,74 @@ async def test_make_request_accepts_successful_empty_response_body():
 
     assert body == {}
     assert headers == {}
+
+
+@pytest.mark.asyncio
+async def test_make_request_keeps_azure_error_message():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        400,
+        json={
+            'message': 'The user does not have permission to edit subscriptions.',
+            'typeKey': 'SubscriptionException',
+        },
+        request=httpx.Request('POST', url),
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AzureDevOpsApiError) as exc_info:
+            await service._make_request(url=url, method=RequestMethod.POST)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.azure_message == (
+        'The user does not have permission to edit subscriptions.'
+    )
+    assert exc_info.value.type_key == 'SubscriptionException'
+
+
+@pytest.mark.asyncio
+async def test_make_request_handles_non_json_azure_error():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        503, text='Service Unavailable', request=httpx.Request('POST', url)
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AzureDevOpsApiError) as exc_info:
+            await service._make_request(url=url, method=RequestMethod.POST)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.azure_message == 'Service Unavailable'
+
+
+@pytest.mark.asyncio
+async def test_make_request_still_maps_unauthorized_to_authentication_error():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        401, json={'message': 'Unauthorized'}, request=httpx.Request('GET', url)
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AuthenticationError):
+            await service._make_request(url=url)
 
 
 @pytest.mark.asyncio
