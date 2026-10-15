@@ -14,7 +14,13 @@ IDP (e.g. a second SAML/OIDC tenant) to carry its own branding for a
   icon.
 - ``color`` -- the button's brand color as a CSS color string. Defaults to
   black (``#000000``) rather than ``NULL`` since every row needs *some*
-  color to render with even before an admin customizes it.
+  color to render with even before an admin customizes it, except the
+  built-in integrated/password IDP (``kind='PasswordProviderDetails'``),
+  which gets its own brand color (``#03A956``) instead of black -- there is
+  always at most one such row (migrations 185/186's
+  ``uq_auth_providers_one_password_provider`` guard), so this is a single
+  targeted ``UPDATE`` after the column is added, not a second
+  column-wide default.
 - ``allow_registration`` -- whether a brand-new user may be created the
   first time someone authenticates through this row (see
   ``server.auth.provider_identity.resolve_or_create_user``), or whether only
@@ -43,6 +49,12 @@ depends_on: str | Sequence[str] | None = None
 # directory.
 _DEFAULT_COLOR = '#000000'
 
+# The integrated/password IDP's (``server.routes.idp``) own brand color --
+# see the module docstring for why this one kind gets a dedicated ``UPDATE``
+# instead of the blanket ``_DEFAULT_COLOR`` every other row backfills to.
+_PASSWORD_KIND = 'PasswordProviderDetails'
+_PASSWORD_LOGIN_COLOR = '#03A956'
+
 
 def upgrade() -> None:
     op.add_column('auth_providers', sa.Column('icon', sa.Text(), nullable=True))
@@ -63,6 +75,12 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text('true'),
         ),
+    )
+
+    bind = op.get_bind()
+    bind.execute(
+        sa.text('UPDATE auth_providers SET color = :color WHERE kind = :kind'),
+        {'color': _PASSWORD_LOGIN_COLOR, 'kind': _PASSWORD_KIND},
     )
 
 
