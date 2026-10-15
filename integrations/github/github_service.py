@@ -48,14 +48,22 @@ class SaaSGitHubService(GitHubService):
 
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
+        self.refresh = bool(external_auth_token or external_auth_id or user_id)
         self.token_manager = TokenManager(external=external_token_manager)
 
-    async def get_latest_token(self) -> SecretStr | None:
+    async def _refresh_latest_token(self) -> SecretStr | None:
+        return await self.get_latest_token(force_refresh=True)
+
+    async def get_latest_token(
+        self, *, force_refresh: bool = False
+    ) -> SecretStr | None:
         github_token = None
         if self.external_auth_token:
             github_token = SecretStr(
                 await self.token_manager.get_idp_token(
-                    self.external_auth_token.get_secret_value(), ProviderType.GITHUB
+                    self.external_auth_token.get_secret_value(),
+                    ProviderType.GITHUB,
+                    force_refresh=force_refresh,
                 )
             )
             logger.debug(
@@ -67,7 +75,7 @@ class SaaSGitHubService(GitHubService):
             )
             github_token_str: str | None = (
                 await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.GITHUB
+                    offline_token, ProviderType.GITHUB, force_refresh=force_refresh
                 )
                 if offline_token
                 else None
@@ -78,7 +86,7 @@ class SaaSGitHubService(GitHubService):
             )
         elif self.user_id:
             github_token_str = await self.token_manager.get_idp_token_from_idp_user_id(
-                self.user_id, ProviderType.GITHUB
+                self.user_id, ProviderType.GITHUB, force_refresh=force_refresh
             )
             github_token = SecretStr(github_token_str) if github_token_str else None
             logger.debug(

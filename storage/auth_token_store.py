@@ -13,10 +13,13 @@ from server.auth.auth_error import TokenRefreshError
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 
-# Time buffer (in seconds) before actual expiration to consider token expired
-# This ensures tokens are refreshed before they actually expire. The
-# github default is 8 hours, so 15 minutes leeway is ~3% of this.
-ACCESS_TOKEN_EXPIRY_BUFFER = 900  # 15 minutes
+# Time buffer (in seconds) before actual expiration to consider token expired.
+# Most brokered git providers expose long-lived access tokens, so refresh them
+# well before they can become stale while a conversation is running. Azure
+# DevOps access tokens are shorter-lived, so use a smaller provider-specific
+# buffer for Entra tokens.
+ACCESS_TOKEN_EXPIRY_BUFFER = 14400  # 4 hours
+AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER = 300  # 5 minutes
 
 # Database lock timeout to prevent indefinite blocking
 LOCK_TIMEOUT_SECONDS = 5
@@ -30,6 +33,11 @@ class AuthTokenStore:
     @property
     def identity_provider_value(self) -> str:
         return self.idp.value
+
+    def _access_token_expiry_buffer(self) -> int:
+        if self.idp == ProviderType.AZURE_DEVOPS:
+            return AZURE_DEVOPS_ACCESS_TOKEN_EXPIRY_BUFFER
+        return ACCESS_TOKEN_EXPIRY_BUFFER
 
     def _is_token_expired(
         self, access_token_expires_at: int, refresh_token_expires_at: int
@@ -47,7 +55,8 @@ class AuthTokenStore:
         access_expired = (
             False
             if access_token_expires_at == 0
-            else access_token_expires_at < current_time + ACCESS_TOKEN_EXPIRY_BUFFER
+            else access_token_expires_at
+            < current_time + self._access_token_expiry_buffer()
         )
         refresh_expired = (
             False
@@ -116,6 +125,8 @@ class AuthTokenStore:
             [ProviderType, str, int, int], Awaitable[dict[str, str | int] | None]
         ]
         | None = None,
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, str | int] | None:
         """Load authentication tokens from the database and refresh them if necessary.
 
@@ -134,6 +145,8 @@ class AuthTokenStore:
                 expired and attempts to refresh them. It should return a dictionary
                 containing the new access_token, refresh_token, and their respective
                 expiration timestamps. If no refresh is needed, it should return None.
+            force_refresh: When True, acquire the row lock and run the refresh
+                callback even when the stored access-token expiry still appears valid.
 
         Returns:
             A dictionary containing the access_token, refresh_token,
@@ -164,8 +177,12 @@ class AuthTokenStore:
                 token_record.refresh_token_expires_at,
             )
 
-            # If token is still valid, return it without acquiring a lock
-            if not access_expired or check_expiration_and_refresh is None:
+            # If token is still valid, return it without acquiring a lock unless
+            # the caller is recovering from a provider-side 401 and needs a fresh
+            # token despite the stored expiry metadata.
+            if (
+                not force_refresh and not access_expired
+            ) or check_expiration_and_refresh is None:
                 return {
                     'access_token': token_record.access_token,
                     'refresh_token': token_record.refresh_token,
@@ -204,7 +221,7 @@ class AuthTokenStore:
                         token_record.refresh_token_expires_at,
                     )
 
-                    if not access_expired:
+                    if not force_refresh and not access_expired:
                         # Token was refreshed by another request while we waited
                         logger.debug(
                             'Token was refreshed by another request while waiting for lock'

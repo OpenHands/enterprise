@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import time
+from functools import partial
 from urllib.parse import parse_qs
 
 import httpx
@@ -296,15 +297,21 @@ class TokenManager:
         self,
         access_token: str,
         idp: ProviderType,
+        *,
+        force_refresh: bool = False,
     ) -> str:
         # Get user info to determine user_id and idp
         user_info = await self.get_user_info(access_token=access_token)
-        return await self.get_idp_token_by_user_id(user_info.sub, idp)
+        return await self.get_idp_token_by_user_id(
+            user_info.sub, idp, force_refresh=force_refresh
+        )
 
     async def get_idp_token_by_user_id(
         self,
         user_id: str,
         idp: ProviderType,
+        *,
+        force_refresh: bool = False,
     ) -> str:
         """Load (and refresh if needed) a provider IDP token using only the user_id.
 
@@ -320,8 +327,13 @@ class TokenManager:
         )
 
         try:
+            refresh_callback = (
+                partial(self._check_expiration_and_refresh, force_refresh=True)
+                if force_refresh
+                else self._check_expiration_and_refresh
+            )
             token_info = await token_store.load_tokens(
-                self._check_expiration_and_refresh
+                refresh_callback, force_refresh=force_refresh
             )
             if not token_info:
                 logger.info(f'No tokens for user: {user_id}, identity provider: {idp}')
@@ -351,6 +363,8 @@ class TokenManager:
         encrypted_refresh_token: str,
         access_token_expires_at: int,
         refresh_token_expires_at: int,
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, str | int] | None:
         current_time = int(time.time())
         # Refresh access tokens before expiration to ensure validity on resume.
@@ -371,13 +385,15 @@ class TokenManager:
             else refresh_token_expires_at < current_time
         )
 
-        if not access_expired:
+        if not force_refresh and not access_expired:
             return None
-        if access_expired and refresh_expired:
-            logger.error('Both Access and Refresh Tokens expired.')
-            raise ValueError('Both Access and Refresh Tokens expired.')
+        if refresh_expired:
+            logger.error('Refresh token expired.')
+            raise ValueError('Refresh token expired.')
 
-        logger.info(f'Access token expired for {identity_provider}. Refreshing token.')
+        logger.info(
+            f'Access token expired or force refresh requested for {identity_provider}. Refreshing token.'
+        )
         refresh_token = self.decrypt_text(encrypted_refresh_token)
         token_data = await self._refresh_token(identity_provider, refresh_token)
         access_token = str(token_data['access_token'])
@@ -582,7 +598,7 @@ class TokenManager:
         before_sleep=_before_sleep_callback,
     )
     async def get_idp_token_from_offline_token(
-        self, offline_token: str, idp: ProviderType
+        self, offline_token: str, idp: ProviderType, *, force_refresh: bool = False
     ) -> str:
         logger.info('Getting IDP token from offline token')
 
@@ -590,7 +606,9 @@ class TokenManager:
             tokens = await get_keycloak_openid(self.external).a_refresh_token(
                 offline_token
             )
-            return await self.get_idp_token(tokens['access_token'], idp)
+            return await self.get_idp_token(
+                tokens['access_token'], idp, force_refresh=force_refresh
+            )
         except KeycloakConnectionError:
             logger.exception(
                 'KeycloakConnectionError when refreshing token', stack_info=True
@@ -611,7 +629,7 @@ class TokenManager:
         before_sleep=_before_sleep_callback,
     )
     async def get_idp_token_from_idp_user_id(
-        self, idp_user_id: str, idp: ProviderType
+        self, idp_user_id: str, idp: ProviderType, *, force_refresh: bool = False
     ) -> str | None:
         logger.info(f'Getting IDP token from IDP user_id: {idp_user_id}')
         user_id = await self.get_user_id_from_idp_user_id(idp_user_id, idp)
@@ -624,7 +642,7 @@ class TokenManager:
                 logger.warning(f'No offline token found for user_id: {user_id}')
                 return None
             return await self.get_idp_token_from_offline_token(
-                offline_token=offline_token, idp=idp
+                offline_token=offline_token, idp=idp, force_refresh=force_refresh
             )
         except KeycloakConnectionError:
             logger.exception(
