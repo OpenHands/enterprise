@@ -89,7 +89,7 @@ export function MarketplaceModal({
   const [sourceError, setSourceError] = React.useState<string | null>(null);
   const [repoPathError, setRepoPathError] = React.useState<string | null>(null);
   const [isChecking, setIsChecking] = React.useState(false);
-  // The last check that did not pass; Save then saves anyway.
+  // Why the last check did not pass, shown until the inputs change.
   const [checkResult, setCheckResult] =
     React.useState<MarketplaceCheckResponse | null>(null);
   // Bumped whenever an in-flight check becomes stale (inputs changed, closed).
@@ -164,15 +164,10 @@ export function MarketplaceModal({
       auto_load: autoLoad,
       scope: showScopeSelector ? scope : undefined,
     };
-    // The user has seen why the check did not pass and chose to save anyway.
-    if (checkResult) {
-      onSave(data);
-      return;
-    }
-
     // Check that the marketplace will load in conversations before saving.
     checkRun.current += 1;
     const run = checkRun.current;
+    setCheckResult(null);
     setIsChecking(true);
     let result: MarketplaceCheckResponse;
     try {
@@ -194,7 +189,9 @@ export function MarketplaceModal({
     }
     if (run !== checkRun.current) return;
     setIsChecking(false);
-    if (result.status === "ok") {
+    // The save step previews the marketplace and refuses sources the server
+    // cannot fetch, so only a check that could not run falls through to it.
+    if (result.status === "ok" || result.reason === "failed") {
       onSave(data);
     } else {
       setCheckResult(result);
@@ -219,10 +216,9 @@ export function MarketplaceModal({
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNSUPPORTED);
       case "sandbox_folder":
         return result.github_repo
-          ? `${t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER)} ${t(
-              I18nKey.SETTINGS$MARKETPLACE_CHECK_GITHUB_HINT,
-              { repo: result.github_repo },
-            )}`
+          ? t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER_GITHUB, {
+              repo: result.github_repo,
+            })
           : t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER);
       case "unknown_host":
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST);
@@ -234,7 +230,6 @@ export function MarketplaceModal({
   let saveLabel: React.ReactNode = t(I18nKey.BUTTON$SAVE);
   if (isChecking) saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_CHECKING);
   else if (isSaving) saveLabel = <span>...</span>;
-  else if (checkResult) saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_SAVE_ANYWAY);
 
   if (!isOpen) return null;
 

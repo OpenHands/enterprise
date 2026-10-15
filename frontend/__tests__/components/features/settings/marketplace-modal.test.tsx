@@ -293,7 +293,7 @@ describe("MarketplaceModal", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("explains a marketplace that will not load and saves only on Save anyway", async () => {
+  it("explains why a marketplace will not load and does not save it", async () => {
     checkSpy.mockResolvedValue(
       checkResult({ status: "error", reason: "not_found" }),
     );
@@ -306,14 +306,27 @@ describe("MarketplaceModal", () => {
       await screen.findByTestId("marketplace-check-message"),
     ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_NOT_FOUND");
     expect(onSave).not.toHaveBeenCalled();
-    expect(screen.getByTestId("marketplace-save-button")).toHaveTextContent(
-      "SETTINGS$MARKETPLACE_SAVE_ANYWAY",
-    );
 
+    // Saving again checks again rather than saving regardless.
     await user.click(screen.getByTestId("marketplace-save-button"));
 
-    expect(onSave).toHaveBeenCalledTimes(1);
-    expect(checkSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(checkSpy).toHaveBeenCalledTimes(2));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("does not save a repository on a host that is not a connected provider", async () => {
+    checkSpy.mockResolvedValue(
+      checkResult({ status: "unchecked", reason: "unknown_host" }),
+    );
+    render(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user, "https://git.example.org/org/skills");
+
+    expect(
+      await screen.findByTestId("marketplace-check-message"),
+    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST");
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it("suggests the GitHub repository for an owner/repo read as a sandbox folder", async () => {
@@ -331,9 +344,7 @@ describe("MarketplaceModal", () => {
 
     expect(
       await screen.findByTestId("marketplace-check-message"),
-    ).toHaveTextContent(
-      "SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER SETTINGS$MARKETPLACE_CHECK_GITHUB_HINT",
-    );
+    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER_GITHUB");
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -362,17 +373,29 @@ describe("MarketplaceModal", () => {
     expect(checkSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("reports a check that could not run instead of saving", async () => {
-    checkSpy.mockRejectedValue(new Error("network"));
+  it.each([
+    [
+      "the request fails",
+      () => checkSpy.mockRejectedValue(new Error("network")),
+    ],
+    [
+      "the check could not run",
+      () =>
+        checkSpy.mockResolvedValue(
+          checkResult({ status: "unchecked", reason: "failed" }),
+        ),
+    ],
+  ])("saves as before when %s", async (_case, arrange) => {
+    arrange();
     render(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user);
 
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(
-      await screen.findByTestId("marketplace-check-message"),
-    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_FAILED");
-    expect(onSave).not.toHaveBeenCalled();
+      screen.queryByTestId("marketplace-check-message"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows that the check is running and disables Save", async () => {
