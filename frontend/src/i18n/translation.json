@@ -5575,6 +5575,23 @@
     "uk": "Azure DevOps не підключено",
     "ca": "Azure DevOps no connectat"
   },
+  "AZURE_DEVOPS$NO_ORGANIZATIONS": {
+    "en": "No Azure DevOps organizations are accessible to this account.",
+    "ja": "No Azure DevOps organizations are accessible to this account.",
+    "zh-CN": "No Azure DevOps organizations are accessible to this account.",
+    "zh-TW": "No Azure DevOps organizations are accessible to this account.",
+    "ko-KR": "No Azure DevOps organizations are accessible to this account.",
+    "no": "No Azure DevOps organizations are accessible to this account.",
+    "it": "No Azure DevOps organizations are accessible to this account.",
+    "pt": "No Azure DevOps organizations are accessible to this account.",
+    "es": "No Azure DevOps organizations are accessible to this account.",
+    "ar": "No Azure DevOps organizations are accessible to this account.",
+    "fr": "No Azure DevOps organizations are accessible to this account.",
+    "tr": "No Azure DevOps organizations are accessible to this account.",
+    "de": "No Azure DevOps organizations are accessible to this account.",
+    "uk": "No Azure DevOps organizations are accessible to this account.",
+    "ca": "No Azure DevOps organizations are accessible to this account."
+  },
   "AZURE_DEVOPS$WEBHOOK_MANAGER_TITLE": {
     "en": "Azure DevOps webhooks",
     "ja": "Azure DevOps webhooks",
