@@ -1,15 +1,16 @@
-"""Real-DB tests for migration 189 (seed GitHub/GitLab/Bitbucket login IDPs
-routed through Keycloak).
+"""Real-DB tests for migration 189:
 
-The migration only has anything to do once an ``auth_providers`` Keycloak
-IDP row exists (seeded by migration 168, gated on ``KEYCLOAK_CLIENT_ID`` --
-not set while building the test template), so every test downgrades to 188
-and inserts that row by hand first.
+- Seeding GitHub/GitLab/Bitbucket login IDPs routed through Keycloak,
+  resolved from the environment.
+- Deleting the legacy generic Keycloak ``auth_providers`` row.
+- Rebranding a pre-fix integrated/password login row's ``title``/``color``.
 """
 
 from __future__ import annotations
 
 import json
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -17,23 +18,28 @@ from sqlalchemy.engine import Engine
 
 from tests import postgres_testdb
 
-_KEYCLOAK_DETAILS = {
-    'kind': 'OAuthProviderDetails',
-    'provider_type': 'enterprise_sso',
-    'client_id': 'allhands',
-    'client_secret': 'ciphertext-does-not-need-decrypting-in-this-test',
-    'authorization_url': (
-        'https://auth.example.com/realms/allhands/protocol/openid-connect/auth'
-    ),
-    'token_url': (
-        'https://auth.example.com/realms/allhands/protocol/openid-connect/token'
-    ),
-    'userinfo_url': (
-        'https://auth.example.com/realms/allhands/protocol/openid-connect/userinfo'
-    ),
-    'scopes': ['openid', 'email', 'profile'],
-    'permitted_drift_seconds': 60,
-}
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / 'migrations'
+    / 'versions'
+    / '189_seed_federated_git_provider_login_idps.py'
+)
+_spec = spec_from_file_location('migration_189', _MIGRATION_PATH)
+assert _spec is not None and _spec.loader is not None
+migration_189 = module_from_spec(_spec)
+_spec.loader.exec_module(migration_189)
+
+_ENV_VARS = (
+    'GITHUB_APP_CLIENT_ID',
+    'GITLAB_APP_CLIENT_ID',
+    'BITBUCKET_APP_CLIENT_ID',
+    'KEYCLOAK_CLIENT_ID',
+    'KEYCLOAK_CLIENT_SECRET',
+    'KEYCLOAK_REALM_NAME',
+    'AUTH_URL',
+    'AUTH_WEB_HOST',
+    'WEB_HOST',
+)
 
 
 def _downgrade_to_188(test_database: postgres_testdb.TestDatabase) -> None:
@@ -48,9 +54,12 @@ def _upgrade_to_189(test_database: postgres_testdb.TestDatabase) -> None:
     )
 
 
-def _insert_keycloak_idp_row(engine: Engine) -> int:
+def _insert_keycloak_idp_row(engine: Engine) -> None:
+    """A legacy generic Keycloak row, as seeded by an older version of
+    migration 168. Its ``details`` content doesn't matter here -- this
+    migration only ever deletes it, never reads it."""
     with engine.begin() as conn:
-        return conn.execute(
+        conn.execute(
             text(
                 """
                 INSERT INTO auth_providers
@@ -58,24 +67,46 @@ def _insert_keycloak_idp_row(engine: Engine) -> int:
                 VALUES
                     ('OAuthProviderDetails', 'Keycloak', true, '#000000', true,
                      :details)
+                """
+            ),
+            {
+                'details': json.dumps(
+                    {'kind': 'OAuthProviderDetails', 'provider_type': 'enterprise_sso'}
+                )
+            },
+        )
+
+
+def _insert_password_login_row(
+    engine: Engine, *, title: str = 'Password Login', color: str = '#000000'
+) -> int:
+    with engine.begin() as conn:
+        return conn.execute(
+            text(
+                """
+                INSERT INTO auth_providers
+                    (kind, title, is_idp, color, allow_registration, details)
+                VALUES
+                    ('PasswordProviderDetails', :title, true, :color, true,
+                     :details)
                 RETURNING id
                 """
             ),
-            {'details': json.dumps(_KEYCLOAK_DETAILS)},
+            {
+                'title': title,
+                'color': color,
+                'details': json.dumps({'kind': 'PasswordProviderDetails'}),
+            },
         ).scalar_one()
 
 
-def _federated_rows(engine: Engine) -> list[dict]:
+def _rows(engine: Engine, where: str = '') -> list[dict]:
     with engine.connect() as conn:
         rows = (
             conn.execute(
                 text(
-                    """
-                    SELECT id, title, color, icon, is_idp, kind, details
-                    FROM auth_providers
-                    WHERE details ->> 'provider_type' <> 'enterprise_sso'
-                    ORDER BY id
-                    """
+                    f'SELECT id, title, color, icon, is_idp, kind, details '
+                    f'FROM auth_providers {where} ORDER BY id'
                 )
             )
             .mappings()
@@ -90,24 +121,45 @@ def _federated_rows(engine: Engine) -> list[dict]:
         return out
 
 
+def _federated_rows(engine: Engine) -> list[dict]:
+    return _rows(engine, "WHERE details ->> 'provider_type' <> 'enterprise_sso'")
+
+
+def _keycloak_rows(engine: Engine) -> list[dict]:
+    return _rows(
+        engine,
+        "WHERE title = 'Keycloak' AND details ->> 'provider_type' = 'enterprise_sso'",
+    )
+
+
+def _password_login_rows(engine: Engine) -> list[dict]:
+    return _rows(engine, "WHERE kind = 'PasswordProviderDetails'")
+
+
 @pytest.fixture(autouse=True)
-def _clear_git_provider_env(monkeypatch):
-    for key in (
-        'GITHUB_APP_CLIENT_ID',
-        'GITLAB_APP_CLIENT_ID',
-        'BITBUCKET_APP_CLIENT_ID',
-    ):
+def _clear_env(monkeypatch):
+    for key in _ENV_VARS:
         monkeypatch.delenv(key, raising=False)
+
+
+def _set_keycloak_env(monkeypatch) -> None:
+    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'allhands')
+    monkeypatch.setenv('KEYCLOAK_CLIENT_SECRET', 'kc-secret')
+    monkeypatch.setenv('KEYCLOAK_REALM_NAME', 'allhands')
+    monkeypatch.setenv('AUTH_URL', 'https://auth.example.com')
+
+
+# ── seeding federated IDP rows from the environment ─────────────────────────
 
 
 def test_upgrade_adds_a_row_per_configured_brand(
     monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
-    _insert_keycloak_idp_row(engine)
-
+    _set_keycloak_env(monkeypatch)
     monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
     monkeypatch.setenv('GITLAB_APP_CLIENT_ID', 'gl-client-id')
+
     _upgrade_to_189(test_database)
 
     rows = _federated_rows(engine)
@@ -118,17 +170,16 @@ def test_upgrade_adds_a_row_per_configured_brand(
         assert row['is_idp'] is True
         assert row['kind'] == 'OAuthProviderDetails'
         assert row['icon']
-        # Reused verbatim from the Keycloak row.
-        assert row['details']['client_id'] == _KEYCLOAK_DETAILS['client_id']
-        assert row['details']['client_secret'] == _KEYCLOAK_DETAILS['client_secret']
-        assert row['details']['token_url'] == _KEYCLOAK_DETAILS['token_url']
-        assert row['details']['userinfo_url'] == _KEYCLOAK_DETAILS['userinfo_url']
-        assert row['details']['scopes'] == _KEYCLOAK_DETAILS['scopes']
-        # Overridden: provider_type + kc_idp_hint appended to the auth URL.
-        expected_hint = f'kc_idp_hint={row["details"]["provider_type"]}'
+        assert row['details']['client_id'] == 'allhands'
         assert row['details']['authorization_url'] == (
-            f'{_KEYCLOAK_DETAILS["authorization_url"]}?{expected_hint}'
+            'https://auth.example.com/realms/allhands/protocol/openid-connect/auth'
+            f'?kc_idp_hint={row["details"]["provider_type"]}'
         )
+
+    from storage.encrypt_utils import decrypt_value
+
+    for row in rows:
+        assert decrypt_value(row['details']['client_secret']) == 'kc-secret'
 
     github_row = next(r for r in rows if r['details']['provider_type'] == 'github')
     assert github_row['title'] == 'Log in with GitHub'
@@ -143,9 +194,9 @@ def test_upgrade_adds_bitbucket_row(
     monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
-    _insert_keycloak_idp_row(engine)
-
+    _set_keycloak_env(monkeypatch)
     monkeypatch.setenv('BITBUCKET_APP_CLIENT_ID', 'bb-client-id')
+
     _upgrade_to_189(test_database)
 
     rows = _federated_rows(engine)
@@ -154,18 +205,91 @@ def test_upgrade_adds_bitbucket_row(
     assert rows[0]['title'] == 'Log in with Bitbucket'
     assert rows[0]['color'] == '#2684FF'
     assert rows[0]['details']['authorization_url'] == (
-        f'{_KEYCLOAK_DETAILS["authorization_url"]}?kc_idp_hint=bitbucket'
+        'https://auth.example.com/realms/allhands/protocol/openid-connect/auth'
+        '?kc_idp_hint=bitbucket'
     )
 
 
-def test_upgrade_appends_hint_with_ampersand_when_url_already_has_a_query(
+def test_with_idp_hint_uses_question_mark_when_url_has_no_query():
+    assert (
+        migration_189._with_idp_hint('https://auth.example.com/auth', 'github')
+        == 'https://auth.example.com/auth?kc_idp_hint=github'
+    )
+
+
+def test_with_idp_hint_uses_ampersand_when_url_already_has_a_query():
+    assert (
+        migration_189._with_idp_hint(
+            'https://auth.example.com/auth?prompt=login', 'github'
+        )
+        == 'https://auth.example.com/auth?prompt=login&kc_idp_hint=github'
+    )
+
+
+def test_with_idp_hint_passes_through_a_missing_url():
+    assert migration_189._with_idp_hint(None, 'github') is None
+
+
+def test_upgrade_noop_without_any_keycloak_client_id(
     monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
-    details = dict(_KEYCLOAK_DETAILS)
-    details['authorization_url'] = (
-        f'{_KEYCLOAK_DETAILS["authorization_url"]}?prompt=login'
-    )
+    # No KEYCLOAK_CLIENT_ID -- nothing to route federated login through,
+    # even though a git-provider brand is configured.
+    monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
+
+    _upgrade_to_189(test_database)
+
+    assert _federated_rows(engine) == []
+
+
+def test_upgrade_noop_without_any_git_provider_env(
+    monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
+):
+    _downgrade_to_188(test_database)
+    _set_keycloak_env(monkeypatch)
+    # No git-provider brand configured.
+
+    _upgrade_to_189(test_database)
+
+    assert _federated_rows(engine) == []
+
+
+# ── removing the generic Keycloak row ───────────────────────────────────────
+
+
+def test_upgrade_deletes_an_existing_keycloak_row(
+    monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
+):
+    _downgrade_to_188(test_database)
+    _insert_keycloak_idp_row(engine)
+
+    # Deletion happens regardless of whether any federated rows end up
+    # seeded.
+    _upgrade_to_189(test_database)
+
+    assert _keycloak_rows(engine) == []
+
+
+def test_upgrade_noop_without_an_existing_keycloak_row(
+    engine: Engine, test_database: postgres_testdb.TestDatabase
+):
+    _downgrade_to_188(test_database)
+    # No pre-existing row -- a brand-new install (migration 168 no longer
+    # seeds one). Deleting nothing must not raise.
+
+    _upgrade_to_189(test_database)
+
+    assert _keycloak_rows(engine) == []
+
+
+def test_upgrade_does_not_touch_an_admin_added_enterprise_sso_row(
+    monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
+):
+    """A second, differently-titled ``enterprise_sso`` row (e.g. an
+    admin-configured SAML/OIDC tenant) must survive."""
+    _downgrade_to_188(test_database)
+    _insert_keycloak_idp_row(engine)
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -173,43 +297,77 @@ def test_upgrade_appends_hint_with_ampersand_when_url_already_has_a_query(
                 INSERT INTO auth_providers
                     (kind, title, is_idp, color, allow_registration, details)
                 VALUES
-                    ('OAuthProviderDetails', 'Keycloak', true, '#000000', true,
+                    ('OAuthProviderDetails', 'Corp SSO', true, '#111111', true,
                      :details)
                 """
             ),
-            {'details': json.dumps(details)},
+            {
+                'details': json.dumps(
+                    {'kind': 'OAuthProviderDetails', 'provider_type': 'enterprise_sso'}
+                )
+            },
         )
-
+    _set_keycloak_env(monkeypatch)
     monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
+
     _upgrade_to_189(test_database)
 
-    rows = _federated_rows(engine)
-    assert rows[0]['details']['authorization_url'] == (
-        f'{_KEYCLOAK_DETAILS["authorization_url"]}?prompt=login&kc_idp_hint=github'
-    )
+    assert _keycloak_rows(engine) == []
+    with engine.connect() as conn:
+        remaining_titles = sorted(
+            conn.execute(text('SELECT title FROM auth_providers')).scalars().all()
+        )
+    assert remaining_titles == ['Corp SSO', 'Log in with GitHub']
 
 
-def test_upgrade_noop_without_any_git_provider_env(
+# ── rebranding the integrated/password login ────────────────────────────────
+
+
+def test_upgrade_rebrands_a_pre_fix_password_login_row(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
-    _insert_keycloak_idp_row(engine)
+    provider_id = _insert_password_login_row(engine)
 
     _upgrade_to_189(test_database)
 
-    assert _federated_rows(engine) == []
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text('SELECT title, color FROM auth_providers WHERE id = :id'),
+                {'id': provider_id},
+            )
+            .mappings()
+            .one()
+        )
+    assert row['title'] == 'Login with Password'
+    assert row['color'] == '#03A956'
 
 
-def test_upgrade_noop_without_a_keycloak_idp_row(
-    monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
+def test_upgrade_does_not_rebrand_a_customized_password_login_row(
+    engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
-    # No Keycloak row inserted this time.
+    provider_id = _insert_password_login_row(
+        engine, title='Corp Password Login', color='#123456'
+    )
 
-    monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
     _upgrade_to_189(test_database)
 
-    assert _federated_rows(engine) == []
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text('SELECT title, color FROM auth_providers WHERE id = :id'),
+                {'id': provider_id},
+            )
+            .mappings()
+            .one()
+        )
+    assert row['title'] == 'Corp Password Login'
+    assert row['color'] == '#123456'
+
+
+# ── idempotency ──────────────────────────────────────────────────────────────
 
 
 def test_upgrade_is_idempotent(
@@ -217,38 +375,48 @@ def test_upgrade_is_idempotent(
 ):
     _downgrade_to_188(test_database)
     _insert_keycloak_idp_row(engine)
+    _insert_password_login_row(engine)
+    _set_keycloak_env(monkeypatch)
     monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
+
     _upgrade_to_189(test_database)
     assert len(_federated_rows(engine)) == 1
+    assert _password_login_rows(engine)[0]['title'] == 'Login with Password'
 
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '188'
     )
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '189'
-    )
+    _upgrade_to_189(test_database)
 
     assert len(_federated_rows(engine)) == 1
+    assert _password_login_rows(engine)[0]['title'] == 'Login with Password'
 
 
-def test_downgrade_removes_seeded_rows_but_not_the_keycloak_row(
+# ── downgrade ────────────────────────────────────────────────────────────────
+
+
+def test_downgrade_reverts_rebrand_removes_federated_rows_and_restores_keycloak(
     monkeypatch, engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     _downgrade_to_188(test_database)
     _insert_keycloak_idp_row(engine)
+    _insert_password_login_row(engine)
+    _set_keycloak_env(monkeypatch)
     monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
     monkeypatch.setenv('GITLAB_APP_CLIENT_ID', 'gl-client-id')
     monkeypatch.setenv('BITBUCKET_APP_CLIENT_ID', 'bb-client-id')
+
     _upgrade_to_189(test_database)
     assert len(_federated_rows(engine)) == 3
+    assert _keycloak_rows(engine) == []
+    assert _password_login_rows(engine)[0]['title'] == 'Login with Password'
 
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '188'
     )
 
     assert _federated_rows(engine) == []
-    with engine.connect() as conn:
-        remaining_titles = (
-            conn.execute(text('SELECT title FROM auth_providers')).scalars().all()
-        )
-    assert remaining_titles == ['Keycloak']
+    assert len(_keycloak_rows(engine)) == 1
+    password_row = _password_login_rows(engine)[0]
+    assert password_row['title'] == 'Password Login'
+    assert password_row['color'] == '#000000'

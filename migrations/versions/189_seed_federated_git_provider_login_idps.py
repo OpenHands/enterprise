@@ -1,10 +1,12 @@
-"""Seed GitHub/GitLab/Bitbucket as login IDPs routed through Keycloak.
+"""Seed GitHub/GitLab/Bitbucket login IDPs, retire the generic Keycloak row,
+and rebrand the integrated/password login.
 
-Migration 168 seeds a single ``auth_providers`` IDP row for Keycloak itself
+**Federated git-provider login IDPs.** Migration 168 originally seeded a
+single ``auth_providers`` IDP row for Keycloak itself
 (``provider_type='enterprise_sso'``, ``title='Keycloak'``) whenever
-``KEYCLOAK_CLIENT_ID`` is set -- which, since Keycloak is the auth server for
-every OpenHands Enterprise install, is effectively always. That row has no
-``kc_idp_hint`` on its ``authorization_url``, so visiting it lands on
+``KEYCLOAK_CLIENT_ID`` was set -- which, since Keycloak is the auth server
+for every OpenHands Enterprise install, was effectively always. That row has
+no ``kc_idp_hint`` on its ``authorization_url``, so visiting it lands on
 Keycloak's own login screen rather than any specific brand.
 
 Before the OAuth v2 login path existed, the ``/login`` page instead showed
@@ -22,21 +24,24 @@ for repo access after login, a completely separate flow from the login
 IDP's own client/secret, and is never read here).
 
 Once ``ENABLE_OAUTH_V2_LOGIN`` renders every ``is_idp`` row as a button
-(``GET /oauth/idp-providers``), the single generic ``'Keycloak'`` row is the
-*only* thing that shows -- a regression from the per-brand chooser above.
-This migration closes that gap the same additive way migration 168 seeded
-its own rows: for each of GitHub/GitLab/Bitbucket whose ``*_APP_CLIENT_ID``
-is set, add a new ``is_idp=True`` row that:
+(``GET /oauth/idp-providers``), the single generic ``'Keycloak'`` row was the
+*only* thing that showed -- a regression from the per-brand chooser above.
+This migration closes that gap: for each of GitHub/GitLab/Bitbucket whose
+``*_APP_CLIENT_ID`` is set (and only if ``KEYCLOAK_CLIENT_ID`` is also set --
+there is no Keycloak client to route through otherwise), it adds a new
+``is_idp=True`` row that:
 
-- Reuses the existing Keycloak IDP row's ``client_id``/``client_secret``/
-  ``token_url``/``userinfo_url``/``scopes`` verbatim (including the
-  already-encrypted ``client_secret`` ciphertext, copied as-is -- it
-  decrypts to the same plaintext either row is read back through, so there
-  is nothing to re-encrypt). Customers keep using their existing Keycloak
-  client; this never talks to GitHub/GitLab/Bitbucket's own OAuth endpoints
-  directly.
-- Only overrides ``provider_type`` (to the brand) and ``authorization_url``
-  (appending ``kc_idp_hint=<brand>``, the same query param
+- Reuses the Keycloak client's ``client_id``/``client_secret``/
+  ``token_url``/``userinfo_url``/``scopes``, resolved directly from the same
+  ``KEYCLOAK_*``/``AUTH_URL``/``AUTH_WEB_HOST``/``WEB_HOST`` env vars
+  migration 168 used to (see ``_resolve_keycloak_realm_base_url``/
+  ``_keycloak_details_from_env``, duplicated from -- no longer present in --
+  migration 168, same convention as every other migration in this directory
+  re-deriving a sibling migration's logic rather than importing it).
+  Customers keep using their existing Keycloak client; this never talks to
+  GitHub/GitLab/Bitbucket's own OAuth endpoints directly.
+- Overrides ``provider_type`` (to the brand) and appends
+  ``kc_idp_hint=<brand>`` to ``authorization_url`` (the same query param
   ``generate-auth-url.ts`` added client-side for the legacy buttons) so
   ``GET /oauth/{id}/login`` (``server/routes/oauth_v2.py``) sends the
   browser straight to that brand's federated login at Keycloak -- no code
@@ -46,11 +51,28 @@ is set, add a new ``is_idp=True`` row that:
   buttons above, so the "Let's Get Started" screen looks the same as before
   OAuth v2.
 
-The original Keycloak row is left untouched -- it remains the fallback for
-installs with no federated git-provider login configured (e.g. a pure
-Keycloak-local-accounts or admin-configured enterprise-SSO setup), and
-admins can always retitle, hide, or delete it via the ``auth_providers``
-admin API/UI if it is not wanted alongside the new rows.
+**Retiring the generic Keycloak row.** This migration also deletes the old
+generic Keycloak row outright, if a host still has one from an older version
+of migration 168 (matched narrowly on ``title='Keycloak'`` + ``provider_type
+='enterprise_sso'``, so an admin-added second enterprise-SSO connector with
+a different title is never touched) -- it added no value once there is at
+least one properly-branded row, and matches the legacy login page, which
+never showed a generic "Keycloak" button either. An install with no
+git-provider brand configured, and no admin-added enterprise-SSO/SAML/
+integrated-password row, now has *no* login IDP at all rather than a
+poorly-labeled fallback -- the same "no providers configured" outcome the
+legacy login page already showed in that situation, so this is not a new
+failure mode.
+
+**Rebranding the integrated/password login.** Migration 179's seeded
+``title`` (``'Password Login'``) and migration 188's blanket ``color``
+default (black, ``#000000``) are both fixed at their point of origin for
+new installs (179's literal is now ``'Login with Password'``, 188 now also
+overrides this one kind's color to ``#03A956`` right after adding the
+column -- see those migrations). Hosts that already ran them before this
+fix are repaired here, narrowly matching the pre-fix defaults
+(``title='Password Login'`` AND ``color='#000000'``) so an admin who already
+customized either field is left alone.
 
 Revision ID: 189
 Revises: 188
@@ -61,7 +83,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Sequence
+from typing import Sequence
 
 import sqlalchemy as sa
 from alembic import op
@@ -73,6 +95,13 @@ depends_on: str | Sequence[str] | None = None
 
 _OAUTH_KIND = 'OAuthProviderDetails'
 _ENTERPRISE_SSO_PROVIDER_TYPE = 'enterprise_sso'
+_KEYCLOAK_TITLE = 'Keycloak'
+
+_PASSWORD_KIND = 'PasswordProviderDetails'
+_PASSWORD_LOGIN_OLD_TITLE = 'Password Login'
+_PASSWORD_LOGIN_NEW_TITLE = 'Login with Password'
+_PASSWORD_LOGIN_OLD_COLOR = '#000000'
+_PASSWORD_LOGIN_NEW_COLOR = '#03A956'
 
 # Mirrors the raw SVG markup of frontend/src/assets/branding/{brand}-logo.svg,
 # with `fill="currentColor"` resolved to white: these rows' `icon` is
@@ -132,26 +161,98 @@ _FEDERATED_BRANDS: list[tuple[str, str, str, str, str]] = [
 ]
 
 
-def _as_dict(value: Any) -> dict:
-    return json.loads(value) if isinstance(value, str) else value
+def _resolve_keycloak_realm_base_url() -> str:
+    """Resolve the externally-reachable Keycloak realm base URL.
+
+    Duplicated from (no longer present in) migration 168 -- see this
+    migration's module docstring. ``KEYCLOAK_SERVER_URL`` is the in-cluster
+    URL used for server-to-server admin calls; it is not reachable by end
+    users' browsers, so it must never be used to build the
+    ``authorization_url``/``token_url``/``userinfo_url`` stored here. Those
+    are derived instead from:
+
+    - ``AUTH_URL``, if set, else
+    - ``https://{AUTH_WEB_HOST}``, if ``AUTH_WEB_HOST`` is set, else
+    - ``https://auth.{WEB_HOST}``, if ``WEB_HOST`` is set.
+
+    Returns an empty string if none of the above resolve to a usable URL (or
+    ``KEYCLOAK_REALM_NAME`` is unset).
+    """
+    auth_url = os.getenv('AUTH_URL', '').strip().rstrip('/')
+    if not auth_url:
+        auth_web_host = os.getenv('AUTH_WEB_HOST', '').strip()
+        if not auth_web_host:
+            web_host = os.getenv('WEB_HOST', '').strip()
+            if web_host:
+                auth_web_host = f'auth.{web_host}'
+        if auth_web_host:
+            auth_url = f'https://{auth_web_host}'
+
+    # If there is still no auth url, we try the keycloak variables
+    if not auth_url:
+        auth_url = os.getenv('KEYCLOAK_SERVER_URL_EXT', '')
+    if not auth_url:
+        auth_url = os.getenv('KEYCLOAK_SERVER_URL', '')
+
+    kc_realm = os.getenv('KEYCLOAK_REALM_NAME', '').strip()
+    if not auth_url or not kc_realm:
+        return ''
+    return f'{auth_url}/realms/{kc_realm}'
 
 
-def _get_keycloak_idp_details(bind) -> dict | None:
-    """The existing Keycloak IDP row's ``details``, or ``None`` if there
-    isn't one (e.g. ``KEYCLOAK_CLIENT_ID`` was never set, so migration 168
-    never seeded it -- nothing to base the new rows on)."""
-    raw = bind.execute(
+def _keycloak_details_from_env() -> dict | None:
+    """Resolve Keycloak IDP OAuth details straight from the environment.
+
+    Fallback for hosts that never had a generic Keycloak ``auth_providers``
+    row to begin with (fresh installs, since migration 168 no longer seeds
+    one -- see this migration's module docstring). Mirrors migration 168's
+    removed ``_seed_from_environment`` Keycloak block. Returns ``None`` when
+    ``KEYCLOAK_CLIENT_ID`` is unset -- nothing to base the per-brand rows on.
+    """
+    kc_client_id = os.getenv('KEYCLOAK_CLIENT_ID', '').strip()
+    if not kc_client_id:
+        return None
+
+    from storage.encrypt_utils import encrypt_value
+
+    kc_client_secret = os.getenv('KEYCLOAK_CLIENT_SECRET', '').strip()
+    kc_base = _resolve_keycloak_realm_base_url()
+    return {
+        'kind': _OAUTH_KIND,
+        'provider_type': _ENTERPRISE_SSO_PROVIDER_TYPE,
+        'client_id': kc_client_id,
+        'client_secret': encrypt_value(kc_client_secret) if kc_client_secret else None,
+        'authorization_url': (
+            f'{kc_base}/protocol/openid-connect/auth' if kc_base else None
+        ),
+        'token_url': (f'{kc_base}/protocol/openid-connect/token' if kc_base else None),
+        'userinfo_url': (
+            f'{kc_base}/protocol/openid-connect/userinfo' if kc_base else None
+        ),
+        'scopes': ['openid', 'email', 'profile'],
+        'permitted_drift_seconds': 60,
+    }
+
+
+def _delete_existing_keycloak_row(bind) -> None:
+    """Delete the legacy generic Keycloak row seeded by an older version of
+    migration 168, if this database still has one. Matched narrowly
+    (``title`` + ``provider_type``) so an admin-added second enterprise-SSO
+    connector is never mistaken for it. A no-op if there is no such row."""
+    bind.execute(
         sa.text(
             """
-            SELECT details FROM auth_providers
-            WHERE kind = :kind AND is_idp = true
+            DELETE FROM auth_providers
+            WHERE kind = :kind AND is_idp = true AND title = :title
               AND details ->> 'provider_type' = :provider_type
-            ORDER BY id LIMIT 1
             """
         ),
-        {'kind': _OAUTH_KIND, 'provider_type': _ENTERPRISE_SSO_PROVIDER_TYPE},
-    ).scalar_one_or_none()
-    return _as_dict(raw) if raw is not None else None
+        {
+            'kind': _OAUTH_KIND,
+            'title': _KEYCLOAK_TITLE,
+            'provider_type': _ENTERPRISE_SSO_PROVIDER_TYPE,
+        },
+    )
 
 
 def _federated_idp_row_exists(bind, provider_type: str) -> bool:
@@ -187,21 +288,7 @@ def _with_idp_hint(authorization_url: str | None, provider_type: str) -> str | N
     return f'{authorization_url}{separator}kc_idp_hint={provider_type}'
 
 
-def upgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != 'postgresql':
-        raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
-
-    inspector = sa.inspect(bind)
-    if not inspector.has_table('auth_providers'):
-        # Should not happen (migration 168 creates it) but guards against
-        # running this out of order / on a fresh install that never had it.
-        return
-
-    keycloak_details = _get_keycloak_idp_details(bind)
-    if keycloak_details is None:
-        return
-
+def _seed_federated_idp_rows(bind, keycloak_details: dict) -> None:
     for provider_type, title, color, icon, env_var in _FEDERATED_BRANDS:
         if not os.getenv(env_var, '').strip():
             continue
@@ -235,8 +322,74 @@ def upgrade() -> None:
         )
 
 
+def _rebrand_password_login(bind) -> None:
+    """Repair a pre-fix integrated/password IDP row's ``title``/``color``.
+
+    Narrowly matched on the exact pre-fix defaults so an admin who already
+    retitled/recolored this row (via the admin API) is left untouched.
+    """
+    bind.execute(
+        sa.text(
+            """
+            UPDATE auth_providers
+            SET title = :new_title, color = :new_color,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE kind = :kind AND title = :old_title AND color = :old_color
+            """
+        ),
+        {
+            'kind': _PASSWORD_KIND,
+            'new_title': _PASSWORD_LOGIN_NEW_TITLE,
+            'new_color': _PASSWORD_LOGIN_NEW_COLOR,
+            'old_title': _PASSWORD_LOGIN_OLD_TITLE,
+            'old_color': _PASSWORD_LOGIN_OLD_COLOR,
+        },
+    )
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != 'postgresql':
+        raise RuntimeError(f'Unsupported database dialect: {bind.dialect.name}')
+
+    inspector = sa.inspect(bind)
+    if not inspector.has_table('auth_providers'):
+        # Should not happen (migration 168 creates it) but guards against
+        # running this out of order / on a fresh install that never had it.
+        return
+
+    keycloak_details = _keycloak_details_from_env()
+    if keycloak_details is not None:
+        _seed_federated_idp_rows(bind, keycloak_details)
+
+    _delete_existing_keycloak_row(bind)
+    _rebrand_password_login(bind)
+
+
 def downgrade() -> None:
     bind = op.get_bind()
+
+    # Revert the password-login rebrand -- same conservative matching, now
+    # keyed on the *new* values so a row an admin customized away from them
+    # in the meantime is left alone.
+    bind.execute(
+        sa.text(
+            """
+            UPDATE auth_providers
+            SET title = :old_title, color = :old_color,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE kind = :kind AND title = :new_title AND color = :new_color
+            """
+        ),
+        {
+            'kind': _PASSWORD_KIND,
+            'old_title': _PASSWORD_LOGIN_OLD_TITLE,
+            'old_color': _PASSWORD_LOGIN_OLD_COLOR,
+            'new_title': _PASSWORD_LOGIN_NEW_TITLE,
+            'new_color': _PASSWORD_LOGIN_NEW_COLOR,
+        },
+    )
+
     for provider_type, title, color, _icon, _env_var in _FEDERATED_BRANDS:
         bind.execute(
             sa.text(
@@ -254,3 +407,48 @@ def downgrade() -> None:
                 'provider_type': provider_type,
             },
         )
+
+    # Restore a generic Keycloak row equivalent to the one upgrade() may have
+    # removed, resolved fresh from the environment (the original row, if
+    # any, is gone by the time downgrade() runs) -- so an upgrade/downgrade
+    # cycle round-trips back to "has a Keycloak row" rather than silently
+    # leaving a downgraded database with none.
+    keycloak_row_exists = (
+        bind.execute(
+            sa.text(
+                """
+                SELECT 1 FROM auth_providers
+                WHERE kind = :kind AND is_idp = true AND title = :title
+                  AND details ->> 'provider_type' = :provider_type
+                LIMIT 1
+                """
+            ),
+            {
+                'kind': _OAUTH_KIND,
+                'title': _KEYCLOAK_TITLE,
+                'provider_type': _ENTERPRISE_SSO_PROVIDER_TYPE,
+            },
+        ).scalar_one_or_none()
+        is not None
+    )
+    if not keycloak_row_exists:
+        keycloak_details = _keycloak_details_from_env()
+        if keycloak_details is not None:
+            bind.execute(
+                sa.text(
+                    """
+                    INSERT INTO auth_providers
+                        (kind, title, is_idp, color, allow_registration,
+                         details, created_at, updated_at)
+                    VALUES
+                        (:kind, :title, true, :color, true, :details,
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """
+                ),
+                {
+                    'kind': _OAUTH_KIND,
+                    'title': _KEYCLOAK_TITLE,
+                    'color': '#000000',
+                    'details': json.dumps(keycloak_details),
+                },
+            )
