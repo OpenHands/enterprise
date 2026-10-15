@@ -31857,23 +31857,6 @@
     "uk": "Replaces \"Account\" in the top left.",
     "ca": "Replaces \"Account\" in the top left."
   },
-  "SUPER_ADMIN$INSTANCE_EMAIL": {
-    "en": "Email invitations and alerts",
-    "ja": "Email invitations and alerts",
-    "zh-CN": "Email invitations and alerts",
-    "zh-TW": "Email invitations and alerts",
-    "ko-KR": "Email invitations and alerts",
-    "no": "Email invitations and alerts",
-    "it": "Email invitations and alerts",
-    "pt": "Email invitations and alerts",
-    "es": "Email invitations and alerts",
-    "ar": "Email invitations and alerts",
-    "fr": "Email invitations and alerts",
-    "tr": "Email invitations and alerts",
-    "de": "Email invitations and alerts",
-    "uk": "Email invitations and alerts",
-    "ca": "Email invitations and alerts"
-  },
   "SUPER_ADMIN$INSTANCE_AUTO_ORG": {
     "en": "Allow users to have personal workspace",
     "ja": "Allow users to have personal workspace",
@@ -32706,23 +32689,6 @@
     "de": "Could not load Super Admin data",
     "uk": "Could not load Super Admin data",
     "ca": "Could not load Super Admin data"
-  },
-  "SUPER_ADMIN$INSTANCE_EMAIL_HINT": {
-    "en": "Configured when SMTP or Resend is set on the instance",
-    "ja": "Configured when SMTP or Resend is set on the instance",
-    "zh-CN": "Configured when SMTP or Resend is set on the instance",
-    "zh-TW": "Configured when SMTP or Resend is set on the instance",
-    "ko-KR": "Configured when SMTP or Resend is set on the instance",
-    "no": "Configured when SMTP or Resend is set on the instance",
-    "it": "Configured when SMTP or Resend is set on the instance",
-    "pt": "Configured when SMTP or Resend is set on the instance",
-    "es": "Configured when SMTP or Resend is set on the instance",
-    "ar": "Configured when SMTP or Resend is set on the instance",
-    "fr": "Configured when SMTP or Resend is set on the instance",
-    "tr": "Configured when SMTP or Resend is set on the instance",
-    "de": "Configured when SMTP or Resend is set on the instance",
-    "uk": "Configured when SMTP or Resend is set on the instance",
-    "ca": "Configured when SMTP or Resend is set on the instance"
   },
   "SUPER_ADMIN$INSTANCE_AUTO_ORG_HINT": {
     "en": "Controlled by deployment configuration (not editable here)",

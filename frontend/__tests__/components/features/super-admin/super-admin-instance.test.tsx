@@ -99,6 +99,24 @@ describe("Super Admin Instance page", () => {
     ).not.toBeChecked();
   });
 
+  it("does not show an email row -- email delivery is configured on the server, not here", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: true }),
+    );
+
+    // Act
+    await renderInstancePage();
+
+    // Assert
+    expect(
+      screen.queryByLabelText("SUPER_ADMIN$INSTANCE_EMAIL"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("SUPER_ADMIN$INSTANCE_AUTO_ORG"),
+    ).toBeInTheDocument();
+  });
+
   it("saves an uploaded logo for the whole instance", async () => {
     // Arrange
     mockSuperAdminConfig();
