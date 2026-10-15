@@ -8,41 +8,30 @@ on its own, each pytest-xdist worker could create a different key, and such a
 test would fail only on the workers that lost that race.
 
 The root ``conftest.py`` sets the key through the environment, which every
-subprocess inherits. This guard fails if that stops being true.
+new process inherits. This guard fails if that stops being true.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from storage.encrypt_utils import encrypt_value
-from tests.postgres_testdb import REPO_ROOT
+import pytest
 
-_DECRYPT = (
-    'import sys\n'
-    'from storage.encrypt_utils import decrypt_value\n'
-    'print(decrypt_value(sys.argv[1]), end="")\n'
-)
+from storage.encrypt_utils import decrypt_value, encrypt_value
 
 
-def test_a_subprocess_without_key_files_decrypts_what_pytest_encrypted(
-    tmp_path: Path,
+def test_a_fresh_process_without_key_files_decrypts_what_pytest_encrypted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # An empty persistence directory: the subprocess cannot read a key file
-    # that this process wrote, so the key must come from the environment.
-    env = {**os.environ, 'OH_PERSISTENCE_DIR': str(tmp_path)}
+    # Encrypt first: the key this process uses must not come from tmp_path.
     ciphertext = encrypt_value('shared-secret')
+    # An empty persistence directory for the new process: it cannot read a key
+    # file that this process wrote, so the key must come from the environment.
+    monkeypatch.setenv('OH_PERSISTENCE_DIR', str(tmp_path))
 
-    result = subprocess.run(
-        [sys.executable, '-c', _DECRYPT, ciphertext],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == 'shared-secret'
+    # ``spawn`` starts a fresh interpreter, like the alembic subprocess does.
+    spawn = multiprocessing.get_context('spawn')
+    with ProcessPoolExecutor(max_workers=1, mp_context=spawn) as pool:
+        assert pool.submit(decrypt_value, ciphertext).result() == 'shared-secret'
