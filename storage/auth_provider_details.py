@@ -184,6 +184,26 @@ class OAuthProviderDetails(AuthProviderDetails):
     userinfo_url: str | None = None
     scopes: list[str] | None = None
     permitted_drift_seconds: int = DEFAULT_PERMITTED_DRIFT_SECONDS
+    # True for the per-brand login rows migration 189 seeds
+    # (``title='Log in with GitHub'`` etc.): their ``token_url``/credentials
+    # are actually Keycloak's own, not the ``provider_type`` brand's --
+    # Keycloak routes straight to that brand's federated identity via
+    # ``kc_idp_hint=<brand>``, but its own OIDC response never carries the
+    # upstream brand's access/refresh token, only Keycloak's. Getting the
+    # real token needs a second call to Keycloak's identity-brokering
+    # endpoint (``GET /realms/{realm}/broker/{alias}/token``, Bearer-
+    # authenticated with the Keycloak access token just obtained -- see
+    # ``TokenManager.get_idp_tokens_from_keycloak``). ``is_idp=True`` +
+    # ``provider_type=github`` alone can't signal this (an admin can also
+    # configure a *direct*, non-Keycloak brand IDP via the admin API, whose
+    # own ``token_url`` *is* the real thing), hence this explicit flag.
+    # ``server.routes.oauth_v2.oauth_v2_callback`` checks it to make that
+    # extra call and store the real token under the sibling
+    # ``is_idp=False`` git-provider row for the same ``provider_type``
+    # (seeded by migration 168, gated on the same env var) instead of this
+    # row -- ``SaasUserAuth._v2_get_provider_tokens`` only ever reads
+    # ``is_idp=False`` rows for git-provider credentials.
+    legacy_keycloak: bool = False
 
     @field_validator('client_secret', mode='before')
     @classmethod

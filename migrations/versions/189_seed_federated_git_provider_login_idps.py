@@ -50,6 +50,11 @@ there is no Keycloak client to route through otherwise), it adds a new
 - Carries that brand's button color/icon from the legacy, hard-coded
   buttons above, so the "Let's Get Started" screen looks the same as before
   OAuth v2.
+- Sets ``details.legacy_keycloak = True`` so ``server.routes.oauth_v2``'s
+  callback knows this row's ``token_url`` only ever yields a Keycloak
+  token, not the brand's real one, and fetches/stores the real token
+  against the sibling is_idp=False row instead -- see
+  ``OAuthProviderDetails.legacy_keycloak``.
 
 **Retiring the generic Keycloak row.** This migration also deletes the old
 generic Keycloak row outright, if a host still has one from an older version
@@ -300,6 +305,12 @@ def _seed_federated_idp_rows(bind, keycloak_details: dict) -> None:
         details['authorization_url'] = _with_idp_hint(
             details.get('authorization_url'), provider_type
         )
+        # Marks this row's token_url/credentials as Keycloak's own, not the
+        # brand's -- see ``OAuthProviderDetails.legacy_keycloak``. The
+        # sibling is_idp=False row this brand's real tokens get stored
+        # against is seeded separately (migration 168), gated on the same
+        # env var checked above.
+        details['legacy_keycloak'] = True
 
         bind.execute(
             sa.text(
