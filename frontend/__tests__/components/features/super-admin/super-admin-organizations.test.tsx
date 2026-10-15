@@ -96,7 +96,7 @@ async function chooseOrgAction(
   actionTestId: string,
 ) {
   await user.click(await screen.findByTestId("super-admin-org-actions-2"));
-  await user.click(screen.getByTestId(actionTestId));
+  await user.click(await screen.findByTestId(actionTestId));
 }
 
 describe("Super Admin Organizations page", () => {
@@ -202,6 +202,9 @@ describe("Super Admin Organizations page", () => {
   it("invites a person into the organization chosen from its row menu", async () => {
     // Arrange
     const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: true }),
+    );
     vi.spyOn(organizationService, "getPendingInvitations").mockResolvedValue({
       items: [],
       email_delivery_configured: true,
@@ -231,6 +234,26 @@ describe("Super Admin Organizations page", () => {
       emails: ["new@acme.org"],
       role: "member",
     });
+  });
+
+  it("hides Invite by email when the instance cannot send email", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: false }),
+    );
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-org-actions-2"));
+
+    // Assert
+    expect(
+      await screen.findByTestId("super-admin-org-remove-2"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-invite-2"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a personal workspace as Personal Workspace and keeps team names", async () => {
