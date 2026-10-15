@@ -128,6 +128,14 @@ def _select_project_repo(
     return None
 
 
+def _azure_service(keycloak_user_id: str, org: str) -> SaaSAzureDevOpsService:
+    # The lazy proxy is typed as the base; the enterprise impl adds the methods.
+    return cast(
+        SaaSAzureDevOpsService,
+        AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id, base_domain=org),
+    )
+
+
 def _actor_username(actor: dict[str, Any]) -> str:
     return (
         actor.get('displayName')
@@ -168,10 +176,14 @@ class AzureDevOpsItem(ResolverViewInterface):
         # Only PR comments carry a branch; overridden there.
         return None
 
-    async def _load_resolver_context(self) -> None:
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
+    def azure_service(self) -> SaaSAzureDevOpsService:
+        """Service bound to the event's organization, not the configured default."""
+        return _azure_service(
+            self.user_info.keycloak_user_id, self.full_repo_name.split('/', 1)[0]
         )
+
+    async def _load_resolver_context(self) -> None:
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_issue_or_pr_comments(
             self.full_repo_name,
             self.issue_number,
@@ -276,9 +288,7 @@ class AzureDevOpsPRComment(AzureDevOpsItem):
     async def _load_resolver_context(self) -> None:
         # Call PR-specific methods directly so a brand-new PR with no prior
         # comments (empty list) never falls back to unrelated work-item discussion.
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
-        )
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_pr_comments(
             self.full_repo_name,
             self.issue_number,
@@ -319,9 +329,7 @@ class AzureDevOpsWorkItemComment(AzureDevOpsItem):
 
     async def _load_resolver_context(self) -> None:
         # Load work-item context directly; never probe PRs (a PR can share the id).
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
-        )
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_work_item_comments(
             self.full_repo_name,
             self.issue_number,
@@ -472,10 +480,7 @@ class AzureDevOpsFactory:
 
             # Work items aren't tied to a repo; resolve a real one for the project
             # instead of fabricating a project-named repo that may not exist.
-            azure_service = cast(
-                SaaSAzureDevOpsService,
-                AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id),
-            )
+            azure_service = _azure_service(keycloak_user_id, org)
             repos = await azure_service.get_project_repositories(project_name)
             repo = _select_project_repo(repos, project_name)
             if repo is None:

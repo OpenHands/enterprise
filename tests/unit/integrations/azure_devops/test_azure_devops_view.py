@@ -164,7 +164,7 @@ async def test_factory_work_item_view_derives_real_repo(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -193,7 +193,7 @@ async def test_factory_work_item_view_uses_sole_repo(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -218,7 +218,7 @@ async def test_factory_work_item_view_returns_none_when_ambiguous(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -235,7 +235,7 @@ async def test_factory_work_item_view_returns_none_when_no_repos(monkeypatch):
     fake_service.get_project_repositories = AsyncMock(return_value=[])
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -307,7 +307,7 @@ async def test_work_item_load_resolver_context_uses_work_item_not_pr(monkeypatch
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -345,7 +345,7 @@ async def test_pr_comment_load_resolver_context_uses_pr_not_work_item(monkeypatc
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(

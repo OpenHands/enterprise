@@ -247,6 +247,43 @@ describe("Super Admin Users page", () => {
     expect(screen.queryByText("inactive")).not.toBeInTheDocument();
   });
 
+  it("lists a pending invitation as invited, with no account to manage", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
+      {
+        user_id: null,
+        email: "pat@acme.org",
+        name: "pat",
+        status: "active",
+        memberships: [
+          {
+            org_id: "2",
+            org_name: "Acme Corp",
+            role: "member",
+            status: "invited",
+          },
+        ],
+      },
+    ]);
+
+    // Act
+    await renderUsersPage();
+    await user.click(await screen.findByText("pat@acme.org"));
+
+    // Assert
+    expect(screen.getByText("invited")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId(/^super-admin-user-actions-/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-groups-modal"),
+    ).not.toBeInTheDocument();
+  });
+
   describe("Reset Password", () => {
     const SAM: SuperAdminUserRow = {
       id: "7",

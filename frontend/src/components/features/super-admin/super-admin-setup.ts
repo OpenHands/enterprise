@@ -63,7 +63,7 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     id: "optional-saml",
     title: "SUPER_ADMIN$SETUP_STEP_SAML",
     description: "SUPER_ADMIN$SETUP_STEP_SAML_HINT",
-    to: SUPER_ADMIN_PATHS.instance,
+    to: SUPER_ADMIN_PATHS.authProviders,
     completion: "optional",
   },
 ];

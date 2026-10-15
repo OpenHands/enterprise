@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
@@ -23,7 +24,6 @@ import {
 } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import { HelpLink } from "#/ui/help-link";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_PATHS,
@@ -90,6 +90,10 @@ export function SuperAdminSetup() {
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
   const { data: me } = useMe();
+  const { data: config } = useConfig();
+  // Invitations are sent by email, so without SMTP or Resend on the instance
+  // (``email_enabled``) there is nothing to send and the item is not offered.
+  const emailEnabled = Boolean(config?.email_enabled);
   const {
     viewOrg,
     canViewOrg,
@@ -243,11 +247,15 @@ export function SuperAdminOrganizations() {
                     ...(row.isPersonal
                       ? []
                       : [
-                          {
-                            label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
-                            testId: `super-admin-org-invite-${row.id}`,
-                            onSelect: () => setInviteOrgId(row.id),
-                          },
+                          ...(emailEnabled
+                            ? [
+                                {
+                                  label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
+                                  testId: `super-admin-org-invite-${row.id}`,
+                                  onSelect: () => setInviteOrgId(row.id),
+                                },
+                              ]
+                            : []),
                           {
                             label: t(I18nKey.SUPER_ADMIN$REMOVE),
                             testId: `super-admin-org-remove-${row.id}`,
@@ -353,6 +361,8 @@ export function SuperAdminUsers() {
   const users: SuperAdminUserRow[] = useMemo(
     () =>
       (data ?? []).map((user) => {
+        // A pending invitation has no account yet, so its email keys the row.
+        const id = user.user_id ?? user.email ?? "";
         const memberships: SuperAdminMembership[] = user.memberships.map(
           (membership) => ({
             orgId: membership.org_id,
@@ -367,14 +377,15 @@ export function SuperAdminUsers() {
           }),
         );
         return {
-          id: user.user_id,
-          name: user.name || user.email || user.user_id,
+          id,
+          name: user.name || user.email || id,
           email: user.email ?? "",
           memberships,
           status:
             user.status === "inactive"
               ? "inactive"
               : deriveUserStatus(user.memberships),
+          isPendingInvite: user.user_id === null,
         };
       }),
     [data, t],
@@ -440,6 +451,7 @@ export function SuperAdminUsers() {
         getRowKey={(row) => row.id}
         empty={t(I18nKey.SUPER_ADMIN$EMPTY_USERS)}
         onRowClick={(row) => setManagedUserId(row.id)}
+        isRowClickable={(row) => !row.isPendingInvite}
         columns={[
           {
             key: "name",
@@ -494,40 +506,42 @@ export function SuperAdminUsers() {
               "w-12 min-w-12 text-right",
               USER_TABLE_CELL_CLASS_NAME,
             ),
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-user-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
-                    testId: `super-admin-manage-user-${row.id}`,
-                    onSelect: () => setManagedUserId(row.id),
-                  },
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
-                    testId: `super-admin-user-grant-admin-${row.id}`,
-                    // Already a Super Admin -- grant it again would be a
-                    // no-op, so disable rather than letting it silently
-                    // succeed and confuse whoever clicked it.
-                    isDisabled: superAdminIds.has(row.id),
-                    title: superAdminIds.has(row.id)
-                      ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
-                      : undefined,
-                    onSelect: () => setUserToGrant(row),
-                  },
-                  ...(enableIntegratedIdp
-                    ? [
-                        {
-                          label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
-                          testId: `super-admin-reset-password-${row.id}`,
-                          onSelect: () => setUserForPasswordReset(row),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            ),
+            // A pending invitation has no account to manage yet.
+            render: (row) =>
+              row.isPendingInvite ? null : (
+                <SuperAdminRowMenu
+                  testId={`super-admin-user-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
+                      testId: `super-admin-manage-user-${row.id}`,
+                      onSelect: () => setManagedUserId(row.id),
+                    },
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
+                      testId: `super-admin-user-grant-admin-${row.id}`,
+                      // Already a Super Admin -- grant it again would be a
+                      // no-op, so disable rather than letting it silently
+                      // succeed and confuse whoever clicked it.
+                      isDisabled: superAdminIds.has(row.id),
+                      title: superAdminIds.has(row.id)
+                        ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
+                        : undefined,
+                      onSelect: () => setUserToGrant(row),
+                    },
+                    ...(enableIntegratedIdp
+                      ? [
+                          {
+                            label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
+                            testId: `super-admin-reset-password-${row.id}`,
+                            onSelect: () => setUserForPasswordReset(row),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              ),
           },
         ]}
       />
@@ -598,6 +612,7 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
@@ -618,7 +633,20 @@ export function SuperAdminAdmins() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
-      <SuperAdminPageHeader title={t(copy.text)} subtitle={t(copy.subtitle)} />
+      <SuperAdminPageHeader
+        title={t(copy.text)}
+        subtitle={t(copy.subtitle)}
+        action={
+          <BrandButton
+            type="button"
+            variant="secondary"
+            testId="super-admin-admins-go-to-users"
+            onClick={() => navigate(SUPER_ADMIN_PATHS.users)}
+          >
+            {t(I18nKey.SUPER_ADMIN$ADMINS_GO_TO_USERS)}
+          </BrandButton>
+        }
+      />
       <p className="text-sm text-[var(--oh-muted)]">
         {t(I18nKey.SUPER_ADMIN$ADMINS_HINT)}
       </p>
@@ -708,13 +736,9 @@ export function SuperAdminAdmins() {
   );
 }
 
-const SAML_SSO_DOCS_URL =
-  "https://docs.openhands.dev/enterprise/integrations/saml-sso";
-
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
-  const emailEnabled = Boolean(config?.email_enabled);
   const personalWorkspacesHidden =
     config?.feature_flags?.hide_personal_workspaces === true;
   const { data: setupState } = useSetupState();
@@ -727,18 +751,6 @@ export function SuperAdminInstance() {
       <InstanceCompanyNameSetting />
       <div className="flex flex-col gap-1">
         <SettingsSwitch
-          isToggled={emailEnabled}
-          isDisabled
-          onToggle={() => undefined}
-        >
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL)}
-        </SettingsSwitch>
-        <p className="pl-0 text-xs text-[var(--oh-muted)]">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL_HINT)}
-        </p>
-      </div>
-      <div className="flex flex-col gap-1">
-        <SettingsSwitch
           isToggled={!personalWorkspacesHidden}
           isDisabled
           onToggle={() => undefined}
@@ -748,22 +760,6 @@ export function SuperAdminInstance() {
         <p className="text-xs text-[var(--oh-muted)]">
           {t(I18nKey.SUPER_ADMIN$INSTANCE_AUTO_ORG_HINT)}
         </p>
-      </div>
-      <div
-        className="flex flex-col gap-1"
-        data-testid="super-admin-instance-sso"
-      >
-        <p className="text-sm text-white">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_SSO)}
-        </p>
-        <HelpLink
-          testId="super-admin-instance-sso-docs"
-          text={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_HINT)}
-          linkText={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_DOCS)}
-          href={SAML_SSO_DOCS_URL}
-          linkColor="white"
-          className="text-[var(--oh-muted)]"
-        />
       </div>
       {/* Only the first Super Admin has a guide to show or hide. */}
       <SettingsSwitch

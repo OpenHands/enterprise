@@ -480,6 +480,43 @@ describe("Budgets", () => {
     expect(within(row).getAllByText("user@example.com")).toHaveLength(1);
   });
 
+  it("presents an exempted user as Unlimited rather than Disabled", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [
+        {
+          ...budgetResponse.users[0],
+          monthly_limit: null,
+          effective_monthly_limit: null,
+          is_disabled: true,
+          is_override: true,
+        },
+      ],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await screen.findByText("User One");
+
+    // Budget cell and status pill
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getAllByText("SETTINGS$BUDGETS_UNLIMITED"),
+    ).toHaveLength(2);
+    expect(within(table).queryByText("Disabled")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+
+    expect(
+      screen.getByRole("checkbox", {
+        name: "SETTINGS$BUDGETS_UNLIMITED_FOR_USER",
+      }),
+    ).toBeChecked();
+  });
+
   it("shows unavailable spend instead of rendering it as zero", async () => {
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
