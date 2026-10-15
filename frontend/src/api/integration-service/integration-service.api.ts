@@ -130,7 +130,7 @@ export const integrationService = {
   },
 
   /**
-   * Get the org-wide Azure DevOps resolver hook installation status.
+   * List the Azure DevOps organizations the signed-in account can access.
    */
   getAzureDevOpsOrganizations: async (): Promise<AzureDevOpsOrganizations> => {
     const { data } = await openHands.get<AzureDevOpsOrganizations>(
@@ -139,6 +139,9 @@ export const integrationService = {
     return data;
   },
 
+  /**
+   * Get the org-wide Azure DevOps resolver hook installation status.
+   */
   getAzureDevOpsResources: async (
     organization?: string,
   ): Promise<AzureDevOpsWebhookStatus> => {

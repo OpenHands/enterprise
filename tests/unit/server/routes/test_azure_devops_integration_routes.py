@@ -365,10 +365,6 @@ async def test_organizations_list_uses_membership_not_configured_default(
 ):
     result = await azure_devops.get_azure_devops_organizations(user_id='user')
     assert result.organizations == ['Alpha', 'Beta']
-    assert result.default_organization is None
-    organization_service.organization = 'alpha'
-    result = await azure_devops.get_azure_devops_organizations(user_id='user')
-    assert result.default_organization == 'Alpha'
 
 
 @pytest.mark.asyncio

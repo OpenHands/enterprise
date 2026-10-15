@@ -61,7 +61,6 @@ class AzureDevOpsWebhookInstallationResult(BaseModel):
 
 class AzureDevOpsOrganizations(BaseModel):
     organizations: list[str]
-    default_organization: str | None
 
 
 def get_azure_devops_manager():
@@ -212,17 +211,8 @@ async def get_azure_devops_organizations(
     user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
 ) -> AzureDevOpsOrganizations:
     service = SaaSAzureDevOpsService(external_auth_id=user_id)
-    organizations = await _accessible_organizations(service)
     return AzureDevOpsOrganizations(
-        organizations=organizations,
-        default_organization=next(
-            (
-                name
-                for name in organizations
-                if name.casefold() == (service.organization or '').casefold()
-            ),
-            None,
-        ),
+        organizations=await _accessible_organizations(service)
     )
 
 

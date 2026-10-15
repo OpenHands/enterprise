@@ -116,5 +116,4 @@ export interface AzureDevOpsWebhookInstallationResult {
 
 export interface AzureDevOpsOrganizations {
   organizations: string[];
-  default_organization: string | null;
 }
