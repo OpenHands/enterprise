@@ -10,7 +10,7 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
-export function useUninstallAzureDevOpsWebhook() {
+export function useUninstallAzureDevOpsWebhook(organization?: string) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -20,9 +20,12 @@ export function useUninstallAzureDevOpsWebhook() {
     void,
     unknown
   >({
-    mutationFn: () => integrationService.uninstallAzureDevOpsWebhook(),
+    mutationFn: () =>
+      integrationService.uninstallAzureDevOpsWebhook(organization),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["azure-devops-resources"] });
+      queryClient.invalidateQueries({
+        queryKey: ["azure-devops-resources", organization],
+      });
 
       if (data.success) {
         displaySuccessToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL_SUCCESS));
