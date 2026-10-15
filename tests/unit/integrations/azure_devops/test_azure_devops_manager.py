@@ -6,7 +6,15 @@ import pytest
 
 from integrations.azure_devops.azure_devops_manager import AzureDevOpsManager
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
-from integrations.azure_devops.azure_devops_view import AzureDevOpsWorkItemComment
+from integrations.azure_devops.azure_devops_v1_callback_processor import (
+    AzureDevOpsV1CallbackProcessor,
+)
+from integrations.azure_devops.azure_devops_view import (
+    OPENHANDS_COMMENT_MARKER,
+    OPENHANDS_WORK_ITEM_MARKER,
+    AzureDevOpsPRComment,
+    AzureDevOpsWorkItemComment,
+)
 from integrations.models import Message, SourceType
 
 
@@ -208,3 +216,55 @@ async def test_pr_comment_from_other_org_still_denies_without_write_access(
         'https://dev.azure.com/Beta/_apis/security/permissionevaluationbatch'
         '?api-version=7.1-preview.1'
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('is_pr', [True, False])
+async def test_replies_carry_the_marker_their_location_keeps(monkeypatch, is_pr):
+    service = MagicMock()
+    service.add_pr_comment_to_thread = AsyncMock()
+    service.add_work_item_comment = AsyncMock()
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_manager.AzureDevOpsServiceImpl',
+        lambda **kwargs: service,
+    )
+    view = MagicMock()
+    view.__class__ = AzureDevOpsPRComment if is_pr else AzureDevOpsWorkItemComment
+    view.user_info.keycloak_user_id = 'kc-alice'
+    view.full_repo_name = 'org/Project/Repo'
+    view.issue_number = 7
+    view.thread_id = 5
+
+    await _manager_with_mentioner().send_message('I am on it', view)
+
+    if is_pr:
+        posted = service.add_pr_comment_to_thread.await_args.args[3]
+        assert posted.startswith(OPENHANDS_COMMENT_MARKER)
+    else:
+        posted = service.add_work_item_comment.await_args.args[2]
+        assert OPENHANDS_WORK_ITEM_MARKER in posted
+    assert posted.endswith('I am on it')
+
+
+@pytest.mark.asyncio
+async def test_work_item_summary_carries_the_work_item_marker(monkeypatch):
+    service = MagicMock()
+    service.add_work_item_comment = AsyncMock()
+    monkeypatch.setattr(
+        'openhands.app_server.integrations.azure_devops.azure_devops_service.AzureDevOpsServiceImpl',
+        lambda **kwargs: service,
+    )
+    processor = AzureDevOpsV1CallbackProcessor(
+        azure_devops_view_data={
+            'keycloak_user_id': 'kc-alice',
+            'repository': 'org/Project/Repo',
+            'issue_number': 42,
+            'is_pr': False,
+        }
+    )
+
+    await processor._post_summary_to_azure_devops('Done')
+
+    posted = service.add_work_item_comment.await_args.args[2]
+    assert OPENHANDS_WORK_ITEM_MARKER in posted
+    assert posted.endswith('Done')
