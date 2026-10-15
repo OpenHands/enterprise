@@ -17,6 +17,15 @@ const HOST_WITHOUT_SCHEME =
   /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\/[^/]/i;
 
 /**
+ * A host followed by a path (e.g. "github.com/owner/repo") is a repository
+ * address without its scheme; it is saved as https, as the backend does.
+ */
+export function normalizeMarketplaceSource(source: string): string {
+  const trimmed = source.trim();
+  return HOST_WITHOUT_SCHEME.test(trimmed) ? `https://${trimmed}` : trimmed;
+}
+
+/**
  * Best-effort marketplace name from a repository source, mirroring the backend
  * `_derive_name_from_source` (marketplace_composition.py): strip a `provider:`
  * prefix, take the last path segment, drop a trailing `.git`. The result is then
@@ -114,12 +123,6 @@ export function MarketplaceModal({
       setSourceError(t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_REQUIRED));
       return;
     }
-    // A host followed by a path (e.g. "github.com/owner/repo") is a repository
-    // address without its scheme; the backend rejects it, so say so here.
-    if (HOST_WITHOUT_SCHEME.test(source.trim())) {
-      setSourceError(t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_MISSING_SCHEME));
-      return;
-    }
     // Repository Path is an optional subdirectory *within* the repository
     // (e.g. "marketplaces/internal"), not a URL or absolute path. Catch the
     // common mistake of pasting the repository URL here before it reaches the
@@ -140,7 +143,7 @@ export function MarketplaceModal({
 
     onSave({
       name: name.trim(),
-      source: source.trim(),
+      source: normalizeMarketplaceSource(source),
       ref: ref.trim() || undefined,
       repo_path: trimmedRepoPath || undefined,
       auto_load: autoLoad,
@@ -219,6 +222,15 @@ export function MarketplaceModal({
               {sourceError}
             </Typography.Paragraph>
           )}
+          {!sourceError &&
+            !isEdit &&
+            normalizeMarketplaceSource(source) !== source.trim() && (
+              <Typography.Paragraph className="text-xs text-tertiary-alt">
+                {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_SAVED_AS, {
+                  url: normalizeMarketplaceSource(source),
+                })}
+              </Typography.Paragraph>
+            )}
           {!sourceError && isEdit && (
             <Typography.Paragraph className="text-xs text-tertiary-alt">
               {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_READONLY)}

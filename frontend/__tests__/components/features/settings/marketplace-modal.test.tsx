@@ -168,33 +168,42 @@ describe("MarketplaceModal", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
-  it("rejects a repository address without a scheme", async () => {
+  it("saves a repository address without a scheme as https", async () => {
     render(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
-    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "root");
+    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "acme");
     await user.type(
       screen.getByPlaceholderText("github:owner/repo"),
-      "github.com/Root-App/openhands-marketplace",
+      "github.com/acme/skills",
     );
-    await user.click(screen.getByTestId("marketplace-save-button"));
 
     expect(
-      screen.getByText("SETTINGS$MARKETPLACE_SOURCE_MISSING_SCHEME"),
+      screen.getByText("SETTINGS$MARKETPLACE_SOURCE_SAVED_AS"),
     ).toBeInTheDocument();
-    expect(onSave).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("marketplace-save-button"));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "https://github.com/acme/skills" }),
+    );
   });
 
   it.each([
-    "github:Root-App/openhands-marketplace",
-    "https://github.com/Root-App/openhands-marketplace",
+    "github:acme/skills",
+    "https://github.com/acme/skills",
     "marketplaces/internal",
-  ])("accepts the source %s", async (source) => {
+  ])("saves the source %s unchanged", async (source) => {
     render(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
-    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "root");
+    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "acme");
     await user.type(screen.getByPlaceholderText("github:owner/repo"), source);
+
+    expect(
+      screen.queryByText("SETTINGS$MARKETPLACE_SOURCE_SAVED_AS"),
+    ).not.toBeInTheDocument();
+
     await user.click(screen.getByTestId("marketplace-save-button"));
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ source }));

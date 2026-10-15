@@ -1654,28 +1654,21 @@ class TestMarketplaceRegistration:
             MarketplaceRegistration(name='test', source='../escape/path')
 
     @pytest.mark.parametrize(
-        'source, hint',
+        'source, expected',
         [
+            ('github.com/acme/skills', 'https://github.com/acme/skills'),
+            ('github.com/acme/skills.git', 'https://github.com/acme/skills.git'),
             (
-                'github.com/Root-App/openhands-marketplace',
-                "use 'github:Root-App/openhands-marketplace' or "
-                "'https://github.com/Root-App/openhands-marketplace'",
-            ),
-            (
-                'github.com/owner/repo.git',
-                "use 'github:owner/repo' or 'https://github.com/owner/repo.git'",
-            ),
-            (
-                'gitlab.example.com/group/skills',
-                "use 'https://gitlab.example.com/group/skills'",
+                ' gitlab.example.com/group/skills ',
+                'https://gitlab.example.com/group/skills',
             ),
         ],
     )
-    def test_source_validation_rejects_host_without_scheme(self, source, hint):
-        """A repository address without a scheme is not a local path."""
-        with pytest.raises(ValidationError, match='missing a scheme') as exc:
-            MarketplaceRegistration(name='test', source=source)
-        assert hint in str(exc.value)
+    def test_source_validation_adds_https_to_host_without_scheme(
+        self, source, expected
+    ):
+        """A repository address without a scheme is stored as an https URL."""
+        assert MarketplaceRegistration(name='test', source=source).source == expected
 
     @pytest.mark.parametrize(
         'source', ['marketplaces/internal', 'skills', 'my_dir/v1.2/skills']
@@ -1950,8 +1943,8 @@ def test_git_full_clone_defaults_to_false_and_updates():
     assert settings.model_dump(mode='json')['git_full_clone'] is True
 
 
-class TestLegacyMarketplaceSourceUpgrade:
-    """Saved sources stored without a scheme keep loading, as https URLs."""
+class TestMarketplaceSourceWithoutScheme:
+    """Sources entered or saved without a scheme load as https URLs."""
 
     def test_stored_host_without_scheme_loads_as_https(self):
         from openhands.app_server.settings.settings_models import (
@@ -1961,8 +1954,8 @@ class TestLegacyMarketplaceSourceUpgrade:
         result = validate_and_convert_marketplaces(
             [
                 {
-                    'name': 'root',
-                    'source': 'github.com/Root-App/openhands-marketplace',
+                    'name': 'acme',
+                    'source': 'github.com/acme/skills',
                     'auto_load': True,
                 },
                 {'name': 'local', 'source': 'marketplaces/internal'},
@@ -1970,7 +1963,7 @@ class TestLegacyMarketplaceSourceUpgrade:
         )
 
         assert [(m.name, m.source, m.auto_load) for m in result] == [
-            ('root', 'https://github.com/Root-App/openhands-marketplace', True),
+            ('acme', 'https://github.com/acme/skills', True),
             ('local', 'marketplaces/internal', False),
         ]
 
@@ -1979,7 +1972,7 @@ class TestLegacyMarketplaceSourceUpgrade:
         settings = Settings(
             registered_marketplaces=[
                 {
-                    'name': 'root',
+                    'name': 'mine',
                     'source': 'github.com/owner/repo',
                     'auto_load': True,
                     'scope': 'personal',
@@ -1997,13 +1990,16 @@ class TestLegacyMarketplaceSourceUpgrade:
             'https://github.com/acme/skills'
         )
 
-    def test_new_settings_reject_host_without_scheme(self):
+    def test_settings_update_saves_host_without_scheme_as_https(self):
         settings = Settings()
-        with pytest.raises(ValueError, match='missing a scheme'):
-            settings.update(
-                {
-                    'registered_marketplaces': [
-                        {'name': 'root', 'source': 'github.com/owner/repo'}
-                    ]
-                }
-            )
+        settings.update(
+            {
+                'registered_marketplaces': [
+                    {'name': 'mine', 'source': 'github.com/owner/repo'}
+                ]
+            }
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )
