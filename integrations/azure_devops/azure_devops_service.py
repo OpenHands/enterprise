@@ -215,7 +215,12 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             return await super().get_repositories(sort, app_mode)
         repos: list[Repository] = []
         for service in await self._organization_services():
-            repos.extend(await service.get_repositories(sort, app_mode))
+            try:
+                repos.extend(await service.get_repositories(sort, app_mode))
+            except Exception as e:
+                logger.warning(
+                    f'[Azure DevOps] organization {service.organization} listing failed: {e}'
+                )
         return repos
 
     async def search_repositories(
@@ -232,17 +237,24 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             return await super().search_repositories(
                 query, per_page, sort, order, public, app_mode
             )
+        services = await self._organization_services()
         results = await asyncio.gather(
             *(
                 service.search_repositories(
                     query, per_page, sort, order, public, app_mode
                 )
-                for service in await self._organization_services()
-            )
+                for service in services
+            ),
+            return_exceptions=True,
         )
         merged: dict[str, Repository] = {}
-        for repos in results:
-            for repo in repos:
+        for service, result in zip(services, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    f'[Azure DevOps] organization {service.organization} search failed: {result}'
+                )
+                continue
+            for repo in result:
                 merged.setdefault(repo.full_name.casefold(), repo)
         return list(merged.values())[:per_page]
 
@@ -251,7 +263,12 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             return await super().get_suggested_tasks()
         tasks: list[SuggestedTask] = []
         for service in await self._organization_services():
-            tasks.extend(await service.get_suggested_tasks())
+            try:
+                tasks.extend(await service.get_suggested_tasks())
+            except Exception as e:
+                logger.warning(
+                    f'[Azure DevOps] organization {service.organization} suggested tasks failed: {e}'
+                )
         return tasks
 
     async def has_contribute_access(self, project_id: str, repository_id: str) -> bool:

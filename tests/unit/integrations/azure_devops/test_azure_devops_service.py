@@ -308,9 +308,14 @@ class _FakeRedis:
 class _FakeAzure:
     """Azure DevOps APIs for one member across several organizations."""
 
-    def __init__(self, repos_by_org: dict[str, list[str]], pr_by_org=None):
+    def __init__(
+        self, repos_by_org: dict[str, list[str]], pr_by_org=None, error_orgs=None
+    ):
         self.repos_by_org = repos_by_org
         self.pr_by_org = pr_by_org or {}
+        # Organizations the membership lookup still reports (a membership-cache
+        # window for a just-removed member) but whose API calls reject.
+        self.error_orgs = set(error_orgs or [])
         self.requests: list[httpx.Request] = []
 
     def _repo(self, org, name):
@@ -329,6 +334,8 @@ class _FakeAzure:
         org, _, rest = path.lstrip('/').partition('/')
         if org not in self.repos_by_org:
             return httpx.Response(404, json={'message': 'not a member'})
+        if org in self.error_orgs:
+            return httpx.Response(403, json={'message': 'access denied'})
         repos = [self._repo(org, name) for name in self.repos_by_org[org]]
         if rest == '_apis/projects':
             return httpx.Response(200, json={'value': [{'name': 'Proj'}]})
@@ -496,3 +503,40 @@ async def test_suggested_tasks_cover_every_organization(azure):
         ('Alpha/Proj/one', 'Alpha PR'),
         ('Beta/Proj/only-in-beta', 'Beta PR'),
     ]
+
+
+@pytest.mark.asyncio
+async def test_cross_organization_listing_skips_failing_organizations(azure):
+    # A just-removed member still has the org in the membership cache for up to
+    # a minute; the org's API rejects with 403. Listing must return the healthy
+    # orgs rather than fail the whole request.
+    azure.error_orgs = {'Beta'}
+
+    repos = await _user_service().get_paginated_repos(
+        page=1, per_page=10, sort='name', installation_id=None
+    )
+
+    assert sorted(r.full_name for r in repos) == [
+        'Alpha/Proj/one',
+        'Alpha/Proj/two',
+    ]
+    assert azure.orgs_requested() == {'Alpha', 'Beta'}
+
+
+@pytest.mark.asyncio
+async def test_cross_organization_search_skips_failing_organizations(azure):
+    azure.error_orgs = {'Beta'}
+
+    repos = await _user_service().search_repositories('one', per_page=5)
+
+    assert [r.full_name for r in repos] == ['Alpha/Proj/one']
+
+
+@pytest.mark.asyncio
+async def test_cross_organization_suggested_tasks_skip_failing_organizations(azure):
+    azure.error_orgs = {'Beta'}
+    azure.pr_by_org = {'Alpha': 'Alpha PR'}
+
+    tasks = await _user_service().get_suggested_tasks()
+
+    assert [(t.repo, t.title) for t in tasks] == [('Alpha/Proj/one', 'Alpha PR')]
