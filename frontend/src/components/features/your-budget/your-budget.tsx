@@ -20,7 +20,13 @@ import { useMyUsage } from "#/hooks/query/use-my-usage";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import { formatTimeDelta } from "#/utils/format-time-delta";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+  settingsListRowHoverClassName,
+} from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
 
 const DAY_MS = 86_400_000;
@@ -84,7 +90,7 @@ interface StatFigureProps {
   sublines?: (string | null)[];
   /** Explanation shown in an info tooltip next to the label. */
   help?: string;
-  /** Leading icon, shown in a circle beside the figure. */
+  /** Optional icon chip, top-right — same treatment as credits/payment. */
   icon?: React.ReactNode;
   /** Sentence-case label for the compact figures inside the scope card. */
   plainLabel?: boolean;
@@ -100,26 +106,21 @@ function StatFigure({
   plainLabel = false,
 }: StatFigureProps) {
   return (
-    <div className="flex gap-3" data-testid={testId}>
-      {icon && (
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-tertiary text-foreground">
-          {icon}
-        </span>
-      )}
-      <div className="flex min-w-0 flex-col gap-2">
+    <div
+      className="flex items-start justify-between gap-3"
+      data-testid={testId}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
         <span
           className={cn(
             "flex items-center gap-1.5 text-muted",
-            icon ? "min-h-10" : undefined,
-            plainLabel
-              ? "text-sm"
-              : "text-xs font-medium uppercase tracking-wide",
+            plainLabel ? "text-sm" : "text-xs font-medium leading-tight",
           )}
         >
           {label}
           {help && <InfoTooltip content={help} />}
         </span>
-        <span className="text-2xl font-bold leading-none text-foreground">
+        <span className="text-2xl font-bold leading-none tabular-nums tracking-tight text-foreground">
           {value}
         </span>
         {sublines.filter(Boolean).map((subline) => (
@@ -128,6 +129,14 @@ function StatFigure({
           </span>
         ))}
       </div>
+      {icon && (
+        <span
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary"
+          aria-hidden
+        >
+          {icon}
+        </span>
+      )}
     </div>
   );
 }
@@ -237,7 +246,7 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
           <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
             <StatFigure
               testId="your-budget-available"
-              icon={<Wallet className="size-5" strokeWidth={2} aria-hidden />}
+              icon={<Wallet size={18} strokeWidth={2} />}
               label={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE)}
               help={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE_TOOLTIP)}
               value={available === null ? EMPTY_VALUE : formatCost(available)}
@@ -247,9 +256,7 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
           <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
             <StatFigure
               testId="your-budget-spent"
-              icon={
-                <BarChart2 className="size-5" strokeWidth={2} aria-hidden />
-              }
+              icon={<BarChart2 size={18} strokeWidth={2} />}
               label={t(I18nKey.SETTINGS$YOUR_BUDGET_SPENT)}
               value={spend === null ? EMPTY_VALUE : formatCost(spend)}
               sublines={[spendNote, staleNote]}
@@ -365,50 +372,56 @@ function DailySpendChart({ days }: { days: OrgMyUsageStats["daily_spend"] }) {
   const [hoveredDate, setHoveredDate] = React.useState<string | null>(null);
   const maxCost = Math.max(...days.map((day) => day.cost), 0);
   const labelEvery = Math.ceil(days.length / 7);
+  const gapClassName = days.length > 31 ? "gap-px" : "gap-1";
 
   return (
-    // Cleared on the chart rather than per bar so the tooltip does not flicker
-    // while the pointer crosses the gaps between bars.
+    // Labels live outside the bar track so a 100% bar cannot grow the column
+    // past the baseline (which made taller bars stick out below shorter ones).
     <div
-      className={cn(
-        "flex h-40 items-end",
-        days.length > 31 ? "gap-px" : "gap-1",
-      )}
       data-testid="your-budget-daily-chart"
       onMouseLeave={() => setHoveredDate(null)}
     >
-      {days.map((day, index) => (
-        <div
-          key={day.date}
-          className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1"
-          data-testid="your-budget-daily-bar"
-          onMouseEnter={() => setHoveredDate(day.date)}
-        >
+      <div className={cn("flex h-36 items-end", gapClassName)}>
+        {days.map((day) => (
           <div
-            className="relative min-h-[2px] w-full rounded-t bg-primary"
-            style={{
-              height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
-            }}
+            key={day.date}
+            className="flex h-full min-h-0 min-w-0 flex-1 items-end"
+            data-testid="your-budget-daily-bar"
+            onMouseEnter={() => setHoveredDate(day.date)}
           >
-            {hoveredDate === day.date && (
-              <div
-                className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
-                data-testid="your-budget-daily-tooltip"
-              >
-                <div className="text-sm font-medium text-foreground">
-                  {formatShortDate(day.date)}
+            <div
+              className="relative w-full min-h-[2px] rounded-t bg-primary"
+              style={{
+                height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
+              }}
+            >
+              {hoveredDate === day.date && (
+                <div
+                  className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                  data-testid="your-budget-daily-tooltip"
+                >
+                  <div className="text-sm font-medium text-foreground">
+                    {formatShortDate(day.date)}
+                  </div>
+                  <div className="mt-0.5 text-xs tabular-nums text-muted">
+                    {formatCost(day.cost)}
+                  </div>
                 </div>
-                <div className="mt-0.5 text-xs tabular-nums text-muted">
-                  {formatCost(day.cost)}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-          <span className="h-4 whitespace-nowrap text-[10px] text-muted">
+        ))}
+      </div>
+      <div className={cn("mt-1 flex", gapClassName)}>
+        {days.map((day, index) => (
+          <span
+            key={day.date}
+            className="h-4 min-w-0 flex-1 whitespace-nowrap text-[10px] text-muted"
+          >
             {index % labelEvery === 0 ? formatShortDate(day.date) : ""}
           </span>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -483,26 +496,38 @@ function RecentUsageList({
 }) {
   const { t } = useTranslation();
 
+  // Same list chrome as MCP servers / budget thresholds: bordered shell,
+  // dividers, title/subtitle + trailing value.
   return (
-    <ul className="flex flex-col gap-0.5" data-testid="your-budget-recent">
+    <ul
+      className={cn(
+        settingsListContainerClassName,
+        settingsListDividerClassName,
+      )}
+      data-testid="your-budget-recent"
+    >
       {items.map((item) => (
         <li key={item.conversation_id}>
           <a
             href={`/canvas/conversations/${item.conversation_id}`}
-            className="flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-[var(--oh-interactive-hover-low)]"
+            className={cn(
+              "flex items-center gap-3 px-3 py-3",
+              formControlTransitionClassName,
+              settingsListRowHoverClassName,
+            )}
           >
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm text-foreground">
+              <div className="truncate text-sm font-medium leading-5 text-foreground">
                 {item.title || t(I18nKey.SETTINGS$YOUR_BUDGET_UNTITLED)}
               </div>
               {item.updated_at && (
-                <div className="mt-0.5 text-xs text-muted">
+                <div className="mt-0.5 truncate text-xs leading-4 text-muted">
                   {formatTimeDelta(item.updated_at)}{" "}
                   {t(I18nKey.CONVERSATION$AGO)}
                 </div>
               )}
             </div>
-            <span className="shrink-0 text-sm font-medium text-foreground">
+            <span className="shrink-0 text-sm font-medium tabular-nums text-foreground">
               {formatCost(item.accumulated_cost)}
             </span>
           </a>
@@ -590,14 +615,18 @@ function UsageBreakdown({ timeWindow }: { timeWindow: TimeWindow }) {
         </section>
       </div>
 
-      <section className={cn(CARD_CLASS_NAME, "p-5")}>
-        <h3 className="mb-3 text-sm font-semibold text-foreground">
+      <section className="flex flex-col gap-3">
+        <h3 className="text-sm font-semibold text-foreground">
           {t(I18nKey.SETTINGS$YOUR_BUDGET_RECENT_USAGE)}
         </h3>
         {usage.recent_usage.length > 0 ? (
           <RecentUsageList items={usage.recent_usage} />
         ) : (
-          emptyNote
+          <div
+            className={cn(settingsListContainerClassName, "p-8 text-center")}
+          >
+            {emptyNote}
+          </div>
         )}
       </section>
 
