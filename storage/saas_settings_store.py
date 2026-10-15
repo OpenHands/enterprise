@@ -44,6 +44,7 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
     apply_provider_connection,
+    find_agent_profile_by_id,
     load_agent_profiles,
     load_llm_profiles,
 )
@@ -283,7 +284,8 @@ class SaasSettingsStore(SettingsStore):
         non-persisted launch override — never written back to
         ``org_member.active_agent_profile_id``), else the member's ambient
         ``active_agent_profile_id``, else the org-wide default pointer
-        (``AgentProfiles.active``, if one has been set). Returns
+        (``AgentProfiles.active``, if one has been set). The id is looked up
+        in the member's personal collection first, then the org's. Returns
         ``(agent_settings_dump, profile_id, revision)``, or ``None`` to fall
         back to the composed ``agent_settings``.
         Delegates the ``llm_profile_ref`` + ``mcp_server_refs`` join entirely to
@@ -296,17 +298,16 @@ class SaasSettingsStore(SettingsStore):
         error returns ``None`` and logs, because bricking *every* settings load
         on a dangling pointer is far worse than launching the composed default.
         """
-        agent_profiles = load_agent_profiles(org)
         active_id = (
             override_agent_profile_id
             or org_member.active_agent_profile_id
-            or agent_profiles.active
+            or load_agent_profiles(org).active
         )
         if not active_id:
             return None
 
-        name = agent_profiles.name_for_id(active_id)
-        if name is None:
+        found = find_agent_profile_by_id(org, org_member, active_id)
+        if found is None:
             logger.warning(
                 'Active agent profile %s not found for user %s in org %s; '
                 'falling back to composed settings',
@@ -315,10 +316,8 @@ class SaasSettingsStore(SettingsStore):
                 org.id,
             )
             return None
-        try:
-            profile = agent_profiles.load(name)
-        except FileNotFoundError:
-            return None
+        profile, _scope = found
+        name = profile.name
 
         mcp_config: dict[str, MCPServer] = {}
         mcp_raw = merged_agent_settings.get('mcp_config')
@@ -660,6 +659,15 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['agent_settings'] = resolved_dump
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
+                # Launch provenance for conversation-start secret scoping.
+                # ``getattr``: the lint hook type-checks against an older SDK
+                # whose profile model predates ``secret_refs``.
+                found = find_agent_profile_by_id(org, org_member, resolved_id)
+                kwargs['active_agent_profile_secret_refs'] = (
+                    getattr(found[0], 'secret_refs', None)
+                    if found is not None
+                    else None
+                )
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False

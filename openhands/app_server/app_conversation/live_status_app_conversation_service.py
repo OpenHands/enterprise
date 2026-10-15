@@ -168,6 +168,28 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
 
+# Custom secrets the runtime itself depends on; never stripped by a profile's
+# ``secret_refs`` allow-list.
+_ALWAYS_ALLOWED_SECRET_NAMES: frozenset[str] = frozenset({'OPENHANDS_API_KEY'})
+
+
+def _apply_profile_secret_refs(
+    user: UserInfo, secrets: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep only the custom secrets the launched Agent Profile allows.
+
+    ``active_agent_profile_secret_refs`` is launch provenance set by
+    ``SaasSettingsStore.load`` (``None`` = no restriction). Applies to the
+    member's saved custom secrets only; git-provider tokens, integration
+    secrets and API-supplied secrets are layered on afterwards and untouched.
+    """
+    refs = getattr(user, 'active_agent_profile_secret_refs', None)
+    if not isinstance(refs, list):
+        return secrets
+    allowed = set(refs) | _ALWAYS_ALLOWED_SECRET_NAMES
+    return {name: source for name, source in secrets.items() if name in allowed}
+
+
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
     if (
@@ -1312,7 +1334,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Dictionary of secrets for the conversation
         """
-        secrets = await self.user_context.get_secrets()
+        secrets = _apply_profile_secret_refs(
+            user, await self.user_context.get_secrets()
+        )
 
         # Get all provider tokens from user authentication
         provider_tokens = cast(
@@ -2338,14 +2362,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # filesystem, so we attach the agent's built-in switch_llm tool
         # ourselves rather than relying on create_agent()'s gating. Enabled
         # whenever there are at least two valid saved profiles (a switch needs
-        # a target).
+        # a target) and the agent settings -- or the launched Agent Profile
+        # they were resolved from -- leave ``enable_switch_llm_tool`` on.
         valid_profile_names = [
             name
             for name in user.llm_profiles.profiles
             if PROFILE_NAME_REGEX.match(name)
         ]
         if (
-            len(valid_profile_names) >= 2
+            getattr(user.agent_settings, 'enable_switch_llm_tool', True)
+            and len(valid_profile_names) >= 2
             and SwitchLLMTool.__name__ not in agent.include_default_tools
         ):
             agent = agent.model_copy(
@@ -2590,7 +2616,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # causing provider auth to silently fail at subprocess launch.
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
-        secrets: dict = await self.user_context.get_secrets()
+        secrets: dict = _apply_profile_secret_refs(
+            user, await self.user_context.get_secrets()
+        )
         provider_tokens = cast(
             PROVIDER_TOKEN_TYPE | None,
             await self.user_context.get_provider_tokens(),

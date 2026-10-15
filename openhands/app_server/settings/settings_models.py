@@ -691,17 +691,19 @@ def grouped_workspace_dir(
 #   inputs, enforce the count cap, and take the per-user lock. Accepting a
 #   raw dict here both bypassed those guards and crashed downstream
 #   serialisation.
-# - ``active_agent_profile_id`` / ``active_agent_profile_revision`` are launch
-#   provenance, not persisted settings — ``store()`` refuses instances that
-#   carry them. The pointer is set via the agent-profiles activate endpoint, so
-#   a client echoing a non-null value back on a settings PUT must be ignored,
-#   not written (which would 500 in ``store()``).
+# - ``active_agent_profile_id`` / ``active_agent_profile_revision`` /
+#   ``active_agent_profile_secret_refs`` are launch provenance, not persisted
+#   settings — ``store()`` refuses instances that carry them. The pointer is
+#   set via the agent-profiles activate endpoint, so a client echoing a
+#   non-null value back on a settings PUT must be ignored, not written (which
+#   would 500 in ``store()``).
 _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
     [
         'secrets_store',
         'llm_profiles',
         'active_agent_profile_id',
         'active_agent_profile_revision',
+        'active_agent_profile_secret_refs',
     ]
 )
 
@@ -768,6 +770,10 @@ class Settings(BaseModel):
     # None and ``store()`` refuses instances that carry them (no backing column).
     active_agent_profile_id: str | None = None
     active_agent_profile_revision: int | None = None
+    # The launched profile's ``secret_refs`` (``None`` = no restriction), so
+    # conversation-start can scope the member's custom secrets. Same
+    # launch-provenance contract as the two fields above.
+    active_agent_profile_secret_refs: list[str] | None = None
 
     # True when this instance came from a resolve-requested load: its
     # agent_settings are the *effective* launch view (possibly an Agent
