@@ -2006,6 +2006,9 @@ def test_warns_for_auto_load_marketplace_read_as_sandbox_path():
     from openhands.app_server.app_conversation.app_conversation_service_base import (
         _warn_unresolved_marketplace_sources,
     )
+    from openhands.app_server.settings.settings_models import (
+        MarketplaceRegistration,
+    )
 
     registrations = [
         MarketplaceRegistration(name='bare', source='owner/repo', auto_load=True),
