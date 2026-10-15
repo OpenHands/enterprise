@@ -33,8 +33,7 @@ def test_a_subprocess_without_key_files_decrypts_what_pytest_encrypted(
 ):
     # An empty persistence directory: the subprocess cannot read a key file
     # that this process wrote, so the key must come from the environment.
-    env = {key: value for key, value in os.environ.items() if key != 'FILE_STORE_PATH'}
-    env['OH_PERSISTENCE_DIR'] = str(tmp_path)
+    env = {**os.environ, 'OH_PERSISTENCE_DIR': str(tmp_path)}
     ciphertext = encrypt_value('shared-secret')
 
     result = subprocess.run(

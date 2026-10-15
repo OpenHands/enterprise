@@ -220,6 +220,21 @@ def _run_migrations(server: PostgresServer, database: str) -> None:
     run_alembic(server, database, 'upgrade', 'head')
 
 
+# Runs the ``alembic`` command line and prints the traceback of any error.
+# ``openhands`` sends uncaught exceptions to its logger, and ``fileConfig`` in
+# ``migrations/env.py`` turns that logger off, so a plain ``alembic`` run that
+# raises prints no traceback.
+_ALEMBIC_MAIN = (
+    'import sys, traceback\n'
+    'from alembic.config import main\n'
+    'try:\n'
+    '    main(argv=sys.argv[1:])\n'
+    'except Exception:\n'
+    '    traceback.print_exc()\n'
+    '    sys.exit(1)\n'
+)
+
+
 def run_alembic(server: PostgresServer, database: str, *args: str) -> None:
     """Run ``alembic <args>`` against ``database``."""
     # Run alembic out of process: importing ``migrations/env.py`` here would
@@ -244,7 +259,7 @@ def run_alembic(server: PostgresServer, database: str, *args: str) -> None:
     env.pop('STRIPE_API_KEY', None)
 
     result = subprocess.run(
-        [sys.executable, '-m', 'alembic', '-c', str(ALEMBIC_INI), *args],
+        [sys.executable, '-c', _ALEMBIC_MAIN, '-c', str(ALEMBIC_INI), *args],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
