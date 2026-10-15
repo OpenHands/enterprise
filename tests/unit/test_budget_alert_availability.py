@@ -7,6 +7,8 @@ from fastapi import HTTPException
 from server.routes.org_models import OrgBudgetSettingsUpdate
 from server.services.org_budget_service import OrgBudgetService
 from storage.org_budget_settings import OrgBudgetSettings
+from storage.org_member import OrgMember
+from storage.role import Role
 from storage.slack_team import SlackTeam
 from storage.slack_user import SlackUser
 
@@ -188,109 +190,116 @@ async def alert_http(alert_service, create_org):
             yield client, org.id
 
 
+@pytest.fixture
+def link_slack(alert_service, create_user):
+    """Make a new org member and link Slack for them, like the OAuth callback.
+
+    ``create_user`` gives each user a personal current org, so the link's
+    ``org_id`` is never the org under test.
+    """
+    session = alert_service.db_session
+    role = Role(name='member', rank=1000)
+
+    async def _link(org_id, team_id: str) -> SlackUser:
+        if role.id is None:
+            session.add(role)
+            await session.flush()
+        user = create_user()
+        link = SlackUser(
+            keycloak_user_id=str(user.id),
+            org_id=user.current_org_id,
+            slack_user_id=f'U{uuid4().hex[:8]}',
+            slack_display_name='Test User',
+            team_id=team_id,
+        )
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org_id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    llm_api_key='test-only',
+                ),
+                link,
+            ]
+        )
+        await session.flush()
+        return link
+
+    return _link
+
+
+def install_slack_teams(alert_service, *team_ids: str) -> None:
+    alert_service.db_session.add_all(
+        SlackTeam(team_id=team_id, bot_access_token=f'{team_id}-token')
+        for team_id in team_ids
+    )
+
+
 @pytest.mark.asyncio
-async def test_resolves_legacy_org_workspace_with_multiple_installs(
-    alert_service, monkeypatch, create_org
+async def test_resolves_member_workspace_linked_from_another_org(
+    alert_service, monkeypatch, create_org, link_slack
 ):
     enable_slack(monkeypatch)
     org_id = create_org().id
-    legacy_user = SlackUser(
-        keycloak_user_id='user-1',
-        org_id=org_id,
-        slack_user_id='U_TARGET',
-        slack_display_name='Target User',
-    )
-    alert_service.db_session.add_all(
-        [
-            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
-            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
-            legacy_user,
-        ]
-    )
-    await alert_service.db_session.flush()
+    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
+    link = await link_slack(org_id, 'T_TARGET')
+    assert link.org_id != org_id
 
-    def client_for_token(token: str) -> AsyncMock:
-        client = AsyncMock()
-        client.users_info.return_value = {'ok': token == 'target-token'}
-        return client
-
-    with patch(
-        'server.services.org_budget_service.AsyncWebClient',
-        side_effect=client_for_token,
-    ):
-        team_id = await alert_service._resolve_slack_team_id(None, org_id)
+    team_id = await alert_service._resolve_slack_team_id(None, org_id)
 
     assert team_id == 'T_TARGET'
-    assert legacy_user.team_id == 'T_TARGET'
 
 
 @pytest.mark.asyncio
-async def test_api_saves_org_slack_workspace_with_multiple_installs(
-    alert_http, alert_service, monkeypatch
+async def test_does_not_resolve_when_members_linked_several_workspaces(
+    alert_service, monkeypatch, create_org, link_slack
 ):
-    from sqlalchemy import select
-
     enable_slack(monkeypatch)
-    client, org_id = alert_http
-    alert_service.db_session.add_all(
-        [
-            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
-            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
-            SlackUser(
-                keycloak_user_id='user-1',
-                org_id=org_id,
-                slack_user_id='U_TARGET',
-                slack_display_name='Target User',
-                team_id='T_TARGET',
-            ),
-        ]
-    )
-    await alert_service.db_session.commit()
+    org_id = create_org().id
+    install_slack_teams(alert_service, 'T_ONE', 'T_TWO')
+    await link_slack(org_id, 'T_ONE')
+    await link_slack(org_id, 'T_TWO')
 
-    response = await client.patch(
-        f'/api/organizations/{org_id}/budgets',
-        json={
-            'slack_channel': '#on-callstatus',
-            'thresholds': [
-                {
-                    'percentage': 80,
-                    'email_enabled': False,
-                    'slack_enabled': True,
-                }
-            ],
-        },
+    team_id = await alert_service._resolve_slack_team_id(None, org_id)
+
+    assert team_id is None
+
+
+@pytest.mark.asyncio
+async def test_save_accepts_slack_alert_with_multiple_installs(
+    alert_service, monkeypatch, create_org, link_slack
+):
+    enable_slack(monkeypatch)
+    org_id = create_org().id
+    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
+    await link_slack(org_id, 'T_TARGET')
+    settings = OrgBudgetSettings(org_id=org_id)
+    update = OrgBudgetSettingsUpdate(
+        slack_channel='#on-callstatus',
+        thresholds=[
+            {
+                'percentage': 80,
+                'email_enabled': False,
+                'slack_enabled': True,
+            }
+        ],
     )
 
-    assert response.status_code == 200, response.text
-    assert response.json()['slack_team_id'] == 'T_TARGET'
-    settings = (
-        await alert_service.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
-    ).scalar_one()
-    assert settings.slack_team_id == 'T_TARGET'
+    await alert_service._validate_alert_settings(settings, update, [])
+
+    availability = await alert_service._alert_availability(settings)
+    assert availability['slack_workspace_connected']
 
 
 @pytest.mark.asyncio
 async def test_slack_alert_uses_org_workspace_with_multiple_installs(
-    alert_service, monkeypatch, create_org
+    alert_service, monkeypatch, create_org, link_slack
 ):
     enable_slack(monkeypatch)
     org_id = create_org().id
-    alert_service.db_session.add_all(
-        [
-            SlackTeam(team_id='T_OTHER', bot_access_token='other-token'),
-            SlackTeam(team_id='T_TARGET', bot_access_token='target-token'),
-            SlackUser(
-                keycloak_user_id='user-1',
-                org_id=org_id,
-                slack_user_id='U_TARGET',
-                slack_display_name='Target User',
-                team_id='T_TARGET',
-            ),
-        ]
-    )
-    await alert_service.db_session.flush()
+    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
+    await link_slack(org_id, 'T_TARGET')
     settings = OrgBudgetSettings(
         org_id=org_id,
         monthly_limit=100,
@@ -307,8 +316,7 @@ async def test_slack_alert_uses_org_workspace_with_multiple_installs(
         )
 
     assert delivered
-    assert settings.slack_team_id == 'T_TARGET'
-    client_factory.assert_called_once_with(token='target-token')
+    client_factory.assert_called_once_with(token='T_TARGET-token')
     client.chat_postMessage.assert_awaited_once_with(
         channel='#on-callstatus',
         text=(
