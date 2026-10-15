@@ -90,6 +90,10 @@ export function SuperAdminSetup() {
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
   const { data: me } = useMe();
+  const { data: config } = useConfig();
+  // Invitations are sent by email, so without SMTP or Resend on the instance
+  // (``email_enabled``) there is nothing to send and the item is not offered.
+  const emailEnabled = Boolean(config?.email_enabled);
   const {
     viewOrg,
     canViewOrg,
@@ -243,11 +247,15 @@ export function SuperAdminOrganizations() {
                     ...(row.isPersonal
                       ? []
                       : [
-                          {
-                            label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
-                            testId: `super-admin-org-invite-${row.id}`,
-                            onSelect: () => setInviteOrgId(row.id),
-                          },
+                          ...(emailEnabled
+                            ? [
+                                {
+                                  label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
+                                  testId: `super-admin-org-invite-${row.id}`,
+                                  onSelect: () => setInviteOrgId(row.id),
+                                },
+                              ]
+                            : []),
                           {
                             label: t(I18nKey.SUPER_ADMIN$REMOVE),
                             testId: `super-admin-org-remove-${row.id}`,
