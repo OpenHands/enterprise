@@ -8,6 +8,7 @@ from openhands.app_server.integrations.azure_devops.azure_devops_service import 
     AzureDevOpsService,
 )
 from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
     ProviderType,
     Repository,
     RequestMethod,
@@ -142,9 +143,10 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
     async def get_accessible_organizations(self) -> list[str]:
         """Organizations the token holder belongs to, cached briefly per user.
 
-        If discovery fails, the last organizations discovered for the user are
-        returned instead. Listing an organization still needs Azure to accept
-        the user's token, so a stale entry grants nothing.
+        If discovery fails, for example while Azure throttles it, the last
+        organizations discovered for the user are returned instead. Listing an
+        organization still needs Azure to accept the user's token, so a stale
+        entry grants nothing. A rejected token is raised, not hidden.
         """
         key = self._membership_cache_key()
         if key:
@@ -154,6 +156,8 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
 
         try:
             organizations = await self._discover_organizations()
+        except AuthenticationError:
+            raise
         except Exception as e:
             last_known = (
                 await _read_cached_organizations(f'{key}:last-known') if key else None
@@ -226,14 +230,18 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
     async def get_repositories(self, sort: str, app_mode: AppMode) -> list[Repository]:
         if self.bound_to_organization:
             return await super().get_repositories(sort, app_mode)
+        services = await self._organization_services()
         repos: list[Repository] = []
-        for service in await self._organization_services():
+        errors: list[BaseException] = []
+        for service in services:
             try:
                 repos.extend(await service.get_repositories(sort, app_mode))
             except Exception as e:
+                errors.append(e)
                 logger.warning(
                     f'[Azure DevOps] organization {service.organization} listing failed: {e}'
                 )
+        _raise_if_every_organization_rejected_the_token(errors, len(services))
         return repos
 
     async def search_repositories(
@@ -261,27 +269,34 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             return_exceptions=True,
         )
         merged: dict[str, Repository] = {}
+        errors: list[BaseException] = []
         for service, result in zip(services, results, strict=True):
             if isinstance(result, BaseException):
+                errors.append(result)
                 logger.warning(
                     f'[Azure DevOps] organization {service.organization} search failed: {result}'
                 )
                 continue
             for repo in result:
                 merged.setdefault(repo.full_name.casefold(), repo)
+        _raise_if_every_organization_rejected_the_token(errors, len(services))
         return list(merged.values())[:per_page]
 
     async def get_suggested_tasks(self) -> list[SuggestedTask]:
         if self.bound_to_organization:
             return await super().get_suggested_tasks()
+        services = await self._organization_services()
         tasks: list[SuggestedTask] = []
-        for service in await self._organization_services():
+        errors: list[BaseException] = []
+        for service in services:
             try:
                 tasks.extend(await service.get_suggested_tasks())
             except Exception as e:
+                errors.append(e)
                 logger.warning(
                     f'[Azure DevOps] organization {service.organization} suggested tasks failed: {e}'
                 )
+        _raise_if_every_organization_rejected_the_token(errors, len(services))
         return tasks
 
     async def has_contribute_access(self, project_id: str, repository_id: str) -> bool:
@@ -321,6 +336,21 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
         url = f'{self.base_url}/{project_enc}/_apis/git/repositories?api-version=7.1'
         response, _ = await self._make_request(url)
         return response.get('value') or []
+
+
+def _raise_if_every_organization_rejected_the_token(
+    errors: list[BaseException], organizations: int
+) -> None:
+    """An invalid token is an auth error, not an empty result.
+
+    One organization rejecting the token (a just-removed member) is skipped.
+    """
+    if (
+        organizations
+        and len(errors) == organizations
+        and all(isinstance(e, AuthenticationError) for e in errors)
+    ):
+        raise errors[0]
 
 
 async def _read_cached_organizations(key: str) -> list[str] | None:

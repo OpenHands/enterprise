@@ -394,6 +394,10 @@ class _FakeAzure:
         self.error_orgs = set(error_orgs or [])
         # Azure answers a throttled profile request with 500 "Too Many Requests".
         self.throttled = False
+        # Organizations whose API calls reject the token (401).
+        self.unauthorized_orgs: set[str] = set()
+        # A revoked token: every Azure call returns 401.
+        self.revoked = False
         self.requests: list[httpx.Request] = []
 
     def _repo(self, org, name):
@@ -402,6 +406,8 @@ class _FakeAzure:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
+        if self.revoked:
+            return httpx.Response(401, json={'message': 'Unauthorized'})
         if request.url.host == 'app.vssps.visualstudio.com':
             if path == '/_apis/profile/profiles/me':
                 if self.throttled:
@@ -418,6 +424,8 @@ class _FakeAzure:
             return httpx.Response(404, json={'message': 'not a member'})
         if org in self.error_orgs:
             return httpx.Response(403, json={'message': 'access denied'})
+        if org in self.unauthorized_orgs:
+            return httpx.Response(401, json={'message': 'Unauthorized'})
         repos = [self._repo(org, name) for name in self.repos_by_org[org]]
         if rest == '_apis/projects':
             return httpx.Response(200, json={'value': [{'name': 'Proj'}]})
@@ -476,6 +484,14 @@ def azure(monkeypatch, fake_redis):
     return fake
 
 
+@pytest.fixture
+def no_token_refresh(monkeypatch):
+    # A 401 triggers one token refresh before the request fails.
+    monkeypatch.setattr(
+        SaaSAzureDevOpsService, 'get_latest_token', AsyncMock(return_value=None)
+    )
+
+
 def _user_service(base_domain=None) -> SaaSAzureDevOpsService:
     return SaaSAzureDevOpsService(
         external_auth_id='kc-user', token=SecretStr('token'), base_domain=base_domain
@@ -528,6 +544,18 @@ async def test_discovery_failure_without_last_known_memberships_raises(azure):
     azure.throttled = True
 
     with pytest.raises(UnknownException):
+        await _user_service().get_installations()
+
+
+@pytest.mark.asyncio
+async def test_rejected_token_is_raised_instead_of_last_known_memberships(
+    azure, fake_redis, no_token_refresh
+):
+    assert await _user_service().get_installations() == ['Alpha', 'Beta']
+    del fake_redis.values['azure_devops:organizations:kc-user']
+    azure.revoked = True
+
+    with pytest.raises(AuthenticationError):
         await _user_service().get_installations()
 
 
@@ -646,3 +674,38 @@ async def test_cross_organization_suggested_tasks_skip_failing_organizations(azu
     tasks = await _user_service().get_suggested_tasks()
 
     assert [(t.repo, t.title) for t in tasks] == [('Alpha/Proj/one', 'Alpha PR')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        lambda service: service.get_paginated_repos(
+            page=1, per_page=10, sort='name', installation_id=None
+        ),
+        lambda service: service.search_repositories('one', per_page=5),
+        lambda service: service.get_suggested_tasks(),
+    ],
+    ids=['listing', 'search', 'suggested-tasks'],
+)
+async def test_every_organization_rejecting_the_token_raises(
+    azure, no_token_refresh, operation
+):
+    azure.unauthorized_orgs = {'Alpha', 'Beta'}
+
+    with pytest.raises(AuthenticationError):
+        await operation(_user_service())
+
+
+@pytest.mark.asyncio
+async def test_one_organization_rejecting_the_token_is_skipped(azure, no_token_refresh):
+    azure.unauthorized_orgs = {'Beta'}
+
+    repos = await _user_service().get_paginated_repos(
+        page=1, per_page=10, sort='name', installation_id=None
+    )
+
+    assert sorted(r.full_name for r in repos) == [
+        'Alpha/Proj/one',
+        'Alpha/Proj/two',
+    ]
