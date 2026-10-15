@@ -241,6 +241,8 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 def _exception_detail(exc: Exception) -> str:
     """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
     detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
     return detail if isinstance(detail, str) else str(exc)
 
 

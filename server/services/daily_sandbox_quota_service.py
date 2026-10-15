@@ -14,6 +14,10 @@ carry over:
 
 NULL at any level means "inherit from the next level down." ``-1``
 (``EXEMPT_LIMIT``) means explicitly exempt (unlimited).
+
+Only sandbox *creation* on the remote backend is metered (see
+``RemoteSandboxService._reserve_daily_sandbox_quota`` for the full scope
+note). Resuming a paused sandbox is not metered.
 """
 
 from __future__ import annotations

@@ -6341,6 +6341,20 @@ def test_exception_detail_strips_http_status_prefix():
     assert _exception_detail(ValueError('boom')) == 'boom'
 
 
+def test_exception_detail_unwraps_dict_message():
+    """A structured 429 detail surfaces its message, not the dict repr."""
+    from fastapi import HTTPException
+
+    exc = HTTPException(
+        status_code=429,
+        detail={
+            'code': 'daily_sandbox_limit_reached',
+            'message': 'Daily sandbox limit of 3 reached.',
+        },
+    )
+    assert _exception_detail(exc) == 'Daily sandbox limit of 3 reached.'
+
+
 class TestACPProviderAllowlistAtServiceStart:
     """The allowlist is enforced in the shared start path, not only in the HTTP
     endpoints. The integrations (GitHub, GitLab, Jira, Slack, ...) call

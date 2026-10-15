@@ -129,6 +129,94 @@ async def test_limit_reached_rejects_next_start(sandbox_quota):
 
 
 @pytest.mark.asyncio
+async def test_wait_timeout_refunds_and_running_keeps_reservation(
+    app_db_session, async_session_maker, create_user, monkeypatch
+):
+    """wait_for_sandbox_running settles the pending reservation."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from openhands.app_server.sandbox.sandbox_models import SandboxInfo
+
+    user = create_user(daily_sandbox_limit=3)
+    user_context = QuotaUserContext(str(user.id), user.current_org_id)
+    monkeypatch.setattr(server_config, 'app_mode', AppMode.SAAS)
+
+    def make_service():
+        spec_service = AsyncMock()
+        spec = MagicMock()
+        spec.id = 'spec-1'
+        spec_service.get_default_sandbox_spec.return_value = spec
+        spec_service.get_sandbox_spec.return_value = spec
+        db_session = AsyncMock()
+        db_session.add = MagicMock()
+        service = RemoteSandboxService(
+            sandbox_spec_service=spec_service,
+            api_url='https://api.example.com',
+            api_key='test-api-key',
+            web_url='https://web.example.com',
+            resource_factor=1,
+            runtime_class='gvisor',
+            start_sandbox_timeout=120,
+            max_num_sandboxes=10,
+            user_context=user_context,
+            httpx_client=AsyncMock(),
+            db_session=db_session,
+        )
+        service.pause_old_sandboxes = AsyncMock(return_value=[])
+        service._init_environment = AsyncMock(return_value={})
+        service.build_sandbox_start_request = AsyncMock(return_value={})
+        response = MagicMock()
+        response.json.return_value = {
+            'session_id': 'sb-x',
+            'status': 'starting',
+            'url': 'https://sandbox.example.com',
+            'session_api_key': 'key',
+            'runtime_id': 'runtime-1',
+        }
+        response.raise_for_status = MagicMock()
+        service._send_runtime_api_request = AsyncMock(return_value=response)
+        return service
+
+    async def used_today():
+        async with async_session_maker() as session:
+            result = await DailySandboxQuotaService(session).get_status(str(user.id))
+        return result.used_today
+
+    # Timeout: the sandbox stays STARTING, the wait fails, slot refunded.
+    service = make_service()
+    info = await service.start_sandbox()
+    assert await used_today() == 1
+    stuck = SandboxInfo(
+        id=info.id,
+        created_by_user_id=str(user.id),
+        sandbox_spec_id='spec-1',
+        status=SandboxStatus.STARTING,
+        session_api_key=None,
+    )
+    service.get_sandbox = AsyncMock(return_value=stuck)
+    with pytest.raises(SandboxError):
+        await service.wait_for_sandbox_running(info.id, timeout=0, poll_interval=0)
+    assert await used_today() == 0
+    assert service._pending_quota == {}
+
+    # Success: the sandbox reaches RUNNING, the slot stays consumed.
+    service = make_service()
+    info = await service.start_sandbox()
+    assert await used_today() == 1
+    running = SandboxInfo(
+        id=info.id,
+        created_by_user_id=str(user.id),
+        sandbox_spec_id='spec-1',
+        status=SandboxStatus.RUNNING,
+        session_api_key=None,
+    )
+    service.get_sandbox = AsyncMock(return_value=running)
+    await service.wait_for_sandbox_running(info.id, timeout=5, poll_interval=0)
+    assert await used_today() == 1
+    assert service._pending_quota == {}
+
+
+@pytest.mark.asyncio
 async def test_unlimited_user_is_not_counted(sandbox_quota, async_session_maker):
     user, start, used_today = sandbox_quota
     async with async_session_maker() as session:

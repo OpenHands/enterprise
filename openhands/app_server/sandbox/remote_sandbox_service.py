@@ -1,11 +1,12 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 from uuid import UUID
 
+import anyio
 import base62
 import httpx
 from fastapi import Request
@@ -127,6 +128,11 @@ class RemoteSandboxService(SandboxService):
     user_context: UserContext
     httpx_client: httpx.AsyncClient
     db_session: AsyncSession
+    # Sandboxes started by this instance whose quota reservation is not yet
+    # confirmed by the sandbox reaching RUNNING: sandbox_id -> user_id.
+    # wait_for_sandbox_running settles each entry (keep on success, refund
+    # on failure); entries for starts nobody waits on simply linger.
+    _pending_quota: dict[str, str] = field(default_factory=dict)
 
     async def _send_runtime_api_request(
         self, method: str, path: str, **kwargs: Any
@@ -423,6 +429,13 @@ class RemoteSandboxService(SandboxService):
         the start fails). Raises HTTP 429 when the user is at their limit.
         No-ops outside SaaS mode, for unattributed (system/warm) sandboxes,
         and in OSS builds where the enterprise quota service is not importable.
+
+        Scope, deliberately: only this backend meters starts. Prod SaaS runs
+        the remote backend exclusively; a SaaS deployment on the Docker, E2B
+        or process backends would not be metered. Resuming a paused sandbox
+        is not metered either — it reuses an existing sandbox rather than
+        creating one — so a caller that resumes a single sandbox repeatedly
+        allocates pods outside this quota.
         """
         if not user_id:
             return False
@@ -451,10 +464,44 @@ class RemoteSandboxService(SandboxService):
             )
             from storage.database import a_session_maker
 
-            async with a_session_maker() as session:
-                await DailySandboxQuotaService(session).release(user_id)
+            # Shielded: callers may run in a cancelled scope (e.g. a client
+            # disconnect cancels the streaming start task), and a cancelled
+            # release would silently burn the user's slot.
+            with anyio.CancelScope(shield=True):
+                async with a_session_maker() as session:
+                    await DailySandboxQuotaService(session).release(user_id)
         except Exception:
             _logger.exception('Failed to release daily sandbox quota reservation')
+
+    async def wait_for_sandbox_running(
+        self,
+        sandbox_id: str,
+        timeout: int = 120,
+        poll_interval: int = 2,
+        httpx_client: httpx.AsyncClient | None = None,
+    ) -> SandboxInfo:
+        """Wait for RUNNING, settling this instance's quota reservation.
+
+        A sandbox this instance started that never reaches RUNNING (startup
+        timeout, ERROR state, or a cancelled wait) refunds its reservation:
+        the user must not burn quota because the cluster couldn't schedule
+        them. Sandboxes started elsewhere have no pending entry and are
+        never refunded here.
+        """
+        try:
+            info = await super().wait_for_sandbox_running(
+                sandbox_id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                httpx_client=httpx_client,
+            )
+        except BaseException:
+            pending_user_id = self._pending_quota.pop(sandbox_id, None)
+            if pending_user_id is not None:
+                await self._release_daily_sandbox_quota(pending_user_id)
+            raise
+        self._pending_quota.pop(sandbox_id, None)
+        return info
 
     async def start_sandbox(
         self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
@@ -517,7 +564,17 @@ class RemoteSandboxService(SandboxService):
             runtime_id = runtime_data.get('runtime_id', 'unknown')
             _logger.info(f'Started sandbox {sandbox_id} with runtime_id={runtime_id}')
 
-            return self._to_sandbox_info(stored_sandbox, runtime_data)
+            info = self._to_sandbox_info(stored_sandbox, runtime_data)
+            if quota_reserved and user_id:
+                if info.status == SandboxStatus.ERROR:
+                    # The runtime already failed: refund immediately rather
+                    # than waiting for a waiter that may never come.
+                    await self._release_daily_sandbox_quota(user_id)
+                else:
+                    # Settled by wait_for_sandbox_running: kept if the
+                    # sandbox reaches RUNNING, refunded if it never does.
+                    self._pending_quota[sandbox_id] = user_id
+            return info
 
         except httpx.HTTPError as e:
             if quota_reserved:

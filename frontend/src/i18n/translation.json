@@ -5355,7 +5355,7 @@
     "ca": "Activeu habilitats i gestioneu els mercats per a l'agent."
   },
   "SETTINGS$PAGE_QUOTA_SUBLINE": {
-    "en": "Daily conversation limit, today's usage, and increase requests.",
+    "en": "Daily sandbox limit, today's usage, and increase requests.",
     "ja": "1日の会話上限、本日の使用量、上限引き上げリクエスト。",
     "zh-CN": "每日对话限额、今日用量和提额申请。",
     "zh-TW": "每日對話限額、今日用量與提額申請。",

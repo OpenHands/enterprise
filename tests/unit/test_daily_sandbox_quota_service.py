@@ -12,6 +12,30 @@ from server.services.daily_sandbox_quota_service import (
 )
 
 USER_ID = str(uuid4())
+
+
+@pytest.mark.parametrize(
+    ('env', 'expected'),
+    [
+        # New variable only.
+        ({'OH_DAILY_SANDBOX_LIMIT': '7'}, 7),
+        # Legacy variable only: prod keeps its 20 without a chart change.
+        ({'OH_DAILY_CONVERSATION_LIMIT': '20'}, 20),
+        # Both set: the new variable wins.
+        ({'OH_DAILY_SANDBOX_LIMIT': '7', 'OH_DAILY_CONVERSATION_LIMIT': '20'}, 7),
+        # Blank new variable means unset, so the legacy value still applies.
+        ({'OH_DAILY_SANDBOX_LIMIT': '  ', 'OH_DAILY_CONVERSATION_LIMIT': '20'}, 20),
+        # Nothing configured: unlimited.
+        ({}, None),
+    ],
+)
+def test_configured_daily_limit(env, expected):
+    from server.services.daily_sandbox_quota_service import configured_daily_limit
+
+    with patch.dict('os.environ', env, clear=True):
+        assert configured_daily_limit() == expected
+
+
 ORG_ID = uuid4()
 
 
