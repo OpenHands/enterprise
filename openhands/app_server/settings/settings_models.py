@@ -842,6 +842,17 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    @field_validator('registered_marketplaces', 'inherited_marketplaces', mode='before')
+    @classmethod
+    def _upgrade_saved_marketplace_sources(cls, v: Any) -> Any:
+        # Stored entries may predate source validation; writes go through update().
+        if isinstance(v, list):
+            return [
+                upgrade_legacy_marketplace_source(m) if isinstance(m, dict) else m
+                for m in v
+            ]
+        return v
+
     # NOTE: marketplace name uniqueness is enforced on the write paths (personal
     # settings + org store) and deduplicated defensively during composition
     # (``marketplace_composition``). It is intentionally NOT a model validator:

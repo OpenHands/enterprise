@@ -132,6 +132,16 @@ class TestComposeMarketplaces:
         # Assert
         assert [m.name for m in composed.inherited] == ['pub', 'team']
 
+    def test_stored_org_source_without_scheme_stays_inherited(self):
+        # Arrange - saved before sources were validated.
+        org = [{'name': 'team', 'source': 'github.com/o/team', 'auto_load': True}]
+        # Act
+        composed = compose_marketplaces([], org, [])
+        # Assert
+        assert [(m.name, m.source) for m in composed.inherited] == [
+            ('team', 'https://github.com/o/team')
+        ]
+
     def test_org_overrides_instance_by_name(self):
         # Arrange - org re-declares 'pub' to flip auto_load (AC #7).
         instance = [{'name': 'pub', 'source': 'github:o/pub', 'auto_load': True}]

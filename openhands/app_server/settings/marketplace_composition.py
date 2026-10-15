@@ -204,7 +204,9 @@ def _coerce(raw: _RawMarketplace) -> MarketplaceRegistration | None:
     try:
         if isinstance(raw, MarketplaceRegistration):
             return raw
-        return MarketplaceRegistration.model_validate(raw)
+        return MarketplaceRegistration.model_validate(
+            upgrade_legacy_marketplace_source(raw)
+        )
     except (ValidationError, ValueError) as e:
         logger.warning('Skipping invalid marketplace entry: %s', e)
         return None

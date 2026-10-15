@@ -1974,6 +1974,29 @@ class TestLegacyMarketplaceSourceUpgrade:
             ('local', 'marketplaces/internal', False),
         ]
 
+    def test_settings_load_upgrades_stored_host_without_scheme(self):
+        """Loading saved settings must not fail on a source stored without a scheme."""
+        settings = Settings(
+            registered_marketplaces=[
+                {
+                    'name': 'root',
+                    'source': 'github.com/owner/repo',
+                    'auto_load': True,
+                    'scope': 'personal',
+                }
+            ],
+            inherited_marketplaces=[
+                {'name': 'org', 'source': 'github.com/acme/skills', 'scope': 'org'}
+            ],
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )
+        assert settings.inherited_marketplaces[0].source == (
+            'https://github.com/acme/skills'
+        )
+
     def test_new_settings_reject_host_without_scheme(self):
         settings = Settings()
         with pytest.raises(ValueError, match='missing a scheme'):
