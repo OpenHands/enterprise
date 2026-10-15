@@ -1045,10 +1045,15 @@ export function SuperAdminAuthProviders() {
             key: "is_idp",
             header: t(I18nKey.SUPER_ADMIN$COL_IS_IDP),
             className: "w-[8%]",
+            // Password and SAML providers are always login IDPs (see
+            // ``toFormState``), so only an OAuth row can be switched here.
             render: (row) => (
               <Toggle
                 checked={row.is_idp}
-                disabled
+                disabled={row.kind !== KIND_OAUTH || updateProvider.isPending}
+                onClick={() =>
+                  updateProvider.mutate({ id: row.id, is_idp: !row.is_idp })
+                }
                 aria-label={`${t(I18nKey.SUPER_ADMIN$COL_IS_IDP)}: ${row.title}`}
               />
             ),

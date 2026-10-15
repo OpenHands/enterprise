@@ -12,7 +12,13 @@ import {
   formControlSettingsFieldClassName,
 } from "#/utils/form-control-classes";
 import { ToggleSwitch } from "#/ui/toggle-switch";
-import SkillsService, { MarketplaceCheckResponse } from "#/api/skills-service";
+import { MarketplaceCheckResponse } from "#/api/skills-service";
+import { useCheckMarketplace } from "#/hooks/mutation/use-check-marketplace";
+
+// The save step previews the marketplace and refuses sources the server
+// cannot fetch, so only a check that could not run falls through to it.
+const checkAllowsSave = (result: MarketplaceCheckResponse) =>
+  result.status === "ok" || result.reason === "failed";
 
 const HOST_WITHOUT_SCHEME =
   /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?\/[^/]/i;
@@ -88,17 +94,16 @@ export function MarketplaceModal({
   const [nameError, setNameError] = React.useState<string | null>(null);
   const [sourceError, setSourceError] = React.useState<string | null>(null);
   const [repoPathError, setRepoPathError] = React.useState<string | null>(null);
-  const [isChecking, setIsChecking] = React.useState(false);
+  const {
+    mutate: checkMarketplace,
+    data: checkResult,
+    isPending: isChecking,
+    // Also drops an in-flight check, so its callbacks never run.
+    reset: resetCheck,
+  } = useCheckMarketplace();
   // Why the last check did not pass, shown until the inputs change.
-  const [checkResult, setCheckResult] =
-    React.useState<MarketplaceCheckResponse | null>(null);
-  // Bumped whenever an in-flight check becomes stale (inputs changed, closed).
-  const checkRun = React.useRef(0);
-  const resetCheck = () => {
-    checkRun.current += 1;
-    setIsChecking(false);
-    setCheckResult(null);
-  };
+  const failedCheck =
+    checkResult && !checkAllowsSave(checkResult) ? checkResult : null;
 
   // Reset form when modal opens/closes or marketplace changes
   React.useEffect(() => {
@@ -116,15 +121,13 @@ export function MarketplaceModal({
       setSourceError(null);
       setRepoPathError(null);
     }
-    checkRun.current += 1;
-    setIsChecking(false);
-    setCheckResult(null);
-  }, [isOpen, marketplace]);
+    resetCheck();
+  }, [isOpen, marketplace, resetCheck]);
 
   // Scope selection only applies when adding and the caller allows it.
   const showScopeSelector = mode === "add" && allowScopeSelection;
 
-  const handleSave = async () => {
+  const handleSave = () => {
     // Validate name on click
     if (!name.trim()) {
       setNameError(t(I18nKey.SETTINGS$MARKETPLACE_NAME_REQUIRED));
@@ -165,36 +168,21 @@ export function MarketplaceModal({
       scope: showScopeSelector ? scope : undefined,
     };
     // Check that the marketplace will load in conversations before saving.
-    checkRun.current += 1;
-    const run = checkRun.current;
-    setCheckResult(null);
-    setIsChecking(true);
-    let result: MarketplaceCheckResponse;
-    try {
-      result = await SkillsService.checkMarketplace({
+    checkMarketplace(
+      {
         name: data.name,
         source: data.source,
         ref: data.ref,
         repo_path: data.repo_path,
         auto_load: data.auto_load,
-      });
-    } catch {
-      result = {
-        status: "unchecked",
-        reason: "failed",
-        plugin_count: 0,
-        skill_count: 0,
-      };
-    }
-    if (run !== checkRun.current) return;
-    setIsChecking(false);
-    // The save step previews the marketplace and refuses sources the server
-    // cannot fetch, so only a check that could not run falls through to it.
-    if (result.status === "ok" || result.reason === "failed") {
-      onSave(data);
-    } else {
-      setCheckResult(result);
-    }
+      },
+      {
+        onSuccess: (result) => {
+          if (checkAllowsSave(result)) onSave(data);
+        },
+        onError: () => onSave(data),
+      },
+    );
   };
 
   const checkMessage = (result: MarketplaceCheckResponse) => {
@@ -426,17 +414,17 @@ export function MarketplaceModal({
           />
         </div>
 
-        {checkResult && (
+        {failedCheck && (
           <Typography.Paragraph
             testId="marketplace-check-message"
             className={cn(
               "text-xs",
-              checkResult.status === "error"
+              failedCheck.status === "error"
                 ? "text-red-400"
                 : "text-tertiary-alt",
             )}
           >
-            {checkMessage(checkResult)}
+            {checkMessage(failedCheck)}
           </Typography.Paragraph>
         )}
 

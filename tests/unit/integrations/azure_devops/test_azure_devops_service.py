@@ -7,7 +7,14 @@ import pytest
 from pydantic import SecretStr
 
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
-from openhands.app_server.integrations.service_types import ProviderType, RequestMethod
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+)
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+    RequestMethod,
+)
 
 
 @pytest.mark.asyncio
@@ -160,6 +167,74 @@ async def test_make_request_accepts_successful_empty_response_body():
 
 
 @pytest.mark.asyncio
+async def test_make_request_keeps_azure_error_message():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        400,
+        json={
+            'message': 'The user does not have permission to edit subscriptions.',
+            'typeKey': 'SubscriptionException',
+        },
+        request=httpx.Request('POST', url),
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AzureDevOpsApiError) as exc_info:
+            await service._make_request(url=url, method=RequestMethod.POST)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.azure_message == (
+        'The user does not have permission to edit subscriptions.'
+    )
+    assert exc_info.value.type_key == 'SubscriptionException'
+
+
+@pytest.mark.asyncio
+async def test_make_request_handles_non_json_azure_error():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        503, text='Service Unavailable', request=httpx.Request('POST', url)
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AzureDevOpsApiError) as exc_info:
+            await service._make_request(url=url, method=RequestMethod.POST)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.azure_message == 'Service Unavailable'
+
+
+@pytest.mark.asyncio
+async def test_make_request_still_maps_unauthorized_to_authentication_error():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    url = 'https://dev.azure.com/alonaking/_apis/hooks/subscriptions?api-version=7.1'
+    response = httpx.Response(
+        401, json={'message': 'Unauthorized'}, request=httpx.Request('GET', url)
+    )
+
+    with patch.object(
+        service,
+        'execute_request',
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        with pytest.raises(AuthenticationError):
+            await service._make_request(url=url)
+
+
+@pytest.mark.asyncio
 async def test_create_pr_comment_service_hook_posts_expected_payload():
     service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
     service._make_request = AsyncMock(  # type: ignore[method-assign]
@@ -266,3 +341,28 @@ async def test_create_work_item_comment_service_hook_posts_expected_payload():
     assert kwargs['params']['publisherInputs'] == {}
     assert kwargs['params']['consumerInputs']['basicAuthUsername'] == 'openhands'
     assert kwargs['params']['consumerInputs']['basicAuthPassword'] == 'secret'
+
+
+@pytest.mark.asyncio
+async def test_membership_discovery_ignores_default_but_legacy_installations_preserve_it():
+    service = SaaSAzureDevOpsService(
+        token=SecretStr('token'), base_domain='configured-org'
+    )
+    with patch.object(service, '_make_request', new_callable=AsyncMock) as request:
+        request.side_effect = [
+            ({'id': 'member-id'}, {}),
+            (
+                {
+                    'value': [
+                        {'accountName': 'Alpha'},
+                        {'accountName': 'Beta'},
+                        {'accountId': 'no-name'},
+                    ]
+                },
+                {},
+            ),
+        ]
+        assert await service.get_installations() == ['configured-org']
+        request.assert_not_awaited()
+        assert await service.get_accessible_organizations() == ['Alpha', 'Beta']
+        assert 'memberId=member-id' in request.await_args.args[0]

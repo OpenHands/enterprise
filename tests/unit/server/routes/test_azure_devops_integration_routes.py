@@ -4,6 +4,9 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+)
 from server.routes.integration import azure_devops
 
 
@@ -341,3 +344,292 @@ async def test_events_route_skips_duplicate_without_scheduling(monkeypatch):
 
     assert response.status_code == 200
     background_tasks.add_task.assert_not_called()
+
+
+_HOOK_URL = 'https://app.example.com/integration/azure-devops/events'
+
+
+def _hook(subscription_id, event_type, status='enabled'):
+    return {
+        'id': subscription_id,
+        'status': status,
+        'eventType': event_type,
+        'publisherInputs': {},
+        'consumerInputs': {'url': _HOOK_URL},
+    }
+
+
+class _InMemoryAzureOrg:
+    """Fake service that tracks which Service Hooks exist and call order."""
+
+    organization = 'alonaking'
+
+    def __init__(self, *, fail_create=None, fail_delete=()):
+        self.hooks = {
+            'old-pr': _hook('old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+            'old-wi': _hook(
+                'old-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT
+            ),
+        }
+        self.fail_create = fail_create
+        self.fail_delete = set(fail_delete)
+        self.calls = []
+
+    async def list_service_hook_subscriptions(self):
+        return list(self.hooks.values())
+
+    async def delete_service_hook_subscription(self, subscription_id):
+        self.calls.append(('delete', subscription_id))
+        if subscription_id in self.fail_delete:
+            raise RuntimeError('delete failed')
+        self.hooks.pop(subscription_id)
+
+    def _create(self, kind, event_type):
+        self.calls.append(('create', kind))
+        if self.fail_create == kind:
+            raise AzureDevOpsApiError(
+                400, 'The user does not have permission to edit subscriptions.'
+            )
+        subscription_id = f'new-{kind}'
+        self.hooks[subscription_id] = _hook(subscription_id, event_type)
+        return {'id': subscription_id}
+
+    async def create_pr_comment_service_hook(self, **_):
+        return self._create('pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT)
+
+    async def create_work_item_comment_service_hook(self, **_):
+        return self._create('wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT)
+
+
+def _use_service(monkeypatch, service):
+    monkeypatch.setattr(azure_devops, 'HOST_URL', 'https://app.example.com')
+    monkeypatch.setattr(azure_devops, 'IS_LOCAL_DEPLOYMENT', False)
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    monkeypatch.setattr(
+        azure_devops, 'SaaSAzureDevOpsService', lambda external_auth_id: service
+    )
+
+
+@pytest.mark.asyncio
+async def test_reinstall_creates_new_hooks_before_deleting_old_ones(monkeypatch):
+    service = _InMemoryAzureOrg()
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+
+    assert response.success is True
+    assert set(service.hooks) == {'new-pr', 'new-wi'}
+    assert service.calls == [
+        ('create', 'pr'),
+        ('create', 'wi'),
+        ('delete', 'old-pr'),
+        ('delete', 'old-wi'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reinstall_keeps_existing_hooks_when_azure_rejects_create(monkeypatch):
+    service = _InMemoryAzureOrg(fail_create='pr')
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+
+    assert exc_info.value.status_code == 502
+    assert 'HTTP 400' in exc_info.value.detail
+    assert (
+        'The user does not have permission to edit subscriptions.'
+        in exc_info.value.detail
+    )
+    assert set(service.hooks) == {'old-pr', 'old-wi'}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_rolls_back_new_hook_when_second_create_fails(monkeypatch):
+    service = _InMemoryAzureOrg(fail_create='wi')
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+
+    assert exc_info.value.status_code == 502
+    assert set(service.hooks) == {'old-pr', 'old-wi'}
+    assert ('delete', 'new-pr') in service.calls
+
+
+@pytest.mark.asyncio
+async def test_reinstall_succeeds_when_old_hook_cleanup_fails(monkeypatch):
+    service = _InMemoryAzureOrg(fail_delete={'old-pr'})
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+
+    assert response.success is True
+    assert response.pr_subscription_id == 'new-pr'
+    assert set(service.hooks) == {'old-pr', 'new-pr', 'new-wi'}
+
+
+@pytest.mark.asyncio
+async def test_resources_prefers_enabled_hook_over_stale_copy(monkeypatch):
+    service = _InMemoryAzureOrg()
+    service.hooks = {
+        'stale-pr': _hook(
+            'stale-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'disabledBySystem'
+        ),
+        'new-pr': _hook('new-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+        'new-wi': _hook('new-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT),
+    }
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+
+    assert status.webhook_installed is True
+    assert status.pr_subscription_id == 'new-pr'
+
+
+@pytest.mark.asyncio
+async def test_uninstall_reports_azure_error_message(monkeypatch):
+    service = _InMemoryAzureOrg()
+
+    async def reject_delete(subscription_id):
+        raise AzureDevOpsApiError(403, 'Access denied.')
+
+    service.delete_service_hook_subscription = reject_delete
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.uninstall_azure_devops_webhook(user_id='user-id')
+
+    assert exc_info.value.status_code == 502
+    assert 'Access denied.' in exc_info.value.detail
+
+
+@pytest.fixture
+def organization_service(monkeypatch):
+    service = MagicMock()
+    service.organization = 'configured-org'
+    service.get_accessible_organizations = AsyncMock(return_value=['Alpha', 'Beta'])
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    service.delete_service_hook_subscription = AsyncMock()
+    service.create_pr_comment_service_hook = AsyncMock(return_value={'id': 'pr'})
+    service.create_work_item_comment_service_hook = AsyncMock(return_value={'id': 'wi'})
+    monkeypatch.setattr(
+        azure_devops, 'SaaSAzureDevOpsService', lambda **kwargs: service
+    )
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'test-secret')
+    return service
+
+
+@pytest.mark.asyncio
+async def test_organizations_list_uses_membership_not_configured_default(
+    organization_service,
+):
+    result = await azure_devops.get_azure_devops_organizations(user_id='user')
+    assert result.organizations == ['Alpha', 'Beta']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize('requested,expected', [(' alpha ', 'Alpha'), ('BETA', 'Beta')])
+async def test_operations_use_explicit_canonical_organization(
+    organization_service, operation, requested, expected
+):
+    result = await operation(user_id='user', organization=requested)
+    assert result.organization == expected
+    assert organization_service.organization == expected
+    organization_service.get_accessible_organizations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize(
+    'requested,code',
+    [
+        ('configured-org', 403),
+        ('https://attacker.invalid', 403),
+        (' ', 400),
+    ],
+)
+async def test_inaccessible_organization_never_reads_or_changes_hooks(
+    organization_service, operation, requested, code
+):
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization=requested)
+    assert error.value.status_code == code
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+    organization_service.delete_service_hook_subscription.assert_not_awaited()
+    organization_service.create_pr_comment_service_hook.assert_not_awaited()
+    organization_service.create_work_item_comment_service_hook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+async def test_membership_failure_blocks_hook_operations(
+    organization_service, operation
+):
+    organization_service.get_accessible_organizations.side_effect = RuntimeError(
+        'Azure unavailable'
+    )
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization='Alpha')
+    assert error.value.status_code == 503
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sequential_users_cannot_reuse_another_users_membership(monkeypatch):
+    memberships = {
+        'shared-user': ['Alpha', 'Beta'],
+        'alpha-user': ['Alpha'],
+        'beta-user': ['Beta'],
+    }
+    services = []
+
+    def make_service(external_auth_id):
+        service = MagicMock()
+        service.organization = ''
+        service.get_accessible_organizations = AsyncMock(
+            return_value=memberships[external_auth_id]
+        )
+        service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+        services.append(service)
+        return service
+
+    monkeypatch.setattr(azure_devops, 'SaaSAzureDevOpsService', make_service)
+    for user, org in [
+        ('shared-user', 'Alpha'),
+        ('shared-user', 'Beta'),
+        ('alpha-user', 'Alpha'),
+        ('beta-user', 'Beta'),
+    ]:
+        result = await azure_devops.get_azure_devops_resources(
+            user_id=user, organization=org
+        )
+        assert result.organization == org
+    with pytest.raises(HTTPException) as error:
+        await azure_devops.get_azure_devops_resources(
+            user_id='alpha-user', organization='Beta'
+        )
+    assert error.value.status_code == 403
+    services[-1].list_service_hook_subscriptions.assert_not_awaited()

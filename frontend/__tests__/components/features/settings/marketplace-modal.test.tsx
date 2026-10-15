@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   MarketplaceModal,
   normalizeMarketplaceSource,
 } from "#/components/features/settings/marketplace-modal";
+import { renderWithProviders } from "test-utils";
 import SkillsService, { MarketplaceCheckResponse } from "#/api/skills-service";
 
 const onClose = vi.fn();
@@ -39,7 +40,7 @@ beforeEach(() => {
 
 describe("MarketplaceModal", () => {
   it("renders nothing when not open", () => {
-    const { container } = render(
+    const { container } = renderWithProviders(
       <MarketplaceModal {...baseProps} isOpen={false} />,
     );
 
@@ -47,7 +48,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("renders form fields in add mode", () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
 
     // Form fields are identified by their text content
     expect(screen.getByText("SETTINGS$MARKETPLACE_NAME")).toBeInTheDocument();
@@ -59,7 +60,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("shows name required error when name is empty", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     // Click save without entering anything
@@ -72,7 +73,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("shows name invalid error for invalid name format", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     // Find the name input by placeholder
@@ -87,7 +88,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("validates that onSave is not called when source is empty", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     // Fill in name but not source
@@ -100,7 +101,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("clears name error when user starts typing", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     // Trigger name required error
@@ -120,7 +121,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("validates source before calling onSave", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     // Fill name but not source
@@ -141,7 +142,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("calls onSave with correct data when form is valid", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await user.type(
@@ -165,7 +166,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("rejects a URL entered in the repository path field", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await user.type(
@@ -189,7 +190,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("saves a repository address without a scheme as https", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await user.type(screen.getByPlaceholderText("e.g., my-skills"), "acme");
@@ -215,7 +216,7 @@ describe("MarketplaceModal", () => {
     "https://github.com/acme/skills",
     "marketplaces/internal",
   ])("saves the source %s unchanged", async (source) => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await user.type(screen.getByPlaceholderText("e.g., my-skills"), "acme");
@@ -232,7 +233,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("accepts a relative subdirectory as the repository path", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await user.type(screen.getByPlaceholderText("e.g., my-skills"), "team");
@@ -274,7 +275,7 @@ describe("MarketplaceModal", () => {
   };
 
   it("checks the marketplace as it will be saved before saving", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user, "github.com/acme/skills");
@@ -296,7 +297,7 @@ describe("MarketplaceModal", () => {
     checkSpy.mockResolvedValue(
       checkResult({ status: "error", reason: "not_found" }),
     );
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user);
@@ -317,7 +318,7 @@ describe("MarketplaceModal", () => {
     checkSpy.mockResolvedValue(
       checkResult({ status: "unchecked", reason: "unknown_host" }),
     );
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user, "https://git.example.org/org/skills");
@@ -332,7 +333,7 @@ describe("MarketplaceModal", () => {
     checkSpy.mockResolvedValue(
       checkResult({ status: "unchecked", reason: "sandbox_folder" }),
     );
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user, "acme/skills");
@@ -347,7 +348,7 @@ describe("MarketplaceModal", () => {
     checkSpy.mockResolvedValueOnce(
       checkResult({ status: "error", reason: "empty" }),
     );
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user);
@@ -382,7 +383,7 @@ describe("MarketplaceModal", () => {
     ],
   ])("saves as before when %s", async (_case, arrange) => {
     arrange();
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user);
@@ -400,7 +401,7 @@ describe("MarketplaceModal", () => {
         finish = resolve;
       }),
     );
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();
 
     await fillAndSave(user);
@@ -414,8 +415,32 @@ describe("MarketplaceModal", () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
   });
 
+  it("does not save from a check that was running when the repository changed", async () => {
+    let finish: (value: MarketplaceCheckResponse) => void = () => {};
+    checkSpy.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user);
+    await waitFor(() => expect(checkSpy).toHaveBeenCalledTimes(1));
+    await user.type(screen.getByPlaceholderText("github:owner/repo"), "-v2");
+    expect(screen.getByTestId("marketplace-save-button")).toHaveTextContent(
+      "BUTTON$SAVE",
+    );
+
+    finish(checkResult());
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("does not render scope selector unless scope selection is allowed", () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
 
     expect(
       screen.queryByTestId("marketplace-scope-select"),
@@ -423,13 +448,13 @@ describe("MarketplaceModal", () => {
   });
 
   it("renders scope selector when scope selection is allowed (add mode)", () => {
-    render(<MarketplaceModal {...baseProps} allowScopeSelection />);
+    renderWithProviders(<MarketplaceModal {...baseProps} allowScopeSelection />);
 
     expect(screen.getByTestId("marketplace-scope-select")).toBeInTheDocument();
   });
 
   it("includes the chosen scope in onSave when scope selection is allowed", async () => {
-    render(<MarketplaceModal {...baseProps} allowScopeSelection />);
+    renderWithProviders(<MarketplaceModal {...baseProps} allowScopeSelection />);
     const user = userEvent.setup();
 
     await user.type(screen.getByPlaceholderText("e.g., my-skills"), "team");
@@ -450,7 +475,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("calls onClose when cancel is clicked", async () => {
-    render(<MarketplaceModal {...baseProps} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
 
     await userEvent.click(
       screen.getByRole("button", { name: "BUTTON$CANCEL" }),
@@ -460,7 +485,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("disables buttons when isSaving is true", () => {
-    render(<MarketplaceModal {...baseProps} isSaving={true} />);
+    renderWithProviders(<MarketplaceModal {...baseProps} isSaving={true} />);
 
     expect(screen.getByTestId("marketplace-save-button")).toBeDisabled();
     expect(
@@ -469,7 +494,7 @@ describe("MarketplaceModal", () => {
   });
 
   it("renders in edit mode with read-only source", () => {
-    render(
+    renderWithProviders(
       <MarketplaceModal
         {...baseProps}
         mode="edit"

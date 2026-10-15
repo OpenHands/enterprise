@@ -5,10 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from integrations.azure_devops.azure_devops_manager import AzureDevOpsManager
+from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
+from integrations.azure_devops.azure_devops_view import AzureDevOpsWorkItemComment
 from integrations.models import Message, SourceType
 
 
-def _pr_comment_message(body: str = '@openhands please fix this') -> Message:
+def _pr_comment_message(
+    body: str = '@openhands please fix this', org: str = 'alonaking'
+) -> Message:
     return Message(
         source=SourceType.AZURE_DEVOPS,
         message={
@@ -16,7 +20,7 @@ def _pr_comment_message(body: str = '@openhands please fix this') -> Message:
             'payload': {
                 'eventType': 'ms.vss-code.git-pullrequest-comment-event',
                 'resourceContainers': {
-                    'account': {'baseUrl': 'https://dev.azure.com/alonaking/'}
+                    'account': {'baseUrl': f'https://dev.azure.com/{org}/'}
                 },
                 'resource': {
                     'comment': {
@@ -52,8 +56,8 @@ async def test_receive_message_skips_when_commenter_lacks_write_access(monkeypat
     fake_service = MagicMock()
     fake_service.has_contribute_access = AsyncMock(return_value=False)
     monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_manager.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
+        lambda **kwargs: fake_service,
     )
 
     await manager.receive_message(_pr_comment_message())
@@ -71,11 +75,136 @@ async def test_receive_message_dispatches_when_commenter_has_write_access(monkey
     fake_service = MagicMock()
     fake_service.has_contribute_access = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_manager.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
+        lambda **kwargs: fake_service,
     )
 
     await manager.receive_message(_pr_comment_message())
 
     fake_service.has_contribute_access.assert_awaited_once_with('proj-1', 'repo-1')
     manager.start_job.assert_awaited_once()
+
+
+def _work_item_comment_message(org: str) -> Message:
+    return Message(
+        source=SourceType.AZURE_DEVOPS,
+        message={
+            'event_key': 'workitem.commented',
+            'payload': {
+                'eventType': 'workitem.commented',
+                'resourceContainers': {
+                    'account': {'baseUrl': f'https://dev.azure.com/{org}/'}
+                },
+                'resource': {
+                    'id': 42,
+                    'fields': {
+                        'System.TeamProject': 'Project',
+                        'System.ChangedBy': {
+                            'id': 'ado-user-id',
+                            'displayName': 'Alice Example',
+                            'uniqueName': 'alice@example.com',
+                        },
+                        'System.History': '@openhands please fix work item',
+                    },
+                },
+            },
+        },
+    )
+
+
+@pytest.fixture
+def azure_requests(monkeypatch):
+    """Route resolver calls through the real service and record their URLs."""
+    urls: list[str] = []
+    state = {'has_access': True}
+
+    async def fake_make_request(self, url, params=None, method=None):
+        urls.append(url)
+        if '/_apis/security/permissionevaluationbatch' in url:
+            return {'evaluations': [{'value': state['has_access']}]}, {}
+        if '/_apis/git/repositories' in url:
+            repo = {'id': 'repo-b', 'name': 'Repo', 'project': {'id': 'proj-b'}}
+            return {'value': [repo]}, {}
+        if '/_apis/wit/workitems/42?' in url:
+            fields = {'System.Title': 'Beta title', 'System.Description': 'Body'}
+            return {'fields': fields}, {}
+        if '/_apis/wit/workItems/42/comments' in url:
+            return {'comments': []}, {}
+        raise AssertionError(f'unexpected Azure request {url}')
+
+    monkeypatch.setattr(SaaSAzureDevOpsService, '_make_request', fake_make_request)
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
+        SaaSAzureDevOpsService,
+    )
+    return urls, state
+
+
+def _manager_with_mentioner() -> AzureDevOpsManager:
+    manager = AzureDevOpsManager(AsyncMock())
+    manager._resolve_mentioner_keycloak_id = AsyncMock(return_value='kc-alice')  # type: ignore[method-assign]
+    manager.start_job = AsyncMock()  # type: ignore[method-assign]
+    return manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configured_org', ['Alpha', ''])
+async def test_pr_comment_from_other_org_checks_access_in_event_org(
+    monkeypatch, azure_requests, configured_org
+):
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
+        configured_org,
+    )
+    urls, _ = azure_requests
+    manager = _manager_with_mentioner()
+
+    await manager.receive_message(_pr_comment_message(org='Beta'))
+
+    manager.start_job.assert_awaited_once()
+    assert urls
+    assert all(url.startswith('https://dev.azure.com/Beta/') for url in urls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configured_org', ['Alpha', ''])
+async def test_work_item_comment_from_other_org_resolves_in_event_org(
+    monkeypatch, azure_requests, configured_org
+):
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
+        configured_org,
+    )
+    urls, _ = azure_requests
+    manager = _manager_with_mentioner()
+
+    await manager.receive_message(_work_item_comment_message('Beta'))
+
+    manager.start_job.assert_awaited_once()
+    view = manager.start_job.await_args.args[0]
+    assert isinstance(view, AzureDevOpsWorkItemComment)
+    assert view.full_repo_name == 'Beta/Project/Repo'
+    await view._load_resolver_context()
+    assert view.title == 'Beta title'
+    assert all(url.startswith('https://dev.azure.com/Beta/') for url in urls)
+
+
+@pytest.mark.asyncio
+async def test_pr_comment_from_other_org_still_denies_without_write_access(
+    monkeypatch, azure_requests
+):
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
+        'Alpha',
+    )
+    urls, state = azure_requests
+    state['has_access'] = False
+    manager = _manager_with_mentioner()
+
+    await manager.receive_message(_pr_comment_message(org='Beta'))
+
+    manager.start_job.assert_not_called()
+    assert urls == [
+        'https://dev.azure.com/Beta/_apis/security/permissionevaluationbatch'
+        '?api-version=7.1-preview.1'
+    ]

@@ -129,10 +129,11 @@ describe("Super Admin Auth Providers page", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists configured auth providers by title, kind, and a read-only IDP switch, without client id/secret columns", async () => {
+  it("lists configured auth providers by title, kind, and an IDP switch that only OAuth rows can flip, without client id/secret columns", async () => {
     vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
       GITHUB_PROVIDER,
       PASSWORD_PROVIDER,
+      SAML_PROVIDER,
     ]);
     renderAuthProvidersPage();
 
@@ -144,7 +145,7 @@ describe("Super Admin Auth Providers page", () => {
     const githubIsIdpSwitch = screen.getByRole("switch", {
       name: "SUPER_ADMIN$COL_IS_IDP: GitHub",
     });
-    expect(githubIsIdpSwitch).toBeDisabled();
+    expect(githubIsIdpSwitch).toBeEnabled();
     expect(githubIsIdpSwitch).toHaveAttribute("aria-checked", "false");
 
     const passwordIsIdpSwitch = screen.getByRole("switch", {
@@ -153,9 +154,42 @@ describe("Super Admin Auth Providers page", () => {
     expect(passwordIsIdpSwitch).toBeDisabled();
     expect(passwordIsIdpSwitch).toHaveAttribute("aria-checked", "true");
 
+    const samlIsIdpSwitch = screen.getByRole("switch", {
+      name: "SUPER_ADMIN$COL_IS_IDP: Okta SAML",
+    });
+    expect(samlIsIdpSwitch).toBeDisabled();
+    expect(samlIsIdpSwitch).toHaveAttribute("aria-checked", "true");
+
     expect(screen.queryByText("github-client-id")).not.toBeInTheDocument();
     expect(
       screen.queryByText("SUPER_ADMIN$OAUTH_PROVIDER_SECRET_SET"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches an OAuth provider's Login IDP from the table without opening the edit form", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, is_idp: true });
+    renderAuthProvidersPage();
+
+    // Act
+    await user.click(
+      await screen.findByRole("switch", {
+        name: "SUPER_ADMIN$COL_IS_IDP: GitHub",
+      }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledExactlyOnceWith({
+        id: 1,
+        is_idp: true,
+      }),
+    );
+    expect(
+      screen.queryByTestId("super-admin-auth-provider-form"),
     ).not.toBeInTheDocument();
   });
 
