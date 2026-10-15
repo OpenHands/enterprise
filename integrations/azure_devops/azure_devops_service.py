@@ -24,6 +24,8 @@ GENERIC_CONTRIBUTE_PERMISSION = 4
 
 # Short, so a removed member loses access quickly.
 MEMBERSHIP_CACHE_SECONDS = 60
+# Used only when discovery fails, for example while Azure throttles it.
+LAST_KNOWN_MEMBERSHIP_SECONDS = 24 * 60 * 60
 
 
 class SaaSAzureDevOpsService(AzureDevOpsService):
@@ -138,24 +140,35 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
         return None
 
     async def get_accessible_organizations(self) -> list[str]:
-        """Organizations the token holder belongs to, cached briefly per user."""
+        """Organizations the token holder belongs to, cached briefly per user.
+
+        If discovery fails, the last organizations discovered for the user are
+        returned instead. Listing an organization still needs Azure to accept
+        the user's token, so a stale entry grants nothing.
+        """
         key = self._membership_cache_key()
         if key:
-            try:
-                cached = await get_redis_client_async().get(key)
-                if cached:
-                    return json.loads(cached)
-            except Exception as e:
-                logger.warning(f'[Azure DevOps] membership cache read failed: {e}')
+            cached = await _read_cached_organizations(key)
+            if cached is not None:
+                return cached
 
-        organizations = await self._discover_organizations()
+        try:
+            organizations = await self._discover_organizations()
+        except Exception as e:
+            last_known = (
+                await _read_cached_organizations(f'{key}:last-known') if key else None
+            )
+            if last_known is None:
+                raise
+            logger.warning(
+                f'[Azure DevOps] organization discovery failed, using last known: {e}'
+            )
+            return last_known
         if key:
-            try:
-                await get_redis_client_async().set(
-                    key, json.dumps(organizations), ex=MEMBERSHIP_CACHE_SECONDS
-                )
-            except Exception as e:
-                logger.warning(f'[Azure DevOps] membership cache write failed: {e}')
+            await _cache_organizations(key, organizations, MEMBERSHIP_CACHE_SECONDS)
+            await _cache_organizations(
+                f'{key}:last-known', organizations, LAST_KNOWN_MEMBERSHIP_SECONDS
+            )
         return organizations
 
     async def _discover_organizations(self) -> list[str]:
@@ -308,3 +321,21 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
         url = f'{self.base_url}/{project_enc}/_apis/git/repositories?api-version=7.1'
         response, _ = await self._make_request(url)
         return response.get('value') or []
+
+
+async def _read_cached_organizations(key: str) -> list[str] | None:
+    try:
+        cached = await get_redis_client_async().get(key)
+        return json.loads(cached) if cached else None
+    except Exception as e:
+        logger.warning(f'[Azure DevOps] membership cache read failed: {e}')
+        return None
+
+
+async def _cache_organizations(
+    key: str, organizations: list[str], seconds: int
+) -> None:
+    try:
+        await get_redis_client_async().set(key, json.dumps(organizations), ex=seconds)
+    except Exception as e:
+        logger.warning(f'[Azure DevOps] membership cache write failed: {e}')

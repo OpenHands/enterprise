@@ -8,7 +8,11 @@ from fastapi import HTTPException
 from pydantic import SecretStr
 
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
-from openhands.app_server.integrations.service_types import ProviderType, RequestMethod
+from openhands.app_server.integrations.service_types import (
+    ProviderType,
+    RequestMethod,
+    UnknownException,
+)
 
 
 @pytest.mark.asyncio
@@ -316,6 +320,8 @@ class _FakeAzure:
         # Organizations the membership lookup still reports (a membership-cache
         # window for a just-removed member) but whose API calls reject.
         self.error_orgs = set(error_orgs or [])
+        # Azure answers a throttled profile request with 500 "Too Many Requests".
+        self.throttled = False
         self.requests: list[httpx.Request] = []
 
     def _repo(self, org, name):
@@ -326,6 +332,10 @@ class _FakeAzure:
         path = request.url.path
         if request.url.host == 'app.vssps.visualstudio.com':
             if path == '/_apis/profile/profiles/me':
+                if self.throttled:
+                    return httpx.Response(
+                        500, json={'message': 'VssServiceException: Too Many Requests'}
+                    )
                 return httpx.Response(200, json={'id': 'member-1'})
             if path == '/_apis/accounts':
                 names = list(self.repos_by_org)
@@ -425,7 +435,28 @@ async def test_membership_is_cached_per_user_for_a_short_time(azure, fake_redis)
     assert await _user_service().get_installations() == ['Alpha', 'Beta']
 
     assert azure.requests == []
-    assert fake_redis.expiry == {'azure_devops:organizations:kc-user': 60}
+    assert fake_redis.expiry == {
+        'azure_devops:organizations:kc-user': 60,
+        'azure_devops:organizations:kc-user:last-known': 24 * 60 * 60,
+    }
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_uses_last_known_memberships(azure, fake_redis):
+    assert await _user_service().get_installations() == ['Alpha', 'Beta']
+    # The short cache expires, then Azure throttles discovery.
+    del fake_redis.values['azure_devops:organizations:kc-user']
+    azure.throttled = True
+
+    assert await _user_service().get_installations() == ['Alpha', 'Beta']
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_without_last_known_memberships_raises(azure):
+    azure.throttled = True
+
+    with pytest.raises(UnknownException):
+        await _user_service().get_installations()
 
 
 @pytest.mark.asyncio
