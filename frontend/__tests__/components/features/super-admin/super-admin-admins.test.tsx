@@ -140,6 +140,35 @@ describe("Super Admin Admins page", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("sends the admin to the Users page to grant Super Admin", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const RouterStub = createRoutesStub([
+      { path: "/super-admin/admins", Component: SuperAdminAdmins },
+      {
+        path: "/super-admin/users",
+        Component: () => <div data-testid="users-page-stub" />,
+      },
+    ]);
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <RouterStub initialEntries={["/super-admin/admins"]} />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+    await screen.findByText("grace@acme.org");
+
+    // Act
+    await user.click(screen.getByTestId("super-admin-admins-go-to-users"));
+
+    // Assert
+    expect(await screen.findByTestId("users-page-stub")).toBeInTheDocument();
+  });
+
   it("keeps the Super Admin when the revoke is cancelled", async () => {
     // Arrange
     const user = userEvent.setup();

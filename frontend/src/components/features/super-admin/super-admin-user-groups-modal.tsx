@@ -417,6 +417,13 @@ export function SuperAdminUserGroupsModal({
   const addItems: ChecklistItem[] = organizations
     .filter((org) => !memberIds.has(org.id))
     .map((org) => ({ id: org.id, label: org.name }));
+  // Bulk Actions only offers the status change the checked organizations can
+  // take: Suspend for active memberships, Activate for suspended ones.
+  const checkedItems = currentItems.filter((item) =>
+    selectedCurrent.includes(item.id),
+  );
+  const canSuspend = checkedItems.some((item) => !item.suspended);
+  const canResume = checkedItems.some((item) => item.suspended);
 
   const run = (
     action: "suspend" | "resume" | "remove" | "add" | "set_role",
@@ -572,18 +579,31 @@ export function SuperAdminUserGroupsModal({
                             : undefined
                         }
                         options={[
-                          {
-                            value: "suspend",
-                            label: optionLabel(t(I18nKey.SUPER_ADMIN$SUSPEND)),
-                          },
-                          {
-                            value: "resume",
-                            label: optionLabel(t(I18nKey.SUPER_ADMIN$ACTIVATE)),
-                          },
+                          ...(canSuspend
+                            ? [
+                                {
+                                  value: "suspend",
+                                  label: optionLabel(
+                                    t(I18nKey.SUPER_ADMIN$SUSPEND),
+                                  ),
+                                },
+                              ]
+                            : []),
+                          ...(canResume
+                            ? [
+                                {
+                                  value: "resume",
+                                  label: optionLabel(
+                                    t(I18nKey.SUPER_ADMIN$ACTIVATE),
+                                  ),
+                                },
+                              ]
+                            : []),
                           {
                             value: "remove",
                             label: optionLabel(t(I18nKey.SUPER_ADMIN$REMOVE)),
-                            divider: true,
+                            // The rule separates status changes from removal.
+                            divider: canSuspend || canResume,
                           },
                         ]}
                         onChange={(item) => {
