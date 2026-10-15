@@ -733,7 +733,6 @@ export function SuperAdminAdmins() {
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
-  const emailEnabled = Boolean(config?.email_enabled);
   const personalWorkspacesHidden =
     config?.feature_flags?.hide_personal_workspaces === true;
   const { data: setupState } = useSetupState();
@@ -744,18 +743,6 @@ export function SuperAdminInstance() {
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
       <InstanceLogoSetting />
       <InstanceCompanyNameSetting />
-      <div className="flex flex-col gap-1">
-        <SettingsSwitch
-          isToggled={emailEnabled}
-          isDisabled
-          onToggle={() => undefined}
-        >
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL)}
-        </SettingsSwitch>
-        <p className="pl-0 text-xs text-[var(--oh-muted)]">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL_HINT)}
-        </p>
-      </div>
       <div className="flex flex-col gap-1">
         <SettingsSwitch
           isToggled={!personalWorkspacesHidden}
