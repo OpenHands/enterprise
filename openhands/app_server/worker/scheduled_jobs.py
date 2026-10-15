@@ -69,8 +69,13 @@ JOBS = (
         'proactive_convo_clean', 'sync.clean_proactive_convo_table', '0 2 * * *', 1800
     ),
     ScheduledJob('resend_sync', 'sync.resend_keycloak', '0 1 * * *', 3600),
+    # Unlike the CronJob's sync.install_gitlab_webhooks, reads only OAuth v2
+    # tokens and never calls Keycloak.
     ScheduledJob(
-        'install_gitlab_webhooks', 'sync.install_gitlab_webhooks', '* * * * *', 300
+        'install_gitlab_webhooks',
+        'sync.install_gitlab_webhooks_oauth_v2',
+        '* * * * *',
+        300,
     ),
     ScheduledJob(
         'enrich_user_interaction',

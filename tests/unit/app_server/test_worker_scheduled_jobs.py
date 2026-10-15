@@ -174,6 +174,11 @@ def test_the_maintenance_lease_follows_the_longer_budget_deadline():
     }
 
 
+def test_the_gitlab_webhook_job_runs_the_keycloak_free_installer():
+    [job] = [job for job in JOBS if job.name == 'install_gitlab_webhooks']
+    assert job.module == 'sync.install_gitlab_webhooks_oauth_v2'
+
+
 def test_every_job_has_its_own_setting_prefix():
     prefixes = [job.prefix for job in JOBS]
     assert len(prefixes) == len(set(prefixes)) == 7
