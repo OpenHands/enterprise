@@ -1,4 +1,5 @@
 import asyncio
+from typing import Self
 
 from pydantic import SecretStr
 
@@ -13,6 +14,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.oauth_v2_refresh import get_oauth_v2_git_token
 from server.auth.token_manager import TokenManager
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
@@ -634,3 +636,25 @@ class SaaSGitLabService(GitLabService):
         )
 
         return projects_with_admin_access, groups_with_admin_access
+
+
+class OAuthV2GitLabService(SaaSGitLabService):
+    """Acts as a user with only their GitLab token from ``oauth_tokens``.
+
+    Unlike ``SaaSGitLabService``, it never reads a Keycloak token, so it
+    works on installs without Keycloak.
+    """
+
+    @classmethod
+    async def for_user(cls, user_id: str) -> Self | None:
+        """The service for ``user_id``; ``None`` if they have no such token."""
+        token = await get_oauth_v2_git_token(user_id, ProviderType.GITLAB)
+        if token is None:
+            return None
+        return cls(external_auth_id=user_id, token=SecretStr(token))
+
+    async def get_latest_token(self) -> SecretStr | None:
+        if not self.external_auth_id:
+            return None
+        token = await get_oauth_v2_git_token(self.external_auth_id, ProviderType.GITLAB)
+        return SecretStr(token) if token else None

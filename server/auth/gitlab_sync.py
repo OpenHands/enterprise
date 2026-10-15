@@ -69,3 +69,29 @@ def schedule_gitlab_repo_sync(
             logger.warning('gitlab_repo_sync_failed', exc_info=True)
 
     _ = asyncio.create_task(_run())
+
+
+def schedule_oauth_v2_gitlab_repo_sync(user_id: str) -> None:
+    """Like ``schedule_gitlab_repo_sync``, but acting with the user's GitLab
+    token from ``oauth_tokens``; never calls Keycloak. Skipped when the user
+    has no such token."""
+
+    async def _run():
+        try:
+            # Lazy import: see schedule_gitlab_repo_sync.
+            from integrations.gitlab.gitlab_service import OAuthV2GitLabService
+
+            service = await OAuthV2GitLabService.for_user(user_id)
+            if service is None:
+                logger.debug(
+                    'gitlab_repo_sync_skipped: user has no OAuth v2 GitLab token',
+                    extra={'user_id': user_id},
+                )
+                return
+            await service.get_all_repositories(
+                'pushed', AppMode.SAAS, store_in_background=False
+            )
+        except Exception:
+            logger.warning('gitlab_repo_sync_failed', exc_info=True)
+
+    _ = asyncio.create_task(_run())
