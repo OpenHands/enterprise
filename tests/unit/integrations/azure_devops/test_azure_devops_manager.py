@@ -152,10 +152,7 @@ def _manager_with_mentioner() -> AzureDevOpsManager:
 async def test_pr_comment_from_other_org_checks_access_in_event_org(
     monkeypatch, azure_requests, configured_org
 ):
-    monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
-        configured_org,
-    )
+    monkeypatch.setenv('AZURE_DEVOPS_ORGANIZATION', configured_org)
     urls, _ = azure_requests
     manager = _manager_with_mentioner()
 
@@ -171,10 +168,7 @@ async def test_pr_comment_from_other_org_checks_access_in_event_org(
 async def test_work_item_comment_from_other_org_resolves_in_event_org(
     monkeypatch, azure_requests, configured_org
 ):
-    monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
-        configured_org,
-    )
+    monkeypatch.setenv('AZURE_DEVOPS_ORGANIZATION', configured_org)
     urls, _ = azure_requests
     manager = _manager_with_mentioner()
 
@@ -193,10 +187,7 @@ async def test_work_item_comment_from_other_org_resolves_in_event_org(
 async def test_pr_comment_from_other_org_still_denies_without_write_access(
     monkeypatch, azure_requests
 ):
-    monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION',
-        'Alpha',
-    )
+    monkeypatch.setenv('AZURE_DEVOPS_ORGANIZATION', 'Alpha')
     urls, state = azure_requests
     state['has_access'] = False
     manager = _manager_with_mentioner()

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import SecretStr
 
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
@@ -269,7 +270,7 @@ async def test_create_work_item_comment_service_hook_posts_expected_payload():
 
 
 @pytest.mark.asyncio
-async def test_membership_discovery_ignores_default_but_legacy_installations_preserve_it():
+async def test_installations_ignore_stored_organization():
     service = SaaSAzureDevOpsService(
         token=SecretStr('token'), base_domain='configured-org'
     )
@@ -287,7 +288,211 @@ async def test_membership_discovery_ignores_default_but_legacy_installations_pre
                 {},
             ),
         ]
-        assert await service.get_installations() == ['configured-org']
-        request.assert_not_awaited()
-        assert await service.get_accessible_organizations() == ['Alpha', 'Beta']
+        assert await service.get_installations() == ['Alpha', 'Beta']
         assert 'memberId=member-id' in request.await_args.args[0]
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.values: dict[str, str] = {}
+        self.expiry: dict[str, int] = {}
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+        self.expiry[key] = ex
+
+
+class _FakeAzure:
+    """Azure DevOps APIs for one member across several organizations."""
+
+    def __init__(self, repos_by_org: dict[str, list[str]], pr_by_org=None):
+        self.repos_by_org = repos_by_org
+        self.pr_by_org = pr_by_org or {}
+        self.requests: list[httpx.Request] = []
+
+    def _repo(self, org, name):
+        return {'id': f'{org}-{name}', 'name': name, 'project': {'name': 'Proj'}}
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        path = request.url.path
+        if request.url.host == 'app.vssps.visualstudio.com':
+            if path == '/_apis/profile/profiles/me':
+                return httpx.Response(200, json={'id': 'member-1'})
+            if path == '/_apis/accounts':
+                names = list(self.repos_by_org)
+                value = [{'accountName': name} for name in names]
+                return httpx.Response(200, json={'value': value})
+        org, _, rest = path.lstrip('/').partition('/')
+        if org not in self.repos_by_org:
+            return httpx.Response(404, json={'message': 'not a member'})
+        repos = [self._repo(org, name) for name in self.repos_by_org[org]]
+        if rest == '_apis/projects':
+            return httpx.Response(200, json={'value': [{'name': 'Proj'}]})
+        if rest in ('_apis/git/repositories', 'Proj/_apis/git/repositories'):
+            return httpx.Response(200, json={'value': repos})
+        if rest == '_apis/connectionData':
+            return httpx.Response(200, json={'authenticatedUser': {'id': 'member-1'}})
+        if rest == 'Proj/_apis/git/pullrequests':
+            prs = (
+                [
+                    {
+                        'pullRequestId': 1,
+                        'title': self.pr_by_org[org],
+                        'mergeStatus': 'conflicts',
+                        'repository': {'name': repos[0]['name']},
+                    }
+                ]
+                if org in self.pr_by_org
+                else []
+            )
+            return httpx.Response(200, json={'value': prs})
+        if rest == 'Proj/_apis/wit/wiql':
+            return httpx.Response(200, json={'workItems': []})
+        raise AssertionError(f'unexpected Azure request {request.url}')
+
+    def orgs_requested(self) -> set[str]:
+        return {
+            r.url.path.lstrip('/').split('/')[0]
+            for r in self.requests
+            if r.url.host == 'dev.azure.com'
+        }
+
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    redis = _FakeRedis()
+    monkeypatch.setattr(
+        'integrations.azure_devops.azure_devops_service.get_redis_client_async',
+        lambda: redis,
+    )
+    return redis
+
+
+@pytest.fixture
+def azure(monkeypatch, fake_redis):
+    real_client = httpx.AsyncClient
+    fake = _FakeAzure({'Alpha': ['one', 'two'], 'Beta': ['only-in-beta']})
+    monkeypatch.setattr(
+        httpx,
+        'AsyncClient',
+        lambda *args, **kwargs: real_client(transport=httpx.MockTransport(fake)),
+    )
+    return fake
+
+
+def _user_service(base_domain=None) -> SaaSAzureDevOpsService:
+    return SaaSAzureDevOpsService(
+        external_auth_id='kc-user', token=SecretStr('token'), base_domain=base_domain
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stored_host', [None, 'Alpha'])
+async def test_installations_are_every_member_organization(
+    azure, monkeypatch, stored_host
+):
+    # Neither the former install-wide default nor a stored per-user host
+    # narrows the organizations.
+    monkeypatch.setenv('AZURE_DEVOPS_ORGANIZATION', 'Alpha')
+    assert await _user_service(stored_host).get_installations() == ['Alpha', 'Beta']
+
+
+@pytest.mark.asyncio
+async def test_installations_for_single_organization_member(azure):
+    azure.repos_by_org = {'Alpha': ['one']}
+    assert await _user_service().get_installations() == ['Alpha']
+
+
+@pytest.mark.asyncio
+async def test_membership_is_cached_per_user_for_a_short_time(azure, fake_redis):
+    assert await _user_service().get_installations() == ['Alpha', 'Beta']
+    azure.requests.clear()
+
+    assert await _user_service().get_installations() == ['Alpha', 'Beta']
+
+    assert azure.requests == []
+    assert fake_redis.expiry == {'azure_devops:organizations:kc-user': 60}
+
+
+@pytest.mark.asyncio
+async def test_repositories_for_installation_use_canonical_organization(azure):
+    repos = await _user_service().get_paginated_repos(
+        page=1, per_page=10, sort='pushed', installation_id='beta'
+    )
+
+    assert [r.full_name for r in repos] == ['Beta/Proj/only-in-beta']
+    assert azure.orgs_requested() == {'Beta'}
+
+
+@pytest.mark.asyncio
+async def test_repositories_for_non_member_installation_are_forbidden(azure):
+    with pytest.raises(HTTPException) as exc_info:
+        await _user_service().get_paginated_repos(
+            page=1, per_page=10, sort='pushed', installation_id='Gamma'
+        )
+
+    assert exc_info.value.status_code == 403
+    assert azure.orgs_requested() == set()
+
+
+@pytest.mark.asyncio
+async def test_repositories_without_installation_span_every_organization(azure):
+    repos = await _user_service().get_paginated_repos(
+        page=1, per_page=10, sort='name', installation_id=None
+    )
+
+    assert sorted(r.full_name for r in repos) == [
+        'Alpha/Proj/one',
+        'Alpha/Proj/two',
+        'Beta/Proj/only-in-beta',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_installation_pages_return_each_repository_once(azure):
+    azure.repos_by_org = {'Alpha': ['r1', 'r2', 'r3', 'r4', 'r5']}
+    service = _user_service()
+
+    pages = [
+        await service.get_paginated_repos(
+            page=page, per_page=2, sort='name', installation_id='Alpha'
+        )
+        for page in (1, 2, 3, 4)
+    ]
+
+    names = [r.full_name.rsplit('/', 1)[1] for page in pages for r in page]
+    assert names == ['r1', 'r2', 'r3', 'r4', 'r5']
+
+
+@pytest.mark.asyncio
+async def test_search_finds_repositories_in_any_organization(azure):
+    repos = await _user_service().search_repositories('beta', per_page=5)
+
+    assert [r.full_name for r in repos] == ['Beta/Proj/only-in-beta']
+    assert all(org in azure.orgs_requested() for org in ('Alpha', 'Beta'))
+
+
+@pytest.mark.asyncio
+async def test_search_merges_organizations_and_caps_results(azure):
+    azure.repos_by_org = {'Alpha': ['app', 'api'], 'Beta': ['apps']}
+
+    repos = await _user_service().search_repositories('ap', per_page=2)
+
+    assert len(repos) == 2
+    assert len({r.full_name for r in repos}) == 2
+
+
+@pytest.mark.asyncio
+async def test_suggested_tasks_cover_every_organization(azure):
+    azure.pr_by_org = {'Alpha': 'Alpha PR', 'Beta': 'Beta PR'}
+
+    tasks = await _user_service().get_suggested_tasks()
+
+    assert sorted((t.repo, t.title) for t in tasks) == [
+        ('Alpha/Proj/one', 'Alpha PR'),
+        ('Beta/Proj/only-in-beta', 'Beta PR'),
+    ]
