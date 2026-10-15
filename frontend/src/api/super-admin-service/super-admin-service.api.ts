@@ -23,7 +23,8 @@ export interface SuperAdminApiMembership {
 }
 
 export interface SuperAdminApiUser {
-  user_id: string;
+  /** ``null`` for a pending invitation whose address has no account yet. */
+  user_id: string | null;
   email: string | null;
   name: string | null;
   memberships: SuperAdminApiMembership[];

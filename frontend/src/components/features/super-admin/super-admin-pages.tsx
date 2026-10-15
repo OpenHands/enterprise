@@ -361,6 +361,8 @@ export function SuperAdminUsers() {
   const users: SuperAdminUserRow[] = useMemo(
     () =>
       (data ?? []).map((user) => {
+        // A pending invitation has no account yet, so its email keys the row.
+        const id = user.user_id ?? user.email ?? "";
         const memberships: SuperAdminMembership[] = user.memberships.map(
           (membership) => ({
             orgId: membership.org_id,
@@ -375,14 +377,15 @@ export function SuperAdminUsers() {
           }),
         );
         return {
-          id: user.user_id,
-          name: user.name || user.email || user.user_id,
+          id,
+          name: user.name || user.email || id,
           email: user.email ?? "",
           memberships,
           status:
             user.status === "inactive"
               ? "inactive"
               : deriveUserStatus(user.memberships),
+          isPendingInvite: user.user_id === null,
         };
       }),
     [data, t],
@@ -448,6 +451,7 @@ export function SuperAdminUsers() {
         getRowKey={(row) => row.id}
         empty={t(I18nKey.SUPER_ADMIN$EMPTY_USERS)}
         onRowClick={(row) => setManagedUserId(row.id)}
+        isRowClickable={(row) => !row.isPendingInvite}
         columns={[
           {
             key: "name",
@@ -502,40 +506,42 @@ export function SuperAdminUsers() {
               "w-12 min-w-12 text-right",
               USER_TABLE_CELL_CLASS_NAME,
             ),
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-user-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
-                    testId: `super-admin-manage-user-${row.id}`,
-                    onSelect: () => setManagedUserId(row.id),
-                  },
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
-                    testId: `super-admin-user-grant-admin-${row.id}`,
-                    // Already a Super Admin -- grant it again would be a
-                    // no-op, so disable rather than letting it silently
-                    // succeed and confuse whoever clicked it.
-                    isDisabled: superAdminIds.has(row.id),
-                    title: superAdminIds.has(row.id)
-                      ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
-                      : undefined,
-                    onSelect: () => setUserToGrant(row),
-                  },
-                  ...(enableIntegratedIdp
-                    ? [
-                        {
-                          label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
-                          testId: `super-admin-reset-password-${row.id}`,
-                          onSelect: () => setUserForPasswordReset(row),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            ),
+            // A pending invitation has no account to manage yet.
+            render: (row) =>
+              row.isPendingInvite ? null : (
+                <SuperAdminRowMenu
+                  testId={`super-admin-user-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
+                      testId: `super-admin-manage-user-${row.id}`,
+                      onSelect: () => setManagedUserId(row.id),
+                    },
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
+                      testId: `super-admin-user-grant-admin-${row.id}`,
+                      // Already a Super Admin -- grant it again would be a
+                      // no-op, so disable rather than letting it silently
+                      // succeed and confuse whoever clicked it.
+                      isDisabled: superAdminIds.has(row.id),
+                      title: superAdminIds.has(row.id)
+                        ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
+                        : undefined,
+                      onSelect: () => setUserToGrant(row),
+                    },
+                    ...(enableIntegratedIdp
+                      ? [
+                          {
+                            label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
+                            testId: `super-admin-reset-password-${row.id}`,
+                            onSelect: () => setUserForPasswordReset(row),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              ),
           },
         ]}
       />
