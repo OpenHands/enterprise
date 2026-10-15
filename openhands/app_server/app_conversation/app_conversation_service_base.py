@@ -57,6 +57,31 @@ from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWor
 
 _logger = logging.getLogger(__name__)
 
+# Source forms the agent-server clones; anything else is read as a sandbox path.
+_REPOSITORY_SOURCE_RE = re.compile(
+    r'^(?:github:|[a-z][a-z0-9+.-]*://|[^@/\s]+@[^:/\s]+:)'
+)
+
+
+def _warn_unresolved_marketplace_sources(
+    registered_marketplaces: list[MarketplaceRegistration] | None,
+) -> None:
+    """Log auto-load marketplaces the agent-server will not treat as repositories."""
+    for reg in registered_marketplaces or []:
+        source = getattr(reg, 'source', None)
+        if (
+            getattr(reg, 'auto_load', False) is True
+            and isinstance(source, str)
+            and not _REPOSITORY_SOURCE_RE.match(source)
+        ):
+            _logger.warning(
+                'Marketplace %r source %r is not a repository URL; the '
+                'agent-server will look for it as a path in the sandbox',
+                reg.name,
+                source,
+            )
+
+
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
 
@@ -205,6 +230,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             registered_marketplaces = await authenticate_marketplace_sources(
                 registered_marketplaces, self.user_context
             )
+            _warn_unresolved_marketplace_sources(registered_marketplaces)
 
             # Single API call to agent-server for ALL skills
             all_skills = await load_skills_from_agent_server(

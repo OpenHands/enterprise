@@ -1653,6 +1653,36 @@ class TestMarketplaceRegistration:
         with pytest.raises(ValidationError, match="cannot contain '..'"):
             MarketplaceRegistration(name='test', source='../escape/path')
 
+    @pytest.mark.parametrize(
+        'source, hint',
+        [
+            (
+                'github.com/Root-App/openhands-marketplace',
+                "use 'github:Root-App/openhands-marketplace' or "
+                "'https://github.com/Root-App/openhands-marketplace'",
+            ),
+            (
+                'github.com/owner/repo.git',
+                "use 'github:owner/repo' or 'https://github.com/owner/repo.git'",
+            ),
+            (
+                'gitlab.example.com/group/skills',
+                "use 'https://gitlab.example.com/group/skills'",
+            ),
+        ],
+    )
+    def test_source_validation_rejects_host_without_scheme(self, source, hint):
+        """A repository address without a scheme is not a local path."""
+        with pytest.raises(ValidationError, match='missing a scheme') as exc:
+            MarketplaceRegistration(name='test', source=source)
+        assert hint in str(exc.value)
+
+    @pytest.mark.parametrize(
+        'source', ['marketplaces/internal', 'skills', 'my_dir/v1.2/skills']
+    )
+    def test_source_validation_keeps_plain_relative_paths(self, source):
+        assert MarketplaceRegistration(name='test', source=source).source == source
+
 
 # --- Tests for Settings.registered_marketplaces ---
 
@@ -1918,3 +1948,39 @@ def test_git_full_clone_defaults_to_false_and_updates():
 
     assert settings.git_full_clone is True
     assert settings.model_dump(mode='json')['git_full_clone'] is True
+
+
+class TestLegacyMarketplaceSourceUpgrade:
+    """Saved sources stored without a scheme keep loading, as https URLs."""
+
+    def test_stored_host_without_scheme_loads_as_https(self):
+        from openhands.app_server.settings.settings_models import (
+            validate_and_convert_marketplaces,
+        )
+
+        result = validate_and_convert_marketplaces(
+            [
+                {
+                    'name': 'root',
+                    'source': 'github.com/Root-App/openhands-marketplace',
+                    'auto_load': True,
+                },
+                {'name': 'local', 'source': 'marketplaces/internal'},
+            ]
+        )
+
+        assert [(m.name, m.source, m.auto_load) for m in result] == [
+            ('root', 'https://github.com/Root-App/openhands-marketplace', True),
+            ('local', 'marketplaces/internal', False),
+        ]
+
+    def test_new_settings_reject_host_without_scheme(self):
+        settings = Settings()
+        with pytest.raises(ValueError, match='missing a scheme'):
+            settings.update(
+                {
+                    'registered_marketplaces': [
+                        {'name': 'root', 'source': 'github.com/owner/repo'}
+                    ]
+                }
+            )

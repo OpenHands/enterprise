@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     MarketplaceScope,
+    upgrade_legacy_marketplace_source,
 )
 
 if TYPE_CHECKING:
@@ -157,7 +158,9 @@ def get_instance_default_marketplaces() -> list[dict[str, Any]]:
         if not entry.get('name'):
             entry['name'] = _derive_name_from_source(entry.get('source', ''))
         try:
-            reg = MarketplaceRegistration.model_validate(entry)
+            reg = MarketplaceRegistration.model_validate(
+                upgrade_legacy_marketplace_source(entry)
+            )
         except (ValidationError, ValueError) as e:
             logger.warning(
                 'Invalid marketplace in %s: %s', INSTANCE_MARKETPLACES_ENV, e

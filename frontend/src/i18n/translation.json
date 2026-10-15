@@ -30718,6 +30718,23 @@
     "tr": "Kaynak gereklidir",
     "uk": "Джерело є обов'язковим"
   },
+  "SETTINGS$MARKETPLACE_SOURCE_MISSING_SCHEME": {
+    "en": "Add https:// to the repository address (e.g., https://github.com/owner/repo), or use github:owner/repo",
+    "ja": "リポジトリのアドレスに https:// を付けるか（例: https://github.com/owner/repo）、github:owner/repo の形式を使用してください",
+    "zh-CN": "请在仓库地址前加上 https://（例如 https://github.com/owner/repo），或使用 github:owner/repo",
+    "zh-TW": "請在儲存庫位址前加上 https://（例如 https://github.com/owner/repo），或使用 github:owner/repo",
+    "ko-KR": "저장소 주소에 https://를 추가하거나(예: https://github.com/owner/repo) github:owner/repo 형식을 사용하세요",
+    "no": "Legg til https:// i repository-adressen (f.eks. https://github.com/owner/repo), eller bruk github:owner/repo",
+    "ar": "أضف https:// إلى عنوان المستودع (مثل https://github.com/owner/repo)، أو استخدم github:owner/repo",
+    "de": "Fügen Sie der Repository-Adresse https:// hinzu (z. B. https://github.com/owner/repo) oder verwenden Sie github:owner/repo",
+    "fr": "Ajoutez https:// à l'adresse du dépôt (par ex. https://github.com/owner/repo) ou utilisez github:owner/repo",
+    "it": "Aggiungi https:// all'indirizzo del repository (es. https://github.com/owner/repo) oppure usa github:owner/repo",
+    "pt": "Adicione https:// ao endereço do repositório (por exemplo, https://github.com/owner/repo) ou use github:owner/repo",
+    "es": "Añade https:// a la dirección del repositorio (por ejemplo, https://github.com/owner/repo) o usa github:owner/repo",
+    "ca": "Afegeix https:// a l'adreça del repositori (p. ex. https://github.com/owner/repo) o fes servir github:owner/repo",
+    "tr": "Depo adresine https:// ekleyin (ör. https://github.com/owner/repo) veya github:owner/repo kullanın",
+    "uk": "Додайте https:// до адреси репозиторію (наприклад, https://github.com/owner/repo) або використайте github:owner/repo"
+  },
   "SUPER_ADMIN$TITLE": {
     "en": "Super Admin",
     "ja": "Super Admin",

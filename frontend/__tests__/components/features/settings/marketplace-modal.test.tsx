@@ -168,6 +168,38 @@ describe("MarketplaceModal", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("rejects a repository address without a scheme", async () => {
+    render(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "root");
+    await user.type(
+      screen.getByPlaceholderText("github:owner/repo"),
+      "github.com/Root-App/openhands-marketplace",
+    );
+    await user.click(screen.getByTestId("marketplace-save-button"));
+
+    expect(
+      screen.getByText("SETTINGS$MARKETPLACE_SOURCE_MISSING_SCHEME"),
+    ).toBeInTheDocument();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "github:Root-App/openhands-marketplace",
+    "https://github.com/Root-App/openhands-marketplace",
+    "marketplaces/internal",
+  ])("accepts the source %s", async (source) => {
+    render(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText("e.g., my-skills"), "root");
+    await user.type(screen.getByPlaceholderText("github:owner/repo"), source);
+    await user.click(screen.getByTestId("marketplace-save-button"));
+
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ source }));
+  });
+
   it("accepts a relative subdirectory as the repository path", async () => {
     render(<MarketplaceModal {...baseProps} />);
     const user = userEvent.setup();

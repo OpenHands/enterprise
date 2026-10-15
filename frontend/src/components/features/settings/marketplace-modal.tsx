@@ -13,6 +13,9 @@ import {
 } from "#/utils/form-control-classes";
 import { ToggleSwitch } from "#/ui/toggle-switch";
 
+const HOST_WITHOUT_SCHEME =
+  /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\/[^/]/i;
+
 /**
  * Best-effort marketplace name from a repository source, mirroring the backend
  * `_derive_name_from_source` (marketplace_composition.py): strip a `provider:`
@@ -109,6 +112,12 @@ export function MarketplaceModal({
     }
     if (!source.trim()) {
       setSourceError(t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_REQUIRED));
+      return;
+    }
+    // A host followed by a path (e.g. "github.com/owner/repo") is a repository
+    // address without its scheme; the backend rejects it, so say so here.
+    if (HOST_WITHOUT_SCHEME.test(source.trim())) {
+      setSourceError(t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_MISSING_SCHEME));
       return;
     }
     // Repository Path is an optional subdirectory *within* the repository

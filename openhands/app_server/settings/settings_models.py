@@ -65,6 +65,40 @@ _GIT_URL_PATTERN = re.compile(
 _UNSAFE_PERCENT_ESCAPE = re.compile(r'%(?:[01][0-9a-fA-F]|7[fF]|2[fF]|5[cC])')
 # - Relative local paths (no absolute paths, no parent traversal)
 _LOCAL_PATH_PATTERN = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_./-]*$')
+# A host name followed by a path, e.g. 'github.com/owner/repo'. It passes as a
+# relative local path but is almost always a repository URL missing its scheme.
+_HOST_WITHOUT_SCHEME_PATTERN = re.compile(
+    r'^((?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})/[^/].*$'
+)
+
+
+def _missing_scheme_error(source: str) -> str | None:
+    """Explain how to write ``source`` when it is a URL without a scheme."""
+    match = _HOST_WITHOUT_SCHEME_PATTERN.match(source)
+    if match is None:
+        return None
+    url = f'https://{source}'
+    if match.group(1).lower() == 'github.com':
+        path = source.split('/', 1)[1].removesuffix('.git')
+        return f"source is missing a scheme: use 'github:{path}' or '{url}'"
+    return f"source is missing a scheme: use '{url}'"
+
+
+def upgrade_legacy_marketplace_source(raw: dict[str, Any]) -> dict[str, Any]:
+    """Add ``https://`` to a saved source that was stored without a scheme.
+
+    Such sources were accepted before registration validated them, but the
+    agent-server read them as local paths and loaded nothing.
+    """
+    source = raw.get('source')
+    if isinstance(source, str) and _missing_scheme_error(source.strip()):
+        logger.warning(
+            'Marketplace %r source %r has no scheme; using https://',
+            raw.get('name'),
+            source,
+        )
+        return {**raw, 'source': f'https://{source.strip()}'}
+    return raw
 
 
 class MarketplaceScope(str, Enum):
@@ -191,6 +225,8 @@ class MarketplaceRegistration(BaseModel):
             raise ValueError('local path source must be relative, not absolute')
         if '..' in v:
             raise ValueError("source cannot contain '..' (parent directory traversal)")
+        if (missing_scheme := _missing_scheme_error(v)) is not None:
+            raise ValueError(missing_scheme)
         if _LOCAL_PATH_PATTERN.match(v):
             return v
 
@@ -252,7 +288,11 @@ def validate_and_convert_marketplaces(
     for i, mp in enumerate(raw_marketplaces):
         try:
             if isinstance(mp, dict):
-                validated.append(MarketplaceRegistration.model_validate(mp))
+                validated.append(
+                    MarketplaceRegistration.model_validate(
+                        upgrade_legacy_marketplace_source(mp)
+                    )
+                )
             elif isinstance(mp, MarketplaceRegistration):
                 validated.append(mp)
             else:

@@ -1999,3 +1999,31 @@ class TestLoadSkillsAndUpdateAgent:
                 'registered_marketplaces'
             ]
             assert forwarded == marketplaces
+
+
+def test_warns_for_auto_load_marketplace_read_as_sandbox_path():
+    """Auto-load sources the agent-server will not clone are logged."""
+    from openhands.app_server.app_conversation.app_conversation_service_base import (
+        _warn_unresolved_marketplace_sources,
+    )
+
+    registrations = [
+        MarketplaceRegistration(name='bare', source='owner/repo', auto_load=True),
+        MarketplaceRegistration(name='off', source='owner/other', auto_load=False),
+        MarketplaceRegistration(name='gh', source='github:o/r', auto_load=True),
+        MarketplaceRegistration(
+            name='url', source='https://github.com/o/r.git', auto_load=True
+        ),
+        MarketplaceRegistration(
+            name='scp', source='git@gitlab.example.com:o/r.git', auto_load=True
+        ),
+    ]
+
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base._logger'
+    ) as logger:
+        _warn_unresolved_marketplace_sources(registrations)
+
+    assert [c.args[1:] for c in logger.warning.call_args_list] == [
+        ('bare', 'owner/repo')
+    ]
