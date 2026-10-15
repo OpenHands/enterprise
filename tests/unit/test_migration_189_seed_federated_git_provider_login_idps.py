@@ -39,7 +39,32 @@ _ENV_VARS = (
     'AUTH_URL',
     'AUTH_WEB_HOST',
     'WEB_HOST',
+    'JWT_SECRET',
 )
+
+
+def _decrypt_with_fixed_secret(ciphertext: str, jwt_secret: str) -> str:
+    """Decrypt a value encrypted (by the migration, running in its own
+    ``run_alembic`` subprocess -- see ``postgres_testdb.run_alembic``) with
+    ``storage.encrypt_utils.encrypt_value()`` under ``JWT_SECRET=<jwt_secret>``.
+
+    Deliberately builds its own throwaway ``JwtService`` from that same
+    ``JWT_SECRET`` instead of going through
+    ``storage.encrypt_utils.get_jwt_service()``: that helper caches a
+    process-wide singleton the first time anything in this pytest process
+    calls it, which may happen in an earlier test with no ``JWT_SECRET`` set
+    (falling back to a random/``.keys``-file key) -- a cache this test must
+    not depend on or disturb for tests that run after it.
+    """
+    from openhands.app_server.services.jwt_service import JwtService
+    from openhands.app_server.utils.encryption_key import (
+        get_default_encryption_keys,
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv('JWT_SECRET', jwt_secret)
+        keys = get_default_encryption_keys(Path('/does-not-matter'))
+    return JwtService(keys=keys).decrypt_value(ciphertext)
 
 
 def _downgrade_to_188(test_database: postgres_testdb.TestDatabase) -> None:
@@ -157,6 +182,10 @@ def test_upgrade_adds_a_row_per_configured_brand(
 ):
     _downgrade_to_188(test_database)
     _set_keycloak_env(monkeypatch)
+    # Fixes the key ``encrypt_value()`` uses for ``client_secret`` inside the
+    # migration's own ``run_alembic`` subprocess, so this test can decrypt it
+    # back deterministically -- see ``_decrypt_with_fixed_secret``.
+    monkeypatch.setenv('JWT_SECRET', 'test-jwt-secret')
     monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client-id')
     monkeypatch.setenv('GITLAB_APP_CLIENT_ID', 'gl-client-id')
 
@@ -175,11 +204,12 @@ def test_upgrade_adds_a_row_per_configured_brand(
             'https://auth.example.com/realms/allhands/protocol/openid-connect/auth'
             f'?kc_idp_hint={row["details"]["provider_type"]}'
         )
-
-    from storage.encrypt_utils import decrypt_value
-
-    for row in rows:
-        assert decrypt_value(row['details']['client_secret']) == 'kc-secret'
+        assert (
+            _decrypt_with_fixed_secret(
+                row['details']['client_secret'], 'test-jwt-secret'
+            )
+            == 'kc-secret'
+        )
 
     github_row = next(r for r in rows if r['details']['provider_type'] == 'github')
     assert github_row['title'] == 'Log in with GitHub'
