@@ -101,9 +101,8 @@ def test_foreign_keys_are_enforced(engine: Engine):
 def test_a_failed_alembic_run_reports_its_traceback():
     """The error says why alembic failed, not only that it failed.
 
-    ``openhands`` sends uncaught exceptions to a logger, and ``fileConfig`` in
-    ``migrations/env.py`` turns that logger off, so a plain ``alembic`` run that
-    raises prints no traceback.
+    ``openhands`` sends uncaught exceptions to its own logger, so the traceback
+    is lost if ``migrations/env.py`` turns that logger off.
     """
     unreachable = postgres_testdb.PostgresServer(
         host='127.0.0.1', port=1, user='openhands', password='openhands'

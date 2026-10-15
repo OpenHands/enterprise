@@ -123,10 +123,12 @@ config = context.config
 
 # Interpret the config file for Python logging, unless the caller keeps its own
 # (the app sets configure_logger=False when it migrates on startup).
+# Keep the loggers that already exist: ``openhands`` sends uncaught exceptions
+# to its own logger, so turning it off would hide why a migration failed.
 if config.config_file_name is not None and config.attributes.get(
     'configure_logger', True
 ):
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Re-apply SQLAlchemy engine log suppression after fileConfig, which may override
 # our earlier settings from alembic.ini. This ensures DEBUG-level SQL result logging
