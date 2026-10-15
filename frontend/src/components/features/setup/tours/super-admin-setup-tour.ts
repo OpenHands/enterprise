@@ -5,6 +5,7 @@ const NAV = {
   orgDefaults: '[data-testid="sidebar-settings-/settings/org-defaults"]',
   members: '[data-testid="sidebar-settings-/settings/org-members"]',
   instance: '[data-testid="sidebar-settings-/super-admin/instance"]',
+  authProviders: '[data-testid="sidebar-settings-/super-admin/auth-providers"]',
 } as const;
 
 /**
@@ -93,10 +94,9 @@ export const SUPER_ADMIN_SETUP_TOUR: GuidedTour = {
     {
       id: "optional-saml",
       checklistId: "optional-saml",
-      route: SUPER_ADMIN_PATHS.instance,
-      anchor:
-        '[data-testid="super-admin-instance-sso"], [data-testid="super-admin-instance"]',
-      alsoHighlight: NAV.instance,
+      route: SUPER_ADMIN_PATHS.authProviders,
+      anchor: '[data-testid="super-admin-auth-providers"]',
+      alsoHighlight: NAV.authProviders,
       title: "Optional: SAML / instance",
       body: "Harden the installation with SSO and other instance settings when you are ready.",
       side: "bottom",
