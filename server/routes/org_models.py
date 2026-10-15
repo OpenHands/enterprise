@@ -827,7 +827,10 @@ class OrgBudgetThresholdUpdate(BaseModel):
 
 
 SLACK_CHANNEL_MAX_LENGTH = 80
-SLACK_CHANNEL_PATTERN = re.compile(r'^#[a-z0-9][a-z0-9_-]*$')
+# Slack channel names are lowercase, so an uppercase value is a channel ID
+# (C… public, G… private), which is what Slack's "Copy link" gives.
+SLACK_CHANNEL_NAME_PATTERN = re.compile(r'^#?([a-z0-9][a-z0-9_-]*)$')
+SLACK_CHANNEL_ID_PATTERN = re.compile(r'^#?([CG][A-Z0-9]{6,})$')
 
 MAX_BUDGET_THRESHOLDS = 10000
 
@@ -927,17 +930,28 @@ class OrgBudgetSettingsUpdate(BaseModel):
     @field_validator('slack_channel')
     @classmethod
     def _validate_slack_channel(cls, value: str | None) -> str | None:
+        """Accept a channel name (``#name`` or ``name``) or a channel ID.
+
+        Names are stored as ``#name`` and IDs without ``#``; both are values
+        ``chat.postMessage`` accepts as ``channel``.
+        """
         if value is None:
             return value
-        if len(value) > SLACK_CHANNEL_MAX_LENGTH:
+        value = value.strip()
+        if id_match := SLACK_CHANNEL_ID_PATTERN.fullmatch(value):
+            return id_match.group(1)
+        name_match = SLACK_CHANNEL_NAME_PATTERN.fullmatch(value)
+        if not name_match:
+            raise ValueError(
+                'slack_channel must be a channel name (lowercase letters, numbers, '
+                'hyphens, or underscores) or a channel ID such as C0123ABCD'
+            )
+        name = name_match.group(1)
+        if len(name) > SLACK_CHANNEL_MAX_LENGTH:
             raise ValueError(
                 f'slack_channel must be {SLACK_CHANNEL_MAX_LENGTH} characters or fewer'
             )
-        if not SLACK_CHANNEL_PATTERN.fullmatch(value):
-            raise ValueError(
-                'slack_channel must start with # and contain only lowercase letters, numbers, hyphens, or underscores'
-            )
-        return value
+        return f'#{name}'
 
     @model_validator(mode='after')
     def _validate_thresholds(self) -> 'OrgBudgetSettingsUpdate':
