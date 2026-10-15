@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import i18next from "i18next";
+import { useTranslation } from "react-i18next";
 import { isAxiosError } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
@@ -29,6 +30,8 @@ function rejectedBudgetChange(error: unknown): string | null {
 }
 
 export function Budgets() {
+  // Aliased: the threshold handlers below already use `t` for a threshold.
+  const { t: translate } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
   const queryClient = useQueryClient();
 
@@ -339,7 +342,7 @@ export function Budgets() {
           status = "Usage unavailable";
           statusColor = "yellow";
         } else if (user.is_disabled) {
-          status = "Disabled";
+          status = translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
         } else if (hasLimit) {
           if (usagePercent > 100) {
             status = "Over cap";
@@ -358,7 +361,7 @@ export function Budgets() {
 
         let budgetLabel = "No limit";
         if (user.is_disabled) {
-          budgetLabel = "Disabled";
+          budgetLabel = translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
         } else if (hasLimit) {
           budgetLabel = `$${limit.toLocaleString()} / month`;
         }
@@ -372,7 +375,8 @@ export function Budgets() {
 
         return {
           ...user,
-          name: user.user_name || user.user_email || "Unknown user",
+          name:
+            user.user_name || user.user_email?.split("@")[0] || "Unknown user",
           email: user.user_email || "",
           hasLimit,
           budgetLabel,
@@ -383,7 +387,7 @@ export function Budgets() {
           maxUsage: limit ?? 0,
         };
       }),
-    [budgetData, defaultUserLimit],
+    [budgetData, defaultUserLimit, translate],
   );
 
   const startEditingUser = (user: BudgetUserRow) => {

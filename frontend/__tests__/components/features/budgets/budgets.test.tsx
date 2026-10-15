@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -464,6 +464,57 @@ describe("Budgets", () => {
         userId: "user-1",
       });
     });
+  });
+
+  it("shows the email local part as the name when the user has no Git name", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [{ ...budgetResponse.users[0], user_name: null }],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    const row = (await screen.findByText("user")).closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("user@example.com")).toHaveLength(1);
+  });
+
+  it("presents an exempted user as Unlimited rather than Disabled", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [
+        {
+          ...budgetResponse.users[0],
+          monthly_limit: null,
+          effective_monthly_limit: null,
+          is_disabled: true,
+          is_override: true,
+        },
+      ],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await screen.findByText("User One");
+
+    // Budget cell and status pill
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getAllByText("SETTINGS$BUDGETS_UNLIMITED"),
+    ).toHaveLength(2);
+    expect(within(table).queryByText("Disabled")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+
+    expect(
+      screen.getByRole("checkbox", {
+        name: "SETTINGS$BUDGETS_UNLIMITED_FOR_USER",
+      }),
+    ).toBeChecked();
   });
 
   it("shows unavailable spend instead of rendering it as zero", async () => {

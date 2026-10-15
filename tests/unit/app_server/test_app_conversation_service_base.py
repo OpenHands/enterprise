@@ -17,8 +17,10 @@ from openhands.app_server.app_conversation.app_conversation_models import AgentT
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
 )
+from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
+from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.sdk.skills import Skill
 
@@ -1849,6 +1851,111 @@ class TestLoadAndMergeAllSkills:
             # Assert
             sent = mock_load_skills.call_args.kwargs['registered_marketplaces']
             assert [reg.source for reg in sent] == [authenticated_url]
+
+
+class TestMarketplaceGitCredentials:
+    """Entra-authenticated Azure marketplaces get a token-free credential helper."""
+
+    @staticmethod
+    def _service(token: str | None):
+        mock_user_context = Mock(spec=UserContext)
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={ProviderType.AZURE_DEVOPS: ProviderToken()}
+        )
+        mock_user_context.get_latest_token = AsyncMock(return_value=token)
+        with patch.object(AppConversationServiceBase, '__abstractmethods__', set()):
+            service = AppConversationServiceBase(
+                init_git_in_empty_workspace=True, user_context=mock_user_context
+            )
+        sandbox = Mock(spec=SandboxInfo)
+        sandbox.id = 'sandbox-123'
+        sandbox.exposed_urls = []
+        sandbox.session_api_key = 'session-key'
+        marketplaces = [
+            MarketplaceRegistration(
+                name='azure',
+                source='https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+                auto_load=True,
+            )
+        ]
+        return service, sandbox, marketplaces
+
+    @pytest.mark.asyncio
+    async def test_installs_global_helper_for_entra_token(self):
+        """The helper is configured per org and the token never enters the command."""
+        token = 'header.payload.signature'
+        service, sandbox, marketplaces = self._service(token)
+        workspace = AsyncMock()
+        workspace.execute_command.return_value = Mock(exit_code=0, stderr='')
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base.AsyncRemoteWorkspace',
+            return_value=workspace,
+        ):
+            await service._configure_marketplace_git_credentials(
+                sandbox, 'http://agent:8000', '/workspace', marketplaces
+            )
+
+        command = workspace.execute_command.call_args.args[0]
+        assert token not in command
+        assert (
+            '/api/v1/sandboxes/sandbox-123/settings/secrets/azure_devops_token'
+            in command
+        )
+        assert (
+            'git config --global credential.https://dev.azure.com/acme.username oauth2'
+            in command
+        )
+        assert 'credential.https://dev.azure.com/acme.helper' in command
+        assert (
+            'git config --global credential.https://dev.azure.com.useHttpPath true'
+            in command
+        )
+        workspace.reset_client.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_helper_for_pat(self):
+        """PATs are embedded in the authenticated URL; no helper is installed."""
+        service, sandbox, marketplaces = self._service('plain-pat')
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base.AsyncRemoteWorkspace'
+        ) as workspace_cls:
+            await service._configure_marketplace_git_credentials(
+                sandbox, 'http://agent:8000', '/workspace', marketplaces
+            )
+
+        workspace_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base.load_skills_from_agent_server'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base.build_org_configs'
+    )
+    async def test_load_and_merge_configures_credentials_before_loading(
+        self, mock_build_org_configs, mock_load_skills
+    ):
+        """Skill loading installs the helper before the agent-server clones."""
+        service, sandbox, marketplaces = self._service('header.payload.signature')
+        mock_build_org_configs.return_value = []
+        mock_load_skills.return_value = []
+        order: list[str] = []
+        service._configure_marketplace_git_credentials = AsyncMock(
+            side_effect=lambda *a, **k: order.append('credentials')
+        )
+        mock_load_skills.side_effect = lambda **k: order.append('load') or []
+
+        await service.load_and_merge_all_skills(
+            sandbox,
+            None,
+            '/workspace',
+            'http://agent:8000',
+            registered_marketplaces=marketplaces,
+        )
+
+        assert order == ['credentials', 'load']
 
 
 class TestLoadSkillsAndUpdateAgent:

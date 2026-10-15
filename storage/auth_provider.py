@@ -30,12 +30,17 @@ validates the JSON into the correct ``AuthProviderDetails`` subclass, so
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Identity, String
+from sqlalchemy import Boolean, DateTime, Identity, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from storage.auth_provider_details import AuthProviderDetails
 from storage.base import Base
 from storage.encrypt_utils import create_json_with_encrypted_secrets_type_decorator
+
+# Default ``color`` for a row that hasn't been given a brand color yet --
+# see migration 188. Duplicated as a literal there (not imported) so the
+# migration's data shape stays fixed in time even if this default changes.
+DEFAULT_AUTH_PROVIDER_COLOR = '#000000'
 
 
 class AuthProvider(Base):
@@ -55,6 +60,23 @@ class AuthProvider(Base):
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     # True for login IDPs, False for git providers.
     is_idp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Raw SVG markup for this provider's login button (see migration 188).
+    # Client-supplied, not validated server-side -- same contract as
+    # ``InstanceSettings.logo``. ``NULL`` until an admin sets one; the
+    # frontend falls back to a generic icon.
+    icon: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # CSS color string for the login button. Every row needs *some* color to
+    # render with, so this defaults to black rather than ``NULL``.
+    color: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=DEFAULT_AUTH_PROVIDER_COLOR
+    )
+    # Whether a brand-new user may be created the first time someone
+    # authenticates through this row, or whether only an already-linked
+    # account may sign in through it -- see
+    # ``server.auth.provider_identity.resolve_or_create_user``.
+    allow_registration: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
     details: Mapped[AuthProviderDetails] = mapped_column(
         create_json_with_encrypted_secrets_type_decorator(AuthProviderDetails),
         nullable=False,

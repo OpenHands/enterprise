@@ -2,6 +2,7 @@ import { openHands } from "../open-hands-axios";
 import type {
   AuthProvider,
   CreateAuthProviderParams,
+  PublicIdpProvider,
   SamlIdpMetadata,
   UpdateAuthProviderParams,
 } from "./auth-providers.types";
@@ -47,6 +48,18 @@ export const authProvidersService = {
     const { data } = await openHands.post<SamlIdpMetadata>(
       "/api/admin/oauth-providers/saml-metadata-preview",
       { metadata_url: metadataUrl },
+    );
+    return data;
+  },
+
+  /** Public, unauthenticated list of configured login IDPs (see
+   * ``server.routes.oauth_v2.oauth_v2_list_idp_providers``) -- backs the
+   * "Let's Get Started" login screen's provider buttons when
+   * ``ENABLE_OAUTH_V2_LOGIN`` is on. Never requires a session and never
+   * carries secrets. */
+  listPublicIdpProviders: async () => {
+    const { data } = await openHands.get<PublicIdpProvider[]>(
+      "/oauth/idp-providers",
     );
     return data;
   },

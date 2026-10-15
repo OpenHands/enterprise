@@ -889,7 +889,7 @@ class UserStore:
 
         Called after a successful email-match link so the seeding window is
         exactly one login wide per user. Subsequent logins resolve via the
-        ``oauth_provider_users`` ``sub`` lookup only.
+        ``auth_provider_users`` ``sub`` lookup only.
         """
         async with a_session_maker() as session:
             result = await session.execute(
