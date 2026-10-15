@@ -1662,6 +1662,10 @@ class TestMarketplaceRegistration:
                 ' gitlab.example.com/group/skills ',
                 'https://gitlab.example.com/group/skills',
             ),
+            (
+                'bitbucket.example.com:7990/scm/proj/skills.git',
+                'https://bitbucket.example.com:7990/scm/proj/skills.git',
+            ),
         ],
     )
     def test_source_validation_adds_https_to_host_without_scheme(

@@ -30,6 +30,7 @@ from openhands.app_server.app_conversation.skill_loader import (
     build_org_configs,
     build_sandbox_config,
     get_azure_devops_bearer_token,
+    is_agent_server_repository_source,
     load_skills_from_agent_server,
 )
 from openhands.app_server.integrations.service_types import ProviderType
@@ -57,11 +58,6 @@ from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWor
 
 _logger = logging.getLogger(__name__)
 
-# Source forms the agent-server clones; anything else is read as a sandbox path.
-_REPOSITORY_SOURCE_RE = re.compile(
-    r'^(?:github:|[a-z][a-z0-9+.-]*://|[^@/\s]+@[^:/\s]+:)'
-)
-
 
 def _warn_unresolved_marketplace_sources(
     registered_marketplaces: list[MarketplaceRegistration] | None,
@@ -72,11 +68,11 @@ def _warn_unresolved_marketplace_sources(
         if (
             getattr(reg, 'auto_load', False) is True
             and isinstance(source, str)
-            and not _REPOSITORY_SOURCE_RE.match(source)
+            and not is_agent_server_repository_source(source)
         ):
             _logger.warning(
-                'Marketplace %r source %r is not a repository URL; the '
-                'agent-server will look for it as a path in the sandbox',
+                'Marketplace %r source %r is not a repository address the '
+                'agent-server can clone; it will not load from a repository',
                 reg.name,
                 source,
             )

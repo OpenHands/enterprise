@@ -65,10 +65,11 @@ _GIT_URL_PATTERN = re.compile(
 _UNSAFE_PERCENT_ESCAPE = re.compile(r'%(?:[01][0-9a-fA-F]|7[fF]|2[fF]|5[cC])')
 # - Relative local paths (no absolute paths, no parent traversal)
 _LOCAL_PATH_PATTERN = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_./-]*$')
-# A host name followed by a path, e.g. 'github.com/owner/repo': a repository
-# URL without its scheme. The agent-server would read it as a sandbox path.
+# A host name, optional port and path, e.g. 'github.com/owner/repo': a
+# repository URL without its scheme. The agent-server would read it as a
+# sandbox path.
 _HOST_WITHOUT_SCHEME_PATTERN = re.compile(
-    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}/[^/]'
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?::[0-9]{1,5})?/[^/]'
 )
 
 

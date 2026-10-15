@@ -430,6 +430,17 @@ def parse_marketplace_source(source: str) -> tuple[str, str]:
 # parse_marketplace_source, never treated as scp-style host:path.
 _PROVIDER_SOURCE_PREFIXES = ('github:', 'gitlab:', 'bitbucket:', 'azure-devops:')
 
+# Source forms the agent-server clones (mirrors the SDK's parse_extension_source).
+# Anything else is read as a path in the sandbox, or not loaded at all.
+_AGENT_SERVER_REPOSITORY_RE = re.compile(
+    r'^(?:github:|https?://|git://|file://|[\w.-]+@[\w.-]+:)'
+)
+
+
+def is_agent_server_repository_source(source: str) -> bool:
+    """Whether the agent-server clones ``source`` rather than reading a path."""
+    return bool(_AGENT_SERVER_REPOSITORY_RE.match(source.strip()))
+
 
 def _split_git_url_source(source: str) -> tuple[str, str] | None:
     """Return ``(host, path)`` for a URL/scp git source, else ``None``.
