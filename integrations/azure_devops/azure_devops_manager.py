@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import cast
 
 from jinja2 import Environment, FileSystemLoader
 from pydantic import SecretStr
 
-from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.azure_devops.azure_devops_view import (
     AzureDevOpsFactory,
     AzureDevOpsPRComment,
@@ -104,13 +102,9 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
             logger.info('[Azure DevOps] No repository resolved for event; ignoring.')
             return
 
-        # Gate on write access, mirroring the GitHub/GitLab/Bitbucket resolvers.
-        # The lazy proxy is typed as the base; the enterprise impl adds the method.
-        azure_service = cast(
-            SaaSAzureDevOpsService,
-            AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id),
-        )
-        if not await azure_service.has_contribute_access(
+        # Gate on write access in the event's organization, mirroring the
+        # GitHub/GitLab/Bitbucket resolvers.
+        if not await azure_view.azure_service().has_contribute_access(
             azure_view.project_id, azure_view.repository_id
         ):
             logger.info(
