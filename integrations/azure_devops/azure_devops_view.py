@@ -146,12 +146,12 @@ def _actor_username(actor: dict[str, Any]) -> str:
 
 
 def actor_email(actor: dict[str, Any]) -> str:
-    unique_name = str(actor.get('uniqueName') or '').strip()
-    if '@' in unique_name:
-        return unique_name
-    display_name = str(actor.get('displayName') or '').strip()
-    match = re.search(r'[\w.+-]+@[\w.-]+\.\w+', display_name)
-    return match.group(0) if match else ''
+    # Work item service hooks send the identity as one "Name <email>" string.
+    for value in (actor.get('uniqueName'), actor.get('displayName')):
+        match = re.search(r'[\w.+-]+@[\w.-]+\.\w+', str(value or ''))
+        if match:
+            return match.group(0)
+    return ''
 
 
 @dataclass

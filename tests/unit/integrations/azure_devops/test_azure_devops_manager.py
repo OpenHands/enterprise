@@ -208,3 +208,21 @@ async def test_pr_comment_from_other_org_still_denies_without_write_access(
         'https://dev.azure.com/Beta/_apis/security/permissionevaluationbatch'
         '?api-version=7.1-preview.1'
     ]
+
+
+@pytest.mark.asyncio
+async def test_work_item_mentioner_resolves_from_identity_string():
+    # Work item service hooks send System.ChangedBy as "Name <email>", with no revisedBy.
+    message = _work_item_comment_message('Beta')
+    fields = message.message['payload']['resource']['fields']
+    fields['System.ChangedBy'] = 'Alice Example <alice@example.com>'
+    token_manager = AsyncMock()
+    token_manager.get_user_id_from_user_email = AsyncMock(return_value='kc-alice')
+    manager = AzureDevOpsManager(token_manager)
+
+    keycloak_user_id = await manager._resolve_mentioner_keycloak_id(message)
+
+    assert keycloak_user_id == 'kc-alice'
+    token_manager.get_user_id_from_user_email.assert_awaited_once_with(
+        'alice@example.com'
+    )
