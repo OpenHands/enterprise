@@ -138,7 +138,9 @@ class DailySandboxQuotaService:
             .on_conflict_do_update(
                 index_elements=['user_id', 'usage_date'],
                 set_={
-                    'sandbox_count': DailySandboxUsage.sandbox_count + 1,
+                    DailySandboxUsage.sandbox_count: (
+                        DailySandboxUsage.sandbox_count + 1
+                    ),
                     'updated_at': now,
                 },
                 where=DailySandboxUsage.sandbox_count < limit,
@@ -157,7 +159,7 @@ class DailySandboxQuotaService:
         today = datetime.now(UTC).date()
         await self.db_session.execute(
             text(
-                'UPDATE daily_sandbox_usage SET sandbox_count = GREATEST(sandbox_count - 1, 0), updated_at = CURRENT_TIMESTAMP WHERE user_id = :user_id AND usage_date = :usage_date'
+                'UPDATE daily_conversation_usage SET conversation_count = GREATEST(conversation_count - 1, 0), updated_at = CURRENT_TIMESTAMP WHERE user_id = :user_id AND usage_date = :usage_date'
             ),
             {'user_id': UUID(user_id), 'usage_date': today},
         )

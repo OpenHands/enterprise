@@ -9,8 +9,8 @@ expects.
 
 The user row is inserted with raw SQL rather than the ``create_user``
 fixture: at revision 186 the ORM models carry columns from later
-migrations (e.g. ``org.daily_sandbox_limit``, renamed in 189) that do not
-exist yet, so an ORM insert cannot run against the downgraded schema.
+migrations that do not exist yet, so an ORM insert cannot run against
+the downgraded schema.
 """
 
 from __future__ import annotations

@@ -1350,7 +1350,7 @@ class UserStore:
                 """,
                 'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
                 'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
-                'DELETE FROM daily_sandbox_usage WHERE user_id = :user_id',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
                 'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
                 'DELETE FROM quota_increase_request WHERE user_id = :user_id',
                 'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
