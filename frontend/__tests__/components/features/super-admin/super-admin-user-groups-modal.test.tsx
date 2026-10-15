@@ -229,6 +229,45 @@ describe("SuperAdminUserGroupsModal", () => {
     );
   });
 
+  it("offers Activate for a suspended checked group and Suspend for an active one", async () => {
+    // Arrange
+    const events = userEvent.setup();
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={() => undefined}
+      />,
+    );
+    const bulkInput = screen
+      .getByTestId("super-admin-groups-bulk")
+      .querySelector("input") as HTMLInputElement;
+    const bulkOptions = async () =>
+      (await screen.findAllByRole("option")).map((node) => node.textContent);
+
+    // Act: only the suspended membership (org 4) is checked
+    await events.click(screen.getByTestId("super-admin-group-current-4"));
+    await events.click(bulkInput);
+
+    // Assert
+    expect(await bulkOptions()).toEqual([
+      "SUPER_ADMIN$ACTIVATE",
+      "SUPER_ADMIN$REMOVE",
+    ]);
+
+    // Act: only the active membership (org 2) is checked
+    await events.keyboard("{Escape}");
+    await events.click(screen.getByTestId("super-admin-group-current-4"));
+    await events.click(screen.getByTestId("super-admin-group-current-2"));
+    await events.click(bulkInput);
+
+    // Assert
+    expect(await bulkOptions()).toEqual([
+      "SUPER_ADMIN$SUSPEND",
+      "SUPER_ADMIN$REMOVE",
+    ]);
+  });
+
   it("asks before removing the checked groups", async () => {
     // Arrange
     const events = userEvent.setup();
