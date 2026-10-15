@@ -7,6 +7,13 @@
 # configure their own LLM in Settings instead of requiring a LiteLLM proxy
 # (OH_LLM_MODEL_KIND). See OHE-3376.
 #
+# Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
+# the `proxy` service (Caddy): `/api/automation/*` goes to the automation
+# service and everything else to the app, mirroring the cloud ingress. Agent
+# Canvas calls same-origin `/api/automation/v1/...`, so no extra port or CORS
+# setup is needed. `/api/service/*` is deliberately not reachable through the
+# proxy (see the `caddyfile` config at the bottom).
+#
 # First run: open http://localhost:3100/oauth/idp/signup to create the admin
 # account, then add an LLM under Settings. `/` then redirects to Agent Canvas
 # at /canvas, which this stack builds into the image (AGENT_CANVAS=1, below)
@@ -38,6 +45,12 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
+    # The automation service needs its own database: it and the app both run
+    # Alembic against an `alembic_version` table, so sharing one database
+    # would collide. `POSTGRES_DB` only creates one, hence this init script.
+    configs:
+      - source: automation-db-init
+        target: /docker-entrypoint-initdb.d/10-automation-db.sql
     # Intentionally no `db-data` volume mount here for now: this stack is
     # meant to be completely ephemeral (see OHE-3376 investigation into the
     # Docker named volume surviving `docker compose down`). Every
@@ -81,8 +94,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports:
-      - '${APP_PORT:-3100}:3000'
+    # Not published: reached through `proxy`, which owns APP_PORT.
+    expose:
+      - '3000'
     # The Docker sandbox backend creates sibling containers via the host's
     # Docker daemon (same pattern as containers/dev/compose.yml), so the app
     # container needs the socket -- not `privileged: true`, since it runs as
@@ -202,6 +216,97 @@ services:
       # APP_PORT is published as (see `ports`, above), or sandboxes won't
       # be able to reach the app.
       OH_SANDBOX_HOST_PORT: ${APP_PORT:-3100}
+
+      # Automation service wiring. AUTOMATIONS_SERVICE_KEY lets the
+      # automation service mint per-user API keys through /api/service/*, and
+      # must match AUTOMATION_SERVICE_KEY on the `automation-server` service. The
+      # default is only acceptable because the proxy does not expose
+      # /api/service/*; set a real value if you publish `app` some other way.
+      # AUTOMATION_SERVICE_URL includes the /api/automation base path (the
+      # app appends /v1 to it).
+      AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
+      AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
+      AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
+      AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+    restart: unless-stopped
+
+  # Scheduled and event-driven automations (OpenHands/automation). It
+  # authenticates users by calling the app's /api/v1/users/me with the
+  # browser's session cookie, and starts each run as a Docker sandbox through
+  # the app's sandbox API.
+  # Named `automation-server`, not `automation`: a bare `automation` hostname
+  # can be captured by the host's DNS search domains (e.g. a Kubernetes
+  # namespace that has a service called `automation`) before Docker's own DNS.
+  automation-server:
+    image: ghcr.io/openhands/automation:1.20.0
+    # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
+    # here. The service only auto-migrates SQLite, so migrate Postgres first.
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && exec uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - '8000'
+    # The image runs as uid 42420 with no home directory, so tarball storage
+    # needs an explicitly writable path. tmpfs keeps this stack ephemeral.
+    tmpfs:
+      - /data:uid=42420,gid=42420
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+      # The app reports each sandbox's URL as http://localhost:<published
+      # port> (the browser needs that), and the automation service uses it
+      # as-is to reach the sandbox, unlike the app, which rewrites localhost
+      # to host.docker.internal. Resolving localhost to the Docker host as
+      # well makes the connection fall through from this container's own
+      # loopback (nothing listens there) to the sandbox's published port.
+      - 'localhost:host-gateway'
+    environment:
+      AUTOMATION_DB_HOST: db
+      AUTOMATION_DB_PORT: '5432'
+      AUTOMATION_DB_NAME: ${AUTOMATION_DB_NAME:-automations}
+      AUTOMATION_DB_USER: ${DB_USER:-openhands}
+      AUTOMATION_DB_PASS: ${DB_PASS:-openhands}
+      AUTOMATION_DB_SSL_MODE: disable
+      FILE_STORE: local
+      LOCAL_STORAGE_PATH: /data
+
+      # Cloud mode (AUTOMATION_AGENT_SERVER_URL unset): every run gets its own
+      # Docker sandbox, created through the app. Server-to-server calls use
+      # the internal service name.
+      AUTOMATION_OPENHANDS_API_BASE_URL: http://app:3000
+      AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
+      AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
+      AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
+
+      # Callback URL handed to sandbox containers, so it must be reachable
+      # from them (not from the browser): the proxy's published port on the
+      # Docker host, like OH_SANDBOX_HOST_PORT on the app.
+      AUTOMATION_BASE_URL: http://host.docker.internal:${APP_PORT:-3100}
+      AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Single entry point on APP_PORT. Caddy handles WebSocket upgrades and
+  # streams event-stream responses without extra configuration.
+  proxy:
+    image: caddy:2
+    depends_on:
+      app:
+        condition: service_started
+      automation-server:
+        condition: service_healthy
+    ports:
+      - '${APP_PORT:-3100}:80'
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     restart: unless-stopped
 
   # Runs the Postgres-backed Procrastinate tasks that have already been
@@ -238,3 +343,33 @@ services:
 # volumes:
 #   db-data:
 #   app-filestore:
+
+configs:
+  automation-db-init:
+    content: |
+      CREATE DATABASE "${AUTOMATION_DB_NAME:-automations}";
+  caddyfile:
+    content: |
+      {
+        auto_https off
+        admin off
+      }
+      :80 {
+        # Server-to-server only: the automation service reaches it as
+        # http://app:3000, so it never needs to be reachable from outside.
+        @internal path /api/service /api/service/*
+        handle @internal {
+          respond 404
+        }
+
+        # The automation service already serves under /api/automation, so the
+        # path is forwarded unchanged.
+        @automation path /api/automation /api/automation/*
+        handle @automation {
+          reverse_proxy automation-server:8000
+        }
+
+        handle {
+          reverse_proxy app:3000
+        }
+      }
