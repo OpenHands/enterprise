@@ -111,9 +111,14 @@ class AdminMembershipResponse(BaseModel):
 
 
 class AdminUserResponse(BaseModel):
-    """A single user in the instance directory."""
+    """A single user in the instance directory.
 
-    user_id: str
+    ``user_id`` is ``None`` for someone invited by email who has not signed
+    up yet; such a row carries each pending invitation as an ``invited``
+    membership.
+    """
+
+    user_id: str | None
     email: str | None = None
     name: str | None = None
     memberships: list[AdminMembershipResponse] = Field(default_factory=list)
@@ -375,6 +380,21 @@ async def list_admin_users(
                 .join(Role, Role.id == OrgMember.role_id)
             )
         ).all()
+        # Pending invitations only expire when someone touches them, so check
+        # the date too. ``expires_at`` is stored as naive UTC.
+        now = datetime.now(UTC).replace(tzinfo=None)
+        invitation_rows = (
+            await session.execute(
+                select(OrgInvitation, Org, Role)
+                .join(Org, Org.id == OrgInvitation.org_id)
+                .join(Role, Role.id == OrgInvitation.role_id)
+                .where(
+                    OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+                    OrgInvitation.expires_at > now,
+                )
+                .order_by(OrgInvitation.email)
+            )
+        ).all()
 
     by_user: dict[UUID, list[AdminMembershipResponse]] = {}
     for org_member, org, role in membership_rows:
@@ -400,6 +420,34 @@ async def list_admin_users(
                 name=_display_name(user),
                 memberships=memberships,
                 status='inactive' if user.is_disabled else 'active',
+            )
+        )
+
+    # Someone invited by email who has not signed up yet has no ``User`` row;
+    # list them once, with each pending invitation as an ``invited``
+    # membership. Invitation emails are stored lower-cased.
+    known_emails = {user.email.lower() for user in users if user.email}
+    invited: dict[str, dict[str, AdminMembershipResponse]] = {}
+    for invitation, org, role in invitation_rows:
+        email = invitation.email.lower()
+        if email in known_emails:
+            continue
+        by_org = invited.setdefault(email, {})
+        if str(org.id) not in by_org:
+            by_org[str(org.id)] = AdminMembershipResponse(
+                org_id=str(org.id),
+                org_name=org.name,
+                role=role.name,
+                status='invited',
+            )
+    for email, by_org in invited.items():
+        users_out.append(
+            AdminUserResponse(
+                user_id=None,
+                email=email,
+                name=email.split('@', 1)[0],
+                memberships=sorted(by_org.values(), key=lambda m: m.org_name.lower()),
+                status='active',
             )
         )
     return AdminUserListResponse(users=users_out)

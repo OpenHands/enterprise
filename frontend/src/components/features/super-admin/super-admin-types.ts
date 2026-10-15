@@ -26,6 +26,8 @@ export interface SuperAdminUserRow {
   email: string;
   memberships: SuperAdminMembership[];
   status: "active" | "invited" | "inactive" | "suspended" | "removed";
+  /** A pending invitation whose address has no account yet. */
+  isPendingInvite?: boolean;
 }
 
 export interface SuperAdminAdminRow {
