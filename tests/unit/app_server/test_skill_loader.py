@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from openhands.app_server.app_conversation.skill_loader import (
     _MAX_ORG_CANDIDATES,
@@ -25,10 +26,15 @@ from openhands.app_server.app_conversation.skill_loader import (
     azure_devops_marketplace_orgs,
     build_org_configs,
     build_sandbox_config,
+    explicit_source_provider,
     get_azure_devops_bearer_token,
     load_skills_from_agent_server,
 )
-from openhands.app_server.integrations.provider import ProviderToken, ProviderType
+from openhands.app_server.integrations.provider import (
+    ProviderHandler,
+    ProviderToken,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.sandbox.sandbox_models import (
     ExposedUrl,
@@ -1037,20 +1043,13 @@ class TestAuthenticateMarketplaceSources:
     """Test authenticate_marketplace_sources source rewriting."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        'source',
-        [
-            'github:OpenHands/extensions-private',
-            'OpenHands/extensions-private',
-        ],
-    )
-    async def test_rewrites_owner_repo_source_to_authenticated_url(self, source):
-        """Non-URL owner/repo sources resolve via user_context and are rewritten."""
+    async def test_rewrites_owner_repo_source_to_authenticated_url(self):
+        """Bare owner/repo sources resolve via user_context and are rewritten."""
         # Arrange
         mock_user_context = AsyncMock(spec=UserContext)
         mock_user_context.get_provider_tokens.return_value = None
         mock_user_context.get_authenticated_git_url.return_value = AUTHENTICATED_URL
-        registrations = [_make_registration(source=source)]
+        registrations = [_make_registration(source='OpenHands/extensions-private')]
 
         # Act
         result = await authenticate_marketplace_sources(
@@ -1101,7 +1100,11 @@ class TestAuthenticateMarketplaceSources:
         # Arrange
         mock_user_context = AsyncMock(spec=UserContext)
         mock_user_context.get_authenticated_git_url.return_value = AUTHENTICATED_URL
-        registration = _make_registration(ref='main', repo_path='marketplaces/team')
+        registration = _make_registration(
+            source='OpenHands/extensions-private',
+            ref='main',
+            repo_path='marketplaces/team',
+        )
 
         # Act
         result = await authenticate_marketplace_sources(
@@ -1116,7 +1119,8 @@ class TestAuthenticateMarketplaceSources:
             'main',
             'marketplaces/team',
         )
-        assert registration.source == 'github:OpenHands/extensions-private'
+        assert rewritten.source == AUTHENTICATED_URL
+        assert registration.source == 'OpenHands/extensions-private'
 
     @pytest.mark.asyncio
     async def test_keeps_source_when_resolution_fails(self):
@@ -1126,7 +1130,7 @@ class TestAuthenticateMarketplaceSources:
         mock_user_context.get_authenticated_git_url.side_effect = Exception(
             'no provider tokens'
         )
-        registrations = [_make_registration()]
+        registrations = [_make_registration(source='OpenHands/extensions-private')]
 
         # Act
         result = await authenticate_marketplace_sources(
@@ -1135,7 +1139,59 @@ class TestAuthenticateMarketplaceSources:
 
         # Assert
         assert result is not None
-        assert result[0].source == 'github:OpenHands/extensions-private'
+        assert result[0].source == 'OpenHands/extensions-private'
+
+    @pytest.mark.asyncio
+    async def test_github_source_without_github_token_is_not_resolved(self):
+        """An Azure-only user's github: source reaches the agent-server as given."""
+        # Arrange
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_provider_tokens.return_value = {
+            ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('pat'))
+        }
+        registrations = [_make_registration(source='github:dotnet/skills')]
+
+        # Act
+        with patch.object(ProviderHandler, 'get_authenticated_git_url') as resolve:
+            result = await authenticate_marketplace_sources(
+                registrations, mock_user_context
+            )
+
+        # Assert
+        assert result is not None
+        assert result[0].source == 'github:dotnet/skills'
+        resolve.assert_not_called()
+        mock_user_context.get_authenticated_git_url.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_github_source_resolves_only_against_github(self):
+        """With a GitHub token, a github: source is resolved pinned to GitHub."""
+        # Arrange
+        mock_user_context = AsyncMock(spec=UserContext)
+        mock_user_context.get_provider_tokens.return_value = {
+            ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('pat')),
+            ProviderType.GITHUB: ProviderToken(token=SecretStr('gh')),
+        }
+        mock_user_context.get_user_id.return_value = 'user-1'
+        registrations = [_make_registration()]
+
+        # Act
+        with patch.object(
+            ProviderHandler, 'get_authenticated_git_url', return_value=AUTHENTICATED_URL
+        ) as resolve:
+            result = await authenticate_marketplace_sources(
+                registrations, mock_user_context
+            )
+
+        # Assert
+        assert result is not None
+        assert result[0].source == AUTHENTICATED_URL
+        resolve.assert_awaited_once_with(
+            'OpenHands/extensions-private',
+            is_optional=True,
+            specified_provider=ProviderType.GITHUB,
+        )
+        mock_user_context.get_authenticated_git_url.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_non_auto_load_registrations(self):
@@ -1395,3 +1451,21 @@ class TestAzureDevOpsMarketplaceCredentials:
         orgs = await azure_devops_marketplace_orgs(registrations, mock_user_context)
 
         assert orgs == ['acme']
+
+
+@pytest.mark.parametrize(
+    'source, expected',
+    [
+        ('github:dotnet/skills', ProviderType.GITHUB),
+        ('https://github.com/dotnet/skills.git', ProviderType.GITHUB),
+        ('git@github.com:dotnet/skills.git', ProviderType.GITHUB),
+        ('gitlab:acme/skills', ProviderType.GITLAB),
+        ('azure-devops:acme/proj/skills', ProviderType.AZURE_DEVOPS),
+        ('dotnet/skills', None),
+        ('https://dev.azure.com/acme/proj/_git/skills', None),
+        ('https://github.com@evil.example/dotnet/skills', None),
+    ],
+)
+def test_explicit_source_provider(source, expected):
+    """Only provider prefixes and public provider hosts name a provider."""
+    assert explicit_source_provider(source) == expected

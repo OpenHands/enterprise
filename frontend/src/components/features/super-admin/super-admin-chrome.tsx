@@ -90,6 +90,8 @@ interface SuperAdminTableProps<T> {
   getRowKey: (row: T) => string;
   empty: string;
   onRowClick?: (row: T) => void;
+  /** Rows this returns false for get no click handler or pointer cursor. */
+  isRowClickable?: (row: T) => boolean;
 }
 
 export function SuperAdminTable<T>({
@@ -99,7 +101,10 @@ export function SuperAdminTable<T>({
   getRowKey,
   empty,
   onRowClick,
+  isRowClickable,
 }: SuperAdminTableProps<T>) {
+  const isClickable = (row: T) =>
+    onRowClick !== undefined && (isRowClickable?.(row) ?? true);
   return (
     <div
       data-testid={testId}
@@ -144,9 +149,13 @@ export function SuperAdminTable<T>({
                   key={getRowKey(row)}
                   className={cn(
                     settingsListTableRowClassName,
-                    onRowClick && "cursor-pointer",
+                    isClickable(row) && "cursor-pointer",
                   )}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  onClick={
+                    onRowClick && isClickable(row)
+                      ? () => onRowClick(row)
+                      : undefined
+                  }
                 >
                   {columns.map((column) => (
                     <td

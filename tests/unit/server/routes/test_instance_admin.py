@@ -149,9 +149,13 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
     users_result.scalars.return_value = [user]
     membership_result = MagicMock()
     membership_result.all.return_value = [(org_member, org, role)]
+    invitation_result = MagicMock()
+    invitation_result.all.return_value = []
 
     fake_session = MagicMock()
-    fake_session.execute = AsyncMock(side_effect=[users_result, membership_result])
+    fake_session.execute = AsyncMock(
+        side_effect=[users_result, membership_result, invitation_result]
+    )
     fake_session.__aenter__ = AsyncMock(return_value=fake_session)
     fake_session.__aexit__ = AsyncMock(return_value=None)
 
@@ -168,6 +172,71 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
     assert body['users'][0]['email'] == 'me@acme.example'
     assert body['users'][0]['memberships'][0]['role'] == 'owner'
     assert body['users'][0]['status'] == 'inactive'
+
+
+@pytest.mark.asyncio
+async def test_list_users_includes_pending_invitations_without_accounts(
+    mock_app, grant_manage_super_admins
+):
+    """An invited address with no account is listed once, as ``invited``."""
+    org_id = uuid.uuid4()
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.email = 'me@acme.example'
+    user.git_user_name = None
+    user.is_disabled = False
+    org = MagicMock()
+    org.id = org_id
+    org.name = 'Acme'
+    role = MagicMock()
+    role.name = 'member'
+    new_invitation = MagicMock()
+    new_invitation.email = 'new@acme.example'
+    resent_invitation = MagicMock()
+    resent_invitation.email = 'new@acme.example'
+    existing_user_invitation = MagicMock()
+    existing_user_invitation.email = 'ME@acme.example'
+
+    users_result = MagicMock()
+    users_result.scalars.return_value = [user]
+    membership_result = MagicMock()
+    membership_result.all.return_value = []
+    invitation_result = MagicMock()
+    invitation_result.all.return_value = [
+        (new_invitation, org, role),
+        (resent_invitation, org, role),
+        (existing_user_invitation, org, role),
+    ]
+
+    fake_session = MagicMock()
+    fake_session.execute = AsyncMock(
+        side_effect=[users_result, membership_result, invitation_result]
+    )
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        'server.routes.instance_admin.a_session_maker',
+        return_value=fake_session,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/directory/users')
+
+    assert resp.status_code == 200
+    users = resp.json()['users']
+    assert [u['email'] for u in users] == ['me@acme.example', 'new@acme.example']
+    assert users[0]['memberships'] == []
+    assert users[1]['user_id'] is None
+    assert users[1]['name'] == 'new'
+    assert users[1]['status'] == 'active'
+    assert users[1]['memberships'] == [
+        {
+            'org_id': str(org_id),
+            'org_name': 'Acme',
+            'role': 'member',
+            'status': 'invited',
+        }
+    ]
 
 
 @pytest.mark.asyncio

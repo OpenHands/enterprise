@@ -14,13 +14,18 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping
-from typing import Any
+from types import MappingProxyType
+from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 import httpx
 from pydantic import BaseModel
 
-from openhands.app_server.integrations.provider import ProviderHandler, ProviderType
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
@@ -430,6 +435,52 @@ def parse_marketplace_source(source: str) -> tuple[str, str]:
 # parse_marketplace_source, never treated as scp-style host:path.
 _PROVIDER_SOURCE_PREFIXES = ('github:', 'gitlab:', 'bitbucket:', 'azure-devops:')
 
+_SOURCE_PREFIX_PROVIDERS = {
+    'github:': ProviderType.GITHUB,
+    'gitlab:': ProviderType.GITLAB,
+    'bitbucket:': ProviderType.BITBUCKET,
+    'azure-devops:': ProviderType.AZURE_DEVOPS,
+}
+_PUBLIC_HOST_PROVIDERS = {
+    'github.com': ProviderType.GITHUB,
+    'gitlab.com': ProviderType.GITLAB,
+    'bitbucket.org': ProviderType.BITBUCKET,
+}
+
+
+def explicit_source_provider(source: str) -> ProviderType | None:
+    """Return the provider a marketplace source names, if it names one.
+
+    ``github:owner/repo``-style prefixes and URLs on a public provider host
+    name their provider; a bare ``owner/repo`` does not.
+    """
+    s = source.strip()
+    for prefix, provider in _SOURCE_PREFIX_PROVIDERS.items():
+        if s.startswith(prefix):
+            return provider
+    split = _split_git_url_source(s)
+    if split is None:
+        return None
+    return _PUBLIC_HOST_PROVIDERS.get(split[0])
+
+
+async def provider_handler_with_token(
+    user_context: UserContext, provider: ProviderType
+) -> ProviderHandler | None:
+    """Return a handler for the user's tokens if they include ``provider``."""
+    try:
+        provider_tokens = await user_context.get_provider_tokens()
+    except Exception:
+        return None
+    if not isinstance(provider_tokens, Mapping) or provider not in provider_tokens:
+        return None
+    return ProviderHandler(
+        provider_tokens=MappingProxyType(
+            dict(cast(PROVIDER_TOKEN_TYPE, provider_tokens))
+        ),
+        external_auth_id=await user_context.get_user_id(),
+    )
+
 
 def _split_git_url_source(source: str) -> tuple[str, str] | None:
     """Return ``(host, path)`` for a URL/scp git source, else ``None``.
@@ -613,11 +664,28 @@ async def authenticate_marketplace_sources(
         _, repo_name = parse_marketplace_source(reg.source)
         if not repo_name or '/' not in repo_name or '://' in repo_name:
             return reg
+        # A named provider is never resolved through another provider's token;
+        # without a token for it, the agent-server clones the public source.
+        named_provider = explicit_source_provider(reg.source)
+        named_handler = None
+        if named_provider is not None:
+            named_handler = await provider_handler_with_token(
+                user_context, named_provider
+            )
+            if named_handler is None:
+                return reg
         try:
             async with sem:
-                url = await user_context.get_authenticated_git_url(
-                    repo_name, is_optional=True
-                )
+                if named_handler is not None:
+                    url = await named_handler.get_authenticated_git_url(
+                        repo_name,
+                        is_optional=True,
+                        specified_provider=named_provider,
+                    )
+                else:
+                    url = await user_context.get_authenticated_git_url(
+                        repo_name, is_optional=True
+                    )
         except Exception as e:
             _logger.debug(
                 f'Could not resolve authenticated URL for marketplace '

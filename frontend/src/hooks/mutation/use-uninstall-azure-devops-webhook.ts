@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { integrationService } from "#/api/integration-service/integration-service.api";
 import type { AzureDevOpsWebhookInstallationResult } from "#/api/integration-service/integration-service.types";
@@ -7,6 +8,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export function useUninstallAzureDevOpsWebhook(organization?: string) {
   const queryClient = useQueryClient();
@@ -14,7 +16,7 @@ export function useUninstallAzureDevOpsWebhook(organization?: string) {
 
   return useMutation<
     AzureDevOpsWebhookInstallationResult,
-    Error,
+    AxiosError,
     void,
     unknown
   >({
@@ -35,7 +37,8 @@ export function useUninstallAzureDevOpsWebhook(organization?: string) {
     },
     onError: (error) => {
       displayErrorToast(
-        error?.message || t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL_FAILED),
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL_FAILED),
       );
     },
   });
