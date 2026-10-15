@@ -10,7 +10,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, inspect, or_, select
+from sqlalchemy import String, and_, cast, inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2027,8 +2027,6 @@ class OrgBudgetService:
         token = await self._get_slack_bot_token(team_id) if team_id else None
         if not token:
             return False
-        if settings.slack_team_id != team_id:
-            settings.slack_team_id = team_id
 
         client = AsyncWebClient(token=token)
         message = (
@@ -2119,23 +2117,30 @@ class OrgBudgetService:
         )
         if not activates('slack_enabled') and not destination_changed:
             return
-        resolved_team_id = await self._resolve_slack_team_id(team_id, settings.org_id)
-        if not await self._get_slack_bot_token(resolved_team_id):
+        if not await self._get_slack_bot_token(team_id, settings.org_id):
             reject('Slack budget alerts require a connected Slack integration.')
         if not channel:
             reject('Select a Slack channel for budget alerts.')
-        if settings.slack_team_id != resolved_team_id:
-            settings.slack_team_id = resolved_team_id
 
     async def _resolve_slack_team_id(
         self, team_id: str | None, org_id: UUID | None = None
     ) -> str | None:
+        """Pick the Slack workspace for an org's budget alerts.
+
+        An explicit ``slack_team_id`` wins. Otherwise use the one workspace that
+        the org's members linked through the Slack OAuth flow. If no member
+        linked one, fall back to the only installed workspace.
+        """
         if team_id:
             return team_id
         if org_id:
             result = await self.db_session.execute(
                 select(SlackUser.team_id)
-                .where(SlackUser.org_id == org_id, SlackUser.team_id.is_not(None))
+                .join(
+                    OrgMember,
+                    SlackUser.keycloak_user_id == cast(OrgMember.user_id, String),
+                )
+                .where(OrgMember.org_id == org_id, SlackUser.team_id.is_not(None))
                 .distinct()
             )
             linked_team_ids = [row.team_id for row in result]
@@ -2143,13 +2148,10 @@ class OrgBudgetService:
                 return linked_team_ids[0]
             if linked_team_ids:
                 logger.warning(
-                    'Multiple Slack teams linked to organization; set slack_team_id to enable alerts',
-                    extra={'org_id': str(org_id)},
+                    'org_budget_slack_team_ambiguous',
+                    extra={'org_id': str(org_id), 'team_ids': linked_team_ids},
                 )
                 return None
-            discovered_team_id = await self._discover_legacy_slack_team_id(org_id)
-            if discovered_team_id:
-                return discovered_team_id
         result = await self.db_session.execute(select(SlackTeam.team_id))
         team_ids = [row.team_id for row in result]
         if len(team_ids) == 1:
@@ -2157,51 +2159,6 @@ class OrgBudgetService:
         if team_ids:
             logger.warning(
                 'Multiple Slack teams configured; set slack_team_id to enable alerts'
-            )
-        return None
-
-    async def _discover_legacy_slack_team_id(self, org_id: UUID) -> str | None:
-        if not SLACK_AVAILABLE or not is_slack_configured():
-            return None
-        users = (
-            (
-                await self.db_session.execute(
-                    select(SlackUser).where(
-                        SlackUser.org_id == org_id, SlackUser.team_id.is_(None)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not users:
-            return None
-        teams = (
-            await self.db_session.execute(
-                select(SlackTeam.team_id, SlackTeam.bot_access_token)
-            )
-        ).all()
-        matched_team_ids: set[str] = set()
-        clients = {team_id: AsyncWebClient(token=token) for team_id, token in teams}
-        for user in users:
-            user_matches: list[str] = []
-            for team_id, client in clients.items():
-                try:
-                    response = await client.users_info(user=user.slack_user_id)
-                except Exception:
-                    continue
-                if response.get('ok'):
-                    user_matches.append(team_id)
-            if len(user_matches) == 1:
-                user.team_id = user_matches[0]
-                matched_team_ids.add(user_matches[0])
-        if len(matched_team_ids) == 1:
-            await self.store.flush()
-            return matched_team_ids.pop()
-        if matched_team_ids:
-            logger.warning(
-                'Multiple Slack teams discovered for organization; set slack_team_id to enable alerts',
-                extra={'org_id': str(org_id)},
             )
         return None
 
