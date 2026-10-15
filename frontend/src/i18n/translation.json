@@ -5983,6 +5983,23 @@
     "uk": "Не підключено",
     "ca": "No connectat"
   },
+  "SETTINGS$GIT_PROVIDER_NOT_CONFIGURED": {
+    "en": "{{provider}} is not configured on this install",
+    "ja": "このインストールでは{{provider}}が設定されていません",
+    "zh-CN": "此安装未配置 {{provider}}",
+    "zh-TW": "此安裝未設定 {{provider}}",
+    "ko-KR": "이 설치에는 {{provider}}이(가) 구성되어 있지 않습니다",
+    "no": "{{provider}} er ikke konfigurert på denne installasjonen",
+    "it": "{{provider}} non è configurato in questa installazione",
+    "pt": "{{provider}} não está configurado nesta instalação",
+    "es": "{{provider}} no está configurado en esta instalación",
+    "ar": "{{provider}} غير مُكوَّن في هذا التثبيت",
+    "fr": "{{provider}} n'est pas configuré sur cette installation",
+    "tr": "{{provider}} bu kurulumda yapılandırılmamış",
+    "de": "{{provider}} ist in dieser Installation nicht konfiguriert",
+    "uk": "{{provider}} не налаштовано в цьому встановленні",
+    "ca": "{{provider}} no està configurat en aquesta instal·lació"
+  },
   "BITBUCKET_DATA_CENTER$WEBHOOK_SECTION_TITLE": {
     "en": "Bitbucket Data Center",
     "ja": "Bitbucket Data Center",

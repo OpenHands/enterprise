@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { useConfig } from "#/hooks/query/use-config";
 import { useDisconnectGitProvider } from "#/hooks/mutation/use-disconnect-git-provider";
+import { useStartGitProviderLink } from "#/hooks/mutation/use-start-git-provider-link";
 import { generateIdpLinkUrl } from "#/utils/generate-idp-link-url";
 import {
   displayErrorToast,
@@ -22,7 +23,8 @@ interface GitProviderConnectionProps {
 
 /**
  * Connect / Disconnect controls for a git provider linked to the user's
- * account (SaaS). Connect starts the Keycloak account-linking flow and
+ * account (SaaS). Connect starts the Keycloak account-linking flow (or the
+ * OAuth v2 link flow for OAuth v2 sessions) and
  * Disconnect unlinks the provider after confirmation. Children render only
  * while connected (e.g. configure links) and sit beside the Disconnect button.
  * The connection status itself is shown by the surrounding provider card.
@@ -37,9 +39,26 @@ export function GitProviderConnection({
   const { data: config } = useConfig();
   const { mutate: disconnectGitProvider, isPending } =
     useDisconnectGitProvider();
+  const { mutate: startGitProviderLink, isPending: isLinkPending } =
+    useStartGitProviderLink();
   const [confirmDisconnect, setConfirmDisconnect] = React.useState(false);
 
+  // Only these installs have OAuth v2 sessions, which must link through
+  // OAuth v2; the backend tells them apart from legacy Keycloak sessions.
+  const mayHaveOAuthV2Sessions =
+    !!config?.feature_flags?.enable_integrated_idp ||
+    !!config?.feature_flags?.enable_oauth_v2_login;
+
   const handleConnect = () => {
+    if (mayHaveOAuthV2Sessions) {
+      startGitProviderLink(provider, {
+        onError: (error) => {
+          const errorMessage = retrieveAxiosErrorMessage(error);
+          displayErrorToast(errorMessage || t(I18nKey.ERROR$GENERIC));
+        },
+      });
+      return;
+    }
     window.location.href = generateIdpLinkUrl(
       provider,
       new URL(window.location.href),
@@ -83,6 +102,7 @@ export function GitProviderConnection({
             type="button"
             variant="primary"
             className={settingsListRowActionButtonClassName}
+            isDisabled={isLinkPending}
             onClick={handleConnect}
           >
             {t(I18nKey.BUTTON$CONNECT)}
