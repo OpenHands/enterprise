@@ -25,6 +25,13 @@ CHUNK_SIZE = 100
 
 
 class VerifyWebhookStatus:
+    async def gitlab_service_for(self, user_id: str) -> SaaSGitLabService | None:
+        """The service acting as ``user_id``; ``None`` skips their row this run."""
+        # GitLabServiceImpl returns SaaSGitLabService in enterprise context
+        from integrations.gitlab.gitlab_service import SaaSGitLabService
+
+        return cast(SaaSGitLabService, GitLabServiceImpl(external_auth_id=user_id))
+
     async def fetch_rows(self, webhook_store: GitlabWebhookStore):
         webhooks = await webhook_store.filter_rows(limit=CHUNK_SIZE)
 
@@ -129,8 +136,6 @@ class VerifyWebhookStatus:
 
         """
 
-        from integrations.gitlab.gitlab_service import SaaSGitLabService
-
         # Check if the table exists before proceeding
         # This handles cases where the CronJob runs before database migrations complete
         async with a_session_maker() as session:
@@ -168,12 +173,9 @@ class VerifyWebhookStatus:
                     webhook
                 )
 
-                # GitLabServiceImpl returns SaaSGitLabService in enterprise context
-                from integrations.gitlab.gitlab_service import SaaSGitLabService
-
-                gitlab_service = cast(
-                    SaaSGitLabService, GitLabServiceImpl(external_auth_id=user_id)
-                )
+                gitlab_service = await self.gitlab_service_for(user_id)
+                if gitlab_service is None:
+                    continue
 
                 await self.verify_conditions_are_met(
                     gitlab_service=gitlab_service,

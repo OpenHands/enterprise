@@ -1,6 +1,6 @@
 """Unit tests for install_gitlab_webhooks module."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from integrations.gitlab.webhook_installation import (
 from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
+from sync.install_gitlab_webhooks import VerifyWebhookStatus
 
 
 @pytest.fixture
@@ -439,3 +440,12 @@ class TestInstallWebhookOnResource:
         call_args = mock_gitlab_service.install_webhook.call_args
         assert call_args[1]['webhook_name'] == 'OpenHands Resolver'
         assert call_args[1]['webhook_url'] == GITLAB_WEBHOOK_URL
+
+
+@pytest.mark.asyncio
+async def test_the_cronjob_installer_builds_its_service_through_gitlab_service_impl():
+    with patch('sync.install_gitlab_webhooks.GitLabServiceImpl') as impl:
+        service = await VerifyWebhookStatus().gitlab_service_for('user-1')
+
+    impl.assert_called_once_with(external_auth_id='user-1')
+    assert service is impl.return_value
