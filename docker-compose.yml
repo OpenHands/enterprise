@@ -38,8 +38,12 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
-    volumes:
-      - db-data:/var/lib/postgresql/data
+    # Intentionally no `db-data` volume mount here for now: this stack is
+    # meant to be completely ephemeral (see OHE-3376 investigation into the
+    # Docker named volume surviving `docker compose down`). Every
+    # `docker compose up --build` starts from a fresh, empty database.
+    # volumes:
+    #   - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
       interval: 5s
@@ -85,7 +89,11 @@ services:
     # root (via `user: '0:0'`, above) and root can always reach the socket.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - app-filestore:/.openhands
+      # `app-filestore` intentionally not mounted for now: this stack is
+      # meant to be completely ephemeral, so /.openhands starts empty on
+      # every `docker compose up --build` instead of surviving it via a
+      # Docker named volume.
+      # - app-filestore:/.openhands
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     environment:
@@ -225,6 +233,8 @@ services:
       DB_PASS: ${DB_PASS:-openhands}
     restart: unless-stopped
 
-volumes:
-  db-data:
-  app-filestore:
+# `db-data` / `app-filestore` are declared but currently unused (see the
+# commented-out mounts above) while this stack is kept completely ephemeral.
+# volumes:
+#   db-data:
+#   app-filestore:
