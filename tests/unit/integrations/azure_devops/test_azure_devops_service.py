@@ -381,13 +381,16 @@ def fake_redis(monkeypatch):
 
 @pytest.fixture
 def azure(monkeypatch, fake_redis):
-    real_client = httpx.AsyncClient
     fake = _FakeAzure({'Alpha': ['one', 'two'], 'Beta': ['only-in-beta']})
-    monkeypatch.setattr(
-        httpx,
-        'AsyncClient',
-        lambda *args, **kwargs: real_client(transport=httpx.MockTransport(fake)),
-    )
+
+    # A class, not a lambda, so annotations such as `httpx.AsyncClient | None`
+    # in modules imported during the test still evaluate.
+    class MockClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs['transport'] = httpx.MockTransport(fake)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, 'AsyncClient', MockClient)
     return fake
 
 
