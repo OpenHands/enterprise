@@ -40,6 +40,9 @@ from openhands.sdk import TextContent
 
 OH_LABEL, INLINE_OH_LABEL = get_oh_labels(HOST)
 OPENHANDS_COMMENT_MARKER = '<!-- openhands-azure-devops-resolver -->'
+# Azure strips HTML comments from work item comments but keeps attributes, so
+# work item replies also carry an empty element with this attribute.
+OPENHANDS_WORK_ITEM_MARKER = 'data-openhands-azure-devops-resolver'
 
 
 def mark_openhands_comment(comment: str) -> str:
@@ -48,8 +51,14 @@ def mark_openhands_comment(comment: str) -> str:
     return f'{OPENHANDS_COMMENT_MARKER}\n{comment}'
 
 
+def mark_openhands_work_item_comment(comment: str) -> str:
+    if OPENHANDS_WORK_ITEM_MARKER in comment:
+        return comment
+    return f'<span {OPENHANDS_WORK_ITEM_MARKER}="1"></span>{comment}'
+
+
 def _is_openhands_comment(comment: str) -> bool:
-    return OPENHANDS_COMMENT_MARKER in comment
+    return OPENHANDS_COMMENT_MARKER in comment or OPENHANDS_WORK_ITEM_MARKER in comment
 
 
 def _strip_ref_prefix(ref_name: str | None) -> str | None:
