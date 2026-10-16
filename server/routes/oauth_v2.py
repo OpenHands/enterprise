@@ -49,6 +49,7 @@ from openhands.app_server.user_auth import get_user_auth, get_user_id
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.gitlab_sync import schedule_oauth_v2_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -537,6 +538,16 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             keycloak_access_token=access_token,
         )
+
+    # Records the user's GitLab projects and groups as gitlab_webhook rows for
+    # the webhook installer. Integrated-IDP sessions never refresh an IDP
+    # token, so the middleware's refresh-time sync never runs for them. Must
+    # follow the fetch above, which stores a legacy Keycloak login's token.
+    if isinstance(details, OAuthProviderDetails) and ProviderType.GITLAB in (
+        details.provider_type,
+        details.legacy_keycloak_type,
+    ):
+        schedule_oauth_v2_gitlab_repo_sync(user_id)
 
     redirect_url = state_data.redirect_url or '/'
 
