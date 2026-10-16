@@ -215,17 +215,10 @@ class GitHubReposMixin(GitHubMixinBase):
         order: str,
         public: bool,
         app_mode: AppMode,
-        page: int = 1,
     ) -> list[Repository]:
-        """Search repositories. Every search call below takes the same page."""
-        # GitHub search returns at most the first 1000 results
-        if (page - 1) * per_page >= 1000:
-            return []
-
         url = f'{self.BASE_URL}/search/repositories'
         params = {
             'per_page': per_page,
-            'page': page,
             'sort': sort,
             'order': order,
         }
@@ -281,9 +274,8 @@ class GitHubReposMixin(GitHubMixinBase):
                 except Exception as e:
                     logger.warning(f'Org {org} search failed: {e}')
 
-            # Also search for top repos from orgs that match the query name.
-            # These are extras, so they come only with the first page.
-            for org in user_orgs if page == 1 else []:
+            # Also search for top repos from orgs that match the query name
+            for org in user_orgs:
                 if self._fuzzy_match_org_name(query, org):
                     org_repos_query = f'org:{org}'
                     org_repos_params = params.copy()

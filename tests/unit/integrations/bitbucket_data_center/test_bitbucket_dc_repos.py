@@ -341,39 +341,57 @@ async def _make_parsed_repo(svc, repo_dict):
 
 
 @pytest.mark.asyncio
-async def test_search_repositories_across_projects_returns_requested_page():
-    """Search filters the repositories of every project, then takes the page."""
+async def test_search_repositories_finds_matches_past_first_page_of_a_project():
+    """Search reads every repository of a project, not only the first per_page."""
     svc = make_service()
-    proj_a = [_repo_dict('A', slug=f'repo-a{i}', name=f'repo a{i}') for i in (1, 2)]
-    proj_b = [_repo_dict('B', slug=f'repo-b{i}', name=f'repo b{i}') for i in (1, 2)]
-    other = [_repo_dict('B', slug='other', name='other')]
+    proj_a = [_repo_dict('A', slug=f'other{i}', name=f'other {i}') for i in range(5)]
+    proj_a.append(_repo_dict('A', slug='repo-a', name='repo a'))
 
     with (
-        patch.object(svc, 'get_installations', new=AsyncMock(return_value=['A', 'B'])),
-        patch.object(
-            svc,
-            '_fetch_paginated_data',
-            new=AsyncMock(side_effect=[proj_a, proj_b + other]),
-        ),
+        patch.object(svc, 'get_installations', new=AsyncMock(return_value=['A'])),
+        patch.object(svc, '_fetch_paginated_data', new=AsyncMock(return_value=proj_a)),
     ):
         repos = await svc.search_repositories(
-            'repo', 3, 'name', 'asc', False, AppMode.SAAS, page=2
+            'repo', 3, 'name', 'asc', False, AppMode.SAAS
         )
 
-    assert [r.full_name for r in repos] == ['B/repo-b2']
+    assert [r.full_name for r in repos] == ['A/repo-a']
 
 
 @pytest.mark.asyncio
-async def test_search_repositories_slash_query_returns_requested_page():
+async def test_search_repositories_stops_after_a_page_of_matches():
+    """The projects after a full page of matches are not read."""
+    svc = make_service()
+    proj_a = [_repo_dict('A', slug=f'repo-a{i}', name=f'repo a{i}') for i in (1, 2)]
+    proj_b = [_repo_dict('B', slug=f'repo-b{i}', name=f'repo b{i}') for i in (1, 2)]
+
+    with (
+        patch.object(
+            svc, 'get_installations', new=AsyncMock(return_value=['A', 'B', 'C'])
+        ),
+        patch.object(
+            svc, '_fetch_paginated_data', new=AsyncMock(side_effect=[proj_a, proj_b])
+        ) as mock_fetch,
+    ):
+        repos = await svc.search_repositories(
+            'repo', 3, 'name', 'asc', False, AppMode.SAAS
+        )
+
+    assert [r.full_name for r in repos] == ['A/repo-a1', 'A/repo-a2', 'B/repo-b1']
+    assert mock_fetch.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_slash_query_cuts_to_per_page():
     svc = make_service()
     raw = [_repo_dict('PROJ', slug=f'myrepo{i}', name=f'My Repo {i}') for i in range(5)]
 
     with patch.object(svc, '_fetch_paginated_data', new=AsyncMock(return_value=raw)):
         repos = await svc.search_repositories(
-            'PROJ/myrepo', 2, 'name', 'asc', False, AppMode.SAAS, page=3
+            'PROJ/myrepo', 2, 'name', 'asc', False, AppMode.SAAS
         )
 
-    assert [r.full_name for r in repos] == ['PROJ/myrepo4']
+    assert [r.full_name for r in repos] == ['PROJ/myrepo0', 'PROJ/myrepo1']
 
 
 @pytest.mark.asyncio

@@ -96,7 +96,6 @@ async def test_search_repositories(forgejo_service):
         f'{forgejo_service.BASE_URL}/repos/search',
         {
             'q': 'test',
-            'page': 1,
             'limit': 10,
             'sort': 'updated',
             'order': 'desc',
@@ -273,20 +272,6 @@ async def test_request_reviewers_empty_list(forgejo_service):
     await forgejo_service.request_reviewers('org/project', 5, [])
 
     forgejo_service._make_request.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_search_repositories_passes_page(forgejo_service):
-    """Search sends the requested page to the repos search API."""
-    forgejo_service._make_request = AsyncMock(return_value=({'data': []}, {}))
-
-    await forgejo_service.search_repositories(
-        'test', 10, 'updated', 'desc', public=False, app_mode=AppMode.OPENHANDS, page=4
-    )
-
-    params = forgejo_service._make_request.call_args[0][1]
-    assert params['page'] == 4
-    assert params['limit'] == 10
 
 
 @pytest.mark.asyncio

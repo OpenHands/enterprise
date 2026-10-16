@@ -127,7 +127,7 @@ async def search_repositories(
 ) -> RepositoryPage:
     """Get or search repositories.
 
-    If query is provided, searches repositories across the git provider.
+    If query is provided, searches repositories across the git provider (first page only).
     If query is not provided, returns a paginated list of the authenticated user's repositories.
     """
     # Get provider tokens from user context
@@ -153,6 +153,14 @@ async def search_repositories(
 
     # If query is provided, use search; otherwise get user's repositories
     if query:
+        if page != 1:
+            # TODO: Support pagination for repository search after refactoring.
+            # search_repositories takes no page number, so a later page would
+            # only repeat the first page.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Pagination not yet supported for repository search queries. Use empty query to list repositories with pagination.',
+            )
         # Parse sort_order into sort and order components (if provided)
         if sort_order:
             search_sort, order = sort_order.value.rsplit('-', 1)
@@ -167,8 +175,11 @@ async def search_repositories(
             sort=search_sort,
             order=order,
             app_mode=get_global_config().app_mode,
-            page=page,
         )
+        # Search results are a single page, so there is no next page. Do not
+        # cut them to limit: some providers search the user and each org with
+        # per_page=limit, so the merged results can be longer than limit.
+        return RepositoryPage(items=repos, next_page_id=None)
     else:
         if sort_order:
             # TODO: This is a temporary state until we refactor the underlying API.
@@ -192,9 +203,7 @@ async def search_repositories(
         )
 
     # A full page can have more results after it. When the total is a multiple
-    # of limit, the client gets one empty last page. Search is not cut to
-    # limit: some providers search the user and each org with per_page=limit
-    # and merge the results.
+    # of limit, the client gets one empty last page.
     next_page_id = encode_page_id(page + 1) if len(repos) >= limit else None
 
     return RepositoryPage(items=repos, next_page_id=next_page_id)

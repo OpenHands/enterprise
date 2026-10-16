@@ -21,19 +21,15 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
         order: str,
         public: bool,
         app_mode: AppMode,
-        page: int = 1,
     ) -> list[Repository]:
         """Search for repositories.
 
-        The API cannot filter by name, so this gets the repositories, filters
-        them here, and returns the requested page of the matches.
+        The API cannot filter by name, so this reads the repositories of each
+        project, filters them here, and stops after the first per_page matches.
         """
         repositories = []
 
         if public:
-            # The URL names one repository, so only the first page has a result
-            if page > 1:
-                return []
             try:
                 parsed_url = urlparse(query)
                 path_segments = [
@@ -84,32 +80,29 @@ class BitbucketDCReposMixin(BitbucketDCMixinBase):
             repo_query = query
             project_keys = await self.get_installations()
 
-        raw_repos: list[dict] = []
+        matches: list[dict] = []
         for project_key in project_keys:
             project_repos_url = f'{self.BASE_URL}/projects/{project_key}/repos'
             try:
-                raw_repos.extend(
-                    await self._fetch_paginated_data(
-                        project_repos_url, {'limit': PER_PAGE}, MAX_REPOS
-                    )
+                project_repos = await self._fetch_paginated_data(
+                    project_repos_url, {'limit': PER_PAGE}, MAX_REPOS
                 )
             except Exception:
                 if '/' in query:
                     raise
                 continue
-
-        if repo_query:
-            raw_repos = [
+            matches.extend(
                 r
-                for r in raw_repos
-                if repo_query.lower() in r.get('slug', '').lower()
+                for r in project_repos
+                if not repo_query
+                or repo_query.lower() in r.get('slug', '').lower()
                 or repo_query.lower() in r.get('name', '').lower()
-            ]
-        start = (page - 1) * per_page
-        return [
-            await self._parse_repository(repo)
-            for repo in raw_repos[start : start + per_page]
-        ]
+            )
+            # Search returns one page, so the projects after it are not needed
+            if len(matches) >= per_page:
+                break
+
+        return [await self._parse_repository(repo) for repo in matches[:per_page]]
 
     async def _get_user_projects(self) -> list[dict[str, Any]]:
         """Get all projects the user has access to"""

@@ -272,9 +272,8 @@ class GitService(Protocol):
         order: str,
         public: bool,
         app_mode: AppMode,
-        page: int = 1,
     ) -> list[Repository]:
-        """Search for repositories. page is 1-based."""
+        """Search for public repositories"""
         ...
 
     async def get_all_repositories(
