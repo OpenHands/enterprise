@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import (
     APIRouter,
@@ -21,6 +21,9 @@ from pydantic import BaseModel
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.models import Message, SourceType
 from integrations.utils import HOST_URL, IS_LOCAL_DEPLOYMENT
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+)
 from openhands.app_server.integrations.azure_devops.service.webhooks import (
     AZURE_DEVOPS_PR_COMMENT_EVENT,
     AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT,
@@ -109,6 +112,35 @@ def _subscription_is_project_scoped(subscription: dict[str, Any]) -> bool:
 def _subscription_is_enabled(subscription: dict[str, Any] | None) -> bool:
     # A Service Hook can exist but be disabled/suspended and not deliver events.
     return subscription is not None and subscription.get('status') == 'enabled'
+
+
+def _find_subscription(
+    subscriptions: list[dict[str, Any]],
+    matches: Callable[[dict[str, Any]], bool],
+) -> dict[str, Any] | None:
+    # Prefer an enabled hook, e.g. when a stale copy survived a reinstall.
+    matching = [subscription for subscription in subscriptions if matches(subscription)]
+    return next(
+        (
+            subscription
+            for subscription in matching
+            if _subscription_is_enabled(subscription)
+        ),
+        matching[0] if matching else None,
+    )
+
+
+def _azure_devops_api_http_exception(
+    action: str, error: AzureDevOpsApiError
+) -> HTTPException:
+    reason = error.azure_message or 'Azure DevOps did not return an error message.'
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=(
+            f'Azure DevOps rejected the request to {action} '
+            f'(HTTP {error.status_code}): {reason}'
+        ),
+    )
 
 
 def _matches_pr_comment_subscription(
@@ -244,25 +276,17 @@ async def get_azure_devops_resources(
         webhook_url = azure_devops_webhook_url()
 
         subscriptions = await service.list_service_hook_subscriptions()
-        pr_subscription = next(
-            (
-                subscription
-                for subscription in subscriptions
-                if _matches_pr_comment_subscription(
-                    subscription, webhook_url=webhook_url
-                )
+        pr_subscription = _find_subscription(
+            subscriptions,
+            lambda subscription: _matches_pr_comment_subscription(
+                subscription, webhook_url=webhook_url
             ),
-            None,
         )
-        work_item_subscription = next(
-            (
-                subscription
-                for subscription in subscriptions
-                if _matches_work_item_comment_subscription(
-                    subscription, webhook_url=webhook_url
-                )
+        work_item_subscription = _find_subscription(
+            subscriptions,
+            lambda subscription: _matches_work_item_comment_subscription(
+                subscription, webhook_url=webhook_url
             ),
-            None,
         )
 
         # Only report installed when the hooks are enabled (a disabled/suspended
@@ -287,12 +311,28 @@ async def get_azure_devops_resources(
 
     except HTTPException:
         raise
+    except AzureDevOpsApiError as e:
+        logger.warning(f'Error retrieving Azure DevOps resources: {e}')
+        raise _azure_devops_api_http_exception('read Service Hooks', e) from e
     except Exception as e:
         logger.exception('Error retrieving Azure DevOps resources', stack_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve Azure DevOps resources',
         ) from e
+
+
+async def _delete_subscriptions_best_effort(
+    service: SaaSAzureDevOpsService, subscription_ids: list[str], *, reason: str
+) -> None:
+    for subscription_id in subscription_ids:
+        try:
+            await service.delete_service_hook_subscription(subscription_id)
+        except Exception as e:
+            logger.warning(
+                f'[Azure DevOps] Could not delete {reason} Service Hook '
+                f'{subscription_id}: {e}'
+            )
 
 
 @azure_devops_integration_router.post('/azure-devops/reinstall-webhook')
@@ -307,28 +347,52 @@ async def reinstall_azure_devops_webhook(
 
     try:
         subscriptions = await service.list_service_hook_subscriptions()
-        for subscription in subscriptions:
-            subscription_id = _subscription_id(subscription)
-            if not subscription_id:
-                continue
-            if _matches_pr_comment_subscription(
-                subscription, webhook_url=webhook_url
-            ) or _matches_work_item_comment_subscription(
-                subscription, webhook_url=webhook_url
-            ):
-                await service.delete_service_hook_subscription(subscription_id)
+        existing_subscription_ids = [
+            subscription_id
+            for subscription in subscriptions
+            if (subscription_id := _subscription_id(subscription))
+            and (
+                _matches_pr_comment_subscription(subscription, webhook_url=webhook_url)
+                or _matches_work_item_comment_subscription(
+                    subscription, webhook_url=webhook_url
+                )
+            )
+        ]
 
-        pr_subscription = await service.create_pr_comment_service_hook(
-            webhook_url=webhook_url,
-            webhook_secret=webhook_secret,
-        )
-        work_item_subscription = await service.create_work_item_comment_service_hook(
-            webhook_url=webhook_url,
-            webhook_secret=webhook_secret,
-        )
+        # Create the new hooks before removing the old ones, so a refused
+        # create leaves the existing installation working.
+        created_subscription_ids: list[str] = []
+        try:
+            pr_subscription = await service.create_pr_comment_service_hook(
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
+            )
+            pr_subscription_id = _subscription_id(pr_subscription)
+            if pr_subscription_id:
+                created_subscription_ids.append(pr_subscription_id)
+            work_item_subscription = (
+                await service.create_work_item_comment_service_hook(
+                    webhook_url=webhook_url,
+                    webhook_secret=webhook_secret,
+                )
+            )
+            work_item_subscription_id = _subscription_id(work_item_subscription)
+        except Exception:
+            await _delete_subscriptions_best_effort(
+                service, created_subscription_ids, reason='rollback'
+            )
+            raise
 
-        pr_subscription_id = _subscription_id(pr_subscription)
-        work_item_subscription_id = _subscription_id(work_item_subscription)
+        await _delete_subscriptions_best_effort(
+            service,
+            [
+                subscription_id
+                for subscription_id in existing_subscription_ids
+                if subscription_id
+                not in (pr_subscription_id, work_item_subscription_id)
+            ],
+            reason='replaced',
+        )
 
         logger.info(
             '[Azure DevOps] Resolver hooks installed',
@@ -351,6 +415,9 @@ async def reinstall_azure_devops_webhook(
 
     except HTTPException:
         raise
+    except AzureDevOpsApiError as e:
+        logger.warning(f'Error installing Azure DevOps resolver hooks: {e}')
+        raise _azure_devops_api_http_exception('install Service Hooks', e) from e
     except Exception as e:
         logger.exception(
             'Error installing Azure DevOps resolver hooks', stack_info=True
@@ -409,6 +476,9 @@ async def uninstall_azure_devops_webhook(
 
     except HTTPException:
         raise
+    except AzureDevOpsApiError as e:
+        logger.warning(f'Error uninstalling Azure DevOps resolver hooks: {e}')
+        raise _azure_devops_api_http_exception('uninstall Service Hooks', e) from e
     except Exception as e:
         logger.exception(
             'Error uninstalling Azure DevOps resolver hooks', stack_info=True
