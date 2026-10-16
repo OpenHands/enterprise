@@ -209,6 +209,33 @@ def test_callback_saml_provider_404(client, jwt_svc):
     assert response.status_code == 404
 
 
+def _fake_unknown_kind_provider(*, provider_id: int = 6):
+    provider = MagicMock()
+    provider.id = provider_id
+    provider.kind = 'FutureProviderDetails'
+    provider.details = object()
+    return provider
+
+
+@pytest.mark.parametrize('path', ['login', 'callback'])
+def test_unknown_provider_kind_404(client, jwt_svc, path):
+    provider = _fake_unknown_kind_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            f'/oauth/6/{path}',
+            params={'code': 'c', 'state': 's'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 404
+
+
 def test_login_missing_auth_url_400(client, jwt_svc):
     provider = _fake_provider()
     provider.details.authorization_url = None
