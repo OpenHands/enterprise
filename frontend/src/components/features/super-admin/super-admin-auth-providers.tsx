@@ -1028,9 +1028,24 @@ export function SuperAdminAuthProviders() {
         empty={t(I18nKey.SUPER_ADMIN$EMPTY_AUTH_PROVIDERS)}
         columns={[
           {
+            key: "color",
+            header: "",
+            className: "w-12 min-w-12",
+            render: (row) => (
+              <span
+                data-testid={`super-admin-auth-provider-color-swatch-${row.id}`}
+                role="img"
+                aria-label={`${t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_COLOR)}: ${row.color}`}
+                title={row.color}
+                className="block size-5 rounded-sm border border-white/20"
+                style={{ backgroundColor: row.color }}
+              />
+            ),
+          },
+          {
             key: "title",
             header: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TITLE),
-            className: "w-[60%]",
+            className: "w-[50%]",
             render: (row) => (
               <span className="block truncate">{row.title}</span>
             ),

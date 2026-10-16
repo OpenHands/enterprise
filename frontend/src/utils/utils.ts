@@ -179,9 +179,8 @@ export const shouldUseInstallationRepos = (
       return true;
     case "gitlab":
       return false;
-    case "azure_devops":
-      return false;
     case "github":
+    case "azure_devops":
       return app_mode === "saas";
     default:
       return false;

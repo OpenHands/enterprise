@@ -191,14 +191,6 @@ def _ensure_azure_devops_webhook_secret() -> str:
     return secret
 
 
-def _ensure_azure_devops_organization(service: SaaSAzureDevOpsService) -> None:
-    if not service.organization:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Azure DevOps organization is not configured.',
-        )
-
-
 async def _accessible_organizations(service: SaaSAzureDevOpsService) -> list[str]:
     try:
         return await service.get_accessible_organizations()
@@ -216,11 +208,7 @@ async def _service_for_organization(
     user_id: str, organization: str | None
 ) -> SaaSAzureDevOpsService:
     service = SaaSAzureDevOpsService(external_auth_id=user_id)
-    if organization is None:
-        # Preserve existing clients that use the installation's single default.
-        _ensure_azure_devops_organization(service)
-        return service
-    requested = organization.strip()
+    requested = (organization or '').strip()
     if not requested:
         raise HTTPException(
             status_code=400, detail='Select an Azure DevOps organization.'
