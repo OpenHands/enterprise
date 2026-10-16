@@ -43,6 +43,7 @@ class AppConversationService(ABC):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -60,6 +61,7 @@ class AppConversationService(ABC):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
     ) -> int:
         """Count sandboxed conversations."""
 

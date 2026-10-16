@@ -348,6 +348,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 20,
@@ -362,6 +363,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
             tags__contains=tags__contains,
+            pinned__eq=pinned__eq,
             sort_order=sort_order,
             page_id=page_id,
             limit=limit,
@@ -381,6 +383,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
     ) -> int:
         return await self.app_conversation_info_service.count_app_conversation_info(
             title__contains=title__contains,
@@ -390,6 +393,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
             tags__contains=tags__contains,
+            pinned__eq=pinned__eq,
         )
 
     async def get_app_conversation(
@@ -2990,8 +2994,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         for field_name in request.model_fields_set:
             if field_name == 'tags':
                 continue
+            if field_name == 'pinned':
+                continue
             value = getattr(request, field_name)
             setattr(info, field_name, value)
+
+        if request.pinned is not None:
+            info.pinned_at = (
+                await self.app_conversation_info_service.set_app_conversation_pinned(
+                    conversation_id, request.pinned
+                )
+            )
 
         # Tags are applied as a merge patch: a None value deletes the key and keys
         # not mentioned in the request are left untouched.

@@ -1577,3 +1577,137 @@ class TestTagsContainsFilter:
         # Assert
         assert matching == 2
         assert missing == 0
+
+
+class TestPinned:
+    """Test suite for pinning and the pinned__eq filter."""
+
+    @staticmethod
+    def _conversation(title: str) -> AppConversationInfo:
+        return AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=None,
+            sandbox_id='sandbox_pinned',
+            title=title,
+        )
+
+    @pytest.mark.asyncio
+    async def test_conversations_are_unpinned_by_default(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """A saved conversation reads back with no pinned_at."""
+        # Arrange
+        info = self._conversation('Plain')
+
+        # Act
+        await service.save_app_conversation_info(info)
+        loaded = await service.get_app_conversation_info(info.id)
+
+        # Assert
+        assert loaded is not None
+        assert loaded.pinned_at is None
+
+    @pytest.mark.asyncio
+    async def test_pin_sets_pinned_at_and_unpin_clears_it(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Pinning stores a timestamp that reads back; unpinning clears it."""
+        # Arrange
+        info = self._conversation('Pin me')
+        await service.save_app_conversation_info(info)
+
+        # Act
+        returned = await service.set_app_conversation_pinned(info.id, True)
+        pinned = await service.get_app_conversation_info(info.id)
+        cleared = await service.set_app_conversation_pinned(info.id, False)
+        unpinned = await service.get_app_conversation_info(info.id)
+
+        # Assert
+        assert returned is not None
+        assert pinned is not None
+        assert pinned.pinned_at == returned
+        assert cleared is None
+        assert unpinned is not None
+        assert unpinned.pinned_at is None
+
+    @pytest.mark.asyncio
+    async def test_pinning_again_keeps_the_original_timestamp(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Re-pinning a pinned conversation does not move it to the top."""
+        # Arrange
+        info = self._conversation('Pinned twice')
+        await service.save_app_conversation_info(info)
+        first = await service.set_app_conversation_pinned(info.id, True)
+
+        # Act
+        second = await service.set_app_conversation_pinned(info.id, True)
+
+        # Assert
+        assert first is not None
+        assert second == first
+
+    @pytest.mark.asyncio
+    async def test_saving_a_rebuilt_info_does_not_unpin(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """A lifecycle webhook rebuilds the info without pinned_at; the pin survives."""
+        # Arrange
+        info = self._conversation('Pinned')
+        await service.save_app_conversation_info(info)
+        pinned_at = await service.set_app_conversation_pinned(info.id, True)
+        rebuilt = AppConversationInfo(
+            id=info.id,
+            created_by_user_id=None,
+            sandbox_id=info.sandbox_id,
+            title='Renamed by webhook',
+        )
+
+        # Act
+        await service.save_app_conversation_info(rebuilt)
+        loaded = await service.get_app_conversation_info(info.id)
+
+        # Assert
+        assert loaded is not None
+        assert loaded.title == 'Renamed by webhook'
+        assert loaded.pinned_at == pinned_at
+
+    @pytest.mark.asyncio
+    async def test_pinning_a_missing_conversation_raises(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """Pinning an id that does not exist is an error, not a silent no-op."""
+        with pytest.raises(LookupError):
+            await service.set_app_conversation_pinned(uuid4(), True)
+
+    @pytest.mark.asyncio
+    async def test_search_and_count_filter_by_pinned(
+        self,
+        service: SQLAppConversationInfoService,
+    ):
+        """pinned__eq selects pinned or unpinned conversations in search and count."""
+        # Arrange
+        pinned_a = self._conversation('Pinned A')
+        pinned_b = self._conversation('Pinned B')
+        plain = self._conversation('Plain')
+        for info in (pinned_a, pinned_b, plain):
+            await service.save_app_conversation_info(info)
+        await service.set_app_conversation_pinned(pinned_a.id, True)
+        await service.set_app_conversation_pinned(pinned_b.id, True)
+
+        # Act
+        pinned_page = await service.search_app_conversation_info(pinned__eq=True)
+        unpinned_page = await service.search_app_conversation_info(pinned__eq=False)
+        all_page = await service.search_app_conversation_info()
+        pinned_count = await service.count_app_conversation_info(pinned__eq=True)
+
+        # Assert
+        assert {item.id for item in pinned_page.items} == {pinned_a.id, pinned_b.id}
+        assert [item.id for item in unpinned_page.items] == [plain.id]
+        assert len(all_page.items) == 3
+        assert pinned_count == 2

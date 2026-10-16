@@ -187,6 +187,9 @@ class StoredConversationMetadata(Base):
         String, nullable=True, index=True
     )
     public: Mapped[bool | None] = mapped_column(nullable=True, index=True)
+    pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Execution status: idle, running, paused, finished, error, stuck, deleting
     execution_status: Mapped[str | None] = mapped_column(
@@ -239,6 +242,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -263,6 +267,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
             tags__contains=tags__contains,
+            pinned__eq=pinned__eq,
         )
 
         # Add sort order
@@ -319,6 +324,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
     ) -> int:
         """Count sandboxed conversations matching the given filters."""
         query = select(func.count(StoredConversationMetadata.conversation_id)).where(
@@ -335,6 +341,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
             tags__contains=tags__contains,
+            pinned__eq=pinned__eq,
         )
 
         result = await self.db_session.execute(query)
@@ -351,6 +358,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
     ) -> Select:
         # Apply the same filters as search_app_conversations
         conditions: list[ColumnElement[bool]] = []
@@ -377,6 +385,13 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
         if sandbox_id__eq is not None:
             conditions.append(StoredConversationMetadata.sandbox_id == sandbox_id__eq)
+
+        if pinned__eq is not None:
+            conditions.append(
+                StoredConversationMetadata.pinned_at.is_not(None)
+                if pinned__eq
+                else StoredConversationMetadata.pinned_at.is_(None)
+            )
 
         if tags__contains:
             for key, value in tags__contains.items():
@@ -479,20 +494,23 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # stored value directly by primary key (not via ``_secure_select``) so
         # this works under the ADMIN webhook context as well.
         created_at = info.created_at
-        # Preserve the stored created_at AND soft-delete marker on upsert so a
+        # Preserve the stored created_at, soft-delete marker AND pin on upsert so a
         # lifecycle webhook (which rebuilds the model without these fields) cannot
-        # drift created_at forward or un-delete a soft-deleted conversation.
+        # drift created_at forward, un-delete a soft-deleted conversation or unpin
+        # one. Pins change only through ``set_app_conversation_pinned``.
         deleted_at: datetime | None = None
+        pinned_at: datetime | None = None
         existing = (
             await self.db_session.execute(
                 select(
                     StoredConversationMetadata.created_at,
                     StoredConversationMetadata.deleted_at,
+                    StoredConversationMetadata.pinned_at,
                 ).where(StoredConversationMetadata.conversation_id == str(info.id))
             )
         ).one_or_none()
         if existing is not None:
-            created_at, deleted_at = existing
+            created_at, deleted_at, pinned_at = existing
 
         stored = StoredConversationMetadata(
             conversation_id=str(info.id),
@@ -524,6 +542,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 else None
             ),
             public=info.public,
+            pinned_at=pinned_at,
             tags=info.tags if info.tags else None,
             deleted_at=deleted_at,
         )
@@ -531,6 +550,25 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         await self.db_session.merge(stored)
         await self.db_session.commit()
         return info
+
+    async def set_app_conversation_pinned(
+        self, conversation_id: UUID, pinned: bool
+    ) -> datetime | None:
+        query = await self._secure_select()
+        query = query.where(
+            StoredConversationMetadata.conversation_id == str(conversation_id)
+        ).with_for_update()
+        stored = (await self.db_session.execute(query)).scalar_one_or_none()
+        if stored is None:
+            raise LookupError(f'Conversation {conversation_id} not found')
+
+        if not pinned:
+            stored.pinned_at = None
+        elif stored.pinned_at is None:
+            stored.pinned_at = utc_now()
+        pinned_at = stored.pinned_at
+        await self.db_session.commit()
+        return pinned_at
 
     async def update_conversation_statistics(
         self,
@@ -892,6 +930,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             ),
             sub_conversation_ids=sub_conversation_ids or [],
             public=stored.public,
+            pinned_at=stored.pinned_at,
             tags=stored.tags or {},
             created_at=created_at,
             updated_at=updated_at,
