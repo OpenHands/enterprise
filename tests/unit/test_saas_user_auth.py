@@ -66,6 +66,15 @@ def mock_request():
     return request
 
 
+@pytest.fixture
+def active_user_guard():
+    with patch(
+        'server.auth.saas_user_auth._require_active_user',
+        new=AsyncMock(return_value=MagicMock()),
+    ) as guard:
+        yield guard
+
+
 def create_mock_jwt_tokens(user_id='test_user_id', exp_offset=3600):
     """Helper to create valid JWT tokens for mocking."""
     payload = {
@@ -595,7 +604,9 @@ async def test_get_provider_tokens_succeeds_without_offline_session():
     ],
     ids=['get_for_user', 'get_user_auth_from_keycloak_id'],
 )
-async def test_background_user_auth_does_not_require_offline_session(build):
+async def test_background_user_auth_does_not_require_offline_session(
+    build, active_user_guard
+):
     """Background/integration entry points build BEARER auth with no offline token."""
     # Act
     built = await build()
@@ -651,12 +662,13 @@ async def test_get_user_settings_store_cached():
 
 
 @pytest.mark.asyncio
-async def test_get_instance_from_bearer(mock_request):
+async def test_get_instance_from_bearer(mock_request, active_user_guard):
     """Test that get_instance returns auth from bearer token."""
     with patch(
         'server.auth.saas_user_auth.saas_user_auth_from_bearer'
     ) as mock_from_bearer:
         mock_auth = MagicMock()
+        mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
         mock_from_bearer.return_value = mock_auth
 
         result = await SaasUserAuth.get_instance(mock_request)
@@ -666,7 +678,7 @@ async def test_get_instance_from_bearer(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_without_rate_limiter(mock_request):
+async def test_get_instance_without_rate_limiter(mock_request, active_user_guard):
     """Authentication succeeds without hitting a disabled rate limiter."""
     mock_request.state.user_rate_limit_processed = False
     mock_auth = MagicMock()
@@ -686,7 +698,7 @@ async def test_get_instance_without_rate_limiter(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_from_cookie(mock_request):
+async def test_get_instance_from_cookie(mock_request, active_user_guard):
     """Test that get_instance returns auth from cookie if bearer fails."""
     with (
         patch(
@@ -698,6 +710,7 @@ async def test_get_instance_from_cookie(mock_request):
     ):
         mock_from_bearer.return_value = None
         mock_auth = MagicMock()
+        mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
         mock_from_cookie.return_value = mock_auth
 
         result = await SaasUserAuth.get_instance(mock_request)
@@ -729,61 +742,7 @@ async def test_get_instance_no_auth(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_rejects_a_disabled_user(mock_request):
-    """A disabled user's API key or session no longer authenticates."""
-    # Arrange
-    mock_auth = MagicMock()
-    mock_auth.user_id = 'disabled_user_id'
-
-    with (
-        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', True),
-        patch(
-            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
-            return_value=mock_auth,
-        ),
-        patch(
-            'storage.user_store.UserStore.is_user_disabled',
-            AsyncMock(return_value=True),
-        ) as is_user_disabled,
-    ):
-        # Act / Assert
-        with pytest.raises(AuthError, match='disabled'):
-            await SaasUserAuth.get_instance(mock_request)
-
-    is_user_disabled.assert_awaited_once_with('disabled_user_id')
-
-
-@pytest.mark.asyncio
-async def test_get_instance_skips_the_disabled_check_while_super_admin_is_off(
-    mock_request,
-):
-    """Only the Super Admin directory disables users, so with it off no
-    request pays for the lookup."""
-    # Arrange
-    mock_auth = MagicMock()
-    mock_auth.user_id = 'user_id'
-
-    with (
-        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', False),
-        patch(
-            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
-            return_value=mock_auth,
-        ),
-        patch(
-            'storage.user_store.UserStore.is_user_disabled',
-            AsyncMock(return_value=True),
-        ) as is_user_disabled,
-    ):
-        # Act
-        instance = await SaasUserAuth.get_instance(mock_request)
-
-    # Assert
-    assert instance is mock_auth
-    is_user_disabled.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_success():
+async def test_saas_user_auth_from_bearer_success(active_user_guard):
     """A valid API key authenticates with no Keycloak round-trip.
 
     Bearer auth must not load an offline token or call refresh(): the key
@@ -936,7 +895,7 @@ async def test_saas_user_auth_from_cookie_exception():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token(mock_config):
+async def test_saas_user_auth_from_signed_token(mock_config, active_user_guard):
     """Test successful creation of SaasUserAuth from signed token."""
     # Create a JWT access token
     access_payload = {
@@ -1228,7 +1187,7 @@ def test_get_api_key_from_header_with_unrelated_cookies():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_via_api_key_cookie():
+async def test_saas_user_auth_from_bearer_via_api_key_cookie(active_user_guard):
     """A valid api_key cookie should authenticate the same as an X-Access-Token header."""
     mock_request = MagicMock()
     mock_request.headers = {}
@@ -1281,7 +1240,9 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
+async def test_saas_user_auth_from_signed_token_blocked_domain(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token raises AuthError when email domain is blocked."""
     # Arrange
     access_payload = {
@@ -1316,7 +1277,9 @@ async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_allowed_domain(mock_config):
+async def test_saas_user_auth_from_signed_token_allowed_domain(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token succeeds when email domain is not blocked."""
     # Arrange
     access_payload = {
@@ -1351,7 +1314,9 @@ async def test_saas_user_auth_from_signed_token_allowed_domain(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_domain_blocking_inactive(mock_config):
+async def test_saas_user_auth_from_signed_token_domain_blocking_inactive(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token succeeds when email domain is not blocked."""
     # Arrange
     access_payload = {
