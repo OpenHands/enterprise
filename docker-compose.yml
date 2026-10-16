@@ -185,6 +185,11 @@ services:
       ENABLE_INTEGRATED_IDP: 'true'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
 
+      # Super-admin: the backend flag enables the /super-admin routes, and the
+      # web-client flag shows the entry points in the UI.
+      ENABLE_SUPER_ADMIN: '1'
+      OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
+
       # No managed LiteLLM proxy -- fall back to the OSS default, which lets
       # each user configure their own LLM under Settings. This overrides the
       # LiteLLM-proxy default ``ENV OH_LLM_MODEL_KIND=...`` baked into
