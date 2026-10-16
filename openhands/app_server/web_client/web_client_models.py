@@ -64,6 +64,8 @@ class WebClientFeatureFlags(BaseModel):
     # /login page. Defaults to False so existing installs keep the legacy
     # login path until they opt in.
     enable_oauth_v2_login: bool = False
+    # Require the managed Keycloak enterprise SSO path for interactive login.
+    enforce_enterprise_sso: bool = False
     # Deployment-wide switch for the bundled/external LiteLLM gateway.
     # Defaults to True for backward compatibility with existing installs.
     # When False, the frontend must hide every feature that depends on

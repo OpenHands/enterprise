@@ -73,6 +73,41 @@ describe("useAutoLogin", () => {
     });
   });
 
+  it("uses enterprise SSO instead of a stale saved GitHub login under enforcement", async () => {
+    vi.stubGlobal("location", { href: "https://app.example.test/conversations/abc" });
+    mockUseIsOnIntermediatePage.mockReturnValue(false);
+    mockUseConfig.mockReturnValue({
+      data: {
+        app_mode: "saas",
+        auth_url: "auth.example.test",
+        feature_flags: { enforce_enterprise_sso: true },
+      },
+      isLoading: false,
+    });
+    mockGetLoginMethod.mockReturnValue("github");
+    renderHook(() => useAutoLogin());
+    await waitFor(() => {
+      expect(new URL(window.location.href).searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+    });
+  });
+
+  it("does not restart SSO after logout has cleared the saved login method", () => {
+    const loginUrl = "https://app.example.test/login";
+    vi.stubGlobal("location", { href: loginUrl });
+    mockUseIsOnIntermediatePage.mockReturnValue(false);
+    mockUseConfig.mockReturnValue({
+      data: {
+        app_mode: "saas",
+        auth_url: "auth.example.test",
+        feature_flags: { enforce_enterprise_sso: true },
+      },
+      isLoading: false,
+    });
+    mockGetLoginMethod.mockReturnValue(null);
+    renderHook(() => useAutoLogin());
+    expect(window.location.href).toBe(loginUrl);
+  });
+
   it("should redirect to the Azure DevOps identity provider when that login method is stored", async () => {
     // Arrange - expired session on an app page for a user who logged in with Azure DevOps
     const appUrl =

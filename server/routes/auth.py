@@ -16,8 +16,8 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import KeycloakAuthenticationError, KeycloakConnectionError
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
@@ -40,6 +40,7 @@ from server.auth.cookie_chunking import (
     set_chunked_cookie,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+from server.auth.login_policy import enforce_enterprise_sso
 from server.auth.recaptcha_service import recaptcha_service
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
@@ -802,6 +803,36 @@ async def github_dummy_callback(request: Request):
     """Callback for GitHub that just forwards the user to the app base URL."""
     web_url = get_web_url(request)
     return RedirectResponse(web_url, status_code=302)
+
+
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return a reauthentication hint without exposing credentials.
+
+    The provider marker comes from authenticated Keycloak user info, rather
+    than browser-local history (which Agent Canvas need not populate). It is
+    only a routing hint: Keycloak still verifies the current user when linking.
+    """
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakConnectionError as exc:
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    if enforce_enterprise_sso():
+        return KeycloakLinkContext(provider=ProviderType.ENTERPRISE_SSO.value)
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    allowed = {p.value for p in ProviderType}
+    return KeycloakLinkContext(provider=provider if provider in allowed else None)
 
 
 @api_router.post('/authenticate')

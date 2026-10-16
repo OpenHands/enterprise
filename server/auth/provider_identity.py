@@ -111,6 +111,10 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     A newly created user's ``allow_match_by_email`` is initialised from
     ``AuthProvider.allow_match_by_email``.
     """
+    from server.auth.login_policy import require_native_login_allowed
+
+    require_native_login_allowed()
+
     subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
     if not subject:
         raise HTTPException(

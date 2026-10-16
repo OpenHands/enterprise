@@ -102,6 +102,10 @@ from pydantic import BaseModel, EmailStr, field_validator
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
+from server.auth.login_policy import (
+    enforce_enterprise_sso,
+    require_native_login_allowed,
+)
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -291,11 +295,12 @@ async def _get_integrated_idp_provider() -> AuthProvider | None:
 async def is_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
-    Governed solely by whether migration 179 seeded an ``auth_providers``
-    row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
-    migration time). Whether a real IDP is *also* configured does not affect
-    availability.
+    The managed corporate-SSO policy disables this login path. Otherwise it
+    depends on the ``auth_providers`` row seeded by migration 179; configuring
+    another IDP alone does not disable the password provider.
     """
+    if enforce_enterprise_sso():
+        return False
     return await _get_integrated_idp_provider() is not None
 
 
@@ -491,6 +496,7 @@ def _render_invite_form(
 
 
 async def _require_idp_available() -> AuthProvider:
+    require_native_login_allowed()
     provider = await _get_integrated_idp_provider()
     if provider is None:
         raise HTTPException(
@@ -1341,6 +1347,7 @@ def _set_idp_cookie(
     """
     from server.auth.oauth_v2_refresh import COOKIE_MAX_AGE_CAP_SECONDS
 
+    require_native_login_allowed()
     max_age_seconds = COOKIE_MAX_AGE_CAP_SECONDS
     payload = create_oauth_v2_cookie_payload(
         user_id,

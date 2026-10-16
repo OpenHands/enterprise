@@ -1,5 +1,5 @@
 import { generateAuthUrl } from "./generate-auth-url";
-import { getLoginMethod } from "./local-storage";
+import { getLoginMethod, LoginMethod } from "./local-storage";
 import { Provider } from "#/types/settings";
 
 /**
@@ -16,10 +16,16 @@ export const generateIdpLinkUrl = (
   provider: Provider,
   requestUrl: URL,
   authUrl?: string | null,
+  reauthenticationProvider?: string | null,
 ) => {
   // Hint Keycloak towards the method the user signed in with, so that a forced
   // re-authentication goes to their own IdP rather than the provider being linked.
-  const loginMethod = getLoginMethod();
+  const candidate = reauthenticationProvider ?? getLoginMethod();
+  const loginMethod = Object.values(LoginMethod).includes(
+    candidate as LoginMethod,
+  )
+    ? candidate
+    : null;
   const url = new URL(
     generateAuthUrl(loginMethod ?? provider, requestUrl, authUrl),
   );

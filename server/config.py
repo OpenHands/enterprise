@@ -27,6 +27,7 @@ from server.auth.constants import (
     GITLAB_APP_CLIENT_ID,
     RECAPTCHA_SITE_KEY,
 )
+from server.auth.login_policy import enforce_enterprise_sso
 from server.constants import DEPLOYMENT_MODE
 
 
@@ -90,6 +91,11 @@ class SaaSServerConfig(ServerConfig):
     app_slug: None | str = None
 
     def __init__(self) -> None:
+        if enforce_enterprise_sso() and ENABLE_ENTERPRISE_SSO.lower() not in (
+            'true',
+            '1',
+        ):
+            raise ValueError('ENFORCE_ENTERPRISE_SSO requires ENABLE_ENTERPRISE_SSO')
         self._get_app_slug()
 
     def _get_app_slug(self):
@@ -177,6 +183,7 @@ class SaaSServerConfig(ServerConfig):
             'GITHUB_CLIENT_ID': self.github_client_id,
             'POSTHOG_CLIENT_KEY': self.posthog_client_key,
             'FEATURE_FLAGS': {
+                'ENFORCE_ENTERPRISE_SSO': enforce_enterprise_sso(),
                 'ENABLE_BILLING': self.enable_billing,
                 'ENABLE_LEGACY_LITELLM': self.enable_litellm,
                 'HIDE_LLM_SETTINGS': self.hide_llm_settings,

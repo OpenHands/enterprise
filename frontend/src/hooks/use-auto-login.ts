@@ -15,7 +15,11 @@ export const useAutoLogin = () => {
   const isOnIntermediatePage = useIsOnIntermediatePage();
 
   // Get the stored login method
-  const loginMethod = getLoginMethod();
+  const savedLoginMethod = getLoginMethod();
+  const loginMethod =
+    savedLoginMethod && config?.feature_flags?.enforce_enterprise_sso
+      ? LoginMethod.ENTERPRISE_SSO
+      : savedLoginMethod;
 
   // Get the auth URLs for all providers
   const githubAuthUrl = useAuthUrl({

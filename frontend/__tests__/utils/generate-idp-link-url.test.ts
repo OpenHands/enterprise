@@ -49,4 +49,21 @@ describe("generateIdpLinkUrl", () => {
     expect(url.searchParams.has("kc_idp_hint")).toBe(false);
     expect(url.searchParams.get("kc_action")).toBe("idp_link:gitlab");
   });
+  it("uses the server SSO hint over stale browser history", () => {
+    setLoginMethod(LoginMethod.GITHUB);
+    const url = new URL(generateIdpLinkUrl("github", requestUrl, "auth.example.com", "enterprise_sso"));
+    expect(url.searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+    expect(url.searchParams.get("kc_action")).toBe("idp_link:github");
+  });
+
+  it("uses the server SSO hint without browser history", () => {
+    const url = new URL(generateIdpLinkUrl("github", requestUrl, "auth.example.com", "enterprise_sso"));
+    expect(url.searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+  });
+
+  it("never forwards an unrecognized provider hint", () => {
+    const url = new URL(generateIdpLinkUrl("github", requestUrl, "auth.example.com", "not-a-provider"));
+    expect(url.searchParams.has("kc_idp_hint")).toBe(false);
+  });
+
 });

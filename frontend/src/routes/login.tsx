@@ -52,7 +52,8 @@ export default function LoginPage() {
   });
 
   const enableOauthV2Login =
-    !!config.data?.feature_flags?.enable_oauth_v2_login;
+    !!config.data?.feature_flags?.enable_oauth_v2_login &&
+    !config.data?.feature_flags?.enforce_enterprise_sso;
   const { data: v2IdpProviders, isLoading: v2ProvidersLoading } =
     usePublicIdpProviders(enableOauthV2Login);
 

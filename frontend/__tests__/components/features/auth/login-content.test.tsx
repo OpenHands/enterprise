@@ -25,10 +25,9 @@ vi.mock("#/hooks/use-auth-url", () => ({
   },
 }));
 
+const mockSsoPolicy = vi.hoisted(() => ({ enabled: false }));
 vi.mock("#/hooks/query/use-config", () => ({
-  useConfig: () => ({
-    data: undefined,
-  }),
+  useConfig: () => ({ data: { feature_flags: { enforce_enterprise_sso: mockSsoPolicy.enabled } } }),
 }));
 
 vi.mock("#/hooks/use-recaptcha", () => ({
@@ -60,6 +59,7 @@ vi.mock("#/hooks/use-app-mode", () => ({
 
 describe("LoginContent", () => {
   beforeEach(() => {
+    mockSsoPolicy.enabled = false;
     vi.stubGlobal("location", { href: "" });
     // Reset mock to return SaaS Cloud (CTA enabled) by default
     mockUseAppMode.mockReturnValue({
@@ -77,6 +77,14 @@ describe("LoginContent", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("shows only corporate SSO when policy is enabled", () => {
+    mockSsoPolicy.enabled = true;
+    render(<MemoryRouter><LoginContent githubAuthUrl="https://github.com/oauth/authorize" appMode="saas" providersConfigured={["github", "gitlab", "azure_devops", "enterprise_sso"]} /></MemoryRouter>);
+    expect(screen.getByRole("button", { name: "ENTERPRISE_SSO$CONNECT_TO_ENTERPRISE_SSO" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "GITHUB$CONNECT_TO_GITHUB" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "GITLAB$CONNECT_TO_GITLAB" })).not.toBeInTheDocument();
   });
 
   it("should render login content with heading", () => {

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitProviderConnection } from "#/components/features/settings/git-settings/git-provider-connection";
 import UserService from "#/api/user-service/user-service.api";
+import AuthService from "#/api/auth-service/auth-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
@@ -31,6 +32,7 @@ describe("GitProviderConnection", () => {
 
   beforeEach(() => {
     queryClient.clear();
+    vi.spyOn(AuthService, "getKeycloakLinkContext").mockResolvedValue({ provider: "enterprise_sso" });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
@@ -81,11 +83,24 @@ describe("GitProviderConnection", () => {
     await userEvent.click(screen.getByTestId("connect-github-button"));
 
     // Assert
+    await waitFor(() => expect(window.location.href).toContain("kc_action"));
     const target = new URL(window.location.href);
     expect(target.pathname).toBe(
       "/realms/allhands/protocol/openid-connect/auth",
     );
     expect(target.searchParams.get("kc_action")).toBe("idp_link:github");
+    expect(target.searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+  });
+
+  it("keeps the current page when the authenticated context cannot be loaded", async () => {
+    const initialUrl = "https://app.example.com/settings/integrations";
+    vi.stubGlobal("location", { href: initialUrl });
+    vi.mocked(AuthService.getKeycloakLinkContext).mockRejectedValue(new Error("Unavailable"));
+    const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+    renderComponent(false);
+    await userEvent.click(screen.getByTestId("connect-github-button"));
+    await waitFor(() => expect(errorToast).toHaveBeenCalled());
+    expect(window.location.href).toBe(initialUrl);
   });
 
   it("should disconnect the provider after confirmation", async () => {

@@ -137,6 +137,8 @@ export function LoginContent({
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const { isEnterpriseCloud } = useAppMode();
+  const enforceSso = config?.feature_flags?.enforce_enterprise_sso === true;
+  const loginProviders = enforceSso ? ["enterprise_sso"] : providersConfigured;
 
   // reCAPTCHA - only need token generation, verification happens at backend callback
   const { isReady: recaptchaReady, executeRecaptcha } = useRecaptcha({
@@ -243,32 +245,31 @@ export function LoginContent({
   };
 
   const showGithub =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("github");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("github");
   const showGitlab =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("gitlab");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("gitlab");
   const showBitbucket =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("bitbucket");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("bitbucket");
   const showBitbucketDataCenter =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("bitbucket_data_center");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("bitbucket_data_center");
   const showAzureDevOps =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("azure_devops");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("azure_devops");
   const showEnterpriseSso =
-    providersConfigured &&
-    providersConfigured.length > 0 &&
-    providersConfigured.includes("enterprise_sso");
+    loginProviders &&
+    loginProviders.length > 0 &&
+    loginProviders.includes("enterprise_sso");
 
-  const noProvidersConfigured =
-    !providersConfigured || providersConfigured.length === 0;
+  const noProvidersConfigured = !loginProviders || loginProviders.length === 0;
 
   const buttonBaseClasses = BUTTON_BASE_CLASSES;
   const buttonLabelClasses = BUTTON_LABEL_CLASSES;
@@ -278,7 +279,7 @@ export function LoginContent({
   // -- ``undefined``/``null`` here always means "render the legacy buttons
   // below", never "still loading" (the caller handles its own loading state
   // before rendering this component at all).
-  const isV2Login = v2IdpProviders != null;
+  const isV2Login = !enforceSso && v2IdpProviders != null;
 
   // The "Bitbucket registrations disabled" copy only applies to the legacy,
   // hard-coded-per-brand Bitbucket button below -- in v2 mode, sign-up
