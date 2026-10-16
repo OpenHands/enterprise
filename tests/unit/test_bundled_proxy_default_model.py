@@ -28,6 +28,7 @@ from server.verified_models.default_profile import (
 )
 from server.verified_models.litellm_proxy_model_router import (
     LiteLLMProxyModelService,
+    get_bundled_proxy_model_names,
 )
 from storage import org_default_settings, saas_settings_store
 from storage.org import Org
@@ -176,6 +177,67 @@ class TestCanonicalizeStoredLLM:
         assert constants.canonicalize_bundled_proxy_llm(
             canonicalize_openhands_llm_payload(payload)
         ) == {'model': 'openhands/claude-opus-4-8'}
+
+
+class TestDirectLLMThroughBundledProxy:
+    """A stored ``bedrock/`` or ``vertex_ai/`` LLM without credentials of its
+    own used to authenticate from provider credentials in the sandbox env. On
+    the bundled proxy it is served as the matching ``openhands/<route>``.
+    """
+
+    PROXY_MODELS = frozenset('openhands/' + route for route in PROXY_ROUTES)
+
+    @pytest.mark.parametrize('provider', ['bedrock', 'vertex_ai'])
+    @pytest.mark.parametrize('stored_base_url', [None, PROXY_URL])
+    def test_matching_route_is_served_by_the_proxy(
+        self, bundled_proxy, provider, stored_base_url
+    ):
+        payload = {
+            'model': f'{provider}/claude-opus-4-7',
+            'base_url': stored_base_url,
+            'api_key': 'member-key',
+        }
+
+        assert constants.route_direct_llm_via_bundled_proxy(
+            payload, self.PROXY_MODELS
+        ) == {
+            'model': 'openhands/claude-opus-4-7',
+            'base_url': PROXY_URL,
+            'api_key': 'member-key',
+        }
+
+    @pytest.mark.parametrize(
+        'payload',
+        [
+            {
+                'model': 'bedrock/claude-opus-4-7',
+                'aws_access_key_id': 'AKIA-test',
+                'aws_secret_access_key': 'secret',
+            },
+            {'model': 'bedrock/claude-opus-4-7', 'aws_profile_name': 'dev'},
+            {'model': 'vertex_ai/claude-opus-4-7', 'base_url': 'https://vertex.test'},
+            {'model': 'vertex_ai/claude-opus-4-7', 'provider_connection_id': 'conn'},
+            {'model': 'bedrock/not-served-by-the-proxy'},
+            {'model': 'azure/claude-opus-4-7'},
+            {'model': 'openhands/claude-opus-4-7', 'base_url': PROXY_URL},
+        ],
+    )
+    def test_other_llms_are_untouched(self, bundled_proxy, payload):
+        assert (
+            constants.route_direct_llm_via_bundled_proxy(payload, self.PROXY_MODELS)
+            == payload
+        )
+
+    def test_saas_proxy_is_untouched(self, saas_proxy):
+        payload = {'model': 'bedrock/claude-opus-4-7'}
+
+        assert (
+            constants.route_direct_llm_via_bundled_proxy(payload, self.PROXY_MODELS)
+            == payload
+        )
+
+    async def test_proxy_model_names_include_every_route(self, bundled_proxy):
+        assert self.PROXY_MODELS <= await get_bundled_proxy_model_names()
 
 
 def _org(llm_profiles=None, agent_settings=None) -> Org:
