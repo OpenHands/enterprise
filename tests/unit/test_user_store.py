@@ -3504,3 +3504,40 @@ async def test_delete_user_clears_other_fk_references(async_session_maker):
         )
         assert other_request is not None
         assert other_request.approved_by_user_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', [True, False])
+async def test_create_user_sets_allow_match_by_email(async_session_maker, flag):
+    await _seed_admin_role(async_session_maker)
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            str(uuid.uuid4()),
+            {'email': 'flag@example.com'},
+            allow_match_by_email=flag,
+        )
+
+    assert user is not None
+    assert user.allow_match_by_email is flag
+
+
+@pytest.mark.asyncio
+async def test_create_user_allow_match_by_email_defaults_to_false(async_session_maker):
+    await _seed_admin_role(async_session_maker)
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            str(uuid.uuid4()), {'email': 'default@example.com'}
+        )
+
+    assert user is not None
+    assert user.allow_match_by_email is False
