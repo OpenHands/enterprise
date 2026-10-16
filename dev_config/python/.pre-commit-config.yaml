@@ -51,6 +51,7 @@ repos:
             types-setuptools,
             types-pyyaml,
             types-toml,
+            types-croniter,
             types-docker,
             types-Markdown,
             types-redis,
