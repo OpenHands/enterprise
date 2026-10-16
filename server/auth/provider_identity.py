@@ -107,6 +107,9 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     ``allow_registration=True``, still can). The subject-link and
     opted-in-email-match lookups above always run regardless of this flag,
     since they resolve to an *existing* user rather than registering one.
+
+    A newly created user's ``allow_match_by_email`` is initialised from
+    ``AuthProvider.allow_match_by_email``.
     """
     subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
     if not subject:
@@ -168,7 +171,11 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
         'email_verified': email_verified,
     }
     new_user_id = str(uuid.uuid4())
-    user = await UserStore.create_user(new_user_id, user_info_dict)
+    user = await UserStore.create_user(
+        new_user_id,
+        user_info_dict,
+        allow_match_by_email=provider.allow_match_by_email,
+    )
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
