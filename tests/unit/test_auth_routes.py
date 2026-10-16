@@ -3,6 +3,7 @@ import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -185,6 +186,9 @@ async def test_keycloak_callback_user_not_authorized(
                 email_verified=True,
             )
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
 
         # Mock the user creation
@@ -327,6 +331,9 @@ async def test_keycloak_callback_success_with_valid_offline_token(
                 email_verified=True,
             )
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
@@ -378,6 +385,219 @@ async def test_keycloak_callback_success_with_valid_offline_token(
 
 
 @pytest.mark.asyncio
+async def test_keycloak_callback_idp_token_store_failure_logs_out(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A failing IdP broker-token store logs the user out to retry login.
+
+    Regression test for the production 500s on /oauth/keycloak/callback:
+    Keycloak returns 502 from its broker token endpoint when the user's
+    stored federated grant is stale (e.g. GitLab ``invalid_grant``), and
+    ``store_idp_tokens`` surfaces that as ``httpx.HTTPStatusError``.
+    OpenHands cannot function without working git-provider tokens, so
+    when no previously stored provider tokens are usable either, the
+    callback must not 500 (locking the user out on every retry) and must
+    not complete a degraded login: it ends the Keycloak session, clears
+    the auth cookie, and sends the user back to the login page so the
+    next login re-authenticates with the provider.
+    """
+    mock_analytics = MagicMock()
+    mock_org = MagicMock()
+    mock_org.id = 'test_org_id'
+    mock_org.name = 'Test Org'
+
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch('server.routes.auth.get_analytics_service', return_value=mock_analytics),
+        patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_store.OrgStore.get_orgs_by_ids',
+            new_callable=AsyncMock,
+            return_value=[mock_org],
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_members_count',
+            new_callable=AsyncMock,
+            return_value=1,
+        ),
+        patch(
+            'server.routes.auth._should_redirect_to_onboarding',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+    ):
+        mock_user = MagicMock()
+        mock_user.id = 'test_user_id'
+        mock_user.current_org_id = 'test_org_id'
+        mock_user.accepted_tos = '2025-01-01'
+        mock_user.user_consents_to_analytics = True
+        mock_user.org_members = []
+
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.create_user = AsyncMock(return_value=mock_user)
+        mock_user_store.migrate_user = AsyncMock(return_value=mock_user)
+        mock_user_store.backfill_contact_name = AsyncMock()
+        mock_user_store.backfill_user_email = AsyncMock()
+        mock_user_store.record_login = AsyncMock()
+
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub='test_user_id',
+                preferred_username='test_user',
+                identity_provider='gitlab',
+                email_verified=True,
+            )
+        )
+        broker_request = httpx.Request(
+            'GET', 'http://keycloak/realms/allhands/broker/gitlab/token'
+        )
+        broker_response = httpx.Response(
+            502, request=broker_request, text='Bad Gateway'
+        )
+        mock_token_manager.store_idp_tokens = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                '502 Bad Gateway', request=broker_request, response=broker_response
+            )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            side_effect=ValueError('Both Access and Refresh Tokens expired.')
+        )
+        mock_token_manager.logout = AsyncMock()
+        mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+        assert isinstance(result, RedirectResponse)
+        assert result.status_code == 302
+        assert (
+            result.headers['location']
+            == 'http://localhost:8000/login?git_provider_login_failed=true'
+        )
+        assert 'keycloak_auth=' in result.headers['set-cookie']
+        mock_token_manager.store_idp_tokens.assert_called_once_with(
+            ProviderType.GITLAB, 'test_user_id', 'test_access_token'
+        )
+        mock_token_manager.logout.assert_awaited_once_with('test_refresh_token')
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_idp_store_failure_with_valid_stored_tokens_logs_in(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """Broker-store failure is tolerated when stored provider tokens work.
+
+    The provider tokens stored by an earlier login refresh directly
+    against the provider (``get_idp_token_by_user_id``), independent of
+    Keycloak's broker copy. When they are still usable, a failing broker
+    re-fetch (e.g. a transient Keycloak 502) must not log the user out:
+    the login completes normally.
+    """
+    mock_analytics = MagicMock()
+    mock_org = MagicMock()
+    mock_org.id = 'test_org_id'
+    mock_org.name = 'Test Org'
+
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.set_response_cookie'),
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch('server.routes.auth.get_analytics_service', return_value=mock_analytics),
+        patch(
+            'storage.org_store.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_store.OrgStore.get_orgs_by_ids',
+            new_callable=AsyncMock,
+            return_value=[mock_org],
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_members_count',
+            new_callable=AsyncMock,
+            return_value=1,
+        ),
+        patch(
+            'server.routes.auth._should_redirect_to_onboarding',
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+    ):
+        mock_user = MagicMock()
+        mock_user.id = 'test_user_id'
+        mock_user.current_org_id = 'test_org_id'
+        mock_user.accepted_tos = '2025-01-01'
+        mock_user.user_consents_to_analytics = True
+        mock_user.org_members = []
+
+        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
+        mock_user_store.create_user = AsyncMock(return_value=mock_user)
+        mock_user_store.migrate_user = AsyncMock(return_value=mock_user)
+        mock_user_store.backfill_contact_name = AsyncMock()
+        mock_user_store.backfill_user_email = AsyncMock()
+        mock_user_store.record_login = AsyncMock()
+
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub='test_user_id',
+                preferred_username='test_user',
+                identity_provider='gitlab',
+                email_verified=True,
+            )
+        )
+        broker_request = httpx.Request(
+            'GET', 'http://keycloak/realms/allhands/broker/gitlab/token'
+        )
+        broker_response = httpx.Response(
+            502, request=broker_request, text='Bad Gateway'
+        )
+        mock_token_manager.store_idp_tokens = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                '502 Bad Gateway', request=broker_request, response=broker_response
+            )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_gitlab_access_token'
+        )
+        mock_token_manager.logout = AsyncMock()
+        mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
+
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=create_mock_user_authorizer(),
+        )
+
+        assert isinstance(result, RedirectResponse)
+        assert result.status_code == 302
+        assert result.headers['location'] == 'test_state'
+        mock_token_manager.store_idp_tokens.assert_called_once_with(
+            ProviderType.GITLAB, 'test_user_id', 'test_access_token'
+        )
+        mock_token_manager.logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install_wizard(
     mock_request, mock_background_tasks, create_keycloak_user_info, async_session_maker
 ):
@@ -418,6 +638,9 @@ async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install
                 identity_provider='github',
                 email_verified=True,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
@@ -502,6 +725,9 @@ async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
                 email_verified=True,
             )
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
@@ -562,6 +788,9 @@ async def test_keycloak_callback_email_not_verified(
                 identity_provider='github',
                 email_verified=False,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
 
@@ -626,6 +855,9 @@ async def test_keycloak_callback_email_not_verified_missing_field(
                 identity_provider='github',
                 # email_verified field is missing
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
 
@@ -693,6 +925,9 @@ async def test_keycloak_callback_email_verification_rate_limited(
                 identity_provider='github',
                 email_verified=False,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
 
@@ -795,6 +1030,9 @@ async def test_keycloak_callback_success_without_offline_token(
                 identity_provider='github',
                 email_verified=True,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
         # Set validate_offline_token to return False to test the "without offline token" scenario
@@ -899,6 +1137,9 @@ async def test_keycloak_callback_redirects_to_keycloak_when_offline_token_invali
                 identity_provider='github',
                 email_verified=True,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=False)
@@ -1037,6 +1278,9 @@ async def test_keycloak_offline_callback_success(
         )
         mock_token_manager.get_user_info = AsyncMock(
             return_value=create_keycloak_user_info(sub='test_user_id')
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.store_offline_token = AsyncMock()
@@ -1328,6 +1572,9 @@ async def test_keycloak_callback_missing_email(
                 # No email field
             )
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
@@ -1554,6 +1801,9 @@ async def test_keycloak_callback_duplicate_check_exception(
         mock_token_manager.check_duplicate_base_email = AsyncMock(
             side_effect=Exception('Check failed')
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
@@ -1619,6 +1869,9 @@ async def test_keycloak_callback_no_duplicate_email(
                 email_verified=True,
             )
         )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
 
@@ -1678,6 +1931,9 @@ async def test_keycloak_callback_no_email_in_user_info(
                 identity_provider='github',
                 email_verified=True,
             )
+        )
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
         )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
@@ -1764,6 +2020,9 @@ class TestKeycloakCallbackRecaptcha:
                     identity_provider='github',
                     email_verified=True,
                 )
+            )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
             )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
@@ -1930,6 +2189,9 @@ class TestKeycloakCallbackRecaptcha:
                     email_verified=True,
                 )
             )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
+            )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
             mock_token_manager.check_duplicate_base_email = AsyncMock(
@@ -2023,6 +2285,9 @@ class TestKeycloakCallbackRecaptcha:
                     email_verified=True,
                 )
             )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
+            )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
             mock_token_manager.check_duplicate_base_email = AsyncMock(
@@ -2115,6 +2380,9 @@ class TestKeycloakCallbackRecaptcha:
                     email_verified=True,
                 )
             )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
+            )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
             mock_token_manager.check_duplicate_base_email = AsyncMock(
@@ -2204,6 +2472,9 @@ class TestKeycloakCallbackRecaptcha:
                     email_verified=True,
                 )
             )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
+            )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
             mock_token_manager.check_duplicate_base_email = AsyncMock(
@@ -2290,6 +2561,9 @@ class TestKeycloakCallbackRecaptcha:
                     email_verified=True,
                 )
             )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
+            )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
             mock_token_manager.check_duplicate_base_email = AsyncMock(
@@ -2363,6 +2637,9 @@ class TestKeycloakCallbackRecaptcha:
                     identity_provider='github',
                     email_verified=True,
                 )
+            )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
             )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
@@ -2443,6 +2720,9 @@ class TestKeycloakCallbackRecaptcha:
                     identity_provider='github',
                     email_verified=True,
                 )
+            )
+            mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+                return_value='stored_access_token'
             )
             mock_token_manager.store_idp_tokens = AsyncMock()
             mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
@@ -2598,6 +2878,9 @@ async def test_keycloak_callback_calls_backfill_user_email_for_existing_user(
             return_value=('test_access_token', 'test_refresh_token')
         )
         mock_token_manager.get_user_info = AsyncMock(return_value=user_info)
+        mock_token_manager.get_idp_token_by_user_id = AsyncMock(
+            return_value='stored_access_token'
+        )
         mock_token_manager.store_idp_tokens = AsyncMock()
         mock_token_manager.validate_offline_token = AsyncMock(return_value=True)
         mock_token_manager.check_duplicate_base_email = AsyncMock(return_value=False)
