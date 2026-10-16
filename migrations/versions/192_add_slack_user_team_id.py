@@ -1,8 +1,8 @@
 """Associate linked Slack users with their installed workspace.
 
-Revision ID: 190
-Revises: 189
-Create Date: 2026-10-15 00:00:00.000000
+Revision ID: 192
+Revises: 191
+Create Date: 2026-10-16 00:00:00.000000
 """
 
 from typing import Sequence
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '190'
-down_revision: str | None = '189'
+revision: str = '192'
+down_revision: str | None = '191'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
