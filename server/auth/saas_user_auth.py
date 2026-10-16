@@ -37,7 +37,6 @@ from server.auth.authorization import (
     get_user_super_role,
 )
 from server.auth.constants import (
-    AZURE_DEVOPS_ORGANIZATION,
     BITBUCKET_DATA_CENTER_HOST,
     ENABLE_SUPER_ADMIN,
 )
@@ -844,8 +843,6 @@ class SaasUserAuth(UserAuth):
                         host = user_secrets.provider_tokens[idp_type].host
                     if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
                         host = BITBUCKET_DATA_CENTER_HOST or None
-                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
-                        host = AZURE_DEVOPS_ORGANIZATION or None
 
                     token = await store.get_valid_access_token(
                         permitted_drift_seconds=get_permitted_drift_seconds(provider),
@@ -910,9 +907,6 @@ class SaasUserAuth(UserAuth):
 
                     if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
                         host = BITBUCKET_DATA_CENTER_HOST or None
-
-                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
-                        host = AZURE_DEVOPS_ORGANIZATION or None
 
                     # Resolve the provider token by user_id directly. This reads
                     # the encrypted token from the auth_tokens table and refreshes

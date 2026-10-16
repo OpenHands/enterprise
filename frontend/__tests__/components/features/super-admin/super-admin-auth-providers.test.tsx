@@ -166,6 +166,23 @@ describe("Super Admin Auth Providers page", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows each provider's color as a swatch in the first column", async () => {
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      { ...GITHUB_PROVIDER, color: "#ff0000" },
+      PASSWORD_PROVIDER,
+    ]);
+    renderAuthProvidersPage();
+
+    const swatch = await screen.findByTestId(
+      "super-admin-auth-provider-color-swatch-1",
+    );
+    expect(swatch).toHaveStyle({ backgroundColor: "rgb(255, 0, 0)" });
+    expect(swatch.closest("td")).toBe(swatch.closest("tr")?.firstElementChild);
+    expect(
+      screen.getByTestId("super-admin-auth-provider-color-swatch-2"),
+    ).toHaveStyle({ backgroundColor: DEFAULT_AUTH_PROVIDER_COLOR });
+  });
+
   it("switches an OAuth provider's Login IDP from the table without opening the edit form", async () => {
     // Arrange
     const user = userEvent.setup();
