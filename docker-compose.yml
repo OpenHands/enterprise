@@ -239,6 +239,11 @@ services:
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
     image: ghcr.io/openhands/automation:1.20.0
+    # The image is only published for linux/amd64. Pinning the platform makes
+    # Docker Desktop on Apple Silicon run it under emulation instead of
+    # failing with "no matching manifest for linux/arm64"; it's a no-op on
+    # amd64 hosts. Drop this once the image is published multi-arch.
+    platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
     # here. The service only auto-migrates SQLite, so migrate Postgres first.
     command:
