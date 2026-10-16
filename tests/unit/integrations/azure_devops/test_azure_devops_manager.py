@@ -210,11 +210,19 @@ async def test_pr_comment_from_other_org_still_denies_without_write_access(
 
 
 @pytest.mark.asyncio
-async def test_work_item_mentioner_resolves_from_identity_string():
+@pytest.mark.parametrize(
+    'changed_by',
+    [
+        'Alice Example <alice@example.com>',
+        # A display name that looks like another user's address must not win.
+        'bob@example.com <alice@example.com>',
+    ],
+)
+async def test_work_item_mentioner_resolves_from_identity_string(changed_by):
     # Work item service hooks send System.ChangedBy as "Name <email>", with no revisedBy.
     message = _work_item_comment_message('Beta')
     fields = message.message['payload']['resource']['fields']
-    fields['System.ChangedBy'] = 'Alice Example <alice@example.com>'
+    fields['System.ChangedBy'] = changed_by
     token_manager = AsyncMock()
     token_manager.get_user_id_from_user_email = AsyncMock(return_value='kc-alice')
     manager = AzureDevOpsManager(token_manager)
