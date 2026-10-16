@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, cast
 from uuid import UUID
@@ -34,6 +34,7 @@ class AuthUserContext(UserContext):
     user_auth: UserAuth
     _user_info: UserInfo | None = None
     _resolved_user_info: UserInfo | None = None
+    _override_user_infos: dict[str, UserInfo] = field(default_factory=dict)
     _provider_handler: ProviderHandler | None = None
 
     async def get_user_id(self) -> str | None:
@@ -49,10 +50,12 @@ class AuthUserContext(UserContext):
     def _user_info_from_settings(user_id: str | None, settings: Any | None) -> UserInfo:
         if settings is None:
             return UserInfo(id=user_id)
-        return UserInfo(
+        user_info = UserInfo(
             id=user_id,
             **settings.model_dump(context={'expose_secrets': True}),
         )
+        user_info._resolved_view = settings._resolved_view
+        return user_info
 
     async def get_user_info(
         self,
@@ -61,13 +64,17 @@ class AuthUserContext(UserContext):
         override_agent_profile_id: str | None = None,
     ) -> UserInfo:
         if override_agent_profile_id is not None:
-            # One-off launch override: never memoized in either direction.
+            cached = self._override_user_infos.get(override_agent_profile_id)
+            if cached is not None:
+                return cached
             user_id = await self.get_user_id()
             settings = await self.user_auth.get_user_settings(
                 resolve_agent_profile=True,
                 override_agent_profile_id=override_agent_profile_id,
             )
-            return self._user_info_from_settings(user_id, settings)
+            override_user_info = self._user_info_from_settings(user_id, settings)
+            self._override_user_infos[override_agent_profile_id] = override_user_info
+            return override_user_info
         if resolve_agent_profile:
             user_info = self._resolved_user_info
             if user_info is None:
@@ -90,6 +97,7 @@ class AuthUserContext(UserContext):
         """Discard both user views after an out-of-band settings mutation."""
         self._user_info = None
         self._resolved_user_info = None
+        self._override_user_infos.clear()
         self.user_auth.invalidate_user_settings_cache()
 
     async def get_provider_tokens(

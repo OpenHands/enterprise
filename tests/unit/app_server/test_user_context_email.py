@@ -150,3 +150,32 @@ class TestLaminarUserIdFallback:
         user_id = 'admin-target-user-id'
         laminar_user_id = await ADMIN.get_user_email() or user_id
         assert laminar_user_id == 'admin-target-user-id'
+
+
+@pytest.mark.asyncio
+async def test_profile_override_uses_one_snapshot_per_request():
+    from openhands.app_server.settings.settings_models import Settings
+    from openhands.sdk import LLM
+    from openhands.sdk.settings import OpenHandsAgentSettings
+
+    profile_id = str(uuid4())
+    settings = Settings(
+        active_agent_profile_id=profile_id,
+        active_agent_profile_revision=1,
+        agent_settings=OpenHandsAgentSettings(llm=LLM(model='test'), tools=[]),
+    )
+    settings._resolved_view = True
+    user_auth = MagicMock(spec=UserAuth)
+    user_auth.get_user_id = AsyncMock(return_value='user')
+    user_auth.get_user_settings = AsyncMock(return_value=settings)
+    context = AuthUserContext(user_auth=user_auth)
+    first = await context.get_user_info(override_agent_profile_id=profile_id)
+    settings.active_agent_profile_revision = 2
+    second = await context.get_user_info(override_agent_profile_id=profile_id)
+    assert first is second
+    assert second.active_agent_profile_revision == 1
+    assert second._resolved_view is True
+    user_auth.get_user_settings.assert_awaited_once()
+    context.invalidate_user_info_cache()
+    third = await context.get_user_info(override_agent_profile_id=profile_id)
+    assert third.active_agent_profile_revision == 2

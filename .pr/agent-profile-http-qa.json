@@ -1,0 +1,98 @@
+{
+  "sdk_version": "1.54.0",
+  "identity": "Local bearer identity fixture; real org permissions, PostgreSQL, router, resolver and builder. No deployed Keycloak or Cloud orchestration.",
+  "cases": [
+    {
+      "name": "default",
+      "preview_valid": true,
+      "id": "0a2a69d6-c842-4ae5-a312-a2aa4f524ffc",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "4d23aa29-149b-4e57-b7f0-45223976e672",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "default-copy",
+      "preview_valid": true,
+      "id": "3e44d806-8a70-4d04-92de-80e9309a4e44",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "37d8a701-82d1-48e5-ac29-79596a7de60c",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "dangling_mcp",
+      "status": 422,
+      "detail": {
+        "code": "unresolved_profile_references",
+        "message": "MCP server(s) not configured: missing",
+        "dangling_llm_profile_ref": null,
+        "dangling_mcp_server_refs": [
+          "missing"
+        ],
+        "dangling_meta_profile_ref": null,
+        "dangling_meta_profile_llm_refs": []
+      },
+      "runtime_launches": 0
+    },
+    {
+      "name": "unknown_profile",
+      "status": 404,
+      "settings_readable": true,
+      "runtime_launches": 0
+    },
+    {
+      "name": "acp_create_without_inference",
+      "id": "17903089-5597-4625-9a1f-4e60c8fd0e87",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "40e333c0-d669-4039-b96e-9905c155a4d5",
+      "revision": 0,
+      "request_secret_names": [],
+      "runtime_secret_names": [],
+      "agent_kind": "ACPAgent",
+      "tools": [],
+      "mcp_servers": [],
+      "persona": null,
+      "suffix": "RUNTIME_SUFFIX"
+    },
+    {
+      "name": "opaque_profile_preserved_and_active_launch_rejected",
+      "status": 422,
+      "opaque_preserved": true,
+      "settings_readable": true
+    },
+    {
+      "name": "real_sonnet_mcp",
+      "execution_status": "finished",
+      "tool": "qa_echo",
+      "marker": "ENTERPRISE_PROFILE_QA_OK"
+    }
+  ]
+}

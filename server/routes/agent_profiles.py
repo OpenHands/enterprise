@@ -40,11 +40,11 @@ from openhands.app_server.settings.agent_profiles import (
     AgentProfiles,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.launch import LaunchRuntime, preview_launch
 from openhands.sdk.profiles import (
     AgentProfile,
     AgentProfileDiagnostics,
     ProfileLimitExceeded,
-    resolve_agent_profile_dry_run,
     safe_validation_error_detail,
     save_profile_preserving_identity,
     validate_agent_profile,
@@ -58,10 +58,10 @@ from server.verified_models.default_profile import (
     materialize_default_llm_profile,
 )
 from storage.agent_profile_resolution import (
-    OrgLLMProfileLoader,
     load_agent_profiles,
     load_llm_profiles,
     member_mcp_config,
+    org_launch_stores,
 )
 from storage.database import a_session_maker
 from storage.org import Org
@@ -174,10 +174,6 @@ async def _agent_profiles_transaction(
     re-entrant no-op ``lock()``.
 
     The collection is written back ONLY when the caller actually changed it.
-    Loading is best-effort (``_skip_invalid_profiles`` drops entries that fail
-    to validate, e.g. after schema drift), so an unconditional write-back would
-    let a mutation-free call such as ``/activate`` silently erase a stored
-    profile it merely failed to parse.
     """
     await _get_org(org_id, user_id)
     async with a_session_maker() as session:
@@ -301,6 +297,11 @@ async def save_agent_profile(
                     f'Agent profile limit reached ({MAX_AGENT_PROFILES}). '
                     'Delete a profile before saving a new one.'
                 ),
+            )
+        except FileExistsError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Agent profile '{name}' already exists",
             )
 
     logger.info("Saved agent profile '%s' for org %s", name, effective_org_id)
@@ -456,17 +457,23 @@ async def materialize_agent_profile(
     mcp_config = member_mcp_config(member) if member is not None else {}
     async with a_session_maker() as session:
         model_name = await get_openhands_default_model_name(session)
-    llm_store = OrgLLMProfileLoader(
-        materialize_default_llm_profile(load_llm_profiles(org), model_name)
+    stores = org_launch_stores(
+        org,
+        mcp_config,
+        llm_profiles=materialize_default_llm_profile(
+            load_llm_profiles(org), model_name
+        ),
+        fallback_api_key=member.llm_api_key if member is not None else None,
     )
 
     try:
-        return resolve_agent_profile_dry_run(
+        return preview_launch(
             profile,
-            llm_store=llm_store,
-            mcp_config=mcp_config,
-            available_skills=None,
-            cipher=None,
+            stores,
+            LaunchRuntime(
+                browser_available=True, acp_skill_sourcing='openhands_managed'
+            ),
+            check_usable=False,
         )
     except Exception as exc:
         # The dry-run is contractually total, but SDK contract drift (e.g. a
@@ -476,10 +483,12 @@ async def materialize_agent_profile(
             "Agent profile dry-run resolve failed for '%s' in org %s: %s",
             name,
             effective_org_id,
-            exc,
+            type(exc).__name__,
         )
         return AgentProfileDiagnostics(
             agent_kind=profile.agent_kind,
             valid=False,
-            errors=[f'Failed to resolve profile: {exc}'],
+            errors=[
+                'The profile could not be resolved; repair its configuration or retry.'
+            ],
         )
