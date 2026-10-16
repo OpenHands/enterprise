@@ -7,6 +7,23 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
+# Global so the `FROM` below can use it: `COPY --from` does not expand variables.
+ARG AGENT_CANVAS_SOURCE=none
+
+# Optional source for the Agent Canvas build below, selected by the
+# AGENT_CANVAS_SOURCE build arg (`none` by default). With `git`, BuildKit
+# fetches AGENT_CANVAS_REF (a tag or branch) itself and caches the layer on the
+# resolved commit rather than on the ref's name. A branch such as `main` is
+# therefore rebuilt exactly when it moves, which `git clone` inside a RUN would
+# not do: that layer is reused for as long as the build args stay the same.
+FROM scratch AS agent-canvas-source-none
+FROM scratch AS agent-canvas-source-git
+ARG AGENT_CANVAS_REPO=https://github.com/OpenHands/OpenHands.git
+ARG AGENT_CANVAS_REF=main
+ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
+
+FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
+
 FROM node:26.10.0-trixie-slim AS frontend-builder
 
 WORKDIR /app
@@ -25,6 +42,10 @@ COPY frontend ./
 # bakes /canvas into this image, served by the app.py/saas_server.py static
 # mount at /canvas once frontend/build/canvas exists.
 ARG AGENT_CANVAS=
+# `none` (default): scripts/build-agent-canvas.sh clones its own pinned ref.
+# `git`: build the source fetched by the agent-canvas-source-git stage above.
+ARG AGENT_CANVAS_SOURCE
+COPY --from=agent-canvas-source / /agent-canvas-source
 # Same-origin URL (scheme + host + port) the browser will use to reach this
 # app, e.g. http://localhost:3100. Passed through to
 # scripts/build-agent-canvas.sh as AGENT_CANVAS_LOCK_TO_CLOUD, which bakes it
@@ -41,7 +62,9 @@ RUN if [ -n "$AGENT_CANVAS" ]; then \
         (apt-get update -y \
             && apt-get install -y --no-install-recommends git ca-certificates \
             && rm -rf /var/lib/apt/lists/* \
-            && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" npm run build:agent-canvas) \
+            && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" \
+                AGENT_CANVAS_SOURCE_DIR="$([ "$AGENT_CANVAS_SOURCE" = none ] || echo /agent-canvas-source)" \
+                npm run build:agent-canvas) \
         || echo "Agent Canvas build failed; continuing without /canvas."; \
     fi
 

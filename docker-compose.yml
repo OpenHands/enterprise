@@ -83,6 +83,15 @@ services:
         # etc.), override AGENT_CANVAS_LOCK_TO_CLOUD to match and rebuild.
         AGENT_CANVAS: '1'
         AGENT_CANVAS_LOCK_TO_CLOUD: ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+        # Build Canvas from the tip of its `main` branch for now, not the tag
+        # pinned in scripts/build-agent-canvas.sh. `git` makes BuildKit fetch
+        # AGENT_CANVAS_REF and cache on its commit, so `docker compose up
+        # --build` picks up new commits on `main` but reuses the layer
+        # otherwise. Set AGENT_CANVAS_REF to a tag (e.g. v1.21.0) to pin a
+        # release; AGENT_CANVAS_SOURCE can be dropped once the stack only
+        # builds released versions.
+        AGENT_CANVAS_SOURCE: git
+        AGENT_CANVAS_REF: ${AGENT_CANVAS_REF:-main}
     # containers/app/Dockerfile ends on `USER openhands` (its production,
     # Kubernetes-oriented default), so the container itself must be told to
     # run as root -- `ENV SANDBOX_USER_ID=0` baked into the image only
@@ -333,6 +342,8 @@ services:
       args:
         AGENT_CANVAS: '1'
         AGENT_CANVAS_LOCK_TO_CLOUD: ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+        AGENT_CANVAS_SOURCE: git
+        AGENT_CANVAS_REF: ${AGENT_CANVAS_REF:-main}
     # See the `app` service above: the image defaults to `USER openhands`,
     # so entrypoint.sh's root check needs this override too.
     user: '0:0'
