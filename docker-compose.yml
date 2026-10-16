@@ -199,11 +199,13 @@ services:
       ENABLE_SUPER_ADMIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
 
-      # No managed LiteLLM proxy -- fall back to the OSS default, which lets
-      # each user configure their own LLM under Settings. This overrides the
-      # LiteLLM-proxy default ``ENV OH_LLM_MODEL_KIND=...`` baked into
-      # containers/app/Dockerfile.
-      OH_LLM_MODEL_KIND: openhands.app_server.config_api.default_llm_model_service.DefaultLLMModelServiceInjector
+      # No managed LiteLLM proxy. With ENABLE_LEGACY_LITELLM off, this service
+      # offers only the direct-provider (BYOK) catalogue and omits the
+      # managed ``openhands`` provider, unlike DefaultLLMModelServiceInjector,
+      # which always adds the SDK's hardcoded ``openhands/*`` models.
+      OH_LLM_MODEL_KIND: server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
+      # Each user brings their own LLM key (BYOK).
+      OH_ALLOW_USER_LLM_CONFIGURATION: 'true'
 
       # No billing/Stripe in this stack.
       ENABLE_BILLING: 'false'
