@@ -315,6 +315,15 @@ function GitSettingsScreen() {
       bitbucket_data_center: "bitbucket-dc-status-text",
       azure_devops: "azure-devops-status-text",
     };
+    // A single node (not several `cond && <X />` siblings): the card renders its
+    // bordered children panel whenever `children` is truthy, and an array of
+    // nulls is truthy.
+    const webhookManagers: Partial<Record<Provider, React.ReactNode>> = {
+      gitlab: <GitLabWebhookManager />,
+      bitbucket_data_center: <BitbucketDCWebhookManager />,
+      azure_devops: <AzureDevOpsWebhookManager />,
+    };
+    const webhookManager = row.connected ? webhookManagers[provider] : null;
     return (
       <IntegrationProviderCard
         key={row.id}
@@ -342,15 +351,7 @@ function GitSettingsScreen() {
           </GitProviderConnection>
         }
       >
-        {row.connected && provider === "gitlab" ? (
-          <GitLabWebhookManager />
-        ) : null}
-        {row.connected && provider === "bitbucket_data_center" ? (
-          <BitbucketDCWebhookManager />
-        ) : null}
-        {row.connected && provider === "azure_devops" ? (
-          <AzureDevOpsWebhookManager />
-        ) : null}
+        {webhookManager}
       </IntegrationProviderCard>
     );
   };

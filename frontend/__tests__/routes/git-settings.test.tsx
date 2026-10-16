@@ -1002,6 +1002,19 @@ describe("OAuth v2 provider cards", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not render an empty extra row under a card with no extra content", async () => {
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+    ]);
+
+    renderGitSettingsScreen();
+
+    const card = (await screen.findByTestId("github-status-text")).closest(
+      "section",
+    );
+    expect(card?.children).toHaveLength(1);
+  });
+
   it("shows no git provider cards when none are defined", async () => {
     mockV2([]);
 
