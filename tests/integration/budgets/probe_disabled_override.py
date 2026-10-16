@@ -32,7 +32,7 @@ async def test_disabling_member_limit_restores_requests_without_refilling_spend(
     if individual_override:
         await adapter.set_override(user, 1)
     assert (await adapter.send_request(user)).status_code == 200
-    before = await adapter.wait_for_spend(1)
+    before = await adapter.wait_for_spend(1, expected_member_spend={user: 1})
     assert (await adapter.send_request(user)).status_code == 429
 
     endpoint = f'/api/organizations/{adapter.org_id}/budgets/overrides/{user}'

@@ -21,7 +21,10 @@ async def test_sync_recovery_preserves_spend_and_reopens_requests(
     await budget_adapter.reset_faults()
     await budget_adapter.run_maintenance()
     repaired = await budget_adapter.budget_state()
-    before_request = await budget_adapter.financial_data()
+    before_request = await budget_adapter.wait_for_spend(
+        1.0,
+        expected_member_spend={budget_adapter.user_ids[0]: 1.0},
+    )
 
     assert repaired['settings'].litellm_last_sync_status == 'success'
     assert before_request['team_spend'] == 1.0
@@ -29,5 +32,8 @@ async def test_sync_recovery_preserves_spend_and_reopens_requests(
 
     second = await budget_adapter.send_request(budget_adapter.user_ids[0])
     assert second.status_code == 200, second.text
-    after_request = await budget_adapter.wait_for_spend(2.0)
+    after_request = await budget_adapter.wait_for_spend(
+        2.0,
+        expected_member_spend={budget_adapter.user_ids[0]: 2.0},
+    )
     assert after_request['members'][str(budget_adapter.user_ids[0])]['spend'] == 2.0
