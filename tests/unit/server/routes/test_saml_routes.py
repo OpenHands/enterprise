@@ -344,6 +344,7 @@ def test_acs_missing_nameid_400(client, jwt_svc):
 
 def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
     provider = _fake_saml_provider()
+    provider.allow_match_by_email = False
     fake_user = MagicMock()
     fake_user.id = uuid4()
     fake_user.accepted_tos = '2024-01-01'
@@ -366,10 +367,9 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
                 new=AsyncMock(return_value=None),
             )
         )
+        link_mock = AsyncMock()
         stack.enter_context(
-            patch.object(
-                provider_identity.AuthProviderUserStore, 'link', new=AsyncMock()
-            )
+            patch.object(provider_identity.AuthProviderUserStore, 'link', new=link_mock)
         )
         stack.enter_context(
             patch.object(
@@ -429,6 +429,13 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         userinfo = create_user_mock.await_args.args[1]
         assert userinfo['email'] == 'user@example.com'
         assert userinfo['email_verified'] is True
+        assert create_user_mock.await_args.kwargs['allow_match_by_email'] is False
+        link_mock.assert_awaited_once_with(
+            oauth_provider_id=provider.id,
+            user_id=fake_user.id,
+            external_subject_id='ext-1',
+            external_email='user@example.com',
+        )
 
 
 def test_acs_disabled_user_redirects_without_cookie(client, jwt_svc):

@@ -49,6 +49,7 @@ from server.services.saml_metadata import (
 from storage.auth_provider import DEFAULT_AUTH_PROVIDER_COLOR, AuthProvider
 from storage.auth_provider_details import (
     AuthProviderDetails,
+    OAuthProviderDetails,
     PasswordProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
@@ -113,9 +114,10 @@ class UpdateAuthProviderRequest(BaseModel):
     """Partial update: only fields explicitly set in the request are changed.
 
     ``details`` is replaced as a whole blob when present (it may change
-    ``kind`` -- e.g. reconfiguring a row from OAuth2 to SAML -- so there is
-    no field-by-field merge). Omit it entirely to leave the existing
-    configuration, including its secrets, untouched.
+    ``kind`` -- e.g. reconfiguring a row from OAuth2 to SAML). The one
+    exception: when the row stays OAuth2, any ``details`` field the request
+    leaves out keeps its existing value. Omit ``details`` entirely to leave
+    the existing configuration, including its secrets, untouched.
     """
 
     title: str | None = Field(default=None, min_length=1)
@@ -199,6 +201,26 @@ def _ensure_sp_keypair(
     private_key_pem, cert_pem = generate_sp_keypair()
     details.sp_private_key = SecretStr(private_key_pem)
     details.sp_x509_cert = cert_pem
+
+
+def _carry_forward_unset_oauth_fields(
+    details: AuthProviderDetails | None, existing_details: AuthProviderDetails | None
+) -> None:
+    """Keep the existing value of every OAuth field the request left out.
+
+    Mutates ``details`` in place so a client that doesn't know about a field
+    (e.g. ``legacy_keycloak_type``) can't silently reset it by editing the
+    row. Fields sent explicitly -- including as ``null`` -- are respected.
+    No-op unless both old and new ``details`` are ``OAuthProviderDetails``.
+    """
+    if not (
+        isinstance(details, OAuthProviderDetails)
+        and isinstance(existing_details, OAuthProviderDetails)
+    ):
+        return
+    for name in type(details).model_fields:
+        if name not in details.model_fields_set:
+            setattr(details, name, getattr(existing_details, name))
 
 
 @oauth_provider_admin_router.get('', response_model=list[AuthProviderResponse])
@@ -314,6 +336,7 @@ async def update_oauth_provider(
     fields = body.model_dump(exclude_unset=True, exclude={'details'})
     if 'details' in body.model_fields_set:
         fields['details'] = body.details
+        _carry_forward_unset_oauth_fields(body.details, existing.details)
         _ensure_sp_keypair(body.details, existing_details=existing.details)
 
     resulting_details = fields.get('details', existing.details)

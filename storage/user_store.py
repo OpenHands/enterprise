@@ -93,8 +93,12 @@ class UserStore:
         user_id: str,
         user_info: dict,
         role_id: Optional[int] = None,
+        allow_match_by_email: bool = False,
     ) -> User | None:
         """Create a new user.
+
+        ``allow_match_by_email`` sets the initial value of the one-time
+        ``User.allow_match_by_email`` identity-seeding flag.
 
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
@@ -194,6 +198,7 @@ class UserStore:
                 id=user_uuid,
                 current_org_id=org.id,
                 role_id=role_id,
+                allow_match_by_email=allow_match_by_email,
                 **user_kwargs,
             )
             user.email = user_info.get('email')

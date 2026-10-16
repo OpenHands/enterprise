@@ -30,6 +30,7 @@ from openhands.app_server.app_conversation.skill_loader import (
     build_org_configs,
     build_sandbox_config,
     get_azure_devops_bearer_token,
+    is_agent_server_repository_source,
     load_skills_from_agent_server,
 )
 from openhands.app_server.integrations.service_types import ProviderType
@@ -56,6 +57,26 @@ from openhands.sdk.skills import Skill
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
+
+
+def _warn_unresolved_marketplace_sources(
+    registered_marketplaces: list[MarketplaceRegistration] | None,
+) -> None:
+    """Log auto-load marketplaces the agent-server will not treat as repositories."""
+    for reg in registered_marketplaces or []:
+        source = getattr(reg, 'source', None)
+        if (
+            getattr(reg, 'auto_load', False) is True
+            and isinstance(source, str)
+            and not is_agent_server_repository_source(source)
+        ):
+            _logger.warning(
+                'Marketplace %r source %r is not a repository address the '
+                'agent-server can clone; it will not load from a repository',
+                reg.name,
+                source,
+            )
+
 
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
@@ -205,6 +226,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             registered_marketplaces = await authenticate_marketplace_sources(
                 registered_marketplaces, self.user_context
             )
+            _warn_unresolved_marketplace_sources(registered_marketplaces)
 
             # Single API call to agent-server for ALL skills
             all_skills = await load_skills_from_agent_server(
