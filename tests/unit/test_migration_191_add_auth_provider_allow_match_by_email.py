@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 190 (``allow_match_by_email`` on
+"""Real-DB tests for migration 191 (``allow_match_by_email`` on
 ``auth_providers``)."""
 
 from __future__ import annotations
@@ -40,12 +40,12 @@ def test_upgrade_backfills_existing_rows_to_true(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '189'
+        test_database.server, test_database.name, 'downgrade', '190'
     )
     provider_id = _insert_provider(engine)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '190'
+        test_database.server, test_database.name, 'upgrade', '191'
     )
 
     assert _allow_match_by_email(engine, provider_id) is True
@@ -55,7 +55,7 @@ def test_upgrade_allows_explicit_false_on_new_rows(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '190'
+        test_database.server, test_database.name, 'upgrade', '191'
     )
 
     provider_id = _insert_provider(engine, allow_match_by_email=False)
@@ -67,10 +67,10 @@ def test_downgrade_drops_column(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '190'
+        test_database.server, test_database.name, 'upgrade', '191'
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '189'
+        test_database.server, test_database.name, 'downgrade', '190'
     )
 
     with engine.connect() as conn:

@@ -7,8 +7,8 @@ a brand-new user (see
 ``allow_match_by_email`` is initialised from this column. Defaults to
 ``True`` for every existing and new row.
 
-Revision ID: 190
-Revises: 189
+Revision ID: 191
+Revises: 190
 Create Date: 2026-10-16 00:00:00.000000
 """
 
@@ -17,8 +17,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '190'
-down_revision: str | None = '189'
+revision: str = '191'
+down_revision: str | None = '190'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
