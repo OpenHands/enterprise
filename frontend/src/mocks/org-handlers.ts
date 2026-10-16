@@ -6,12 +6,14 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
+import { ConfigurationOperation } from "#/types/settings";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 import {
   findMockAdminUser,
   onMockAdminMembershipAdded,
   registerMockAdminOrg,
 } from "./super-admin-handlers";
+import { getMockCurrentUser, setMockCurrentUser } from "./mock-current-user";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -362,13 +364,17 @@ const SEEDED_MOCK_USER_ROLES: Record<string, OrganizationUserRole> = {
   "4": "admin", // All Hands AI
 };
 
-/** The mock user's membership in an org, or null when they do not belong to it. */
+/** The active mock user's membership in an org, or null when absent. */
 const findMockUserMembership = (orgId: string): OrganizationMember | null => {
+  const { userId } = getMockCurrentUser();
   const membership = ORGS_AND_MEMBERS[orgId]?.find(
-    (member) => member.user_id === MOCK_ME.user_id,
+    (member) => member.user_id === userId,
   );
   if (membership) {
     return membership;
+  }
+  if (userId !== MOCK_ME.user_id) {
+    return null;
   }
   const seededRole = SEEDED_MOCK_USER_ROLES[orgId];
   return seededRole ? currentUserMembership(orgId, seededRole) : null;
@@ -378,6 +384,47 @@ const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
 const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
 let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
 let freshSaOrgsApplied = false;
+
+interface MockInvitation {
+  id: number;
+  token: string;
+  orgId: string;
+  userId: string;
+  email: string;
+  role: OrganizationUserRole;
+  createdAt: string;
+  expiresAt: string;
+}
+
+const mockInvitations = new Map<string, MockInvitation>();
+let nextMockInvitationId = 1;
+const MOCK_INVITATIONS_KEY = "openhands_mock_invitations";
+
+function getMockInvitations() {
+  try {
+    const stored = localStorage.getItem(MOCK_INVITATIONS_KEY);
+    if (stored) {
+      mockInvitations.clear();
+      (JSON.parse(stored) as MockInvitation[]).forEach((invitation) => {
+        mockInvitations.set(invitation.token, invitation);
+      });
+    }
+  } catch {
+    // Keep the in-memory invitation state when browser storage is unavailable.
+  }
+  return mockInvitations;
+}
+
+function persistMockInvitations() {
+  try {
+    localStorage.setItem(
+      MOCK_INVITATIONS_KEY,
+      JSON.stringify(Array.from(mockInvitations.values())),
+    );
+  } catch {
+    // Keep the in-memory invitation state when browser storage is unavailable.
+  }
+}
 
 /** First-install Super Admin walkthrough with a single team org.
  * Keeps a personal workspace so /me and org selection still work.
@@ -439,6 +486,53 @@ const createDefaultOrgProfiles = (): MockOrgProfilesState => ({
   ]),
   active: "default",
 });
+
+const orgConfigurationOperations = new Map<string, ConfigurationOperation>();
+const MOCK_CONFIGURATION_OPERATIONS_KEY =
+  "openhands_mock_configuration_operations";
+
+const isConfigurationOperation = (
+  operation: unknown,
+): operation is ConfigurationOperation =>
+  typeof operation === "string" &&
+  ["locked", "replace", "subset", "extend"].includes(operation);
+
+function getStoredConfigurationOperations() {
+  try {
+    const stored = localStorage.getItem(MOCK_CONFIGURATION_OPERATIONS_KEY);
+    return stored
+      ? (JSON.parse(stored) as Record<string, ConfigurationOperation>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+const getOrgConfigurationOperation = (orgId: string) => {
+  const storedOperation = getStoredConfigurationOperations()[orgId];
+  if (isConfigurationOperation(storedOperation)) {
+    orgConfigurationOperations.set(orgId, storedOperation);
+  }
+  return orgConfigurationOperations.get(orgId) ?? "extend";
+};
+
+const setOrgConfigurationOperation = (
+  orgId: string,
+  operation: ConfigurationOperation,
+) => {
+  orgConfigurationOperations.set(orgId, operation);
+  try {
+    localStorage.setItem(
+      MOCK_CONFIGURATION_OPERATIONS_KEY,
+      JSON.stringify({
+        ...getStoredConfigurationOperations(),
+        [orgId]: operation,
+      }),
+    );
+  } catch {
+    // Keep the in-memory policy when browser storage is unavailable.
+  }
+};
 
 const orgProfilesByOrgId = new Map<string, MockOrgProfilesState>();
 
@@ -596,11 +690,15 @@ export const ORG_HANDLERS = [
         { status: 404 },
       );
     }
+    const currentUser = getMockCurrentUser();
     return HttpResponse.json({
       ...MOCK_ME,
       ...membership,
+      user_id: currentUser.userId,
+      email: currentUser.email,
       org_id: orgId,
-      permissions: MOCK_ME.permissions,
+      permissions:
+        currentUser.userId === MOCK_ME.user_id ? MOCK_ME.permissions : [],
     });
   }),
 
@@ -1028,6 +1126,9 @@ export const ORG_HANDLERS = [
     return HttpResponse.json({
       agent_settings: org.agent_settings ?? {},
       conversation_settings: {},
+      configuration_policy: {
+        llm: { operation: getOrgConfigurationOperation(orgId) },
+      },
       search_api_key: org.search_api_key,
       llm_api_key_set: true,
     });
@@ -1061,10 +1162,22 @@ export const ORG_HANDLERS = [
         orgs.set(orgId, org);
       }
 
+      const operation = (
+        body.configuration_policy as
+          | { llm?: { operation?: ConfigurationOperation } }
+          | undefined
+      )?.llm?.operation;
+      if (isConfigurationOperation(operation)) {
+        setOrgConfigurationOperation(orgId, operation);
+      }
+
       return HttpResponse.json({
         agent_settings: org.agent_settings ?? {},
         conversation_settings:
           (body.conversation_settings as Record<string, unknown>) ?? {},
+        configuration_policy: {
+          llm: { operation: getOrgConfigurationOperation(orgId) },
+        },
         search_api_key: org.search_api_key,
         llm_api_key_set: true,
       });
@@ -1157,7 +1270,10 @@ export const ORG_HANDLERS = [
   http.post(
     "/api/organizations/:orgId/members/invite",
     async ({ request, params }) => {
-      const { emails } = (await request.json()) as { emails: string[] };
+      const { emails, role = "member" } = (await request.json()) as {
+        emails: string[];
+        role?: OrganizationUserRole;
+      };
       const orgId = params.orgId?.toString();
 
       if (!emails || emails.length === 0) {
@@ -1174,44 +1290,125 @@ export const ORG_HANDLERS = [
         );
       }
 
-      const members = Array.from(ORGS_AND_MEMBERS[orgId]);
-      const newMembers: OrganizationMember[] = emails.map((email, index) => ({
-        org_id: orgId,
-        user_id: String(members.length + index + 1),
-        email,
-        role: "member" as const,
-        llm_api_key: "**********",
-        max_iterations: 20,
-        llm_model: "gpt-4",
-        llm_base_url: "https://api.openai.com",
-        agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
-        status: "invited" as const,
-      }));
-
-      ORGS_AND_MEMBERS[orgId] = [...members, ...newMembers];
+      const invitationsByToken = getMockInvitations();
+      const createdAt = new Date();
+      const expiresAt = new Date(createdAt);
+      expiresAt.setDate(expiresAt.getDate() + 7);
+      const { origin } = new URL(request.url);
+      const invitations = emails.map((rawEmail) => {
+        const email = rawEmail.trim().toLowerCase();
+        while (invitationsByToken.has(`mock-invite-${nextMockInvitationId}`)) {
+          nextMockInvitationId += 1;
+        }
+        const id = nextMockInvitationId;
+        nextMockInvitationId += 1;
+        const invitation: MockInvitation = {
+          id,
+          token: `mock-invite-${id}`,
+          orgId,
+          userId: `mock-invite-user-${id}`,
+          email,
+          role,
+          createdAt: createdAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+        };
+        invitationsByToken.set(invitation.token, invitation);
+        ORGS_AND_MEMBERS[orgId].push({
+          org_id: orgId,
+          user_id: invitation.userId,
+          email,
+          role,
+          llm_api_key: "",
+          max_iterations: 20,
+          llm_model: "",
+          llm_base_url: "",
+          agent_settings: {},
+          status: "invited",
+        });
+        return invitation;
+      });
+      persistMockInvitations();
 
       return HttpResponse.json(
         {
-          successful: emails.map((email, index) => ({
-            id: index + 1,
-            email,
-            role: "member",
+          successful: invitations.map((invitation) => ({
+            id: invitation.id,
+            email: invitation.email,
+            role: invitation.role,
             status: "pending",
-            created_at: "2026-01-01T00:00:00Z",
-            expires_at: "2026-01-08T00:00:00Z",
-            invite_url: `https://app.example.com/api/organizations/members/invite/accept?token=inv-token-${index + 1}`,
+            created_at: invitation.createdAt,
+            expires_at: invitation.expiresAt,
+            invite_url: `${origin}/settings/org-defaults?invitation_token=${encodeURIComponent(invitation.token)}`,
           })),
           failed: [],
-          email_delivery_configured: true,
+          email_delivery_configured: false,
         },
         { status: 201 },
       );
     },
   ),
 
-  http.get("/api/organizations/:orgId/members/invite", () =>
-    HttpResponse.json({ items: [], email_delivery_configured: true }),
-  ),
+  http.get("/api/organizations/:orgId/members/invite", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    const items = Array.from(getMockInvitations().values())
+      .filter((invitation) => invitation.orgId === orgId)
+      .map((invitation) => ({
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        status: "pending",
+        created_at: invitation.createdAt,
+        expires_at: invitation.expiresAt,
+      }));
+    return HttpResponse.json({ items, email_delivery_configured: false });
+  }),
+
+  http.post("/api/organizations/members/invite/accept", async ({ request }) => {
+    const { token } = (await request.json()) as { token?: string };
+    const invitations = getMockInvitations();
+    const invitation = token ? invitations.get(token) : undefined;
+    if (!invitation) {
+      return HttpResponse.json(
+        { detail: "invitation_invalid" },
+        { status: 404 },
+      );
+    }
+
+    let member = ORGS_AND_MEMBERS[invitation.orgId].find(
+      (candidate) => candidate.user_id === invitation.userId,
+    );
+    if (!member) {
+      member = {
+        org_id: invitation.orgId,
+        user_id: invitation.userId,
+        email: invitation.email,
+        role: invitation.role,
+        llm_api_key: "",
+        max_iterations: 20,
+        llm_model: "",
+        llm_base_url: "",
+        agent_settings: {},
+        status: "active",
+      };
+      ORGS_AND_MEMBERS[invitation.orgId].push(member);
+    } else {
+      member.status = "active";
+    }
+    setMockCurrentUser({
+      userId: invitation.userId,
+      email: invitation.email,
+    });
+    mockCurrentOrgId = invitation.orgId;
+    invitations.delete(invitation.token);
+    persistMockInvitations();
+
+    return HttpResponse.json({
+      success: true,
+      org_id: invitation.orgId,
+      org_name: orgs.get(invitation.orgId)?.name ?? "Organization",
+      role: invitation.role,
+    });
+  }),
 
   http.get("/api/organizations/:orgId/conversations/stats", ({ params }) => {
     const orgId = params.orgId?.toString();
@@ -1752,6 +1949,23 @@ export const ORG_HANDLERS = [
       return new HttpResponse(null, { status: 204 });
     },
   ),
+
+  http.post("/api/organizations/:orgId/profiles/:name/select", ({ params }) => {
+    const orgId = params.orgId?.toString();
+    const name = decodeURIComponent(params.name?.toString() ?? "");
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+    const state = getOrgProfiles(orgId);
+    if (!state.profiles.has(name)) {
+      return HttpResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+    state.active = name;
+    return new HttpResponse(null, { status: 204 });
+  }),
 
   http.post(
     "/api/organizations/:orgId/profiles/:name/rename",

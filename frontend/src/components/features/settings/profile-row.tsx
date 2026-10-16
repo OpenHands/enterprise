@@ -20,6 +20,8 @@ interface ProfileRowProps {
   onDelete: (profile: LlmProfileSummary) => void;
   isActivating: boolean;
   canManage?: boolean;
+  canActivate?: boolean;
+  showOrgManagedBadge?: boolean;
 }
 
 export function ProfileRow({
@@ -31,6 +33,8 @@ export function ProfileRow({
   onDelete,
   isActivating,
   canManage = true,
+  canActivate = true,
+  showOrgManagedBadge = false,
 }: ProfileRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -45,7 +49,12 @@ export function ProfileRow({
         "h-auto items-start justify-between gap-3 py-3 sm:items-center",
       )}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col gap-1",
+          !showOrgManagedBadge && "sm:flex-row sm:items-center sm:gap-3",
+        )}
+      >
         <div className="flex min-w-0 max-w-full items-center gap-2">
           <Typography.Text
             className="min-w-0 truncate font-medium text-white"
@@ -53,6 +62,14 @@ export function ProfileRow({
           >
             {profile.name}
           </Typography.Text>
+          {showOrgManagedBadge ? (
+            <Typography.Text
+              className="shrink-0 whitespace-nowrap rounded-full bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-200"
+              testId="profile-org-managed-badge"
+            >
+              {t(I18nKey.SETTINGS$ORG_MANAGED_PROFILE_BADGE)}
+            </Typography.Text>
+          ) : null}
           {isActive && (
             <Typography.Text
               className="shrink-0 whitespace-nowrap rounded-full bg-primary px-2 py-0.5 text-xs font-semibold text-[var(--oh-color-base)]"
@@ -71,7 +88,7 @@ export function ProfileRow({
           </Typography.Text>
         ) : null}
       </div>
-      {canManage ? (
+      {canManage || canActivate ? (
         <div className="relative shrink-0">
           <button
             ref={triggerRef}
@@ -92,6 +109,8 @@ export function ProfileRow({
               onDelete={() => onDelete(profile)}
               isActive={isActive}
               isActivating={isActivating}
+              canManage={canManage}
+              canActivate={canActivate}
               onClose={() => setMenuOpen(false)}
             />
           )}

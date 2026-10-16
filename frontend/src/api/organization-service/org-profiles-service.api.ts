@@ -67,6 +67,12 @@ class OrgProfilesService {
     );
   }
 
+  static async selectProfile(orgId: string, name: string): Promise<void> {
+    await openHands.post(
+      `/api/organizations/${orgId}/profiles/${encodeURIComponent(name)}/select`,
+    );
+  }
+
   static async renameProfile(
     orgId: string,
     name: string,

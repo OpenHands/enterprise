@@ -1627,10 +1627,7 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
 
 @pytest.mark.asyncio
 async def test_update_org_defaults_async_with_llm_api_key():
-    """GIVEN: Organization with members and llm_api_key in update settings
-    WHEN: update_org_defaults_async is called
-    THEN: Org fields are updated and llm_api_key is propagated to all members
-    """
+    """Organization defaults update without overwriting member deltas."""
     from server.routes.org_models import OrgUpdate
 
     # Arrange
@@ -1677,12 +1674,8 @@ async def test_update_org_defaults_async_with_llm_api_key():
         assert result is not None
         assert result.agent_settings['llm']['model'] == 'new-model'
 
-        # Assert - Member update was called with correct settings
-        mock_member_update.assert_called_once()
-        call_args = mock_member_update.call_args
-        member_settings = call_args[0][2]  # Third positional arg is member_settings
-        assert member_settings.llm_api_key.get_secret_value() == 'new-member-api-key'
-        assert member_settings.agent_settings_diff == {'llm': {'model': 'new-model'}}
+        assert result.llm_api_key.get_secret_value() == 'new-member-api-key'
+        mock_member_update.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1731,10 +1724,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
     assert result is not None
     agent_settings = OrgStore.get_agent_settings_from_org(result)
     assert agent_settings.llm.model == 'openhands/claude-3'
-    mock_member_update.assert_called_once()
-    member_settings = mock_member_update.call_args[0][2]
-    assert member_settings.llm_api_key is None
-    assert member_settings.has_custom_llm_api_key is False
+    mock_member_update.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1779,11 +1769,8 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
     ):
         await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
 
-    mock_member_update.assert_called_once()
+    mock_member_update.assert_not_called()
     mock_ensure_managed_key.assert_not_awaited()
-    member_settings = mock_member_update.call_args[0][2]
-    assert member_settings.conversation_settings_diff == {'max_iterations': 42}
-    assert member_settings.has_custom_llm_api_key is None
 
 
 @pytest.mark.asyncio
@@ -1953,7 +1940,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             f'private-{i}': {'url': f'https://mcp{i}.example.com'}
         }
         assert 'mcp_config' not in member.agent_settings_diff
-        assert member.agent_settings_diff['llm']['model'] == 'new-model'
+        assert 'llm' not in member.agent_settings_diff
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,9 @@ type OrganizationSettingsResponse = Pick<
   | "conversation_settings"
   | "search_api_key"
   | "llm_api_key_set"
->;
+> & {
+  configuration_policy?: Settings["configuration_policy"];
+};
 
 export type OrganizationAppSettingsResponse = {
   enable_proactive_conversation_starters: boolean;

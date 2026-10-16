@@ -21,6 +21,7 @@ from openhands.app_server.integrations.provider import (
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.llm_profiles import (
+    LLMProfiles,
     ProfileAlreadyExistsError,
     ProfileLimitExceededError,
     ProfileNotFoundError,
@@ -230,6 +231,32 @@ async def _maybe_rotate_stale_managed_key(
     return llm
 
 
+async def _get_llm_configuration_operation(settings_store: SettingsStore) -> str:
+    resolver = getattr(settings_store, 'get_llm_configuration_operation', None)
+    if resolver is None:
+        return 'replace'
+    operation = await resolver()
+    return str(operation)
+
+
+async def _require_personal_llm_write(settings_store: SettingsStore) -> None:
+    operation = await _get_llm_configuration_operation(settings_store)
+    if operation in {'locked', 'subset'}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f'Personal LLM settings are disabled by the organization ({operation})',
+        )
+
+
+async def _get_personal_llm_profiles(
+    settings_store: SettingsStore, settings: Settings
+) -> LLMProfiles:
+    getter = getattr(settings_store, 'get_personal_llm_profiles', None)
+    if getter is None:
+        return settings.llm_profiles
+    return await getter()
+
+
 # NOTE: We use response_model=None for endpoints that return JSONResponse directly.
 # This is because FastAPI's response_model expects a Pydantic model, but we're returning
 # a response object directly. We document the possible responses using the 'responses'
@@ -380,6 +407,12 @@ async def store_settings(
     cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
     if cloud_analytics_consent_error is not None:
         return cloud_analytics_consent_error
+
+    agent_settings_diff = payload.get('agent_settings_diff')
+    if (
+        isinstance(agent_settings_diff, dict) and 'llm' in agent_settings_diff
+    ) or 'llm_api_key' in payload:
+        await _require_personal_llm_write(settings_store)
 
     try:
         existing_settings = await settings_store.load()
@@ -619,6 +652,7 @@ class SaveProfileRequest(BaseModel):
 @router.get('/profiles', response_model=ProfileListResponse)
 async def list_profiles(
     settings: Settings | None = Depends(get_user_settings),
+    settings_store: SettingsStore = Depends(get_user_settings_store),
 ) -> ProfileListResponse:
     """List all saved LLM profiles.
 
@@ -627,12 +661,13 @@ async def list_profiles(
     if settings is None:
         return ProfileListResponse(profiles=[], active_profile=None)
 
+    profiles = await _get_personal_llm_profiles(settings_store, settings)
     return ProfileListResponse(
         profiles=[
             ProfileInfo(**p)
-            for p in settings.llm_profiles.summaries(managed_proxy_url=LITE_LLM_API_URL)
+            for p in profiles.summaries(managed_proxy_url=LITE_LLM_API_URL)
         ],
-        active_profile=settings.llm_profiles.active,
+        active_profile=profiles.active,
     )
 
 
@@ -640,13 +675,19 @@ async def list_profiles(
 async def get_profile(
     name: ProfileName,
     settings: Settings | None = Depends(get_user_settings),
+    settings_store: SettingsStore = Depends(get_user_settings_store),
 ) -> ProfileDetailResponse:
     """Get a specific profile's configuration.
 
     Returns the full LLM config with ``api_key`` nulled out; the sibling
     ``api_key_set`` flag reports whether a key is stored.
     """
-    profile = settings.llm_profiles.get(name) if settings is not None else None
+    profiles = (
+        await _get_personal_llm_profiles(settings_store, settings)
+        if settings is not None
+        else LLMProfiles()
+    )
+    profile = profiles.get(name)
     if profile is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -684,6 +725,7 @@ async def save_profile(
     if request is None:
         request = SaveProfileRequest()
 
+    await _require_personal_llm_write(settings_store)
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
         if settings is None:
@@ -692,7 +734,14 @@ async def save_profile(
                 detail='Settings not found',
             )
 
-        existing = settings.llm_profiles.get(name)
+        personal_profiles = await _get_personal_llm_profiles(settings_store, settings)
+        existing = personal_profiles.get(name)
+        if existing is None and settings.llm_profiles.get(name) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Profile '{name}' is managed by the organization",
+            )
+
         llm: LLM
         if request.llm is not None:
             llm = request.llm
@@ -749,6 +798,7 @@ async def delete_profile(
 
     Idempotent: returns success even if the profile didn't exist.
     """
+    await _require_personal_llm_write(settings_store)
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
         if settings is not None and settings.delete_profile(name):
@@ -769,12 +819,20 @@ async def activate_profile(
     activating a profile that omits ``base_url`` still points at the
     provider's default endpoint.
     """
+    await _require_personal_llm_write(settings_store)
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
         if settings is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
+            )
+
+        personal_profiles = await _get_personal_llm_profiles(settings_store, settings)
+        if personal_profiles.get(name) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Personal profile '{name}' not found",
             )
 
         try:
@@ -813,6 +871,7 @@ async def rename_profile(
     flag if the renamed profile was active. Returns 409 if ``new_name`` is
     already in use by a different profile.
     """
+    await _require_personal_llm_write(settings_store)
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
         if settings is None:
@@ -820,6 +879,21 @@ async def rename_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Settings not found',
             )
+        personal_profiles = await _get_personal_llm_profiles(settings_store, settings)
+        if personal_profiles.get(name) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Personal profile '{name}' not found",
+            )
+        if (
+            personal_profiles.get(request.new_name) is None
+            and settings.llm_profiles.get(request.new_name) is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Profile '{request.new_name}' is managed by the organization",
+            )
+
         try:
             settings.llm_profiles.rename(name, request.new_name)
         except ProfileNotFoundError as exc:

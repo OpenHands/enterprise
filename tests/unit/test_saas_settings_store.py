@@ -1028,15 +1028,10 @@ async def test_store_does_not_persist_analytics_consent_override(
 
 
 @pytest.mark.asyncio
-async def test_store_syncs_external_provider_key_without_broadcasting_settings(
+async def test_store_scopes_external_provider_key_and_settings_to_member(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A BYOR provider key stays org-wide; the settings around it do not.
-
-    The external key is the org's key for the shared provider, so it still
-    fans out to every member row. The agent/conversation settings saved
-    alongside it must land on the acting member only.
-    """
+    """A personal BYOR key and its settings remain scoped to the acting member."""
     from sqlalchemy import select
 
     from storage.org import Org
@@ -1074,12 +1069,18 @@ async def test_store_syncs_external_provider_key_without_broadcasting_settings(
         }
         assert len(members) == 3
 
-        # The shared provider key still reaches every member row.
-        for member in members.values():
-            assert decrypt_value(member._llm_api_key) == 'shared-external-api-key'
+        admin_member = members[admin_user_id]
+        assert decrypt_value(admin_member._llm_api_key) == 'shared-external-api-key'
+        assert (
+            decrypt_value(members[str(fixture['member1_user_id'])]._llm_api_key)
+            == 'member1-initial-key'
+        )
+        assert (
+            decrypt_value(members[str(fixture['member2_user_id'])]._llm_api_key)
+            == 'member2-initial-key'
+        )
 
         # Only the acting member's settings changed.
-        admin_member = members[admin_user_id]
         assert admin_member.agent_settings_diff['llm']['model'] == (
             'anthropic/claude-sonnet-4'
         )
@@ -1175,13 +1176,10 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
 
 
 @pytest.mark.asyncio
-async def test_store_repropagates_rotated_shared_llm_api_key(
+async def test_store_rotates_only_acting_members_llm_api_key(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A replacement shared provider key must reach every member, not just the.
-
-    first one written.
-    """
+    """Replacing a personal provider key must not affect other members."""
     from sqlalchemy import select
 
     from storage.org_member import OrgMember
@@ -1209,9 +1207,12 @@ async def test_store_repropagates_rotated_shared_llm_api_key(
             .all()
         )
 
-    assert len(members) == 3
-    for member in members:
-        assert decrypt_value(member._llm_api_key) == 'shared-key-v2'
+    keys = {
+        str(member.user_id): decrypt_value(member._llm_api_key) for member in members
+    }
+    assert keys[str(fixture['admin_user_id'])] == 'shared-key-v2'
+    assert keys[str(fixture['member1_user_id'])] == 'member1-initial-key'
+    assert keys[str(fixture['member2_user_id'])] == 'member2-initial-key'
 
 
 @pytest.mark.asyncio
@@ -2185,19 +2186,14 @@ async def test_load_with_null_or_empty_llm_profiles_seeds_default_profile(
 
 
 @pytest.mark.asyncio
-async def test_load_persists_seeded_default_profile_onto_org(
+async def test_load_persists_seeded_default_profile_onto_member(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """The seeded Default profile must be written back to org.llm_profiles.
-
-    The seed is otherwise in-memory only, so the org-profiles management API
-    (which reads org.llm_profiles directly) would still see an empty list.
-    load() backfills it once so the user's last LLM becomes a real stored
-    profile on first use of LLM profiles.
-    """
+    """The seeded Default profile is persisted to the owning admin member."""
     from sqlalchemy import select, update
 
     from storage.org import Org
+    from storage.org_member import OrgMember
 
     fixture = org_with_multiple_members_fixture
     admin_user_id = fixture['admin_user_id']
@@ -2227,16 +2223,23 @@ async def test_load_persists_seeded_default_profile_onto_org(
         await admin_store.load()
 
     async with async_session_maker() as session:
-        org = (
-            (await session.execute(select(Org).where(Org.id == org_id)))
+        member = (
+            (
+                await session.execute(
+                    select(OrgMember).where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.user_id == admin_user_id,
+                    )
+                )
+            )
             .scalars()
             .first()
         )
 
-    assert org.llm_profiles is not None
-    assert set(org.llm_profiles['profiles'].keys()) == {'Default'}
-    assert org.llm_profiles['active'] == 'Default'
-    persisted_default = org.llm_profiles['profiles']['Default']
+    assert member.llm_profiles is not None
+    assert set(member.llm_profiles['profiles'].keys()) == {'Default'}
+    assert member.llm_profiles['active'] == 'Default'
+    persisted_default = member.llm_profiles['profiles']['Default']
     assert persisted_default['model'] == 'anthropic/claude-sonnet-4-5-20250929'
     assert persisted_default['base_url'] == 'https://api.anthropic.com/v1'
     # API key from the legacy config must survive the round-trip so the user

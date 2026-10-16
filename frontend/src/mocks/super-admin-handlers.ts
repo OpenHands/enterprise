@@ -6,6 +6,7 @@ import {
   SetupStateUpdate,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
+import { getMockCurrentUser } from "./mock-current-user";
 
 const MOCK_SUPER_ADMINS = [
   { user_id: "99", email: "me@acme.org" },
@@ -278,6 +279,13 @@ export const resetSuperAdminMockState = () => {
 };
 
 export const SUPER_ADMIN_HANDLERS = [
+  http.get("/api/admin/super-admins/me", () => {
+    const { userId } = getMockCurrentUser();
+    return HttpResponse.json({
+      is_super_admin: superAdmins.some((admin) => admin.user_id === userId),
+    });
+  }),
+
   http.get("/api/admin/super-admins", () =>
     HttpResponse.json({ super_admins: superAdmins }),
   ),

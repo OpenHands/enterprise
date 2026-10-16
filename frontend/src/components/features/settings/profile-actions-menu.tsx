@@ -17,6 +17,8 @@ interface ProfileActionsMenuProps {
   onDelete: () => void;
   isActive: boolean;
   isActivating: boolean;
+  canManage?: boolean;
+  canActivate?: boolean;
   onClose: () => void;
   /**
    * Trigger element to anchor against. The menu portals to document body with
@@ -43,6 +45,8 @@ export function ProfileActionsMenu({
   onDelete,
   isActive,
   isActivating,
+  canManage = true,
+  canActivate = true,
   onClose,
   anchorRef,
 }: ProfileActionsMenuProps) {
@@ -102,32 +106,44 @@ export function ProfileActionsMenu({
   }, [anchorRef, onClose]);
 
   const items: MenuItemSpec[] = [
-    {
-      testId: "profile-edit",
-      icon: SettingsIcon,
-      label: t(I18nKey.SETTINGS$PROFILE_EDIT),
-      onSelect: onEdit,
-    },
-    {
-      testId: "profile-rename",
-      icon: EditIcon,
-      label: t(I18nKey.BUTTON$RENAME),
-      onSelect: onRename,
-    },
-    {
-      testId: "profile-set-active",
-      icon: CheckmarkIcon,
-      label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
-      onSelect: onSetActive,
-      isDisabled: isActive || isActivating,
-    },
-    {
-      testId: "profile-delete",
-      icon: DeleteIcon,
-      label: t(I18nKey.BUTTON$DELETE),
-      onSelect: onDelete,
-      isDestructive: true,
-    },
+    ...(canManage
+      ? [
+          {
+            testId: "profile-edit",
+            icon: SettingsIcon,
+            label: t(I18nKey.SETTINGS$PROFILE_EDIT),
+            onSelect: onEdit,
+          },
+          {
+            testId: "profile-rename",
+            icon: EditIcon,
+            label: t(I18nKey.BUTTON$RENAME),
+            onSelect: onRename,
+          },
+        ]
+      : []),
+    ...(canActivate
+      ? [
+          {
+            testId: "profile-set-active",
+            icon: CheckmarkIcon,
+            label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
+            onSelect: onSetActive,
+            isDisabled: isActive || isActivating,
+          },
+        ]
+      : []),
+    ...(canManage
+      ? [
+          {
+            testId: "profile-delete",
+            icon: DeleteIcon,
+            label: t(I18nKey.BUTTON$DELETE),
+            onSelect: onDelete,
+            isDestructive: true,
+          },
+        ]
+      : []),
   ];
 
   if (typeof document === "undefined" || !portalStyle) {

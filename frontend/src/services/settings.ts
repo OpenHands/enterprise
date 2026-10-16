@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en",
   llm_api_key: null,
   llm_api_key_set: false,
+  configuration_policy: { llm: { operation: "extend" } },
   search_api_key_set: false,
   confirmation_mode: false,
   security_analyzer: "llm",

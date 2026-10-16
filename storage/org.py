@@ -57,6 +57,11 @@ class Org(Base):
     agent_settings: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    configuration_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        server_default='{"llm": {"operation": "extend"}}',
+    )
     conversation_settings: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )

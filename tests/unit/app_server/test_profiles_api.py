@@ -22,13 +22,17 @@ from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.file_settings_store import FileSettingsStore
-from openhands.app_server.settings.llm_profiles import MAX_PROFILES_PER_USER
+from openhands.app_server.settings.llm_profiles import (
+    MAX_PROFILES_PER_USER,
+    LLMProfiles,
+)
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import _user_profile_locks
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.llm import LLM
 from openhands.sdk.settings import OpenHandsAgentSettings
+from storage.configuration_policy import ConfigurationOperation
 
 
 @pytest.fixture(autouse=True)
@@ -1200,3 +1204,54 @@ async def test_concurrent_writes_all_persist(tmp_path: Path):
     assert {p['name'] for p in stored.llm_profiles.summaries()} == {
         f'p{i}' for i in range(10)
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('operation', 'expected_status'),
+    [
+        (ConfigurationOperation.LOCKED, 403),
+        (ConfigurationOperation.SUBSET, 403),
+        (ConfigurationOperation.REPLACE, 201),
+        (ConfigurationOperation.EXTEND, 201),
+    ],
+)
+async def test_personal_profile_writes_follow_configuration_operation(
+    test_client, settings_store, operation, expected_status
+):
+    await _seed(settings_store, _base_settings())
+    settings_store.get_llm_configuration_operation = AsyncMock(  # type: ignore[attr-defined]
+        return_value=operation
+    )
+
+    response = test_client.post(
+        '/api/v1/settings/profiles/policy-test',
+        json={'llm': {'model': 'openai/gpt-4o'}},
+    )
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.asyncio
+async def test_inherited_profile_is_read_only_through_personal_endpoints(
+    test_client, settings_store
+):
+    settings = _base_settings()
+    settings.llm_profiles.save('org-profile', LLM(model='openai/gpt-4o'))
+    await _seed(settings_store, settings)
+    settings_store.get_personal_llm_profiles = AsyncMock(  # type: ignore[attr-defined]
+        return_value=LLMProfiles()
+    )
+
+    listing = test_client.get('/api/v1/settings/profiles')
+    detail = test_client.get('/api/v1/settings/profiles/org-profile')
+    activation = test_client.post('/api/v1/settings/profiles/org-profile/activate')
+    overwrite = test_client.post(
+        '/api/v1/settings/profiles/org-profile',
+        json={'llm': {'model': 'anthropic/claude-sonnet-4'}},
+    )
+
+    assert listing.json() == {'profiles': [], 'active_profile': None}
+    assert detail.status_code == 404
+    assert activation.status_code == 404
+    assert overwrite.status_code == 409

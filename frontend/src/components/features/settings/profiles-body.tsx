@@ -28,6 +28,8 @@ interface ProfilesBodyProps {
   onDelete: (profile: LlmProfileSummary) => void;
   isActivating: boolean;
   canManage?: boolean;
+  canActivate?: boolean;
+  showOrgManagedBadges?: boolean;
 }
 
 interface ProfileGroup {
@@ -92,6 +94,8 @@ export function ProfilesBody({
   onDelete,
   isActivating,
   canManage = true,
+  canActivate = true,
+  showOrgManagedBadges = false,
 }: ProfilesBodyProps) {
   const { t } = useTranslation();
 
@@ -106,6 +110,8 @@ export function ProfilesBody({
       onDelete={onDelete}
       isActivating={isActivating}
       canManage={canManage}
+      canActivate={canActivate}
+      showOrgManagedBadge={showOrgManagedBadges}
     />
   );
 

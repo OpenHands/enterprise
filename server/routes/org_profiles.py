@@ -51,6 +51,10 @@ from storage.agent_profile_resolution import (
     OrgLLMProfileMutator,
     load_agent_profiles,
 )
+from storage.configuration_policy import (
+    ConfigurationOperation,
+    load_configuration_policy,
+)
 from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -263,12 +267,38 @@ async def list_profiles(
     """List all LLM profiles for this organization."""
     org = await _get_org(org_id, user_id)
     profiles = await _load_profiles_with_live_default(org)
+    active_profile = profiles.active
+    operation = load_configuration_policy(org.configuration_policy).llm.operation
+
+    if operation in {
+        ConfigurationOperation.SUBSET,
+        ConfigurationOperation.EXTEND,
+    }:
+        async with a_session_maker() as session:
+            member_result = await session.execute(
+                select(OrgMember).filter(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == UUID(user_id),
+                )
+            )
+            member = member_result.scalars().first()
+            if member is not None:
+                if (
+                    member.active_llm_profile_name
+                    and profiles.get(member.active_llm_profile_name) is not None
+                ):
+                    active_profile = member.active_llm_profile_name
+                elif operation is ConfigurationOperation.EXTEND and (
+                    member.llm_profiles or {}
+                ).get('active'):
+                    active_profile = None
+
     return ProfileListResponse(
         profiles=[
             ProfileInfo(**p)
             for p in profiles.summaries(managed_proxy_url=LITE_LLM_API_URL)
         ],
-        active_profile=profiles.active,
+        active_profile=active_profile,
     )
 
 
@@ -512,6 +542,104 @@ async def activate_profile(
     return ActivateProfileResponse(
         name=name,
         message=f"Profile '{name}' activated",
+        llm=llm.model_dump(mode='json', context={'expose_secrets': False}),
+    )
+
+
+@router.post('/{org_id}/profiles/{name}/select', response_model=ActivateProfileResponse)
+async def select_profile_for_member(
+    org_id: UUID,
+    name: str = Path(..., min_length=1),
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+) -> ActivateProfileResponse:
+    """Select an org profile for one member under locked/subset/extend policy."""
+    async with _org_profiles_transaction(org_id, user_id) as (
+        session,
+        org,
+        profiles,
+    ):
+        operation = load_configuration_policy(org.configuration_policy).llm.operation
+        if operation not in {
+            ConfigurationOperation.LOCKED,
+            ConfigurationOperation.SUBSET,
+            ConfigurationOperation.EXTEND,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f'Organization LLM profiles cannot be selected under {operation}',
+            )
+
+        resolved = materialize_default_llm_profile(
+            profiles.model_copy(deep=True),
+            await get_openhands_default_model_name(session),
+        )
+        llm = resolved.get(name)
+        if llm is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Profile '{name}' not found",
+            )
+        llm = _resolve_provider_connection(org, llm)
+
+        member_result = await session.execute(
+            select(OrgMember).filter(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == UUID(user_id),
+            )
+        )
+        member = member_result.scalars().first()
+        if member is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='Organization membership not found',
+            )
+
+        profile_api_key = llm.api_key
+        if profile_api_key is not None:
+            member.llm_api_key = (
+                profile_api_key
+                if isinstance(profile_api_key, SecretStr)
+                else SecretStr(profile_api_key)
+            )
+            member.has_custom_llm_api_key = (
+                managed_llm_key_config_from_model(
+                    llm.model,
+                    llm.base_url,
+                    getattr(llm, 'provider_connection_id', None),
+                )
+                is None
+            )
+        else:
+            had_custom_key = member.has_custom_llm_api_key
+            member.has_custom_llm_api_key = False
+            if (
+                managed_llm_key_config_from_model(
+                    llm.model,
+                    llm.base_url,
+                    getattr(llm, 'provider_connection_id', None),
+                )
+                is not None
+            ):
+                await OrgStore._ensure_managed_llm_key_for_user(
+                    session,
+                    org,
+                    user_id,
+                    force=had_custom_key,
+                    llm=llm,
+                )
+
+        if member.llm_profiles is not None:
+            member_profiles = dict(member.llm_profiles)
+            member_profiles['active'] = None
+            member.llm_profiles = member_profiles
+        member.active_llm_profile_name = name
+        member_diff = dict(member.agent_settings_diff or {})
+        member_diff.pop('llm', None)
+        member.agent_settings_diff = member_diff
+
+    return ActivateProfileResponse(
+        name=name,
+        message=f"Profile '{name}' selected",
         llm=llm.model_dump(mode='json', context={'expose_secrets': False}),
     )
 

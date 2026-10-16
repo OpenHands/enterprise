@@ -157,6 +157,14 @@ export type SkillNameConflict = {
 
 export type SettingsScope = "personal" | "org";
 
+export type ConfigurationOperation = "locked" | "replace" | "subset" | "extend";
+
+export type ConfigurationPolicy = {
+  llm: {
+    operation: ConfigurationOperation;
+  };
+};
+
 export type MarketplaceRegistration = {
   name: string;
   source: string;
@@ -183,6 +191,7 @@ export type Settings = {
   language: string;
   llm_api_key: string | null;
   llm_api_key_set: boolean;
+  configuration_policy: ConfigurationPolicy;
   search_api_key_set: boolean;
   confirmation_mode: boolean;
   security_analyzer: string | null;

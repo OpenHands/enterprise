@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Callable
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from storage.user import User
 from tests import postgres_testdb
 
 
@@ -35,6 +33,29 @@ def _insert_provider(engine: Engine) -> int:
             ),
             {'details': json.dumps({'kind': 'PasswordProviderDetails'})},
         ).scalar_one()
+
+
+def _insert_user(engine: Engine) -> uuid.UUID:
+    org_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                'INSERT INTO org '
+                '(id, name, agent_settings, conversation_settings) '
+                'VALUES (:id, :name, CAST(:settings AS JSON), CAST(:settings AS JSON))'
+            ),
+            {
+                'id': org_id,
+                'name': f'migration-org-{org_id.hex[:12]}',
+                'settings': '{}',
+            },
+        )
+        conn.execute(
+            text('INSERT INTO "user" (id, current_org_id) VALUES (:id, :org_id)'),
+            {'id': user_id, 'org_id': org_id},
+        )
+    return user_id
 
 
 def _insert_legacy_provider_user(
@@ -77,17 +98,16 @@ def _index_names(engine: Engine, table_name: str) -> set[str]:
 def test_upgrade_renames_table_and_preserves_row_ids(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
-    create_user: Callable[..., User],
 ):
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user = create_user()
+    user_id = _insert_user(engine)
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,
-        user_id=user.id,
+        user_id=user_id,
         external_subject_id='ext-123',
         external_email='person@example.com',
     )
@@ -111,7 +131,7 @@ def test_upgrade_renames_table_and_preserves_row_ids(
 
     assert row['id'] == link_id
     assert row['oauth_provider_id'] == provider_id
-    assert row['user_id'] == user.id
+    assert row['user_id'] == user_id
     assert row['external_subject_id'] == 'ext-123'
     assert row['external_email'] == 'person@example.com'
 
@@ -137,17 +157,16 @@ def test_upgrade_renames_indexes(
 def test_downgrade_restores_table_name_and_indexes(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
-    create_user: Callable[..., User],
 ):
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user = create_user()
+    user_id = _insert_user(engine)
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,
-        user_id=user.id,
+        user_id=user_id,
         external_subject_id='ext-456',
     )
 

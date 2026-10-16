@@ -393,6 +393,7 @@ async def update_org_defaults_settings(
         allowed_fields = {
             'agent_settings_diff',
             'conversation_settings_diff',
+            'configuration_policy',
             'search_api_key',
             'llm_api_key',
         }

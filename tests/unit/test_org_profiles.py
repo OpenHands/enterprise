@@ -37,6 +37,7 @@ with patch('storage.database.a_session_maker'):
         list_profiles,
         rename_profile,
         save_profile,
+        select_profile_for_member,
     )
 
 
@@ -1759,3 +1760,81 @@ class TestSaveLinkedProfileStripsInlineCredentials:
         listed = await list_profiles(org_id=org_id, user_id=user_id)
         summary = next(p for p in listed.profiles if p.name == 'p')
         assert summary.api_key_set is False
+
+
+@pytest.mark.asyncio
+async def test_extend_active_badge_tracks_personal_then_org_selection(
+    async_session_maker, patch_route_db
+):
+    org_id = patch_route_db
+    user_id = str(ADMIN_USER_ID)
+    await save_profile(
+        org_id=org_id,
+        name='org-option',
+        request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o')),
+        user_id=user_id,
+    )
+
+    async with async_session_maker() as session:
+        member = (
+            (
+                await session.execute(
+                    select(OrgMember).where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.user_id == ADMIN_USER_ID,
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        member.llm_profiles = {
+            'profiles': {'personal': {'model': 'anthropic/claude-sonnet-4'}},
+            'active': 'personal',
+        }
+        await session.commit()
+
+    listing = await list_profiles(org_id=org_id, user_id=user_id)
+    assert listing.active_profile is None
+
+    await select_profile_for_member(
+        org_id=org_id,
+        name='org-option',
+        user_id=user_id,
+    )
+
+    member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+    assert member.active_llm_profile_name == 'org-option'
+    assert member.llm_profiles['active'] is None
+    listing = await list_profiles(org_id=org_id, user_id=user_id)
+    assert listing.active_profile == 'org-option'
+
+
+@pytest.mark.asyncio
+async def test_locked_member_can_select_org_profile(
+    async_session_maker, patch_route_db
+):
+    org_id = patch_route_db
+    user_id = str(ADMIN_USER_ID)
+    await save_profile(
+        org_id=org_id,
+        name='org-option',
+        request=SaveProfileRequest(llm=StrictLLM(model='openai/gpt-4o')),
+        user_id=user_id,
+    )
+
+    async with async_session_maker() as session:
+        org = (
+            (await session.execute(select(Org).where(Org.id == org_id))).scalars().one()
+        )
+        org.configuration_policy = {'llm': {'operation': 'locked'}}
+        await session.commit()
+
+    await select_profile_for_member(
+        org_id=org_id,
+        name='org-option',
+        user_id=user_id,
+    )
+
+    member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+    assert member.active_llm_profile_name == 'org-option'

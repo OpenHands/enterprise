@@ -1,4 +1,5 @@
 import React from "react";
+import { ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { useInviteMembersBatch } from "#/hooks/mutation/use-invite-members-batch";
@@ -132,7 +133,20 @@ export function InviteOrganizationMemberModal({
             >
               <span className="truncate">{invitation.email}</span>
               {invitation.invite_url && (
-                <CopyInviteLinkButton inviteUrl={invitation.invite_url} />
+                <div className="flex items-center gap-3 shrink-0">
+                  <CopyInviteLinkButton inviteUrl={invitation.invite_url} />
+                  {import.meta.env.VITE_MOCK_API === "true" && (
+                    <a
+                      href={invitation.invite_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <ExternalLink size={12} />
+                      {t(I18nKey.BUTTON$OPEN_IN_NEW_TAB)}
+                    </a>
+                  )}
+                </div>
               )}
             </div>
           ))}

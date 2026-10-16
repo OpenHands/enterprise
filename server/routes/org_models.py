@@ -27,6 +27,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
+from storage.configuration_policy import ConfigurationPolicy, load_configuration_policy
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -316,6 +317,7 @@ class OrgUpdate(BaseModel):
     llm_api_key: str | None = None
     agent_settings_diff: dict[str, Any] | None = None
     conversation_settings_diff: dict[str, Any] | None = None
+    configuration_policy: ConfigurationPolicy | None = None
 
     @model_validator(mode='after')
     def _normalize_settings_diffs(self) -> 'OrgUpdate':
@@ -428,6 +430,7 @@ class OrgUpdate(BaseModel):
         return self.updated_fields() & {
             'agent_settings_diff',
             'conversation_settings_diff',
+            'configuration_policy',
             'search_api_key',
             'sandbox_api_key',
             'llm_api_key',
@@ -448,21 +451,13 @@ class OrgUpdate(BaseModel):
                 setattr(org, key, value)
 
     def get_member_updates(self) -> 'OrgMemberSettingsUpdate | None':
-        """Get shared updates that need to be propagated to org members.
+        """Return no member-row writes for organization default changes.
 
-        An empty ``llm_api_key`` means the org-wide custom key is being cleared
-        (e.g. owner switching to a managed/OpenHands provider). It must not
-        land in member rows — ``OrgMember.llm_api_key``'s setter has no
-        ``if raw else None`` guard because the column is ``nullable=False``,
-        so an empty string would become an encrypted empty blob rather than a
-        cleared value. Coerce ``""`` to ``None`` so member rows are untouched.
+        Member rows are sparse personal deltas over the organization defaults.
+        Updating the org row is sufficient for inherited values to change and
+        preserves personal values for replace/extend policies.
         """
-        member_settings = OrgMemberSettingsUpdate(
-            agent_settings_diff=self.agent_settings_diff,
-            conversation_settings_diff=self.conversation_settings_diff,
-            llm_api_key=SecretStr(self.llm_api_key) if self.llm_api_key else None,
-        )
-        return member_settings if member_settings.has_updates() else None
+        return None
 
 
 class OrgDefaultsSettingsResponse(BaseModel):
@@ -471,6 +466,9 @@ class OrgDefaultsSettingsResponse(BaseModel):
     agent_settings: AgentSettingsConfig = Field(default_factory=OpenHandsAgentSettings)
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
+    )
+    configuration_policy: ConfigurationPolicy = Field(
+        default_factory=ConfigurationPolicy
     )
     llm_api_key_set: bool = False
     search_api_key: str | None = None  # Masked in response
@@ -503,6 +501,7 @@ class OrgDefaultsSettingsResponse(BaseModel):
             conversation_settings=_load_persisted_conversation_settings(
                 org.conversation_settings
             ),
+            configuration_policy=load_configuration_policy(org.configuration_policy),
             llm_api_key_set=org.llm_api_key is not None,
             search_api_key=cls._mask_key(org.search_api_key),
         )

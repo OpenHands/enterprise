@@ -774,7 +774,7 @@ class UserStore:
         async with a_session_maker() as session:
             result = await session.execute(
                 select(User)
-                .options(selectinload(User.org_members))
+                .options(selectinload(User.org_members).selectinload(OrgMember.role))
                 .filter(User.id == uuid.UUID(user_id))
             )
             user = result.scalars().first()

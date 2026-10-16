@@ -17,6 +17,7 @@ interface ProviderConnectionRowProps {
   linkedProfileCount: number;
   onEdit: (connection: ProviderConnection) => void;
   onDelete: (connection: ProviderConnection) => void;
+  canManage?: boolean;
 }
 
 export function ProviderConnectionRow({
@@ -24,6 +25,7 @@ export function ProviderConnectionRow({
   linkedProfileCount,
   onEdit,
   onDelete,
+  canManage = true,
 }: ProviderConnectionRowProps) {
   const { t } = useTranslation();
 
@@ -49,26 +51,28 @@ export function ProviderConnectionRow({
         </span>
         <KeyStatusIcon isSet={connection.api_key_set} />
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          data-testid="provider-connection-edit"
-          aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_EDIT_TITLE)}
-          className={settingsListIconActionButtonClassName}
-          onClick={() => onEdit(connection)}
-        >
-          <EditIcon width={16} height={16} />
-        </button>
-        <button
-          type="button"
-          data-testid="provider-connection-delete"
-          aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_TITLE)}
-          className={settingsListIconActionButtonClassName}
-          onClick={() => onDelete(connection)}
-        >
-          <DeleteIcon width={16} height={16} />
-        </button>
-      </div>
+      {canManage ? (
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            data-testid="provider-connection-edit"
+            aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_EDIT_TITLE)}
+            className={settingsListIconActionButtonClassName}
+            onClick={() => onEdit(connection)}
+          >
+            <EditIcon width={16} height={16} />
+          </button>
+          <button
+            type="button"
+            data-testid="provider-connection-delete"
+            aria-label={t(I18nKey.SETTINGS$PROVIDER_CONNECTION_DELETE_TITLE)}
+            className={settingsListIconActionButtonClassName}
+            onClick={() => onDelete(connection)}
+          >
+            <DeleteIcon width={16} height={16} />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

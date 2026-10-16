@@ -31,10 +31,7 @@ from server.constants import (
     is_bundled_proxy_base_url,
 )
 from server.logger import logger
-from server.routes.org_models import (
-    MEMBER_PRIVATE_AGENT_KEYS,
-    OrgMemberSettingsUpdate,
-)
+from server.routes.org_models import MEMBER_PRIVATE_AGENT_KEYS
 from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
     get_openhands_default_model_name,
@@ -46,6 +43,10 @@ from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
     load_llm_profiles,
+)
+from storage.configuration_policy import (
+    ConfigurationOperation,
+    load_configuration_policy,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -59,7 +60,6 @@ from storage.mcp_config import (
 )
 from storage.org import Org
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
 from storage.user import User
 from storage.user_settings import UserSettings
@@ -170,6 +170,31 @@ _ORG_OWNED_SETTINGS_KEYS = frozenset(
 )
 
 
+_MISSING = object()
+_ADMIN_ROLE_NAMES = {'admin', 'owner'}
+
+
+def _without_matching_values(
+    member: dict[str, Any], org: dict[str, Any]
+) -> dict[str, Any]:
+    pruned: dict[str, Any] = {}
+    for key, value in member.items():
+        org_value = org.get(key, _MISSING)
+        if isinstance(value, dict) and isinstance(org_value, dict):
+            nested = _without_matching_values(value, org_value)
+            if nested:
+                pruned[key] = nested
+        elif org_value is _MISSING or org_value != value:
+            pruned[key] = value
+    return pruned
+
+
+def _llm_operation(org: Org, role_name: str | None) -> ConfigurationOperation:
+    if role_name in _ADMIN_ROLE_NAMES:
+        return ConfigurationOperation.REPLACE
+    return load_configuration_policy(org.configuration_policy).llm.operation
+
+
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
@@ -191,6 +216,48 @@ class SaasSettingsStore(SettingsStore):
         always a UUID.
         """
         return self.effective_org_id or user.current_org_id
+
+    @staticmethod
+    def _get_role_name(org_member: OrgMember) -> str | None:
+        return org_member.role.name if org_member.role is not None else None
+
+    async def get_llm_configuration_operation(self) -> ConfigurationOperation:
+        user = await UserStore.get_user_by_id(self.user_id)
+        if user is None:
+            return ConfigurationOperation.LOCKED
+        org_id = self._resolve_org_id(user)
+        org_member = next(
+            (
+                membership
+                for membership in user.org_members
+                if membership.org_id == org_id
+            ),
+            None,
+        )
+        if org_member is None:
+            return ConfigurationOperation.LOCKED
+        org = await OrgStore.get_org_by_id_async(org_id)
+        if org is None:
+            return ConfigurationOperation.LOCKED
+        return _llm_operation(org, self._get_role_name(org_member))
+
+    async def get_personal_llm_profiles(self) -> LLMProfiles:
+        """Return only profiles owned by the current organization member."""
+        user = await UserStore.get_user_by_id(self.user_id)
+        if user is None:
+            return LLMProfiles()
+        org_id = self._resolve_org_id(user)
+        org_member = next(
+            (
+                membership
+                for membership in user.org_members
+                if membership.org_id == org_id
+            ),
+            None,
+        )
+        if org_member is None:
+            return LLMProfiles()
+        return LLMProfiles.model_validate(org_member.llm_profiles or {})
 
     async def _get_user_settings_by_keycloak_id_async(
         self, keycloak_user_id: str, session=None
@@ -437,9 +504,16 @@ class SaasSettingsStore(SettingsStore):
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
             )
             return None
+        role_name = self._get_role_name(org_member)
+        llm_operation = _llm_operation(org, role_name)
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
         member_agent_settings_diff = dict(org_member.agent_settings_diff)
         member_agent_settings_diff.pop('mcp_config', None)
+        if llm_operation in {
+            ConfigurationOperation.LOCKED,
+            ConfigurationOperation.SUBSET,
+        }:
+            member_agent_settings_diff.pop('llm', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -484,12 +558,51 @@ class SaasSettingsStore(SettingsStore):
                     exc_info=True,
                 )
                 merged_agent_settings['mcp_config'] = {}
-        effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
+
+        selected_org_profile = None
+        if (
+            llm_operation
+            in {
+                ConfigurationOperation.SUBSET,
+                ConfigurationOperation.EXTEND,
+            }
+            and org_member.active_llm_profile_name
+        ):
+            selected_org_profile = load_llm_profiles(org).get(
+                org_member.active_llm_profile_name
+            )
+            if selected_org_profile is not None:
+                merged_agent_settings['llm'] = selected_org_profile.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
+
+        effective_llm_api_key: SecretStr | None
+        if (
+            selected_org_profile is not None
+            and selected_org_profile.api_key is not None
+        ):
+            profile_api_key = selected_org_profile.api_key
+            effective_llm_api_key = (
+                profile_api_key
+                if isinstance(profile_api_key, SecretStr)
+                else SecretStr(profile_api_key)
+            )
+        elif llm_operation in {
+            ConfigurationOperation.LOCKED,
+            ConfigurationOperation.SUBSET,
+        }:
+            effective_llm_api_key = org.llm_api_key
+            if (
+                effective_llm_api_key is None
+                and not org_member.has_custom_llm_api_key
+                and org_member._llm_api_key
+            ):
+                effective_llm_api_key = org_member.llm_api_key
+        else:
+            effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
         if effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
                 effective_llm_api_key.get_secret_value()
-                if isinstance(effective_llm_api_key, SecretStr)
-                else effective_llm_api_key
             )
         else:
             logger.warning(
@@ -542,32 +655,54 @@ class SaasSettingsStore(SettingsStore):
                     # Convert MarketplaceRegistration to dict
                     normalized_mps.append(mp.model_dump())
             kwargs['registered_marketplaces'] = normalized_mps
-        # Profiles in SaaS live on the org (managed via
-        # /api/organizations/{org_id}/profiles). Surface them through
-        # Settings.llm_profiles so the chat-layer endpoints
-        # (/api/v1/settings/profiles and /switch_profile) see them without
-        # needing a separate code path. Falls back to user.llm_profiles when
-        # the org has none — handles older personal accounts whose profiles
-        # never moved to the org column.
-        if org.llm_profiles:
-            profiles_data = dict(org.llm_profiles)
-            raw_profiles = profiles_data.get('profiles')
+
+        def canonicalize_profiles_payload(
+            payload: dict[str, Any] | None,
+        ) -> dict[str, Any]:
+            result = dict(payload or {})
+            raw_profiles = result.get('profiles')
             if isinstance(raw_profiles, dict):
-                profiles_data['profiles'] = {
+                result['profiles'] = {
                     name: canonicalize_bundled_proxy_llm(
-                        canonicalize_openhands_llm_payload(prof)
+                        canonicalize_openhands_llm_payload(profile)
                     )
-                    if isinstance(prof, dict)
-                    else prof
-                    for name, prof in raw_profiles.items()
+                    if isinstance(profile, dict)
+                    else profile
+                    for name, profile in raw_profiles.items()
                 }
+            return result
+
+        org_profiles_data = canonicalize_profiles_payload(org.llm_profiles)
+        member_profiles_data = canonicalize_profiles_payload(org_member.llm_profiles)
+
+        if llm_operation in {
+            ConfigurationOperation.LOCKED,
+            ConfigurationOperation.SUBSET,
+        }:
+            profiles_data = org_profiles_data
+            if llm_operation is ConfigurationOperation.SUBSET:
+                profiles_data['active'] = (
+                    org_member.active_llm_profile_name
+                    or org_profiles_data.get('active')
+                )
+        elif llm_operation is ConfigurationOperation.EXTEND:
+            profiles_data = {
+                'profiles': {
+                    **dict(org_profiles_data.get('profiles') or {}),
+                    **dict(member_profiles_data.get('profiles') or {}),
+                },
+                'active': (
+                    org_member.active_llm_profile_name
+                    or member_profiles_data.get('active')
+                    or org_profiles_data.get('active')
+                ),
+            }
+        else:
+            profiles_data = member_profiles_data
+
+        if profiles_data.get('profiles'):
             kwargs['llm_profiles'] = profiles_data
-        # When no profiles exist yet, seed a Default profile from the legacy
-        # LLM config so users (and orgs) upgrading from pre-llm_profiles
-        # settings keep their previous LLM as the active profile instead of
-        # landing on an empty profiles UI (mirrors the OSS FileSettingsStore).
-        # Covers both pre-migration rows (llm_profiles is None) and
-        # already-migrated orgs whose profiles map is empty.
+
         seeded_default = False
         seeded_payload: dict[str, Any] | None = None
         if not (kwargs.get('llm_profiles') or {}).get('profiles'):
@@ -580,27 +715,24 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['llm_profiles'] = seeded_payload
                 seeded_default = True
             else:
-                # No legacy LLM to seed; drop a None value so the non-nullable
-                # Settings.llm_profiles falls back to its default_factory.
                 kwargs.pop('llm_profiles', None)
 
         async with a_session_maker() as session:
             openhands_default_model_name = await get_openhands_default_model_name(
                 session
             )
-        # Persist the seeded legacy Default only when there is no DB-backed
-        # OpenHands default to materialize. When there IS a DB default, the
-        # live ``Default`` profile stays derived from
-        # ``verified_models.is_default`` rather than a stored snapshot.
-        #
-        # Note: ``materialize_default_llm_payload`` removes the logical
-        # ``Default`` when ``openhands_default_model_name`` is ``None`` (it is
-        # a live pointer with no target). The seeded legacy Default is a
-        # concrete user model, not a DB-default pointer, so persist the
-        # pre-materialize ``seeded_payload`` — otherwise the materialized
-        # (Default-stripped) view would be written back and the user's legacy
-        # LLM would be lost on the first load after upgrade.
-        persist_seeded_default = seeded_default and openhands_default_model_name is None
+        persist_seeded_org_default = (
+            seeded_default
+            and openhands_default_model_name is None
+            and llm_operation
+            in {ConfigurationOperation.LOCKED, ConfigurationOperation.SUBSET}
+        )
+        persist_seeded_member_default = (
+            seeded_default
+            and openhands_default_model_name is None
+            and llm_operation
+            in {ConfigurationOperation.REPLACE, ConfigurationOperation.EXTEND}
+        )
 
         live_llm_profiles: LLMProfiles | None = None
         deployment_default_materialized = uses_deployment_default_profile(
@@ -677,10 +809,17 @@ class SaasSettingsStore(SettingsStore):
         # LLM), not ``settings.llm_profiles``: materialize stripped the
         # logical ``Default`` because there is no DB default to point at, so
         # the materialized view has no profile to persist.
-        if persist_seeded_default and seeded_payload is not None:
+        if seeded_payload is not None and (
+            persist_seeded_org_default or persist_seeded_member_default
+        ):
             try:
                 seeded_profiles = LLMProfiles.model_validate(seeded_payload)
-                await self._persist_seeded_default_profile(org_id, seeded_profiles)
+                if persist_seeded_org_default:
+                    await self._persist_seeded_default_profile(org_id, seeded_profiles)
+                else:
+                    await self._persist_seeded_member_default_profile(
+                        org_id, seeded_profiles
+                    )
             except Exception:
                 logger.warning(
                     'Failed to persist seeded Default profile for org %s',
@@ -719,6 +858,27 @@ class SaasSettingsStore(SettingsStore):
             org.llm_profiles = serialized
             await session.commit()
 
+    async def _persist_seeded_member_default_profile(
+        self, org_id: UUID, llm_profiles: LLMProfiles
+    ) -> None:
+        serialized = llm_profiles.model_dump(
+            mode='json', context={'expose_secrets': True}
+        )
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == uuid.UUID(self.user_id),
+                )
+                .with_for_update()
+            )
+            member = result.scalars().first()
+            if member is None or (member.llm_profiles or {}).get('profiles'):
+                return
+            member.llm_profiles = serialized
+            await session.commit()
+
     async def store(self, item: Settings):
         if item is not None and (
             item._resolved_view or item.active_agent_profile_id is not None
@@ -737,7 +897,7 @@ class SaasSettingsStore(SettingsStore):
                 return None
             result = await session.execute(
                 select(User)
-                .options(joinedload(User.org_members))
+                .options(joinedload(User.org_members).joinedload(OrgMember.role))
                 .filter(User.id == uuid.UUID(self.user_id))
             )
             user = result.scalars().first()
@@ -785,6 +945,7 @@ class SaasSettingsStore(SettingsStore):
                 )
                 return None
 
+            llm_operation = _llm_operation(org, self._get_role_name(org_member))
             llm_model = item.agent_settings.llm.model
             llm_base_url = item.agent_settings.llm.base_url
             llm_provider_connection_id = getattr(
@@ -830,8 +991,22 @@ class SaasSettingsStore(SettingsStore):
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-            effective_conversation_diff = item.conversation_settings.model_dump(
-                mode='json'
+            org_agent_settings = self._get_persisted_agent_settings(
+                Settings(agent_settings=OrgStore.get_agent_settings_from_org(org))
+            )
+            agent_settings_update = _without_matching_values(
+                agent_settings_update, org_agent_settings
+            )
+            if llm_operation in {
+                ConfigurationOperation.LOCKED,
+                ConfigurationOperation.SUBSET,
+            }:
+                agent_settings_update.pop('llm', None)
+            effective_conversation_diff = _without_matching_values(
+                item.conversation_settings.model_dump(mode='json'),
+                OrgStore.get_conversation_settings_from_org(org).model_dump(
+                    mode='json'
+                ),
             )
 
             kwargs = item.model_dump(context={'expose_secrets': True})
@@ -876,34 +1051,37 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
-            # A non-managed (BYOR) key is the org's key for the shared
-            # provider, so it does reach every member row.
-            await OrgMemberStore.update_all_members_settings_async(
-                session,
-                org_id,
-                OrgMemberSettingsUpdate(
-                    llm_api_key=(
-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if managed_config is None
-                        else None
-                    ),
-                ),
-            )
-
             member_mcp_config = org_member.effective_mcp_config
-            member_agent_settings_diff = dict(org_member.agent_settings_diff)
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                member_agent_settings_diff.pop(private_key, None)
-            # Single assignment so SQLAlchemy tracks the JSON column change.
-            org_member.agent_settings_diff = deep_merge(
-                member_agent_settings_diff,
-                agent_settings_update,
-            )
-            org_member.conversation_settings_diff = deep_merge(
-                dict(org_member.conversation_settings_diff),
-                effective_conversation_diff,
-            )
+            org_member.agent_settings_diff = agent_settings_update
+            org_member.conversation_settings_diff = effective_conversation_diff
             org_member.title_llm_profile = item.title_llm_profile
+            if llm_operation in {
+                ConfigurationOperation.REPLACE,
+                ConfigurationOperation.EXTEND,
+            }:
+                personal_profiles = item.llm_profiles
+                if llm_operation is ConfigurationOperation.EXTEND:
+                    org_profile_names = set(
+                        (org.llm_profiles or {}).get('profiles') or {}
+                    )
+                    personal_profiles = LLMProfiles.model_validate(
+                        {
+                            'profiles': {
+                                name: profile.model_dump(
+                                    mode='json', context={'expose_secrets': True}
+                                )
+                                for name, profile in item.llm_profiles.profiles.items()
+                                if name not in org_profile_names
+                            },
+                            'active': item.llm_profiles.active
+                            if item.llm_profiles.active not in org_profile_names
+                            else None,
+                        }
+                    )
+                org_member.llm_profiles = personal_profiles.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
+                org_member.active_llm_profile_name = None
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
             elif org_member.mcp_config is None and member_mcp_config is not None:

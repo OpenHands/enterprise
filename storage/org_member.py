@@ -43,6 +43,10 @@ class OrgMember(Base):
     agent_settings_diff: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
+    active_llm_profile_name: Mapped[str | None] = mapped_column(String, nullable=True)
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )

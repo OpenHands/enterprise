@@ -5490,6 +5490,42 @@
     "uk": "Ці стандартні налаштування організації застосовуються першими. Учасники можуть застосовувати особисті перевизначення там, де це дозволено.",
     "ca": "Aquests valors predeterminats de l'organització s'apliquen primer. Els membres poden aplicar substitucions personals on estigui permès."
   },
+
+  "SETTINGS$LOCKED_LLM_NOTICE": {
+    "en": "Your organization manages LLM profiles for this setting. You can choose from the profiles provided by your organization, but you cannot add personal LLM profiles.",
+    "ja": "組織がこの設定のLLMプロファイルを管理しています。組織が提供するプロファイルから選択できますが、個人用LLMプロファイルを追加することはできません。",
+    "zh-CN": "您的组织管理此设置的 LLM 配置文件。您可以从组织提供的配置文件中选择，但不能添加个人 LLM 配置文件。",
+    "zh-TW": "您的組織管理此設定的 LLM 設定檔。您可以從組織提供的設定檔中選擇，但無法新增個人 LLM 設定檔。",
+    "ko-KR": "조직에서 이 설정의 LLM 프로필을 관리합니다. 조직에서 제공하는 프로필 중에서 선택할 수 있지만 개인 LLM 프로필을 추가할 수는 없습니다.",
+    "no": "Organisasjonen din administrerer LLM-profiler for denne innstillingen. Du kan velge blant profilene organisasjonen tilbyr, men du kan ikke legge til personlige LLM-profiler.",
+    "it": "La tua organizzazione gestisce i profili LLM per questa impostazione. Puoi scegliere tra i profili forniti dall'organizzazione, ma non puoi aggiungere profili LLM personali.",
+    "pt": "A sua organização gere os perfis LLM para esta definição. Pode escolher entre os perfis fornecidos pela organização, mas não pode adicionar perfis LLM pessoais.",
+    "es": "Tu organización gestiona los perfiles LLM para esta configuración. Puedes elegir entre los perfiles proporcionados por tu organización, pero no puedes añadir perfiles LLM personales.",
+    "ar": "تدير مؤسستك ملفات تعريف LLM لهذا الإعداد. يمكنك الاختيار من الملفات التي توفرها مؤسستك، ولكن لا يمكنك إضافة ملفات تعريف LLM شخصية.",
+    "fr": "Votre organisation gère les profils LLM pour ce paramètre. Vous pouvez choisir parmi les profils fournis par votre organisation, mais vous ne pouvez pas ajouter de profils LLM personnels.",
+    "tr": "Kuruluşunuz bu ayar için LLM profillerini yönetir. Kuruluşunuzun sağladığı profiller arasından seçim yapabilirsiniz ancak kişisel LLM profilleri ekleyemezsiniz.",
+    "de": "Ihre Organisation verwaltet die LLM-Profile für diese Einstellung. Sie können aus den von Ihrer Organisation bereitgestellten Profilen wählen, aber keine persönlichen LLM-Profile hinzufügen.",
+    "uk": "Ваша організація керує профілями LLM для цього налаштування. Ви можете вибирати з профілів, наданих організацією, але не можете додавати особисті профілі LLM.",
+    "ca": "La teva organització gestiona els perfils LLM per a aquesta configuració. Pots triar entre els perfils proporcionats per l'organització, però no pots afegir perfils LLM personals."
+  },
+  "SETTINGS$ORG_MANAGED_PROFILE_BADGE": {
+    "en": "Org-managed",
+    "ja": "組織管理",
+    "zh-CN": "组织管理",
+    "zh-TW": "組織管理",
+    "ko-KR": "조직 관리",
+    "no": "Organisasjonsstyrt",
+    "it": "Gestito dall'organizzazione",
+    "pt": "Gerido pela organização",
+    "es": "Gestionado por la organización",
+    "ar": "مُدار من المؤسسة",
+    "fr": "Géré par l’organisation",
+    "tr": "Kuruluş tarafından yönetiliyor",
+    "de": "Von der Organisation verwaltet",
+    "uk": "Керується організацією",
+    "ca": "Gestionat per l'organització"
+  },
+
   "SETTINGS$PERSONAL_AGENT_INFO": {
     "en": "These settings only affect your own work. Organization defaults still apply unless you override them here.",
     "ja": "これらの設定はあなた自身の作業にのみ影響します。ここで上書きしない限り、組織のデフォルト設定が引き続き適用されます。",

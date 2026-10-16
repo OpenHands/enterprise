@@ -16,6 +16,7 @@ import { FEEDBACK_HANDLERS } from "./feedback-handlers";
 import { ANALYTICS_HANDLERS } from "./analytics-handlers";
 import { SUPER_ADMIN_HANDLERS } from "./super-admin-handlers";
 import { AUTH_PROVIDERS_HANDLERS } from "./auth-providers-handlers";
+import { QUOTA_HANDLERS } from "./quota-handlers";
 
 export const handlers = [
   ...SUPER_ADMIN_HANDLERS,
@@ -23,6 +24,7 @@ export const handlers = [
   ...ORG_HANDLERS,
   ...API_KEYS_HANDLERS,
   ...BILLING_HANDLERS,
+  ...QUOTA_HANDLERS,
   ...FILE_SERVICE_HANDLERS,
   ...TASK_SUGGESTIONS_HANDLERS,
   ...SECRETS_HANDLERS,

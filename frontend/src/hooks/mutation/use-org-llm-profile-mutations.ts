@@ -77,6 +77,21 @@ export function useActivateOrgLlmProfile(orgId: string | null | undefined) {
   });
 }
 
+export function useSelectOrgLlmProfile(orgId: string | null | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (name: string) => {
+      if (!orgId) throw new Error("Organization ID is required");
+      await OrgProfilesService.selectProfile(orgId, name);
+    },
+    onSuccess: () => {
+      invalidateProfileCaches(queryClient, orgId);
+      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+    },
+  });
+}
+
 export function useRenameOrgLlmProfile(orgId: string | null | undefined) {
   const queryClient = useQueryClient();
 
