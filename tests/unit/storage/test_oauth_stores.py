@@ -145,25 +145,44 @@ class TestAuthProviderStore:
         ]
 
     @pytest.mark.asyncio
-    async def test_get_git_provider_by_type_found(self, patched_session, make_provider):
-        """Used by ``server.routes.oauth_v2`` to find the direct
-        ``is_idp=False`` row a ``legacy_keycloak`` login IDP's real,
-        broker-fetched token should be stored against."""
+    async def test_get_provider_by_type_found(self, patched_session, make_provider):
+        """Used by ``server.routes.oauth_v2`` to find the git-provider row a
+        ``legacy_keycloak_type`` login IDP's real, broker-fetched token
+        should be stored against."""
         github = await make_provider(category=ProviderType.GITHUB, is_idp=False)
         await make_provider(category=ProviderType.GITLAB, is_idp=False)
-        # A login IDP of the same brand must never match -- only the
-        # is_idp=False sibling does.
-        await make_provider(category=ProviderType.GITHUB, is_idp=True)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
 
-        got = await AuthProviderStore().get_git_provider_by_type('github')
+        got = await AuthProviderStore().get_provider_by_type('github')
         assert got is not None
         assert got.id == github.id
-        assert got.is_idp is False
 
     @pytest.mark.asyncio
-    async def test_get_git_provider_by_type_none(self, patched_session, make_provider):
+    async def test_get_provider_by_type_ignores_is_idp(
+        self, patched_session, make_provider
+    ):
+        """A git provider that doubles as a login IDP is still a match."""
+        github_idp = await make_provider(category=ProviderType.GITHUB, is_idp=True)
+
+        got = await AuthProviderStore().get_provider_by_type('github')
+        assert got is not None
+        assert got.id == github_idp.id
+
+    @pytest.mark.asyncio
+    async def test_get_provider_by_type_lowest_id_wins(
+        self, patched_session, make_provider
+    ):
+        first = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        await make_provider(category=ProviderType.GITHUB, is_idp=True)
+
+        got = await AuthProviderStore().get_provider_by_type('github')
+        assert got is not None
+        assert got.id == first.id
+
+    @pytest.mark.asyncio
+    async def test_get_provider_by_type_none(self, patched_session, make_provider):
         await make_provider(category=ProviderType.GITLAB, is_idp=False)
-        assert await AuthProviderStore().get_git_provider_by_type('github') is None
+        assert await AuthProviderStore().get_provider_by_type('github') is None
 
     @pytest.mark.asyncio
     async def test_get_idp_providers_lists_integrated_idp_alongside_real_idp(

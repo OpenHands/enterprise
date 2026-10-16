@@ -72,6 +72,7 @@ def _fake_provider(
     icon: str | None = None,
     color: str = DEFAULT_AUTH_PROVIDER_COLOR,
     allow_registration: bool = True,
+    legacy_keycloak_type: ProviderType | None = None,
 ) -> AuthProvider:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     provider = AuthProvider(
@@ -84,6 +85,7 @@ def _fake_provider(
             provider_type=ProviderType(category),
             client_id=client_id,
             client_secret=client_secret,
+            legacy_keycloak_type=legacy_keycloak_type,
         ),
     )
     provider.id = provider_id
@@ -400,6 +402,94 @@ async def test_update_provider_omitted_details_untouched(
     # left untouched.
     update_mock.assert_awaited_once_with(1, title='Renamed')
     assert 'details' not in update_mock.call_args.kwargs
+
+
+async def _patch_oauth_details(app, details: dict) -> OAuthProviderDetails:
+    """PATCH ``details`` onto a row whose ``legacy_keycloak_type`` is github
+    and return the ``details`` forwarded to the store."""
+    existing = _fake_provider(
+        1,
+        'enterprise_sso',
+        is_idp=True,
+        client_secret='old-secret',
+        legacy_keycloak_type=ProviderType.GITHUB,
+    )
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=existing),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=existing),
+        ) as update_mock,
+    ):
+        async with _client(app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'enterprise_sso',
+                        'client_id': 'cid',
+                        **details,
+                    }
+                },
+            )
+    assert resp.status_code == 200
+    return update_mock.call_args.kwargs['details']
+
+
+@pytest.mark.asyncio
+async def test_update_provider_keeps_unsent_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'scopes': ['openid']})
+
+    assert details.legacy_keycloak_type == ProviderType.GITHUB
+    assert details.scopes == ['openid']
+    assert details.client_secret.get_secret_value() == 'old-secret'
+
+
+@pytest.mark.asyncio
+async def test_update_provider_explicit_null_clears_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'legacy_keycloak_type': None})
+
+    assert details.legacy_keycloak_type is None
+
+
+@pytest.mark.asyncio
+async def test_update_provider_sets_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'legacy_keycloak_type': 'gitlab'})
+
+    assert details.legacy_keycloak_type == ProviderType.GITLAB
+
+
+@pytest.mark.asyncio
+async def test_update_provider_rejects_enterprise_sso_legacy_keycloak_type(
+    mock_app, grant_manage_oauth_providers
+):
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/oauth-providers/1',
+            json={
+                'details': {
+                    'kind': 'OAuthProviderDetails',
+                    'provider_type': 'enterprise_sso',
+                    'client_id': 'cid',
+                    'legacy_keycloak_type': 'enterprise_sso',
+                }
+            },
+        )
+
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

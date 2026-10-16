@@ -135,6 +135,13 @@ const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] = [
   { key: "enterprise_sso", label: "Enterprise SSO" },
 ];
 
+type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
+
+const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
+  (option): option is { key: LegacyKeycloakType; label: string } =>
+    option.key !== "enterprise_sso",
+);
+
 function parseScopes(value: string): string[] | null {
   const scopes = value
     .split(/[\s,]+/)
@@ -204,6 +211,8 @@ interface AuthProviderFormState {
   userinfoUrl: string;
   scopes: string;
   permittedDriftSeconds: string;
+  /** ``""`` when unset -- see ``OAuthProviderDetails.legacy_keycloak_type``. */
+  legacyKeycloakType: LegacyKeycloakType | "";
   metadataUrl: string;
   idpEntityId: string;
   ssoUrl: string;
@@ -240,6 +249,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   userinfoUrl: "",
   scopes: "",
   permittedDriftSeconds: DEFAULT_PERMITTED_DRIFT_SECONDS,
+  legacyKeycloakType: "",
   metadataUrl: "",
   idpEntityId: "",
   ssoUrl: "",
@@ -269,6 +279,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       userinfoUrl: details.userinfo_url ?? "",
       scopes: details.scopes?.join(" ") ?? "",
       permittedDriftSeconds: String(details.permitted_drift_seconds),
+      legacyKeycloakType: details.legacy_keycloak_type ?? "",
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -317,7 +328,9 @@ function oauthDetailsUnchanged(
     form.tokenUrl.trim() === initial.tokenUrl.trim() &&
     form.userinfoUrl.trim() === initial.userinfoUrl.trim() &&
     form.scopes.trim() === initial.scopes.trim() &&
-    form.permittedDriftSeconds.trim() === initial.permittedDriftSeconds.trim()
+    form.permittedDriftSeconds.trim() ===
+      initial.permittedDriftSeconds.trim() &&
+    form.legacyKeycloakType === initial.legacyKeycloakType
   );
 }
 
@@ -377,6 +390,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
     permitted_drift_seconds: form.permittedDriftSeconds
       ? Number(form.permittedDriftSeconds)
       : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
+    legacy_keycloak_type: form.legacyKeycloakType || null,
   };
 }
 
@@ -713,6 +727,27 @@ function AuthProviderFormModal({
               }
               showOptionalTag
             />
+            <SettingsDropdownInput
+              testId="super-admin-auth-provider-legacy-keycloak-type"
+              name="legacy_keycloak_type"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE)}
+              items={LEGACY_KEYCLOAK_TYPE_OPTIONS}
+              selectedKey={form.legacyKeycloakType || null}
+              onSelectionChange={(key) =>
+                setForm((prev) => ({
+                  ...prev,
+                  legacyKeycloakType: (key ?? "") as LegacyKeycloakType | "",
+                }))
+              }
+              isClearable
+              showOptionalTag
+            />
+            <p
+              data-testid="super-admin-auth-provider-legacy-keycloak-type-hint"
+              className="text-xs text-tertiary-alt"
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT)}
+            </p>
           </>
         ) : null}
         {form.kind === KIND_SAML ? (

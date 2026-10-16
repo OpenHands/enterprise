@@ -100,24 +100,16 @@ class AuthProviderStore:
             )
             return list(result.scalars().all())
 
-    async def get_git_provider_by_type(self, provider_type: str) -> AuthProvider | None:
-        """Return the (single) ``is_idp=False`` row for ``provider_type``.
+    async def get_provider_by_type(self, provider_type: str) -> AuthProvider | None:
+        """Return the row whose ``details.provider_type`` is ``provider_type``.
 
-        Used by ``server.routes.oauth_v2`` to find the direct git-provider
-        row a ``legacy_keycloak`` login IDP's real, broker-fetched token
-        should be stored against -- see
-        ``OAuthProviderDetails.legacy_keycloak``. Migrations only ever seed
-        one git-provider row per brand, and ``SaasUserAuth._v2_get_provider_tokens``
-        assumes the same (it keys its result dict by ``ProviderType``), so
-        the lowest ``id`` is returned if more than one somehow exists rather
-        than erroring.
+        If several match, the lowest ``id`` wins.
         """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(AuthProvider)
                 .where(
-                    AuthProvider.is_idp.is_(False),
-                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                    AuthProvider.details['provider_type'].as_string() == provider_type
                 )
                 .order_by(AuthProvider.id)
                 .limit(1)

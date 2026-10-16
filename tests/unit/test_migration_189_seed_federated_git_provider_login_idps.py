@@ -1,16 +1,16 @@
 """Real-DB tests for migration 189 (seed federated git-provider login IDPs).
 
-Covers the new piece added alongside the ``legacy_keycloak`` flag on
-``OAuthProviderDetails``: every per-brand row this migration seeds must carry
-``details.legacy_keycloak = true``, since its ``token_url``/credentials are
-actually Keycloak's own, not the brand's -- see
-``storage.auth_provider_details.OAuthProviderDetails.legacy_keycloak`` and
-``server.routes.oauth_v2``'s callback, which checks this flag to fetch the
-real git-provider token from Keycloak's identity-brokering endpoint instead
-of trusting this row's own token exchange.
+Covers ``legacy_keycloak_type`` on ``OAuthProviderDetails``: every per-brand
+row this migration seeds is an ``enterprise_sso`` row carrying
+``details.legacy_keycloak_type = <brand>``, since its ``token_url``/
+credentials are actually Keycloak's own, not the brand's -- see
+``storage.auth_provider_details.OAuthProviderDetails.legacy_keycloak_type``
+and ``server.routes.oauth_v2``'s callback, which uses it to fetch the real
+git-provider token from Keycloak's identity-brokering endpoint instead of
+trusting this row's own token exchange.
 
 The rest of migration 189's behavior (retiring the generic Keycloak row,
-rebranding the password login) is unrelated to this flag and already
+rebranding the password login) is unrelated to this field and already
 exercised by the migration's own docstring/behavior; not re-tested here.
 """
 
@@ -32,7 +32,7 @@ def _auth_provider_rows(engine: Engine) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-def test_upgrade_seeds_legacy_keycloak_true_on_federated_login_rows(
+def test_upgrade_seeds_legacy_keycloak_type_on_federated_login_rows(
     monkeypatch,
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
@@ -53,15 +53,18 @@ def test_upgrade_seeds_legacy_keycloak_true_on_federated_login_rows(
     )
 
     rows = _auth_provider_rows(engine)
-    github_rows = [r for r in rows if r['details'].get('provider_type') == 'github']
+    github_rows = [
+        r for r in rows if r['details'].get('legacy_keycloak_type') == 'github'
+    ]
     assert len(github_rows) == 1
     github_row = github_rows[0]
     assert github_row['is_idp'] is True
-    assert github_row['details']['legacy_keycloak'] is True
+    assert github_row['details']['provider_type'] == 'enterprise_sso'
+    assert github_row['details']['legacy_keycloak_type'] == 'github'
 
     # Only the gated (GITHUB_APP_CLIENT_ID) brand is seeded -- GitLab/
     # Bitbucket must not appear since their env vars are unset.
-    assert {r['details'].get('provider_type') for r in rows} == {'github'}
+    assert {r['details'].get('legacy_keycloak_type') for r in rows} == {'github'}
 
 
 def test_upgrade_without_keycloak_client_id_seeds_nothing(
@@ -108,12 +111,8 @@ def test_downgrade_removes_legacy_keycloak_rows(
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '188'
     )
-    rows = _auth_provider_rows(engine)
-    assert not any(
-        r['details'].get('provider_type') == 'github'
-        and r['details'].get('legacy_keycloak') is True
-        for r in rows
-    )
+    # The per-brand row is gone; the generic Keycloak row is restored.
+    assert [r['title'] for r in _auth_provider_rows(engine)] == ['Keycloak']
 
 
 def _insert_legacy_keycloak_row(engine: Engine) -> int:
@@ -136,9 +135,9 @@ def _insert_legacy_keycloak_row(engine: Engine) -> int:
                 'details': json.dumps(
                     {
                         'kind': 'OAuthProviderDetails',
-                        'provider_type': 'github',
+                        'provider_type': 'enterprise_sso',
                         'client_id': 'kc-client',
-                        'legacy_keycloak': True,
+                        'legacy_keycloak_type': 'github',
                     }
                 )
             },
@@ -165,6 +164,53 @@ def test_upgrade_is_idempotent_when_row_already_exists(
     )
 
     rows = _auth_provider_rows(engine)
-    github_rows = [r for r in rows if r['details'].get('provider_type') == 'github']
+    github_rows = [
+        r for r in rows if r['details'].get('legacy_keycloak_type') == 'github'
+    ]
     assert len(github_rows) == 1
     assert github_rows[0]['id'] == existing_id
+
+
+def test_upgrade_skips_brand_with_existing_direct_idp(
+    monkeypatch,
+    engine: Engine,
+    test_database: postgres_testdb.TestDatabase,
+):
+    """An admin-configured direct GitHub login IDP (``provider_type='github'``
+    on an ``is_idp`` row) already covers the brand, so none is seeded."""
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'downgrade', '188'
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO auth_providers
+                    (kind, title, is_idp, color, allow_registration, details)
+                VALUES
+                    ('OAuthProviderDetails', 'GitHub', true, '#000000', true,
+                     :details)
+                """
+            ),
+            {
+                'details': json.dumps(
+                    {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'direct-client',
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setenv('AUTH_URL', 'https://auth.staging.all-hands.dev')
+    monkeypatch.setenv('KEYCLOAK_REALM_NAME', 'allhands')
+    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'kc-client')
+    monkeypatch.setenv('GITHUB_APP_CLIENT_ID', 'gh-client')
+
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'upgrade', '189'
+    )
+
+    rows = _auth_provider_rows(engine)
+    assert [r['details']['client_id'] for r in rows] == ['direct-client']

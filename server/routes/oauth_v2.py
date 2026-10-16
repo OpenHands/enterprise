@@ -232,10 +232,10 @@ async def _store_legacy_keycloak_git_token(
     keycloak_access_token: str,
 ) -> None:
     """Fetch ``provider_type``'s real token via Keycloak's identity-brokering
-    endpoint and store it under the sibling ``is_idp=False`` git-provider row.
+    endpoint and store it under the git-provider row of that type.
 
-    Called after a successful OAuth2 exchange against a ``legacy_keycloak``
-    row (see ``OAuthProviderDetails.legacy_keycloak``): that row's own
+    Called after a successful OAuth2 exchange against a login row with
+    ``OAuthProviderDetails.legacy_keycloak_type`` set: that row's own
     ``token_url`` is Keycloak's, so the pair ``_exchange_code`` just
     returned is a Keycloak access/refresh token, never ``provider_type``'s
     real one -- Keycloak does not embed the upstream IdP's token in its own
@@ -249,21 +249,13 @@ async def _store_legacy_keycloak_git_token(
     access unavailable until the next login (or a manual link in
     Settings > Integrations).
     """
-    # Login-only brand: no git-provider token to fetch, same as
-    # ``TokenManager.store_idp_tokens``'s identical check for the legacy
-    # (pre-OAuth-v2) Keycloak callback.
-    if provider_type == ProviderType.ENTERPRISE_SSO:
-        return
-
-    git_provider = await AuthProviderStore().get_git_provider_by_type(
-        provider_type.value
-    )
+    git_provider = await AuthProviderStore().get_provider_by_type(provider_type.value)
     if git_provider is None:
         # Should not happen in practice -- migration 189 only seeds a
-        # legacy_keycloak row when the matching direct row (migration 168)
-        # already exists, gated on the same env var -- but an admin could
-        # have deleted the direct row since, or hand-created a
-        # legacy_keycloak row via the admin API without one.
+        # legacy-Keycloak login row when the matching git-provider row
+        # (migration 168) already exists, gated on the same env var -- but an
+        # admin could have deleted that row since, or hand-created a login
+        # row via the admin API without one.
         logger.warning(
             'oauth_v2_legacy_keycloak_no_git_provider_row',
             extra={'provider_type': provider_type.value},
@@ -518,18 +510,17 @@ async def oauth_v2_callback(
     )
 
     # ``provider`` is a login IDP whose own token exchange only ever yields
-    # a Keycloak token (see ``OAuthProviderDetails.legacy_keycloak``) --
+    # a Keycloak token (see ``OAuthProviderDetails.legacy_keycloak_type``) --
     # additionally fetch and store the real git-provider token so repo
     # access works the same way it did for the pre-OAuth-v2 Keycloak login
     # path (``TokenManager.store_idp_tokens``), not just the login session.
     details = provider.details
     if (
-        provider.is_idp
-        and isinstance(details, OAuthProviderDetails)
-        and details.legacy_keycloak
+        isinstance(details, OAuthProviderDetails)
+        and details.legacy_keycloak_type is not None
     ):
         await _store_legacy_keycloak_git_token(
-            provider_type=details.provider_type,
+            provider_type=details.legacy_keycloak_type,
             user_id=uuid.UUID(user_id),
             keycloak_access_token=access_token,
         )

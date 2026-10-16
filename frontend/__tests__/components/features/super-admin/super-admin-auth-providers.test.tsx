@@ -37,6 +37,31 @@ const GITHUB_PROVIDER: AuthProvider = {
     userinfo_url: null,
     scopes: ["repo"],
     permitted_drift_seconds: 60,
+    legacy_keycloak_type: null,
+  },
+  created_at: "2024-01-01T00:00:00Z",
+  updated_at: "2024-01-01T00:00:00Z",
+};
+
+const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
+  id: 4,
+  kind: "OAuthProviderDetails",
+  title: "Log in with GitHub",
+  is_idp: true,
+  icon: null,
+  color: DEFAULT_AUTH_PROVIDER_COLOR,
+  allow_registration: true,
+  details: {
+    kind: "OAuthProviderDetails",
+    provider_type: "enterprise_sso",
+    client_id: "keycloak-client-id",
+    client_secret: "**********",
+    authorization_url: "https://auth.example.com/auth?kc_idp_hint=github",
+    token_url: "https://auth.example.com/token",
+    userinfo_url: "https://auth.example.com/userinfo",
+    scopes: ["openid", "email", "profile"],
+    permitted_drift_seconds: 60,
+    legacy_keycloak_type: "github",
   },
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
@@ -432,6 +457,85 @@ describe("Super Admin Auth Providers page", () => {
             client_id: "github-client-id-2",
             client_secret: null,
           }),
+        }),
+      ),
+    );
+  });
+
+  it("loads legacy_keycloak_type into the edit form and keeps it when another OAuth field is changed", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      KEYCLOAK_GITHUB_LOGIN_PROVIDER,
+    ]);
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(KEYCLOAK_GITHUB_LOGIN_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-4"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-4"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    expect(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-legacy-keycloak-type",
+      ),
+    ).toHaveValue("GitHub");
+
+    const scopesInput = within(dialog).getByTestId(
+      "super-admin-auth-provider-scopes",
+    );
+    await user.clear(scopesInput);
+    await user.type(scopesInput, "openid");
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 4,
+          details: expect.objectContaining({
+            provider_type: "enterprise_sso",
+            scopes: ["openid"],
+            legacy_keycloak_type: "github",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("clears legacy_keycloak_type when the field is cleared", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      KEYCLOAK_GITHUB_LOGIN_PROVIDER,
+    ]);
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(KEYCLOAK_GITHUB_LOGIN_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-4"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-4"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.clear(
+      within(dialog).getByTestId(
+        "super-admin-auth-provider-legacy-keycloak-type",
+      ),
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ legacy_keycloak_type: null }),
         }),
       ),
     );

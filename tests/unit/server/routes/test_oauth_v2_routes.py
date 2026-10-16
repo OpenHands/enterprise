@@ -72,7 +72,7 @@ def _fake_provider(
     is_idp: bool = False,
     client_secret: str | None = 'secret',
     userinfo_url: str | None = 'https://example.com/user',
-    legacy_keycloak: bool = False,
+    legacy_keycloak_type: str | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -88,7 +88,9 @@ def _fake_provider(
         userinfo_url=userinfo_url,
         scopes=['repo'],
         permitted_drift_seconds=60,
-        legacy_keycloak=legacy_keycloak,
+        legacy_keycloak_type=(
+            ProviderType(legacy_keycloak_type) if legacy_keycloak_type else None
+        ),
     )
     return provider
 
@@ -422,7 +424,7 @@ class _FakeTokenStore:
     as a single shared ``AsyncMock`` (which can't tell which provider row a
     given call targeted, since ``self`` isn't part of a method replaced at
     the class level), this can distinguish the login IDP row's own token
-    store from the sibling git-provider row's.
+    store from the git-provider row's.
     """
 
     instances: list[_FakeTokenStore] = []
@@ -446,15 +448,20 @@ class _FakeTokenStore:
         ]
 
 
-# ── callback login flow: legacy_keycloak git-provider token fetch ───────
+# ── callback login flow: legacy_keycloak_type git-provider token fetch ───────
 
 
 def test_callback_login_legacy_keycloak_stores_real_git_token(client, jwt_svc):
-    """A login via a ``legacy_keycloak`` IDP row also fetches the real
+    """A login via a row with ``legacy_keycloak_type`` set also fetches the real
     GitHub token from Keycloak's broker endpoint and stores it under the
-    sibling ``is_idp=False`` git-provider row, in addition to the Keycloak
+    git-provider row for that brand, in addition to the Keycloak
     token pair stored under the login row itself."""
-    provider = _fake_provider(provider_id=1, is_idp=True, legacy_keycloak=True)
+    provider = _fake_provider(
+        provider_id=1,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='github',
+    )
     git_provider = MagicMock()
     git_provider.id = 42
     user_id = uuid4()
@@ -478,9 +485,9 @@ def test_callback_login_legacy_keycloak_stores_real_git_token(client, jwt_svc):
         ),
         patch.object(
             oauth_v2.AuthProviderStore,
-            'get_git_provider_by_type',
+            'get_provider_by_type',
             new=AsyncMock(return_value=git_provider),
-        ) as get_git_provider_by_type,
+        ) as get_provider_by_type,
         _patch_httpx(token_response, userinfo),
         patch.object(
             oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
@@ -521,13 +528,13 @@ def test_callback_login_legacy_keycloak_stores_real_git_token(client, jwt_svc):
         )
 
     assert response.status_code == 302
-    get_git_provider_by_type.assert_awaited_once_with('github')
+    get_provider_by_type.assert_awaited_once_with('github')
     get_idp_tokens_from_keycloak.assert_awaited_once_with('kc-at', ProviderType.GITHUB)
     # Keycloak token pair persisted under the login row itself.
     login_calls = _FakeTokenStore.calls_for(1)
     assert len(login_calls) == 1
     assert login_calls[0].kwargs['access_token'] == 'kc-at'
-    # The real GitHub token persisted under the sibling git-provider row.
+    # The real GitHub token persisted under the GitHub git-provider row.
     git_calls = _FakeTokenStore.calls_for(42)
     assert len(git_calls) == 1
     assert git_calls[0].kwargs['access_token'] == 'gh-at'
@@ -536,11 +543,18 @@ def test_callback_login_legacy_keycloak_stores_real_git_token(client, jwt_svc):
     assert git_calls[0].kwargs['refresh_token_expires_at'] is None
 
 
-def test_callback_login_legacy_keycloak_no_sibling_row_is_graceful(client, jwt_svc):
-    """No matching ``is_idp=False`` row for the brand (e.g. deleted since
+def test_callback_login_legacy_keycloak_no_git_provider_row_is_graceful(
+    client, jwt_svc
+):
+    """No git-provider row for the brand (e.g. deleted since
     the login row was seeded) -- login still succeeds, just without a git
     credential being stored."""
-    provider = _fake_provider(provider_id=1, is_idp=True, legacy_keycloak=True)
+    provider = _fake_provider(
+        provider_id=1,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='github',
+    )
     user_id = uuid4()
     token_response = {'access_token': 'kc-at', 'refresh_token': 'kc-rt'}
     userinfo = {'sub': 'ext-sub-1'}
@@ -558,7 +572,7 @@ def test_callback_login_legacy_keycloak_no_sibling_row_is_graceful(client, jwt_s
         ),
         patch.object(
             oauth_v2.AuthProviderStore,
-            'get_git_provider_by_type',
+            'get_provider_by_type',
             new=AsyncMock(return_value=None),
         ),
         _patch_httpx(token_response, userinfo),
@@ -599,77 +613,10 @@ def test_callback_login_legacy_keycloak_no_sibling_row_is_graceful(client, jwt_s
     assert len(_FakeTokenStore.instances) == 1
 
 
-def test_callback_login_legacy_keycloak_enterprise_sso_skips_broker_fetch(
-    client, jwt_svc
-):
-    """A plain ``enterprise_sso`` IDP (even if marked ``legacy_keycloak``)
-    has no git-provider brand to fetch a broker token for."""
-    provider = _fake_provider(
-        provider_id=1,
-        category='enterprise_sso',
-        is_idp=True,
-        legacy_keycloak=True,
-    )
-    user_id = uuid4()
-    token_response = {'access_token': 'kc-at', 'refresh_token': 'kc-rt'}
-    userinfo = {'sub': 'ext-sub-1'}
-    fake_user = MagicMock()
-    fake_user.id = user_id
-    fake_user.accepted_tos = datetime.now(timezone.utc)
-
-    with (
-        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
-        patch.object(
-            oauth_v2.AuthProviderStore,
-            'get_by_id',
-            new=AsyncMock(return_value=provider),
-        ),
-        patch.object(
-            oauth_v2.AuthProviderStore,
-            'get_git_provider_by_type',
-            new=AsyncMock(),
-        ) as get_git_provider_by_type,
-        _patch_httpx(token_response, userinfo),
-        patch.object(
-            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
-        ),
-        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
-        patch.object(
-            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
-        ),
-        patch.object(
-            oauth_v2.UserStore,
-            'get_user_by_id',
-            new=AsyncMock(return_value=fake_user),
-        ),
-        patch.object(
-            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
-        ),
-        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
-        patch.object(
-            oauth_v2.TokenManager,
-            'get_idp_tokens_from_keycloak',
-            new=AsyncMock(),
-        ) as get_idp_tokens_from_keycloak,
-    ):
-        state = oauth_v2._encrypt_state(
-            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
-        )
-        response = client.get(
-            '/oauth/1/callback',
-            params={'code': 'c', 'state': state},
-            follow_redirects=False,
-        )
-
-    assert response.status_code == 302
-    get_git_provider_by_type.assert_not_awaited()
-    get_idp_tokens_from_keycloak.assert_not_awaited()
-
-
 def test_callback_login_non_legacy_keycloak_skips_broker_fetch(client, jwt_svc):
-    """A regular (non-``legacy_keycloak``) login IDP is unaffected -- no
-    broker call, no sibling-row lookup."""
-    provider = _fake_provider(provider_id=1, is_idp=True, legacy_keycloak=False)
+    """A login IDP with no ``legacy_keycloak_type`` is unaffected -- no
+    broker call, no git-provider row lookup."""
+    provider = _fake_provider(provider_id=1, category='enterprise_sso', is_idp=True)
     user_id = uuid4()
     token_response = {'access_token': 'at-123', 'refresh_token': 'rt-123'}
     userinfo = {'sub': 'ext-sub-1'}
@@ -686,9 +633,9 @@ def test_callback_login_non_legacy_keycloak_skips_broker_fetch(client, jwt_svc):
         ),
         patch.object(
             oauth_v2.AuthProviderStore,
-            'get_git_provider_by_type',
+            'get_provider_by_type',
             new=AsyncMock(),
-        ) as get_git_provider_by_type,
+        ) as get_provider_by_type,
         _patch_httpx(token_response, userinfo),
         patch.object(
             oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
@@ -722,7 +669,7 @@ def test_callback_login_non_legacy_keycloak_skips_broker_fetch(client, jwt_svc):
         )
 
     assert response.status_code == 302
-    get_git_provider_by_type.assert_not_awaited()
+    get_provider_by_type.assert_not_awaited()
     get_idp_tokens_from_keycloak.assert_not_awaited()
 
 
