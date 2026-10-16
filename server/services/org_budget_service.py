@@ -10,7 +10,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, inspect, or_, select
+from sqlalchemy import String, and_, cast, inspect, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,7 @@ from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.slack_team import SlackTeam
+from storage.slack_user import SlackUser
 from storage.user import User
 from utils.sql import escape_ilike
 
@@ -2020,7 +2021,9 @@ class OrgBudgetService:
     ) -> bool:
         if not settings.slack_channel:
             return False
-        team_id = await self._resolve_slack_team_id(settings.slack_team_id)
+        team_id = await self._resolve_slack_team_id(
+            settings.slack_team_id, settings.org_id
+        )
         token = await self._get_slack_bot_token(team_id) if team_id else None
         if not token:
             return False
@@ -2045,10 +2048,12 @@ class OrgBudgetService:
             )
             return False
 
-    async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
+    async def _get_slack_bot_token(
+        self, team_id: str | None, org_id: UUID | None = None
+    ) -> str | None:
         if not SLACK_AVAILABLE or not is_slack_configured():
             return None
-        team_id = await self._resolve_slack_team_id(team_id)
+        team_id = await self._resolve_slack_team_id(team_id, org_id)
         if not team_id:
             return None
         result = await self.db_session.execute(
@@ -2061,7 +2066,7 @@ class OrgBudgetService:
             'email_alerts_available': SMTPEmailService.is_configured(),
             'slack_integration_configured': SLACK_AVAILABLE and is_slack_configured(),
             'slack_workspace_connected': bool(
-                await self._get_slack_bot_token(settings.slack_team_id)
+                await self._get_slack_bot_token(settings.slack_team_id, settings.org_id)
             ),
         }
 
@@ -2112,14 +2117,41 @@ class OrgBudgetService:
         )
         if not activates('slack_enabled') and not destination_changed:
             return
-        if not await self._get_slack_bot_token(team_id):
+        if not await self._get_slack_bot_token(team_id, settings.org_id):
             reject('Slack budget alerts require a connected Slack integration.')
         if not channel:
             reject('Select a Slack channel for budget alerts.')
 
-    async def _resolve_slack_team_id(self, team_id: str | None) -> str | None:
+    async def _resolve_slack_team_id(
+        self, team_id: str | None, org_id: UUID | None = None
+    ) -> str | None:
+        """Pick the Slack workspace for an org's budget alerts.
+
+        An explicit ``slack_team_id`` wins. Otherwise use the one workspace that
+        the org's members linked through the Slack OAuth flow. If no member
+        linked one, fall back to the only installed workspace.
+        """
         if team_id:
             return team_id
+        if org_id:
+            result = await self.db_session.execute(
+                select(SlackUser.team_id)
+                .join(
+                    OrgMember,
+                    SlackUser.keycloak_user_id == cast(OrgMember.user_id, String),
+                )
+                .where(OrgMember.org_id == org_id, SlackUser.team_id.is_not(None))
+                .distinct()
+            )
+            linked_team_ids = [row.team_id for row in result]
+            if len(linked_team_ids) == 1:
+                return linked_team_ids[0]
+            if linked_team_ids:
+                logger.warning(
+                    'org_budget_slack_team_ambiguous',
+                    extra={'org_id': str(org_id), 'team_ids': linked_team_ids},
+                )
+                return None
         result = await self.db_session.execute(select(SlackTeam.team_id))
         team_ids = [row.team_id for row in result]
         if len(team_ids) == 1:

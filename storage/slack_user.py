@@ -19,6 +19,7 @@ class SlackUser(Base):
     org_id: Mapped[UUID | None] = mapped_column(ForeignKey('org.id'), nullable=True)
     slack_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     slack_display_name: Mapped[str] = mapped_column(String, nullable=False)
+    team_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         server_default=text('CURRENT_TIMESTAMP'),
