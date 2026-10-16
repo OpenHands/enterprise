@@ -1263,6 +1263,39 @@ async def test_my_budget_reports_org_default_and_only_own_cycle_spend(
 
 
 @pytest.mark.asyncio
+async def test_my_budget_reports_the_org_limit_and_org_cycle_spend(
+    async_session_maker, budget_org
+):
+    # Arrange: a $1000 org cap with $100 recorded before the cycle started.
+    user_id = uuid4()
+    financial_data = _financial_data(
+        team_spend=1012.4,
+        team_max_budget=1100.0,
+        members={str(user_id): (55.0, None, True)},
+    )
+    async with async_session_maker() as session:
+        session.add(
+            _enabled_budget_settings(
+                budget_org.id,
+                monthly_limit=1000.0,
+                cycle_start_spend=100.0,
+                user_cycle_start_spend={str(user_id): 15.0},
+            )
+        )
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=financial_data)):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, user_id
+            )
+
+    # Assert
+    assert budget['org_monthly_limit'] == 1000.0
+    assert budget['org_current_spend'] == pytest.approx(912.4)
+
+
+@pytest.mark.asyncio
 async def test_my_budget_reports_admin_override_with_the_date_it_was_set(
     async_session_maker, budget_org
 ):
@@ -1341,6 +1374,7 @@ async def test_my_budget_reports_spend_unavailable_instead_of_failing(
     # Assert
     assert budget['monthly_limit'] == 50.0
     assert budget['current_spend'] is None
+    assert budget['org_current_spend'] is None
     assert budget['spend_status'] == 'unavailable'
 
 
