@@ -50,6 +50,9 @@ _DEFAULT_CSP_DIRECTIVES: dict[str, str] = {
 # if they want to lock the docs down.
 _DEFAULT_CSP_SKIP_PATH_PREFIXES: tuple[str, ...] = ('/docs', '/redoc')
 
+_LOOPBACK_HOSTS = ('localhost', '127.0.0.1')
+_LOOPBACK_RUNTIME_HOSTS = 'http://localhost:* http://127.0.0.1:*'
+
 
 def _build_csp(directives: dict[str, str]) -> str:
     """Render a directive map as a CSP header value, dropping empty entries."""
@@ -87,10 +90,14 @@ def _runtime_hosts_from_web_host() -> str:
     (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
     (``vscode-<sandbox>.<sibling>.<registrable>``).
 
-    Returns an empty string when ``WEB_HOST`` is unset or single-label
-    (e.g. ``localhost``), where the wildcard would either be invalid or
-    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
-    case.
+    When ``WEB_HOST`` is a loopback host (``localhost`` / ``127.0.0.1``) the
+    Docker sandbox backend publishes each sandbox on a random host port
+    (``http://localhost:<port>``), which is a different origin from the app
+    and not matched by ``'self'``. Allow any loopback port instead.
+
+    Returns an empty string when ``WEB_HOST`` is unset or any other
+    single-label host, where a wildcard would either be invalid or too
+    broad.
     """
     web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
     if not web_host:
@@ -105,9 +112,11 @@ def _runtime_hosts_from_web_host() -> str:
     # Strip port (e.g. `localhost:3000`) so the dot-split below is sane.
     if ':' in web_host:
         web_host = web_host.split(':', 1)[0]
+    if web_host in _LOOPBACK_HOSTS:
+        return _LOOPBACK_RUNTIME_HOSTS
     parts = web_host.split('.')
     if len(parts) < 2:
-        # Single-label host (`localhost`, `nginx`, ...); no registrable
+        # Single-label host (`nginx`, ...); no registrable
         # domain we can wildcard without becoming `*` itself.
         return ''
     registrable = '.'.join(parts[1:])

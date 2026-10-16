@@ -325,14 +325,40 @@ class TestSecurityHeadersMiddleware:
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``localhost`` has no registrable domain to wildcard."""
-        monkeypatch.setenv('WEB_HOST', 'localhost')
+        """A non-loopback single-label host has no registrable domain to wildcard."""
+        monkeypatch.setenv('WEB_HOST', 'nginx')
 
         response = client.get('/sample')
 
         csp = _csp(response)
         assert 'https://*.' not in csp
+        assert 'localhost' not in csp
         assert "frame-src 'self';" in csp
+
+    @pytest.mark.parametrize(
+        'web_host',
+        ['localhost', 'localhost:3100', 'http://localhost:3100', '127.0.0.1'],
+    )
+    def test_loopback_web_host_allows_loopback_runtime_ports(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        web_host: str,
+    ) -> None:
+        """The Docker sandbox backend serves sandboxes on http://localhost:<random port>."""
+        monkeypatch.setenv('WEB_HOST', web_host)
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        loopback = 'http://localhost:* http://127.0.0.1:*'
+        assert f"frame-src 'self' {loopback};" in csp
+        assert (
+            "connect-src 'self' ws: wss: https://us.i.posthog.com"
+            f' https://us-assets.i.posthog.com {loopback};' in csp
+        )
+        assert 'https://*.' not in csp
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
