@@ -874,6 +874,79 @@ class TestMarketplaceSkillsNameConflicts:
         assert result.conflicts == []
 
 
+# Tests for marketplace-skills preview of repositories without a manifest
+
+
+class TestMarketplaceSkillsPlainRepository:
+    """The preview lists the skills a conversation loads from a plain repo."""
+
+    @pytest.mark.asyncio
+    async def test_lists_skill_folders_in_skills_dirs(self, tmp_path):
+        """Skill folders in skills/ and .skills/ are listed; loose markdown is not."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'greet', 'greet')
+        _write_skill_dir(repo_dir / '.skills' / 'commit', 'commit')
+        _write_skill_file(repo_dir / 'skills', 'notes')
+        _write_skill_dir(repo_dir / 'stray', 'stray')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert [skill.name for skill in result.skills] == ['greet', 'commit']
+        assert result.marketplace_skills == {'acme': ['greet', 'commit']}
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_lists_skill_folders_when_path_is_the_skills_folder(self, tmp_path):
+        """A repository path pointing at the skills folder lists its skills."""
+        # Arrange: the clone path is already the repository path (skills/).
+        skills_dir = tmp_path / 'repo' / 'skills'
+        _write_skill_dir(skills_dir / 'greet', 'greet')
+
+        # Act
+        result = await _preview_marketplace(skills_dir, tmp_path / 'global')
+
+        # Assert
+        assert [skill.name for skill in result.skills] == ['greet']
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_reports_repository_without_manifest_or_skills(self, tmp_path):
+        """A repository a conversation would load nothing from is an error."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_file(repo_dir, 'readme-like')
+        _write_skill_file(repo_dir / 'docs', 'guide')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert result.skills == []
+        assert result.errors == [
+            'acme: no marketplace manifest or skill folders found (expected '
+            '.plugin/marketplace.json or skills/<name>/SKILL.md)'
+        ]
+
+    @pytest.mark.asyncio
+    async def test_invalid_manifest_is_not_read_as_plain_repository(self, tmp_path):
+        """A broken manifest is reported, not replaced by the skills folder."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'greet', 'greet')
+        (repo_dir / '.plugin').mkdir()
+        (repo_dir / '.plugin' / 'marketplace.json').write_text('{not json')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert result.skills == []
+        assert result.errors == ['acme: invalid marketplace manifest']
+
+
 # Tests for the marketplace-check endpoint (checked before saving)
 
 _ROUTER = 'openhands.app_server.user.skills_router'

@@ -248,6 +248,52 @@ def _manifest_entry_skill_names(
     return names
 
 
+def _plain_repo_skills(repo_dir: Path, marketplace_name: str) -> list[SkillInfo]:
+    """Skills a conversation loads from a repository without a manifest.
+
+    Mirrors the agent-server's rule (``Marketplace.from_skills_dir`` in the SDK):
+    the ``<name>/SKILL.md`` folders in ``skills/`` and ``.skills/``, or, when
+    neither exists, those directly in ``repo_dir``, which is where a repository
+    path pointing at the skills folder lands. Loose markdown files are not
+    skills, and every path must resolve inside the clone.
+    """
+    root = repo_dir.resolve()
+    search_dirs = [d for d in (root / 'skills', root / '.skills') if d.is_dir()]
+
+    skills: dict[str, SkillInfo] = {}
+    for search_dir in search_dirs or [root]:
+        for candidate in sorted(search_dir.iterdir()):
+            if not candidate.is_dir() or not candidate.resolve().is_relative_to(root):
+                continue
+            skill_md = next(
+                (
+                    f
+                    for f in sorted(candidate.iterdir())
+                    if f.is_file() and f.name.lower() == 'skill.md'
+                ),
+                None,
+            )
+            if skill_md is None or not skill_md.resolve().is_relative_to(root):
+                continue
+
+            fm = _parse_skill_frontmatter(skill_md)
+            fm = fm if isinstance(fm, dict) else {}
+            name = str(fm.get('name') or candidate.name)
+            triggers = fm.get('triggers')
+            skills.setdefault(
+                name,
+                SkillInfo(
+                    name=name,
+                    type=str(fm.get('type', 'knowledge')),
+                    source=f'marketplace:{marketplace_name}',
+                    triggers=[str(t) for t in triggers]
+                    if isinstance(triggers, list)
+                    else None,
+                ),
+            )
+    return list(skills.values())
+
+
 @router.get(
     '/search',
     response_model=SkillPage,
@@ -555,12 +601,13 @@ async def get_marketplace_skills(
             # in plugins, which are not surfaced as rows.
             shipped_names: set[str] = set()
             loaded_marketplace: Marketplace | None = None
+            manifest_missing = False
             try:
                 loaded_marketplace = Marketplace.load(clone_path)
             except FileNotFoundError:
                 # No manifest: this is a plain skills repo, not a plugin
-                # marketplace. Fall back to a loose-skill scan below.
-                loaded_marketplace = None
+                # marketplace. Fall back to its skill folders below.
+                manifest_missing = True
             except Exception as e:
                 logger.warning(
                     f'Failed to parse marketplace manifest for {marketplace.name}: {e}'
@@ -595,31 +642,23 @@ async def get_marketplace_skills(
                     shipped_names |= _manifest_entry_skill_names(
                         clone_path, skill_entry.source, is_plugin=False
                     )
-            else:
-                # No manifest: surface loose skills from skills/ and .skills/.
+            elif manifest_missing:
+                # No manifest: list the skill folders a conversation loads.
                 # Bundled plugin skills under plugins/*/skills/ are deliberately
                 # not flattened — a plugin marketplace should ship a manifest.
-                skills_dirs = [
-                    d
-                    for d in (clone_path / 'skills', clone_path / '.skills')
-                    if d.is_dir()
-                ]
-                for skills_dir in skills_dirs:
-                    try:
-                        for skill in _load_skills_from_dir(
-                            skills_dir, marketplace.source
-                        ):
-                            all_skills.append(
-                                SkillInfo(
-                                    name=skill.name,
-                                    type=skill.type,
-                                    source=f'marketplace:{marketplace.name}',
-                                    triggers=skill.triggers,
-                                )
-                            )
-                            skill_names.append(skill.name)
-                    except Exception as e:
-                        logger.warning(f'Failed to load skills from {skills_dir}: {e}')
+                try:
+                    plain_skills = _plain_repo_skills(clone_path, marketplace.name)
+                except Exception as e:
+                    logger.warning(f'Failed to read skills from {clone_path}: {e}')
+                    plain_skills = []
+                all_skills.extend(plain_skills)
+                skill_names.extend(skill.name for skill in plain_skills)
+                if not plain_skills:
+                    errors.append(
+                        f'{marketplace.name}: no marketplace manifest or skill '
+                        'folders found (expected .plugin/marketplace.json or '
+                        'skills/<name>/SKILL.md)'
+                    )
 
             marketplace_skills[marketplace.name] = skill_names
 
