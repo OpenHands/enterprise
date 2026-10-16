@@ -125,6 +125,7 @@ from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_w
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import PasswordProviderDetails
 from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
@@ -489,12 +490,30 @@ def _render_invite_form(
     )
 
 
-async def _require_idp_available() -> None:
-    if not await is_idp_available():
+async def _require_idp_available() -> AuthProvider:
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
         )
+    return provider
+
+
+async def _find_existing_user(provider: AuthProvider, email: str) -> User | None:
+    """Resolve the user behind a password-IDP identity (the normalized email).
+
+    The ``auth_provider_users`` link is checked first; accounts that predate
+    it are found by derived id, then by email, and get linked on their next
+    successful login (``_complete_idp_login``).
+    """
+    link = await AuthProviderUserStore().get(provider.id, email)
+    if link is not None:
+        return await UserStore.get_user_by_id(str(link.user_id))
+    user = await UserStore.get_user_by_id(derive_idp_user_id(email))
+    if user is None:
+        user = await UserStore.get_user_by_email(email)
+    return user
 
 
 def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
@@ -587,15 +606,13 @@ async def idp_login(
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
-    user = await UserStore.get_user_by_id(derive_idp_user_id(email_str))
-    if user is None:
-        user = await UserStore.get_user_by_email(email_str)
+    user = await _find_existing_user(provider, email_str)
 
     if (
         user is None
@@ -645,7 +662,7 @@ async def idp_signup(
     (password already set), a too-short password, or a confirm-password
     mismatch.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
@@ -672,9 +689,7 @@ async def idp_signup(
         )
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
 
     # If the user already has a password, the account is claimed — don't
     # allow overwriting it via sign-up (would be a password-reset bypass).
@@ -716,7 +731,9 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        user = await UserStore.create_user(
+            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
+        )
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -829,7 +846,7 @@ async def idp_invite_accept(
     — a no-op if they're already a member — while
     ``_SIGNUP_LINK_ROLE_SUPERADMIN`` instead grants the super-admin role.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     try:
         link = _verify_signup_link_token(token)
@@ -846,9 +863,7 @@ async def idp_invite_accept(
         return _invite_form_redirect(web_url, token=token, error='password_too_short')
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
 
     hashed = hash_password(password)
 
@@ -865,7 +880,9 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        user = await UserStore.create_user(
+            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
+        )
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -1102,6 +1119,15 @@ async def _complete_idp_login(
 
     user_id = str(user.id)
     has_accepted_tos = user.accepted_tos is not None
+
+    link_store = AuthProviderUserStore()
+    if await link_store.get(provider.id, email) is None:
+        await link_store.link(
+            oauth_provider_id=provider.id,
+            user_id=user.id,
+            external_subject_id=email,
+            external_email=email,
+        )
 
     await UserStore.record_login(user_id)
 

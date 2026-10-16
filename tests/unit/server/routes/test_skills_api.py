@@ -6,7 +6,7 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -25,8 +25,11 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.skills_router import (
     GLOBAL_SKILLS_DIR,
+    MarketplacePluginPreview,
+    MarketplaceSkillsPreviewResponse,
     _bearer_auth_git_env,
     _clone_marketplace_repo,
+    check_marketplace,
     get_marketplace_skills,
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -284,6 +287,12 @@ def test_global_skills_dir_points_to_repo_root():
 # Tests for marketplace-skills endpoint git clone failures
 
 
+def _clone_url(mock_run: MagicMock) -> str:
+    """Return the URL passed to the first ``git clone`` call."""
+    argv = mock_run.call_args_list[0][0][0]
+    return argv[argv.index('--') + 1]
+
+
 class TestMarketplaceSkillsCloneFailures:
     """Tests for git clone failure scenarios in marketplace-skills endpoint."""
 
@@ -371,7 +380,7 @@ class TestMarketplaceSkillsCloneFailures:
         marketplace = MarketplaceRegistration(
             name='test-marketplace',
             source='github:owner/valid-repo',
-            ref='nonexistent-branch',
+            ref='0123456789abcdef0123456789abcdef01234567',
         )
 
         # Mock subprocess.run for clone success, checkout failure
@@ -380,7 +389,7 @@ class TestMarketplaceSkillsCloneFailures:
 
         mock_checkout_result = MagicMock()
         mock_checkout_result.returncode = 128
-        mock_checkout_result.stderr = " pathspec 'nonexistent-branch' did not match"
+        mock_checkout_result.stderr = ' reference is not a tree'
 
         def run_side_effect(cmd, *args, **kwargs):
             if 'checkout' in cmd:
@@ -476,9 +485,7 @@ class TestMarketplaceSkillsCloneFailures:
             '~jane/marketplace',
             specified_provider=ProviderType.BITBUCKET_DATA_CENTER,
         )
-        clone_argv = mock_run.call_args[0][0]
-        assert clone_argv[:3] == ['git', 'clone', '--']
-        assert clone_argv[3] == dc_url
+        assert _clone_url(mock_run) == dc_url
 
     @pytest.mark.asyncio
     async def test_clone_azure_devops_encoded_url_encodes_project_once(self):
@@ -522,8 +529,7 @@ class TestMarketplaceSkillsCloneFailures:
         service.get_repository_details_from_repo_name.assert_awaited_once_with(
             'acme/Web Apps/skills'
         )
-        clone_argv = mock_run.call_args[0][0]
-        assert clone_argv[3] == (
+        assert _clone_url(mock_run) == (
             'https://acme:pat@dev.azure.com/acme/Web%20Apps/_git/skills'
         )
         # PATs are already in the URL; no extra header is configured.
@@ -571,7 +577,9 @@ class TestMarketplaceSkillsCloneFailures:
             await _clone_marketplace_repo(marketplace, mock_user_context)
 
         clone_argv = mock_run.call_args[0][0]
-        assert clone_argv[3] == 'https://dev.azure.com/acme/Web%20Apps/_git/skills'
+        assert _clone_url(mock_run) == (
+            'https://dev.azure.com/acme/Web%20Apps/_git/skills'
+        )
         assert not any(token in arg for arg in clone_argv)
         env = mock_run.call_args.kwargs['env']
         assert env['GIT_CONFIG_COUNT'] == '1'
@@ -659,9 +667,113 @@ class TestMarketplaceSkillsCloneFailures:
                 await _clone_marketplace_repo(marketplace, mock_user_context)
 
         # Not refused; cloned from the public github.com domain (no credentials).
-        clone_argv = mock_run.call_args[0][0]
-        assert clone_argv[3] == 'https://github.com/OpenHands/skills.git'
+        assert _clone_url(mock_run) == 'https://github.com/OpenHands/skills.git'
         mock_user_context.get_provider_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'source', ['github:dotnet/skills', 'https://github.com/dotnet/skills.git']
+    )
+    async def test_github_source_skips_azure_devops_token(self, source):
+        """An Azure-only user clones public GitHub without an Azure lookup."""
+        mock_user_context = MagicMock()
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('pat'))
+            }
+        )
+        mock_user_context.get_user_id = AsyncMock(return_value='test-user')
+        mock_user_context.get_provider_handler = AsyncMock()
+        marketplace = MarketplaceRegistration(name='dotnet', source=source)
+
+        with (
+            patch.object(ProviderHandler, 'get_authenticated_git_url') as mock_resolve,
+            patch(
+                'openhands.app_server.user.skills_router.subprocess.run',
+                return_value=MagicMock(returncode=0),
+            ) as mock_run,
+            patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+        ):
+            result = await _clone_marketplace_repo(marketplace, mock_user_context)
+
+        assert result == (Path('/tmp/test_clone'), '')
+        mock_resolve.assert_not_called()
+        mock_user_context.get_provider_handler.assert_not_awaited()
+        assert _clone_url(mock_run) == 'https://github.com/dotnet/skills.git'
+        assert mock_run.call_args_list[0].kwargs['env'] is None
+
+    @pytest.mark.asyncio
+    async def test_github_source_resolves_only_against_github(self):
+        """With a GitHub token, a github: source is resolved pinned to GitHub."""
+        github_url = 'https://x-access-token:gh@github.com/acme/private-skills.git'
+        mock_user_context = MagicMock()
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('pat')),
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh')),
+            }
+        )
+        mock_user_context.get_user_id = AsyncMock(return_value='test-user')
+        marketplace = MarketplaceRegistration(
+            name='private', source='github:acme/private-skills'
+        )
+
+        with (
+            patch.object(
+                ProviderHandler, 'get_authenticated_git_url', return_value=github_url
+            ) as mock_resolve,
+            patch(
+                'openhands.app_server.user.skills_router.subprocess.run',
+                return_value=MagicMock(returncode=0),
+            ) as mock_run,
+            patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+        ):
+            await _clone_marketplace_repo(marketplace, mock_user_context)
+
+        mock_resolve.assert_awaited_once_with(
+            'acme/private-skills', specified_provider=ProviderType.GITHUB
+        )
+        assert _clone_url(mock_run) == github_url
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'ref, clone_flags, checkout',
+        [
+            (None, ['--depth', '1'], False),
+            ('v1.2', ['--depth', '1', '--branch', 'v1.2'], False),
+            ('0123456789abcdef0123456789abcdef01234567', [], True),
+        ],
+    )
+    async def test_clone_is_shallow_unless_ref_is_commit_sha(
+        self, ref, clone_flags, checkout
+    ):
+        """Branches and tags clone shallow; only a commit SHA needs history."""
+        mock_user_context = MagicMock()
+        mock_user_context.get_provider_tokens = AsyncMock(return_value=None)
+        marketplace = MarketplaceRegistration(
+            name='dotnet', source='github:dotnet/skills', ref=ref
+        )
+
+        with (
+            patch(
+                'openhands.app_server.user.skills_router.subprocess.run',
+                return_value=MagicMock(returncode=0),
+            ) as mock_run,
+            patch('tempfile.mkdtemp', return_value=Path('/tmp/test_clone')),
+        ):
+            await _clone_marketplace_repo(marketplace, mock_user_context)
+
+        clone_argv = mock_run.call_args_list[0][0][0]
+        assert clone_argv == [
+            'git',
+            'clone',
+            *clone_flags,
+            '--',
+            'https://github.com/dotnet/skills.git',
+            '/tmp/test_clone',
+        ]
+        checkout_calls = [c for c in mock_run.call_args_list if 'checkout' in c[0][0]]
+        assert len(checkout_calls) == (1 if checkout else 0)
 
 
 # Tests for marketplace-skills endpoint built-in skill name conflicts
@@ -833,3 +945,195 @@ class TestMarketplaceSkillsPlainRepository:
         # Assert
         assert result.skills == []
         assert result.errors == ['acme: invalid marketplace manifest']
+
+
+# Tests for the marketplace-check endpoint (checked before saving)
+
+_ROUTER = 'openhands.app_server.user.skills_router'
+
+
+def _preview(
+    plugins: int = 0, errors: list[str] | None = None
+) -> MarketplaceSkillsPreviewResponse:
+    return MarketplaceSkillsPreviewResponse(
+        skills=[],
+        plugins=[
+            MarketplacePluginPreview(
+                name=f'plugin-{i}', source='github:acme/skills', marketplace='acme'
+            )
+            for i in range(plugins)
+        ],
+        marketplace_skills={},
+        errors=errors or [],
+    )
+
+
+async def _check(
+    source: str,
+    *,
+    resolved: str | None = None,
+    preview: MarketplaceSkillsPreviewResponse | Exception | None = None,
+    provider_match: tuple[ProviderType, str] | None = None,
+    ref: str | None = None,
+):
+    """Run check_marketplace with conversation resolution and preview mocked."""
+    marketplace = MarketplaceRegistration(name='acme', source=source, ref=ref)
+
+    async def authenticate(registrations, _user_context):
+        return [
+            reg.model_copy(update={'source': resolved}) if resolved is not None else reg
+            for reg in registrations
+        ]
+
+    preview_mock = AsyncMock(
+        side_effect=preview if isinstance(preview, Exception) else None,
+        return_value=preview if preview is not None else _preview(plugins=1),
+    )
+    with (
+        patch(f'{_ROUTER}.authenticate_marketplace_sources', side_effect=authenticate),
+        patch(
+            f'{_ROUTER}._match_url_source_to_provider',
+            AsyncMock(return_value=provider_match),
+        ),
+        patch(f'{_ROUTER}.get_marketplace_skills', preview_mock),
+    ):
+        result = await check_marketplace(marketplace, user_context=MagicMock())
+    return result, preview_mock
+
+
+class TestMarketplaceCheck:
+    """The check reports whether a marketplace will load in conversations."""
+
+    @pytest.mark.asyncio
+    async def test_repository_that_loads_is_ok(self):
+        result, preview = await _check('github:acme/skills', preview=_preview(2))
+
+        assert (result.status, result.reason, result.plugin_count) == ('ok', None, 2)
+        assert preview.await_args.args[0][0].source == 'github:acme/skills'
+
+    @pytest.mark.asyncio
+    async def test_source_without_scheme_is_checked_as_https(self):
+        result, preview = await _check('github.com/acme/skills')
+
+        assert result.status == 'ok'
+        assert preview.await_args.args[0][0].source == (
+            'https://github.com/acme/skills'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'error, status, reason',
+        [
+            (
+                "acme: Git clone failed: fatal: repository 'x' not found",
+                'error',
+                'not_found',
+            ),
+            ('acme: Unsupported marketplace host: x', 'error', 'not_found'),
+            (
+                "acme: Git checkout failed: error: pathspec 'v9' did not match",
+                'error',
+                'ref_not_found',
+            ),
+            (
+                'acme: Git clone failed: fatal: Remote branch v9 not found in '
+                'upstream origin',
+                'error',
+                'ref_not_found',
+            ),
+            ('acme: Repo path not found: plugins', 'error', 'path_not_found'),
+            ('acme: Git clone timed out', 'unchecked', 'failed'),
+            ('acme: Clone failed: unexpected', 'unchecked', 'failed'),
+        ],
+    )
+    async def test_preview_errors_are_classified(self, error, status, reason):
+        result, _ = await _check('github:acme/skills', preview=_preview(errors=[error]))
+
+        assert (result.status, result.reason) == (status, reason)
+
+    @pytest.mark.asyncio
+    async def test_repository_without_plugins_or_skills_is_an_error(self):
+        result, _ = await _check('github:acme/skills', preview=_preview(0))
+
+        assert (result.status, result.reason) == ('error', 'empty')
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'source', ['OpenHands/extensions', 'marketplaces/team/internal', 'skills']
+    )
+    async def test_source_read_as_a_sandbox_folder_is_unchecked(self, source):
+        """A source no connected provider resolves is read as a folder, so it
+        loads nothing from a repository."""
+        result, preview = await _check(source)
+
+        assert (result.status, result.reason) == ('unchecked', 'sandbox_folder')
+        preview.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_owner_repo_resolved_by_a_provider_is_checked(self):
+        result, preview = await _check(
+            'acme/skills',
+            resolved='https://x-access-token:secret-token@github.com/acme/skills.git',
+        )
+
+        assert result.status == 'ok'
+        preview.assert_awaited_once()
+        assert 'secret-token' not in result.model_dump_json()
+
+    @pytest.mark.asyncio
+    async def test_host_that_is_not_a_connected_provider_is_unchecked(self):
+        result, preview = await _check('https://gitea.example.org/org/skills')
+
+        assert (result.status, result.reason) == ('unchecked', 'unknown_host')
+        preview.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connected_self_hosted_provider_is_checked(self):
+        result, preview = await _check(
+            'gitlab.example.com/group/skills',
+            provider_match=(ProviderType.GITLAB, 'group/skills'),
+        )
+
+        assert result.status == 'ok'
+        preview.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_source_the_agent_server_cannot_parse_is_an_error(self):
+        result, preview = await _check('ssh://git@github.com/acme/skills.git')
+
+        assert (result.status, result.reason) == ('error', 'unsupported')
+        preview.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_preview_failure_is_unchecked(self):
+        result, _ = await _check(
+            'github:acme/skills', preview=HTTPException(status_code=500)
+        )
+
+        assert (result.status, result.reason) == ('unchecked', 'failed')
+
+
+def test_marketplace_check_endpoint_validates_and_normalizes(test_client):
+    with (
+        patch(
+            f'{_ROUTER}.authenticate_marketplace_sources',
+            AsyncMock(side_effect=lambda regs, _ctx: regs),
+        ),
+        patch(
+            f'{_ROUTER}.get_marketplace_skills',
+            AsyncMock(return_value=_preview(1)),
+        ) as preview,
+    ):
+        ok = test_client.post(
+            '/api/v1/skills/marketplace-check',
+            json={'name': 'acme', 'source': 'github.com/acme/skills'},
+        )
+        invalid = test_client.post(
+            '/api/v1/skills/marketplace-check',
+            json={'name': 'acme', 'source': '/etc/skills'},
+        )
+
+    assert ok.status_code == 200
+    assert ok.json()['status'] == 'ok'
+    assert preview.await_args.args[0][0].source == 'https://github.com/acme/skills'
+    assert invalid.status_code == 422

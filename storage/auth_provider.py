@@ -77,6 +77,12 @@ class AuthProvider(Base):
     allow_registration: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    # Initial ``User.allow_match_by_email`` for users created by a login
+    # through this row -- see
+    # ``server.auth.provider_identity.resolve_or_create_user``.
+    allow_match_by_email: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
     details: Mapped[AuthProviderDetails] = mapped_column(
         create_json_with_encrypted_secrets_type_decorator(AuthProviderDetails),
         nullable=False,
