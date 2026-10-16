@@ -5,7 +5,12 @@ from openhands.app_server.integrations.azure_devops.service.base import (
 )
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
+)
+from openhands.app_server.utils.paging_utils import (
+    decode_page_number,
+    next_page_number_id,
 )
 
 
@@ -140,8 +145,12 @@ class AzureDevOpsBranchesMixin(AzureDevOpsMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search for branches within a repository."""
         # Parse repository string: organization/project/repo
         parts = repository.split('/')
@@ -165,14 +174,19 @@ class AzureDevOpsBranchesMixin(AzureDevOpsMixinBase):
             response, _ = await self._make_request(url)
             branches_data = response.get('value', [])
 
-            # Filter branches by query
+            # Filter branches by query. Skip the matches of earlier pages.
             filtered_branches = []
+            page = decode_page_number(page_id)
+            to_skip = (page - 1) * per_page
             for branch_data in branches_data:
                 # Extract branch name from the ref (e.g., "refs/heads/main" -> "main")
                 name = branch_data.get('name', '').replace('refs/heads/', '')
 
                 # Check if query matches branch name
                 if query.lower() in name.lower():
+                    if to_skip > 0:
+                        to_skip -= 1
+                        continue
                     object_id = branch_data.get('objectId', '')
 
                     # Get commit details for this branch
@@ -194,7 +208,12 @@ class AzureDevOpsBranchesMixin(AzureDevOpsMixinBase):
                     if len(filtered_branches) >= per_page:
                         break
 
-            return filtered_branches
+            return BranchSearchPage(
+                branches=filtered_branches,
+                next_page_id=next_page_number_id(
+                    page, len(filtered_branches), per_page
+                ),
+            )
         except Exception:
-            # Return empty list on error instead of None
-            return []
+            # Return an empty page on error instead of None
+            return BranchSearchPage(branches=[])

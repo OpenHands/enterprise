@@ -6,6 +6,7 @@ from openhands.app_server.integrations.azure_devops.azure_devops_service import 
     AzureDevOpsServiceImpl as AzureDevOpsService,
 )
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 @pytest.mark.asyncio
@@ -125,3 +126,29 @@ async def test_azure_devops_get_repository_details():
         assert repo.id == 'repo1'
         assert repo.full_name == 'myorg/Project1/Repo1'
         assert repo.git_provider == ProviderType.AZURE_DEVOPS
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_search_branches_returns_requested_page():
+    """Search skips the matches of earlier pages, and gets commits only for the page."""
+    service = AzureDevOpsService(user_id='test_user', token=None, base_domain='myorg')
+    refs = [
+        {'name': f'refs/heads/feat-{i}', 'objectId': f'sha{i}'} for i in range(1, 6)
+    ]
+
+    async def fake_request(url, *args, **kwargs):
+        if '/refs?' in url:
+            return {'value': refs}, {}
+        return {'committer': {'date': '2024-01-01T00:00:00Z'}}, {}
+
+    service._make_request = AsyncMock(side_effect=fake_request)  # type: ignore[method-assign]
+
+    result = await service.search_branches(
+        'myorg/P/repo', 'feat', per_page=2, page_id=encode_page_id(2)
+    )
+
+    assert [b.name for b in result.branches] == ['feat-3', 'feat-4']
+    commit_calls = [
+        c for c in service._make_request.call_args_list if '/commits/' in c.args[0]
+    ]
+    assert len(commit_calls) == 2
