@@ -100,6 +100,22 @@ class AuthProviderStore:
             )
             return list(result.scalars().all())
 
+    async def get_provider_by_type(self, provider_type: str) -> AuthProvider | None:
+        """Return the row whose ``details.provider_type`` is ``provider_type``.
+
+        If several match, the lowest ``id`` wins.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .where(
+                    AuthProvider.details['provider_type'].as_string() == provider_type
+                )
+                .order_by(AuthProvider.id)
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
             result = await session.execute(select(AuthProvider))

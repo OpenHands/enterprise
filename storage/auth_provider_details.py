@@ -184,6 +184,25 @@ class OAuthProviderDetails(AuthProviderDetails):
     userinfo_url: str | None = None
     scopes: list[str] | None = None
     permitted_drift_seconds: int = DEFAULT_PERMITTED_DRIFT_SECONDS
+    # Set on the per-brand login rows migration 189 seeds
+    # (``title='Log in with GitHub'`` etc.; ``provider_type`` itself is
+    # ``enterprise_sso``): their ``token_url``/credentials are Keycloak's own
+    # and Keycloak routes to that brand's federated identity via
+    # ``kc_idp_hint``, but its OIDC response only carries a Keycloak token.
+    # The value is the brand whose real token must additionally be fetched
+    # from Keycloak's identity-brokering endpoint
+    # (``TokenManager.get_idp_tokens_from_keycloak``) and stored under the
+    # git-provider row of that ``provider_type``.
+    legacy_keycloak_type: ProviderType | None = None
+
+    @field_validator('legacy_keycloak_type')
+    @classmethod
+    def _legacy_keycloak_type_is_git_provider(
+        cls, value: ProviderType | None
+    ) -> ProviderType | None:
+        if value == ProviderType.ENTERPRISE_SSO:
+            raise ValueError('legacy_keycloak_type must be a git provider')
+        return value
 
     @field_validator('client_secret', mode='before')
     @classmethod
