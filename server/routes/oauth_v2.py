@@ -10,6 +10,8 @@ New endpoints:
   the new small JWT cookie.
 - ``POST /oauth/{provider_id}/link`` — link a git provider to the signed-in
   user (must be authenticated).
+- ``GET /oauth/link-flow`` — whether the signed-in session links a git
+  provider through OAuth v2 or Keycloak.
 - ``DELETE /oauth/{provider_id}`` — unlink a provider from the signed-in user.
 
 These routes are registered but do NOT replace the Keycloak login flow yet
@@ -43,7 +45,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_auth, get_user_id
+from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.provider_identity import (
@@ -61,6 +64,7 @@ from server.auth.provider_identity import (
 from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
+from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -647,6 +651,39 @@ async def oauth_v2_link(
         samesite='lax',
     )
     return response
+
+
+class GitProviderLinkFlow(BaseModel):
+    flow: Literal['oauth_v2', 'keycloak']
+    # The git provider row to pass to ``POST /oauth/{provider_id}/link``;
+    # ``None`` for Keycloak, or when the provider isn't configured.
+    provider_id: int | None = None
+
+
+@oauth_v2_router.get('/link-flow')
+async def oauth_v2_link_flow(
+    provider: ProviderType,
+    user_auth: UserAuth = Depends(get_user_auth),
+    user_id: str = Depends(get_user_id),
+) -> GitProviderLinkFlow:
+    """Which flow links ``provider`` to the signed-in user's session.
+
+    The linked token must land where this session reads git tokens:
+    ``oauth_tokens`` for OAuth v2 sessions, Keycloak for legacy
+    ``keycloak_auth`` ones. Both kinds coexist while an install migrates to
+    OAuth v2 login, and the frontend can't tell them apart.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required to link a provider',
+        )
+    if not (isinstance(user_auth, SaasUserAuth) and user_auth.oauth_v2_cookie):
+        return GitProviderLinkFlow(flow='keycloak')
+    git_provider = await AuthProviderStore().get_provider_by_type(provider.value)
+    return GitProviderLinkFlow(
+        flow='oauth_v2', provider_id=git_provider.id if git_provider else None
+    )
 
 
 @oauth_v2_router.delete('/{provider_id}', status_code=status.HTTP_204_NO_CONTENT)
