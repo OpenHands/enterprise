@@ -360,21 +360,9 @@ async def oauth_v2_callback(
     """
     provider = await _get_provider(provider_id)
 
-    # Integrated IDP callbacks are handled by dedicated routes -- checked
+    # Password and SAML callbacks are handled by dedicated routes; checked
     # first, unconditionally, so this 404s on provider kind alone regardless
     # of whatever ``code``/``state`` a caller happens to send.
-    if provider.kind == PasswordProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='Password login callback must use POST with email field',
-        )
-    # SAML's ACS is a POST (the IdP's auto-submitting form) handled by
-    # ``server.routes.saml``, never this GET callback.
-    if provider.kind == SamlProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='SAML callback must use POST /saml/{provider_id}/acs',
-        )
     _require_oauth_provider(provider)
 
     if error:
