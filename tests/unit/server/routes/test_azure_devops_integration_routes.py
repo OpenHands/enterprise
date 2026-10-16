@@ -46,6 +46,9 @@ async def test_get_azure_devops_resources_reports_installed_status(monkeypatch):
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             # Org-wide subscriptions carry no projectId.
             return [
@@ -72,10 +75,12 @@ async def test_get_azure_devops_resources_reports_installed_status(monkeypatch):
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert status.organization == 'alonaking'
     assert status.webhook_installed is True
@@ -99,6 +104,9 @@ async def test_get_azure_devops_resources_reports_disabled_hook_as_not_installed
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             return [
                 {
@@ -120,10 +128,12 @@ async def test_get_azure_devops_resources_reports_disabled_hook_as_not_installed
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     # Disabled work-item hook -> org not fully installed, but id still surfaced.
     assert status.webhook_installed is False
@@ -164,6 +174,9 @@ async def test_get_azure_devops_resources_ignores_project_scoped_hooks(monkeypat
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             # Same event types + url, but project-scoped (projectId set) -> must
             # NOT be reported as the org-wide install.
@@ -185,10 +198,12 @@ async def test_get_azure_devops_resources_ignores_project_scoped_hooks(monkeypat
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert status.webhook_installed is False
     assert status.pr_webhook_installed is False
@@ -205,6 +220,9 @@ async def test_reinstall_azure_devops_webhook_replaces_existing_hooks(monkeypatc
 
     class FakeAzureDevOpsService:
         organization = 'alonaking'
+
+        async def get_accessible_organizations(self):
+            return ['alonaking']
 
         def __init__(self):
             self.delete_service_hook_subscription = AsyncMock()
@@ -239,10 +257,12 @@ async def test_reinstall_azure_devops_webhook_replaces_existing_hooks(monkeypatc
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
-    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert response.success is True
     assert response.organization == 'alonaking'
@@ -272,14 +292,19 @@ async def test_reinstall_azure_devops_webhook_requires_configured_secret(monkeyp
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
 
     assert exc_info.value.status_code == 503
 
@@ -405,6 +430,7 @@ def _use_service(monkeypatch, service):
     monkeypatch.setattr(azure_devops, 'HOST_URL', 'https://app.example.com')
     monkeypatch.setattr(azure_devops, 'IS_LOCAL_DEPLOYMENT', False)
     monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    service.get_accessible_organizations = AsyncMock(return_value=['alonaking'])
     monkeypatch.setattr(
         azure_devops, 'SaaSAzureDevOpsService', lambda external_auth_id: service
     )
@@ -415,7 +441,9 @@ async def test_reinstall_creates_new_hooks_before_deleting_old_ones(monkeypatch)
     service = _InMemoryAzureOrg()
     _use_service(monkeypatch, service)
 
-    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert response.success is True
     assert set(service.hooks) == {'new-pr', 'new-wi'}
@@ -433,7 +461,9 @@ async def test_reinstall_keeps_existing_hooks_when_azure_rejects_create(monkeypa
     _use_service(monkeypatch, service)
 
     with pytest.raises(HTTPException) as exc_info:
-        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
 
     assert exc_info.value.status_code == 502
     assert 'HTTP 400' in exc_info.value.detail
@@ -450,7 +480,9 @@ async def test_reinstall_rolls_back_new_hook_when_second_create_fails(monkeypatc
     _use_service(monkeypatch, service)
 
     with pytest.raises(HTTPException) as exc_info:
-        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
 
     assert exc_info.value.status_code == 502
     assert set(service.hooks) == {'old-pr', 'old-wi'}
@@ -462,7 +494,9 @@ async def test_reinstall_succeeds_when_old_hook_cleanup_fails(monkeypatch):
     service = _InMemoryAzureOrg(fail_delete={'old-pr'})
     _use_service(monkeypatch, service)
 
-    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert response.success is True
     assert response.pr_subscription_id == 'new-pr'
@@ -481,7 +515,9 @@ async def test_resources_prefers_enabled_hook_over_stale_copy(monkeypatch):
     }
     _use_service(monkeypatch, service)
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert status.webhook_installed is True
     assert status.pr_subscription_id == 'new-pr'
@@ -498,7 +534,9 @@ async def test_uninstall_reports_azure_error_message(monkeypatch):
     _use_service(monkeypatch, service)
 
     with pytest.raises(HTTPException) as exc_info:
-        await azure_devops.uninstall_azure_devops_webhook(user_id='user-id')
+        await azure_devops.uninstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
 
     assert exc_info.value.status_code == 502
     assert 'Access denied.' in exc_info.value.detail
@@ -633,3 +671,17 @@ async def test_sequential_users_cannot_reuse_another_users_membership(monkeypatc
         )
     assert error.value.status_code == 403
     services[-1].list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('organization', [None, ' '])
+async def test_scoped_routes_require_an_organization(
+    organization_service, organization
+):
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.get_azure_devops_resources(
+            user_id='user', organization=organization
+        )
+
+    assert exc_info.value.status_code == 400
+    organization_service.get_accessible_organizations.assert_not_awaited()
