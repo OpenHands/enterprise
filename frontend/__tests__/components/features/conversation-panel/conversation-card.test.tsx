@@ -50,6 +50,11 @@ describe("ConversationCard", () => {
       open: vi.fn(),
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
+      // react-aria (via HeroUI) reads window.screen.orientation and the
+      // window timer functions during focus/resize handling.
+      screen: window.screen,
+      setTimeout: window.setTimeout,
+      clearTimeout: window.clearTimeout,
     });
   });
 

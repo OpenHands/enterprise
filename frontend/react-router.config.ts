@@ -8,11 +8,15 @@ import type { Config } from "@react-router/dev/config";
  *
  * This script is used in the buildEnd function of the Vite config.
  */
-const unpackClientDirectory = async () => {
+const unpackClientDirectory = async ({
+  viteConfig,
+}: {
+  viteConfig: { root: string };
+}) => {
   const fs = await import("fs");
   const path = await import("path");
 
-  const buildDir = path.resolve(__dirname, "build");
+  const buildDir = path.resolve(viteConfig.root, "build");
   const clientDir = path.resolve(buildDir, "client");
 
   const files = await fs.promises.readdir(clientDir);
