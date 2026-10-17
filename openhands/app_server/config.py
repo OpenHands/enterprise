@@ -187,6 +187,16 @@ class AppServerConfig(OpenHandsModel):
         default_factory=get_default_web_url,
         description='The URL where OpenHands is running (e.g., http://localhost:3000)',
     )
+    enable_child_conversation_launcher: bool = Field(
+        default=False,
+        description=(
+            'Attach the start_child_conversation tool to OpenHands agents so a '
+            'parent can launch children server-side through '
+            '/api/v1/webhooks/conversations/{id}/children. Needs web_url and '
+            'sandbox images that ship the tool; keep it off until Agent Canvas '
+            'handles server-launched children. OH_ENABLE_CHILD_CONVERSATION_LAUNCHER.'
+        ),
+    )
     permitted_cors_origins: list[str] = Field(
         default_factory=get_default_permitted_cors_origins,
         description=(
