@@ -23,7 +23,8 @@ export interface SuperAdminApiMembership {
 }
 
 export interface SuperAdminApiUser {
-  user_id: string;
+  /** ``null`` for a pending invitation whose address has no account yet. */
+  user_id: string | null;
   email: string | null;
   name: string | null;
   memberships: SuperAdminApiMembership[];
@@ -73,10 +74,11 @@ export const superAdminService = {
     return data.super_admins;
   },
 
-  grantSuperAdmin: async ({ email }: { email: string }) => {
+  grantSuperAdmin: async (params: { email: string } | { userId: string }) => {
+    const body = "userId" in params ? { user_id: params.userId } : params;
     const { data } = await openHands.post<SuperAdminApiAdmin>(
       "/api/admin/super-admins",
-      { email },
+      body,
     );
     return data;
   },

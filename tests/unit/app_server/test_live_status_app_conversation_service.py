@@ -69,6 +69,7 @@ from openhands.app_server.settings.settings_models import (
     Settings,
 )
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.llm import LLM
@@ -686,6 +687,42 @@ class TestLiveStatusAppConversationService:
             with pytest.raises(ValueError, match='empty prompt'):
                 self.service._apply_suggested_task(request)
 
+    def test_apply_default_trigger_attributes_session_callers_to_gui(self):
+        """A request without a trigger from a session (cookie) caller is GUI."""
+        self.mock_user_auth.get_auth_type.return_value = AuthType.COOKIE
+        request = AppConversationStartRequest()
+
+        self.service._apply_default_trigger(request)
+
+        assert request.trigger == ConversationTrigger.GUI
+
+    def test_apply_default_trigger_attributes_bearer_callers_to_api_key(self):
+        """A request without a trigger from an API-key (bearer) caller is openhands_api."""
+        self.mock_user_auth.get_auth_type.return_value = AuthType.BEARER
+        request = AppConversationStartRequest()
+
+        self.service._apply_default_trigger(request)
+
+        assert request.trigger == ConversationTrigger.REMOTE_API_KEY
+
+    def test_apply_default_trigger_defaults_to_gui_without_user_auth(self):
+        """Contexts with no auth object (e.g. OSS) fall back to GUI."""
+        del self.mock_user_context.user_auth
+        request = AppConversationStartRequest()
+
+        self.service._apply_default_trigger(request)
+
+        assert request.trigger == ConversationTrigger.GUI
+
+    def test_apply_default_trigger_keeps_explicit_trigger(self):
+        """A caller-supplied trigger is never overridden by the default."""
+        self.mock_user_auth.get_auth_type.return_value = AuthType.BEARER
+        request = AppConversationStartRequest(trigger=ConversationTrigger.SLACK)
+
+        self.service._apply_default_trigger(request)
+
+        assert request.trigger == ConversationTrigger.SLACK
+
     @pytest.mark.asyncio
     async def test_setup_secrets_for_git_providers_no_provider_tokens(self):
         """Test _setup_secrets_for_git_providers with no provider tokens."""
@@ -1005,7 +1042,11 @@ class TestLiveStatusAppConversationService:
             get_instance=AsyncMock(return_value=store)
         )
 
-        def managed_llm_key_config_from_model(model, base_url):
+        def managed_llm_key_config_from_model(
+            model, base_url, provider_connection_id=None
+        ):
+            if provider_connection_id:
+                return None
             is_openhands = bool(model and model.startswith('openhands/'))
             is_managed_url = bool(base_url and 'all-hands.dev' in base_url.lower())
             if is_openhands and (base_url is None or is_managed_url):
@@ -2669,6 +2710,20 @@ class TestLiveStatusAppConversationService:
             'client_tools are not supported for ACP agent launches'
         )
         self.service._wait_for_sandbox_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_defaults_trigger_on_first_task(self):
+        """The start task already carries the defaulted trigger."""
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_user_auth.get_auth_type.return_value = AuthType.BEARER
+        request = AppConversationStartRequest()
+
+        start = self.service._start_app_conversation(request)
+        task = await anext(start)
+        await start.aclose()
+
+        assert task.request.trigger == ConversationTrigger.REMOTE_API_KEY
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',

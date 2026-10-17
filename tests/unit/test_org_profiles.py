@@ -1486,3 +1486,276 @@ class TestSwitchBackClearsStaleOrgLevelKey:
         assert effective is not None
         assert effective.get_secret_value() == 'fresh-managed-key'
         assert effective.get_secret_value() != 'dummymodel'
+
+
+class TestActivateLinkedProviderConnectionIsByok:
+    """A profile linked to a provider connection is BYOR by construction: the
+    connection always carries a real, user-supplied key. The managed-key
+    classifier (which keys off ``base_url == LITE_LLM_API_URL``) must not run on
+    a connection-resolved config — otherwise the connection's key is silently
+    swapped for a deployment-managed key on SaaS while the raw key is sent to a
+    proxy on self-hosted (#559)."""
+
+    @pytest.mark.asyncio
+    async def test_linked_profile_uses_connection_key_not_managed(
+        self, async_session_maker, patch_route_db
+    ):
+        from server.constants import LITE_LLM_API_URL
+        from server.routes.org_provider_connections import (
+            ProviderConnectionCreateRequest,
+            create_provider_connection,
+        )
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async def _fake_get_org(org_id, user_id):  # noqa: ARG001
+            async with async_session_maker() as session:
+                result = await session.execute(select(Org).where(Org.id == org_id))
+                return result.scalars().first()
+
+        # ``patch_route_db`` wires the profiles router; also point the
+        # provider-connections router's session + org lookup at the test db so
+        # ``create_provider_connection`` persists against the same org row.
+        with (
+            patch(
+                'server.routes.org_provider_connections.a_session_maker',
+                async_session_maker,
+            ),
+            patch(
+                'server.routes.org_provider_connections.OrgService.get_org_by_id',
+                side_effect=_fake_get_org,
+            ),
+        ):
+            # A connection whose base_url is the managed proxy URL. With the
+            # bug, activating a linked profile classified this as "managed" and
+            # ignored the connection's real key in favor of a deployment-managed
+            # key.
+            created = await create_provider_connection(
+                org_id=org_id,
+                request=ProviderConnectionCreateRequest(
+                    display_name='Shared proxy',
+                    api_key='sk-connection-real-key',
+                    base_url=LITE_LLM_API_URL,
+                ),
+                user_id=user_id,
+            )
+
+            await save_profile(
+                org_id=org_id,
+                name='linked',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        provider_connection_id=created.id,
+                    ),
+                ),
+                user_id=user_id,
+            )
+
+            await activate_profile(org_id=org_id, name='linked', user_id=user_id)
+
+        member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
+        assert member.has_custom_llm_api_key is True, (
+            'a linked provider connection is BYOR — its key must be used, not a '
+            'managed key (#559)'
+        )
+        assert member.llm_api_key.get_secret_value() == 'sk-connection-real-key'
+
+        org = await _read_org(async_session_maker, org_id)
+        effective = SaasSettingsStore._get_effective_llm_api_key(org, member)
+        assert effective is not None
+        assert effective.get_secret_value() == 'sk-connection-real-key'
+
+
+MEMBER_USER_ID = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5083')
+
+
+class TestOrgDefaultsLinkedConnectionReachesMembers:
+    """An org-defaults save of a profile linked to a provider connection must
+    give every member the connection's key and base_url at launch, not only the
+    admin who activated it: ``SaasSettingsStore.load`` resolves the link."""
+
+    @pytest.mark.asyncio
+    async def test_other_member_gets_connection_key_and_base_url(
+        self, async_session_maker, patch_route_db
+    ):
+        from server.routes.org_models import OrgUpdate
+        from server.routes.org_provider_connections import (
+            ProviderConnectionCreateRequest,
+            create_provider_connection,
+        )
+        from storage.org_store import OrgStore
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async with async_session_maker() as session:
+            session.add(
+                User(
+                    id=MEMBER_USER_ID,
+                    current_org_id=org_id,
+                    user_consents_to_analytics=True,
+                )
+            )
+            session.add(
+                OrgMember(
+                    org_id=org_id,
+                    user_id=MEMBER_USER_ID,
+                    role_id=10,
+                    llm_api_key='member-managed-key',
+                    agent_settings_diff={},
+                    conversation_settings_diff={},
+                    status='active',
+                )
+            )
+            await session.commit()
+
+        async def _fake_get_org(org_id, user_id):  # noqa: ARG001
+            async with async_session_maker() as session:
+                result = await session.execute(select(Org).where(Org.id == org_id))
+                return result.scalars().first()
+
+        with (
+            patch('storage.org_store.a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+            patch(
+                'server.routes.org_provider_connections.a_session_maker',
+                async_session_maker,
+            ),
+            patch(
+                'server.routes.org_provider_connections.OrgService.get_org_by_id',
+                side_effect=_fake_get_org,
+            ),
+        ):
+            created = await create_provider_connection(
+                org_id=org_id,
+                request=ProviderConnectionCreateRequest(
+                    display_name='Azure',
+                    api_key='sk-connection-key',
+                    base_url='https://acme.openai.azure.com',
+                ),
+                user_id=user_id,
+            )
+
+            # The three requests the org-defaults Save button sends for a
+            # linked profile: PATCH org settings, save profile, activate.
+            await OrgStore.update_org(
+                org_id=org_id,
+                update_data=OrgUpdate(
+                    agent_settings_diff={
+                        'llm': {
+                            'model': 'azure/gpt-4o',
+                            'base_url': None,
+                            'provider_connection_id': created.id,
+                        }
+                    }
+                ),
+                user_id=user_id,
+            )
+            await save_profile(
+                org_id=org_id,
+                name='linked',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='azure/gpt-4o', provider_connection_id=created.id
+                    ),
+                ),
+                user_id=user_id,
+            )
+            await activate_profile(org_id=org_id, name='linked', user_id=user_id)
+
+            # Load settings the way a conversation start does.
+            member = await SaasSettingsStore(str(MEMBER_USER_ID)).load(
+                resolve_agent_profile=True
+            )
+
+        llm = member.agent_settings.llm
+        api_key = llm.api_key.get_secret_value() if llm.api_key else None
+        assert (llm.model, llm.base_url, api_key) == (
+            'azure/gpt-4o',
+            'https://acme.openai.azure.com',
+            'sk-connection-key',
+        )
+
+
+class TestSaveLinkedProfileStripsInlineCredentials:
+    """Linking a profile must not leave a stale inline key or base_url stored
+    underneath the link: it would resurface silently on unlink and misreport
+    ``api_key_set``."""
+
+    @pytest.mark.asyncio
+    async def test_link_clears_inline_key_and_base_url(
+        self, async_session_maker, patch_route_db
+    ):
+        from server.routes.org_provider_connections import (
+            ProviderConnectionCreateRequest,
+            create_provider_connection,
+        )
+
+        org_id = patch_route_db
+        user_id = str(ADMIN_USER_ID)
+
+        async def _fake_get_org(org_id, user_id):  # noqa: ARG001
+            async with async_session_maker() as session:
+                result = await session.execute(select(Org).where(Org.id == org_id))
+                return result.scalars().first()
+
+        with (
+            patch(
+                'server.routes.org_provider_connections.a_session_maker',
+                async_session_maker,
+            ),
+            patch(
+                'server.routes.org_provider_connections.OrgService.get_org_by_id',
+                side_effect=_fake_get_org,
+            ),
+        ):
+            created = await create_provider_connection(
+                org_id=org_id,
+                request=ProviderConnectionCreateRequest(
+                    display_name='Shared',
+                    api_key='sk-connection-key',
+                    base_url='https://shared.example.com',
+                ),
+                user_id=user_id,
+            )
+
+        # An unlinked profile with its own key and URL ...
+        await save_profile(
+            org_id=org_id,
+            name='p',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    api_key='sk-old-inline',
+                    base_url='https://old.example.com',
+                ),
+            ),
+            user_id=user_id,
+        )
+        # ... is then linked without typing a new key (the UI sends
+        # ``preserve_existing_api_key`` in that case).
+        await save_profile(
+            org_id=org_id,
+            name='p',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-5-sonnet',
+                    provider_connection_id=created.id,
+                ),
+                preserve_existing_api_key=True,
+            ),
+            user_id=user_id,
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        stored = org.llm_profiles['profiles']['p']
+        assert stored.get('api_key') is None
+        assert stored.get('base_url') is None
+        assert stored['provider_connection_id'] == created.id
+
+        listed = await list_profiles(org_id=org_id, user_id=user_id)
+        summary = next(p for p in listed.profiles if p.name == 'p')
+        assert summary.api_key_set is False

@@ -3420,4 +3420,249 @@ describe("LlmSettingsScreen", () => {
       expect(screen.getByTestId("base-url-input")).toBeInTheDocument();
     });
   });
+
+  describe("provider connections (org-defaults)", () => {
+    const sampleConnection = {
+      id: "conn-1",
+      display_name: "Shared OpenAI key",
+      provider: "openai",
+      base_url: "https://api.openai.com",
+      created_at: 1,
+      updated_at: 1,
+      api_key_set: true,
+    };
+
+    const useConnectionsHandler = (
+      connections: unknown[] = [sampleConnection],
+    ) =>
+      http.get("/api/organizations/:orgId/provider-connections", () =>
+        HttpResponse.json({ connections }),
+      );
+
+    it("shows the provider connection selector when connections exist", async () => {
+      server.use(useConnectionsHandler());
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "create",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        await screen.findByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+    });
+
+    it("hides the selector when there are no connections (create form)", async () => {
+      const listConnections = vi.fn(() =>
+        HttpResponse.json({ connections: [] }),
+      );
+      server.use(
+        http.get(
+          "/api/organizations/:orgId/provider-connections",
+          listConnections,
+        ),
+      );
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "create",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      // Only assert absence once the (empty) list has actually been fetched;
+      // before that the selector is trivially missing.
+      await waitFor(() => expect(listConnections).toHaveBeenCalledTimes(1));
+      expect(
+        screen.queryByTestId("llm-provider-connection-input"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("hides inline API key and base URL inputs when a connection is linked", async () => {
+      server.use(useConnectionsHandler());
+
+      // Edit a profile already linked to conn-1 so the selector renders the
+      // linked state and the inline credential inputs disappear.
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "form",
+        profile: { provider_connection_id: "conn-1", base_url: null },
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        await screen.findByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+
+      // The base URL input only exists on the advanced tier; it must be
+      // hidden there too while the connection owns the URL.
+      await userEvent.click(screen.getByTestId("sdk-section-advanced-toggle"));
+      const advancedForm = await screen.findByTestId(
+        "llm-settings-form-advanced",
+      );
+      expect(
+        within(advancedForm).getByTestId("llm-provider-connection-input"),
+      ).toBeInTheDocument();
+      expect(
+        within(advancedForm).queryByTestId("base-url-input"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(advancedForm).queryByTestId("llm-api-key-input"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps the link and explains it when a linked profile is edited from personal scope", async () => {
+      // On SaaS the personal page lists org profiles. Without the selector,
+      // the form can't change the link, so it must say where the credentials
+      // come from and must not silently unlink the profile on save.
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "personal",
+        view: "form",
+        profile: { provider_connection_id: "conn-1", base_url: null },
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      expect(
+        screen.getByTestId("llm-provider-connection-notice"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("llm-provider-connection-input"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveSettingsSpy).toHaveBeenCalled();
+      });
+      const payload = saveSettingsSpy.mock.calls[0]?.[0] as Record<
+        string,
+        unknown
+      >;
+      const llm = getPayloadAgentSettings(payload).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).toMatchObject({
+        provider_connection_id: "conn-1",
+        base_url: null,
+      });
+      expect(llm).not.toHaveProperty("api_key");
+    });
+
+    it("leaves provider_connection_id out of the payload for an unlinked profile", async () => {
+      server.use(useConnectionsHandler());
+      const saveOrganizationSettingsSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue(buildSettings());
+
+      // Edit an unlinked profile on the advanced tier (no MAJOR-field reset
+      // there) and save without touching the selector.
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "form",
+      });
+
+      await screen.findByTestId("llm-settings-form-basic");
+      await userEvent.click(screen.getByTestId("sdk-section-advanced-toggle"));
+      await screen.findByTestId("llm-settings-form-advanced");
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrganizationSettingsSpy).toHaveBeenCalled();
+      });
+      const { settings } = saveOrganizationSettingsSpy.mock.calls[0][0];
+      const llm = getPayloadAgentSettings(settings).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).not.toHaveProperty("provider_connection_id");
+    });
+
+    // The mocked schema predates the field; add it the way the real SDK
+    // schema exposes it (MAJOR prominence, so it is hidden on the basic tier).
+    const buildSettingsWithProviderConnectionField = (): Settings => {
+      const schema = structuredClone(
+        MOCK_DEFAULT_USER_SETTINGS.agent_settings_schema!,
+      );
+      schema.sections
+        .find((section) => section.key === "llm")
+        ?.fields.push({
+          key: "llm.provider_connection_id",
+          label: "Provider connection",
+          section: "llm",
+          section_label: "LLM",
+          value_type: "string",
+          default: null,
+          choices: [],
+          depends_on: [],
+          prominence: "major",
+          secret: false,
+          required: false,
+        });
+      return buildSettings({ agent_settings_schema: schema });
+    };
+
+    it("persists the linked connection on a basic-view save and drops the inline key", async () => {
+      server.use(useConnectionsHandler());
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(buildSettingsWithProviderConnectionField());
+      const saveOrganizationSettingsSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue(buildSettingsWithProviderConnectionField());
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        view: "create",
+      });
+
+      // Create opens on the basic tier, where `provider_connection_id` (a
+      // MAJOR-prominence field) is not rendered and the view payload resets
+      // it to null — the form must carry the selection through explicitly.
+      await screen.findByTestId("llm-settings-form-basic");
+      await selectProvider("OpenAI");
+      await selectModel("gpt-4o");
+
+      const connectionInput = await screen.findByTestId(
+        "llm-provider-connection-input",
+      );
+      await userEvent.click(connectionInput);
+      await userEvent.click(await screen.findByText("Shared OpenAI key"));
+      await waitFor(() => {
+        expect(connectionInput).toHaveValue("Shared OpenAI key");
+      });
+      // A linked profile takes its key from the connection.
+      expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrganizationSettingsSpy).toHaveBeenCalled();
+      });
+      const { settings } = saveOrganizationSettingsSpy.mock.calls[0][0];
+      const llm = getPayloadAgentSettings(settings).llm as Record<
+        string,
+        unknown
+      >;
+      expect(llm).toMatchObject({
+        model: "openai/gpt-4o",
+        provider_connection_id: "conn-1",
+        base_url: null,
+      });
+      expect(llm).not.toHaveProperty("api_key");
+    });
+  });
 });

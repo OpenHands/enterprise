@@ -179,7 +179,12 @@ async def _maybe_rotate_stale_managed_key(
     if not isinstance(settings_store, SaasSettingsStore):
         return llm
 
-    if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+    if (
+        managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
+        is None
+    ):
         return llm
 
     raw_key = (

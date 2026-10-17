@@ -129,39 +129,44 @@ describe("Super Admin Admins page", () => {
     );
   });
 
-  it("grants Super Admin to the entered email and lists them", async () => {
+  it("has no Grant Super Admin control -- granting now happens from the Users page", async () => {
     // Arrange
-    const user = userEvent.setup();
-    const ada: SuperAdminApiAdmin = { user_id: "8", email: "ada@acme.org" };
-    vi.spyOn(superAdminService, "listSuperAdmins")
-      .mockResolvedValueOnce([GRACE])
-      .mockResolvedValue([GRACE, ada]);
-    const grantSuperAdmin = vi
-      .spyOn(superAdminService, "grantSuperAdmin")
-      .mockResolvedValue(ada);
     renderAdminsPage();
     await screen.findByText("grace@acme.org");
 
+    // Assert
+    expect(
+      screen.queryByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends the admin to the Users page to grant Super Admin", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const RouterStub = createRoutesStub([
+      { path: "/super-admin/admins", Component: SuperAdminAdmins },
+      {
+        path: "/super-admin/users",
+        Component: () => <div data-testid="users-page-stub" />,
+      },
+    ]);
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <RouterStub initialEntries={["/super-admin/admins"]} />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+    await screen.findByText("grace@acme.org");
+
     // Act
-    await user.click(
-      screen.getByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
-    );
-    const dialog = screen.getByTestId("super-admin-grant-form");
-    await user.type(within(dialog).getByRole("textbox"), "ada@acme.org");
-    await user.click(
-      within(dialog).getByRole("button", { name: "SUPER_ADMIN$GRANT_ADMIN" }),
-    );
+    await user.click(screen.getByTestId("super-admin-admins-go-to-users"));
 
     // Assert
-    await waitFor(() =>
-      expect(grantSuperAdmin).toHaveBeenCalledWith({ email: "ada@acme.org" }),
-    );
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("super-admin-grant-form"),
-      ).not.toBeInTheDocument(),
-    );
-    expect(await screen.findByText("ada@acme.org")).toBeInTheDocument();
+    expect(await screen.findByTestId("users-page-stub")).toBeInTheDocument();
   });
 
   it("keeps the Super Admin when the revoke is cancelled", async () => {

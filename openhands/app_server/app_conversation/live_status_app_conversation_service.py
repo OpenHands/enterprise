@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
+import anyio
 import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
@@ -113,6 +114,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -428,14 +430,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if quota_reserved:
                     if task.status == AppConversationStartTaskStatus.ERROR:
-                        await self._release_daily_conversation_quota(quota_user_id)
+                        with anyio.CancelScope(shield=True):
+                            await self._release_daily_conversation_quota(quota_user_id)
                         quota_reserved = False
                     elif task.status == AppConversationStartTaskStatus.READY:
                         quota_reserved = False
                 yield task
         except BaseException:
             if quota_reserved:
-                await self._release_daily_conversation_quota(quota_user_id)
+                with anyio.CancelScope(shield=True):
+                    await self._release_daily_conversation_quota(quota_user_id)
             raise
 
     async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
@@ -493,6 +497,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._inherit_configuration_from_parent(request, parent_info)
 
         self._apply_suggested_task(request)
+        self._apply_default_trigger(request)
 
         # Resolved once: validation, the build and provenance must see one revision.
         user = await self.user_context.get_user_info(
@@ -1235,6 +1240,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
 
+    def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
+        """Default the trigger when the caller did not supply one.
+
+        Mirrors the V0 endpoint: bearer (API key) auth is ``REMOTE_API_KEY``,
+        everything else is ``GUI``.
+        """
+        if request.trigger is not None:
+            return
+        user_auth = getattr(self.user_context, 'user_auth', None)
+        auth_type = user_auth.get_auth_type() if user_auth is not None else None
+        if auth_type == AuthType.BEARER:
+            request.trigger = ConversationTrigger.REMOTE_API_KEY
+        else:
+            request.trigger = ConversationTrigger.GUI
+
     def _apply_suggested_task(self, request: AppConversationStartRequest) -> None:
         """Apply suggested task defaults to the start request."""
         suggested_task: SuggestedTask | None = request.suggested_task
@@ -1465,7 +1485,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',

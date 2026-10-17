@@ -54,7 +54,7 @@ describe("Super Admin Instance page", () => {
     vi.restoreAllMocks();
   });
 
-  it("links to the SAML SSO documentation", async () => {
+  it("does not show a SAML callout -- SAML is set up on the Auth Providers page", async () => {
     // Arrange
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig(),
@@ -64,14 +64,9 @@ describe("Super Admin Instance page", () => {
     await renderInstancePage();
 
     // Assert
-    const link = screen.getByRole("link", {
-      name: "SUPER_ADMIN$INSTANCE_SSO_DOCS",
-    });
-    expect(link).toHaveAttribute(
-      "href",
-      "https://docs.openhands.dev/enterprise/integrations/saml-sso",
-    );
-    expect(link).toHaveAttribute("target", "_blank");
+    expect(
+      screen.queryByTestId("super-admin-instance-sso"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows personal workspaces as allowed when the deployment does not hide them", async () => {
@@ -102,6 +97,24 @@ describe("Super Admin Instance page", () => {
     expect(
       screen.getByLabelText("SUPER_ADMIN$INSTANCE_AUTO_ORG"),
     ).not.toBeChecked();
+  });
+
+  it("does not show an email row -- email delivery is configured on the server, not here", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: true }),
+    );
+
+    // Act
+    await renderInstancePage();
+
+    // Assert
+    expect(
+      screen.queryByLabelText("SUPER_ADMIN$INSTANCE_EMAIL"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("SUPER_ADMIN$INSTANCE_AUTO_ORG"),
+    ).toBeInTheDocument();
   });
 
   it("saves an uploaded logo for the whole instance", async () => {

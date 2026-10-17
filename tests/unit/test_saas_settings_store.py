@@ -3039,3 +3039,22 @@ async def test_litellm_on_member_still_launches_openhands_default(
     assert loaded.agent_settings.llm.api_key.get_secret_value() == (
         'sk-litellm-virtual-key'
     )
+
+
+def test_managed_llm_key_config_treats_linked_llm_as_byok():
+    """An LLM linked to a provider connection is never classified as managed,
+    even when its base_url is the managed proxy (the connection supplies a
+    user-owned key)."""
+    from server.constants import LITE_LLM_API_URL
+    from storage.saas_settings_store import managed_llm_key_config_from_model
+
+    assert (
+        managed_llm_key_config_from_model('openhands/claude', LITE_LLM_API_URL)
+        is not None
+    )
+    assert (
+        managed_llm_key_config_from_model(
+            'openhands/claude', LITE_LLM_API_URL, provider_connection_id='c1'
+        )
+        is None
+    )

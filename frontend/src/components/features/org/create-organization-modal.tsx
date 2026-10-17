@@ -44,12 +44,17 @@ export function CreateOrganizationModal({
     : undefined;
   const ownerOptions = [
     ...(meOption ? [meOption] : []),
-    ...(users ?? [])
-      .filter((user) => user.user_id !== me?.user_id)
-      .map((user) => ({
-        value: user.user_id,
-        label: user.email || user.name || user.user_id,
-      })),
+    // A pending invitation has no account to own an organization yet.
+    ...(users ?? []).flatMap((user) =>
+      user.user_id && user.user_id !== me?.user_id
+        ? [
+            {
+              value: user.user_id,
+              label: user.email || user.name || user.user_id,
+            },
+          ]
+        : [],
+    ),
   ];
 
   const inferredContactName =

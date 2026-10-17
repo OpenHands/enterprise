@@ -20,17 +20,19 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.routes import oauth_v2
+from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
 
 
 def _make_jwt_service() -> JwtService:
@@ -70,19 +72,36 @@ def _fake_provider(
     is_idp: bool = False,
     client_secret: str | None = 'secret',
     userinfo_url: str | None = 'https://example.com/user',
+    legacy_keycloak_type: str | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
-    provider.provider_category = category
-    provider.display_name = category.title()
+    provider.kind = OAuthProviderDetails.__name__
+    provider.title = category.title()
     provider.is_idp = is_idp
-    provider.client_id = 'cid'
-    provider.client_secret = {'v': client_secret} if client_secret else None
-    provider.authorization_url = 'https://example.com/auth'
-    provider.token_url = 'https://example.com/token'
-    provider.userinfo_url = userinfo_url
-    provider.scopes = ['repo']
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType(category),
+        client_id='cid',
+        client_secret=SecretStr(client_secret) if client_secret else None,
+        authorization_url='https://example.com/auth',
+        token_url='https://example.com/token',
+        userinfo_url=userinfo_url,
+        scopes=['repo'],
+        permitted_drift_seconds=60,
+        legacy_keycloak_type=(
+            ProviderType(legacy_keycloak_type) if legacy_keycloak_type else None
+        ),
+    )
+    return provider
+
+
+def _fake_saml_provider(*, provider_id: int = 5):
+    provider = MagicMock()
+    provider.id = provider_id
+    provider.kind = SamlProviderDetails.__name__
+    provider.title = 'Acme SSO'
+    provider.is_idp = True
+    provider.details = SamlProviderDetails()
     return provider
 
 
@@ -103,7 +122,7 @@ def test_decrypt_bad_state_raises(jwt_svc, client):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -124,7 +143,7 @@ def test_login_redirect_encodes_state(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -146,7 +165,7 @@ def test_login_unknown_provider_404(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=None),
         ),
@@ -155,13 +174,79 @@ def test_login_unknown_provider_404(client, jwt_svc):
     assert response.status_code == 404
 
 
-def test_login_missing_auth_url_400(client, jwt_svc):
-    provider = _fake_provider()
-    provider.authorization_url = None
+def test_login_saml_provider_redirects_to_saml_router(client, jwt_svc):
+    provider = _fake_saml_provider()
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/5/login',
+            params={'redirect_url': '/dashboard'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    location = response.headers['location']
+    assert '/saml/5/login' in location
+    assert 'redirect_url=%2Fdashboard' in location
+
+
+def test_callback_saml_provider_404(client, jwt_svc):
+    provider = _fake_saml_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            '/oauth/5/callback',
+            params={'code': 'c', 'state': 's'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 404
+
+
+def _fake_unknown_kind_provider(*, provider_id: int = 6):
+    provider = MagicMock()
+    provider.id = provider_id
+    provider.kind = 'FutureProviderDetails'
+    provider.details = object()
+    return provider
+
+
+@pytest.mark.parametrize('path', ['login', 'callback'])
+def test_unknown_provider_kind_404(client, jwt_svc, path):
+    provider = _fake_unknown_kind_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            f'/oauth/6/{path}',
+            params={'code': 'c', 'state': 's'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 404
+
+
+def test_login_missing_auth_url_400(client, jwt_svc):
+    provider = _fake_provider()
+    provider.details.authorization_url = None
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -178,7 +263,7 @@ def test_idp_login_redirects_to_first_idp(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_first_idp',
             new=AsyncMock(return_value=provider),
         ),
@@ -197,7 +282,7 @@ def test_idp_login_no_idp_configured_404(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_first_idp',
             new=AsyncMock(return_value=None),
         ),
@@ -211,7 +296,7 @@ def test_idp_login_forwards_mode_link(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_first_idp',
             new=AsyncMock(return_value=provider),
         ),
@@ -229,48 +314,6 @@ def test_idp_login_forwards_mode_link(client, jwt_svc):
     assert 'redirect_url=%2Fsettings' in location
 
 
-def test_provider_type_login_redirects_to_first_match(client, jwt_svc):
-    provider = _fake_provider(provider_id=11, category='github', is_idp=False)
-    with (
-        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
-        patch.object(
-            oauth_v2.OAuthProviderStore,
-            'get_first_by_category',
-            new=AsyncMock(return_value=provider),
-        ),
-    ):
-        response = client.get('/oauth/github-login', follow_redirects=False)
-    assert response.status_code == 302
-    location = response.headers['location']
-    assert location.endswith('/oauth/11/login')
-
-
-def test_provider_type_login_no_match_404(client, jwt_svc):
-    with (
-        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
-        patch.object(
-            oauth_v2.OAuthProviderStore,
-            'get_first_by_category',
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        response = client.get('/oauth/gitlab-login', follow_redirects=False)
-    assert response.status_code == 404
-
-
-def test_provider_type_login_unknown_type_404(client, jwt_svc):
-    with (
-        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
-        patch.object(
-            oauth_v2.OAuthProviderStore,
-            'get_first_by_category',
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        response = client.get('/oauth/nonexistent-login', follow_redirects=False)
-    assert response.status_code == 404
-
-
 # ── providers list ───────────────────────────────────────────────────────
 
 
@@ -279,7 +322,7 @@ def test_list_providers(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'list_all',
             new=AsyncMock(return_value=[provider]),
         ),
@@ -288,7 +331,9 @@ def test_list_providers(client, jwt_svc):
     assert response.status_code == 200
     body = response.json()
     assert body['providers'][0]['id'] == 1
-    assert body['providers'][0]['provider_category'] == 'github'
+    assert body['providers'][0]['kind'] == OAuthProviderDetails.__name__
+    assert body['providers'][0]['title'] == 'Github'
+    assert body['providers'][0]['is_idp'] is False
 
 
 # ── callback login flow ──────────────────���──────────────────────────────
@@ -336,18 +381,18 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -355,7 +400,7 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
             oauth_v2.UserStore,
             'create_user',
             new=AsyncMock(return_value=fake_user),
-        ),
+        ) as create_user,
         patch.object(
             oauth_v2.UserStore,
             'get_user_by_id',
@@ -384,6 +429,12 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
 
     assert response.status_code == 302
     assert response.headers['location'] == '/done'
+    # 'ext-sub-1' is not a UUID -- the external sub must never be passed
+    # through as the internal User.id (UserStore.create_user requires a
+    # real UUID and derives Org.id from it).
+    created_user_id = create_user.await_args.args[0]
+    UUID(created_user_id)
+    assert created_user_id != 'ext-sub-1'
     # Cookie set on login flow.
     assert 'openhands_auth' in response.cookies
     # Token pair persisted.
@@ -392,6 +443,261 @@ def test_callback_login_persists_tokens_and_sets_cookie(client, jwt_svc):
     assert kwargs['access_token'] == 'at-123'
     assert kwargs['refresh_token'] == 'rt-123'
     assert kwargs['access_token_expires_at'] is not None
+
+
+class _FakeTokenStore:
+    """Records every ``OAuthTokenStore(...)`` construction + ``store_tokens``
+    call, keyed by ``oauth_provider_id`` -- unlike patching ``store_tokens``
+    as a single shared ``AsyncMock`` (which can't tell which provider row a
+    given call targeted, since ``self`` isn't part of a method replaced at
+    the class level), this can distinguish the login IDP row's own token
+    store from the git-provider row's.
+    """
+
+    instances: list[_FakeTokenStore] = []
+
+    def __init__(self, *, user_id, oauth_provider_id):
+        self.user_id = user_id
+        self.oauth_provider_id = oauth_provider_id
+        self.store_tokens = AsyncMock()
+        _FakeTokenStore.instances.append(self)
+
+    @classmethod
+    def reset(cls):
+        cls.instances = []
+
+    @classmethod
+    def calls_for(cls, oauth_provider_id: int) -> list:
+        return [
+            i.store_tokens.call_args
+            for i in cls.instances
+            if i.oauth_provider_id == oauth_provider_id and i.store_tokens.await_count
+        ]
+
+
+# ── callback login flow: legacy_keycloak_type git-provider token fetch ───────
+
+
+def test_callback_login_legacy_keycloak_stores_real_git_token(client, jwt_svc):
+    """A login via a row with ``legacy_keycloak_type`` set also fetches the real
+    GitHub token from Keycloak's broker endpoint and stores it under the
+    git-provider row for that brand, in addition to the Keycloak
+    token pair stored under the login row itself."""
+    provider = _fake_provider(
+        provider_id=1,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='github',
+    )
+    git_provider = MagicMock()
+    git_provider.id = 42
+    user_id = uuid4()
+    token_response = {
+        'access_token': 'kc-at',
+        'refresh_token': 'kc-rt',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    _FakeTokenStore.reset()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_provider_by_type',
+            new=AsyncMock(return_value=git_provider),
+        ) as get_provider_by_type,
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(oauth_v2, 'OAuthTokenStore', _FakeTokenStore),
+        patch.object(
+            oauth_v2.TokenManager,
+            'get_idp_tokens_from_keycloak',
+            new=AsyncMock(
+                return_value={
+                    'access_token': 'gh-at',
+                    'refresh_token': 'gh-rt',
+                    'access_token_expires_at': 0,
+                    'refresh_token_expires_at': 0,
+                }
+            ),
+        ) as get_idp_tokens_from_keycloak,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    get_provider_by_type.assert_awaited_once_with('github')
+    get_idp_tokens_from_keycloak.assert_awaited_once_with('kc-at', ProviderType.GITHUB)
+    # Keycloak token pair persisted under the login row itself.
+    login_calls = _FakeTokenStore.calls_for(1)
+    assert len(login_calls) == 1
+    assert login_calls[0].kwargs['access_token'] == 'kc-at'
+    # The real GitHub token persisted under the GitHub git-provider row.
+    git_calls = _FakeTokenStore.calls_for(42)
+    assert len(git_calls) == 1
+    assert git_calls[0].kwargs['access_token'] == 'gh-at'
+    assert git_calls[0].kwargs['refresh_token'] == 'gh-rt'
+    assert git_calls[0].kwargs['access_token_expires_at'] is None
+    assert git_calls[0].kwargs['refresh_token_expires_at'] is None
+
+
+def test_callback_login_legacy_keycloak_no_git_provider_row_is_graceful(
+    client, jwt_svc
+):
+    """No git-provider row for the brand (e.g. deleted since
+    the login row was seeded) -- login still succeeds, just without a git
+    credential being stored."""
+    provider = _fake_provider(
+        provider_id=1,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='github',
+    )
+    user_id = uuid4()
+    token_response = {'access_token': 'kc-at', 'refresh_token': 'kc-rt'}
+    userinfo = {'sub': 'ext-sub-1'}
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    _FakeTokenStore.reset()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_provider_by_type',
+            new=AsyncMock(return_value=None),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(oauth_v2, 'OAuthTokenStore', _FakeTokenStore),
+        patch.object(
+            oauth_v2.TokenManager,
+            'get_idp_tokens_from_keycloak',
+            new=AsyncMock(),
+        ) as get_idp_tokens_from_keycloak,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    get_idp_tokens_from_keycloak.assert_not_awaited()
+    # Only the login row's own Keycloak token pair was stored.
+    assert len(_FakeTokenStore.instances) == 1
+
+
+def test_callback_login_non_legacy_keycloak_skips_broker_fetch(client, jwt_svc):
+    """A login IDP with no ``legacy_keycloak_type`` is unaffected -- no
+    broker call, no git-provider row lookup."""
+    provider = _fake_provider(provider_id=1, category='enterprise_sso', is_idp=True)
+    user_id = uuid4()
+    token_response = {'access_token': 'at-123', 'refresh_token': 'rt-123'}
+    userinfo = {'sub': 'ext-sub-1'}
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_provider_by_type',
+            new=AsyncMock(),
+        ) as get_provider_by_type,
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(
+            oauth_v2.TokenManager,
+            'get_idp_tokens_from_keycloak',
+            new=AsyncMock(),
+        ) as get_idp_tokens_from_keycloak,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    get_provider_by_type.assert_not_awaited()
+    get_idp_tokens_from_keycloak.assert_not_awaited()
 
 
 def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
@@ -412,18 +718,18 @@ def test_callback_login_redirects_to_tos_when_not_accepted(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -481,18 +787,18 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get',
             new=AsyncMock(return_value=None),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ),
@@ -539,13 +845,13 @@ def test_callback_link_flow_no_cookie(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         _patch_httpx(token_response, userinfo),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'link',
             new=AsyncMock(),
         ) as link,
@@ -580,7 +886,7 @@ def test_callback_missing_code_400(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -596,7 +902,7 @@ def test_callback_error_param_400(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -614,7 +920,7 @@ def test_callback_link_missing_user_id_in_state_400(client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -648,7 +954,7 @@ def test_link_idp_provider_400(app, client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -664,7 +970,7 @@ def test_link_returns_start_url(app, client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -693,7 +999,7 @@ def test_unlink_idp_400(app, client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
@@ -711,17 +1017,17 @@ def test_unlink_git_provider(app, client, jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
-            oauth_v2.OAuthProviderStore,
+            oauth_v2.AuthProviderStore,
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'get_by_user',
             new=AsyncMock(return_value=link_row),
         ),
         patch.object(
-            oauth_v2.OAuthProviderUserStore,
+            oauth_v2.AuthProviderUserStore,
             'unlink',
             new=AsyncMock(),
         ) as unlink,

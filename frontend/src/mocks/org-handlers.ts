@@ -844,6 +844,8 @@ export const ORG_HANDLERS = [
       ).toISOString(),
       spend_status: "live",
       spend_observed_at: now.toISOString(),
+      org_monthly_limit: 1000,
+      org_current_spend: 912.4,
     });
   }),
 
@@ -1781,5 +1783,11 @@ export const ORG_HANDLERS = [
       }
       return new HttpResponse(null, { status: 204 });
     },
+  ),
+
+  // Provider connections — default to an empty list so org-defaults LLM
+  // settings tests can render the connection manager without extra setup.
+  http.get("/api/organizations/:orgId/provider-connections", () =>
+    HttpResponse.json({ connections: [] }),
   ),
 ];
