@@ -1191,6 +1191,9 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         if not signed_token:
             return None
         return await saas_user_auth_from_signed_token(signed_token)
+    except TokenRefreshError:
+        # A temporary Keycloak outage must retain the cookie for retry.
+        raise
     except Exception as exc:
         raise CookieError from exc
 
@@ -1295,7 +1298,7 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
 
     logger.debug('saas_user_auth_from_signed_token:return')
 
-    return SaasUserAuth(
+    user_auth = SaasUserAuth(
         access_token=SecretStr(access_token),
         refresh_token=SecretStr(refresh_token),
         user_id=user_id,
@@ -1304,6 +1307,11 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
         accepted_tos=accepted_tos,
         auth_type=AuthType.COOKIE,
     )
+    # Identity-only APIs may never ask for an upstream token. Refresh here
+    # before accepting an expired access token so a longer-lived app cookie
+    # cannot keep a revoked Keycloak session usable on those endpoints.
+    await user_auth.get_access_token()
+    return user_auth
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:

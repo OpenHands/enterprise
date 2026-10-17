@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 from fastapi import Request
-from keycloak.exceptions import KeycloakConnectionError
+from keycloak.exceptions import KeycloakAuthenticationError, KeycloakConnectionError
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
@@ -968,6 +968,73 @@ async def test_saas_user_auth_from_signed_token(mock_config):
         assert result.refresh_token.get_secret_value() == 'test_refresh_token'
         assert result.email == 'test@example.com'
         assert result.email_verified is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revoked', [False, True])
+async def test_cookie_auth_rechecks_expired_access_before_identity_only_api(
+    mock_config, mock_token_manager, mock_request, revoked
+):
+    """An app-signed cookie must not extend expired upstream API access."""
+    tokens = create_mock_jwt_tokens(exp_offset=-60)
+    tokens['refresh_token'] = create_mock_jwt_tokens()['refresh_token']
+    signed = jwt.encode(tokens, 'test_secret', algorithm='HS256')
+    mock_request.cookies = {'keycloak_auth': signed}
+    if revoked:
+        mock_token_manager.refresh.side_effect = KeycloakAuthenticationError(
+            error_message='Session not active', response_code=400
+        )
+    with patch(
+        'server.auth.saas_user_auth.UserAuthorizationStore.get_authorization_type',
+        AsyncMock(return_value=None),
+    ):
+        if revoked:
+            with pytest.raises(CookieError):
+                await saas_user_auth_from_cookie(mock_request)
+        else:
+            auth = await saas_user_auth_from_cookie(mock_request)
+            assert auth is not None
+            assert await auth.get_user_id() == 'test_user_id'
+            assert auth.refreshed is True
+    mock_token_manager.refresh.assert_awaited_once_with(tokens['refresh_token'])
+
+
+@pytest.mark.asyncio
+async def test_cookie_auth_current_access_does_not_refresh(
+    mock_config, mock_token_manager, mock_request
+):
+    tokens = create_mock_jwt_tokens()
+    mock_request.cookies = {
+        'keycloak_auth': jwt.encode(tokens, 'test_secret', algorithm='HS256')
+    }
+    with patch(
+        'server.auth.saas_user_auth.UserAuthorizationStore.get_authorization_type',
+        AsyncMock(return_value=None),
+    ):
+        auth = await saas_user_auth_from_cookie(mock_request)
+        assert auth is not None
+        assert await auth.get_user_id() == 'test_user_id'
+    mock_token_manager.refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cookie_auth_expired_access_retains_retryable_outage(
+    mock_config, mock_token_manager, mock_request
+):
+    tokens = create_mock_jwt_tokens(exp_offset=-60)
+    tokens['refresh_token'] = create_mock_jwt_tokens()['refresh_token']
+    mock_request.cookies = {
+        'keycloak_auth': jwt.encode(tokens, 'test_secret', algorithm='HS256')
+    }
+    mock_token_manager.refresh.side_effect = KeycloakConnectionError(
+        error_message='Temporary authentication outage'
+    )
+    with patch(
+        'server.auth.saas_user_auth.UserAuthorizationStore.get_authorization_type',
+        AsyncMock(return_value=None),
+    ):
+        with pytest.raises(TokenRefreshError):
+            await saas_user_auth_from_cookie(mock_request)
 
 
 def test_get_api_key_from_header_with_authorization_header():
