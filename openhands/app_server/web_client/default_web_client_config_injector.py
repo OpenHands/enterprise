@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from pydantic import Field
 
@@ -406,6 +406,12 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 ),
             }
         )
+        # Keep the public V1 login URL aligned with the backend realm while
+        # leaving AUTH_URL and the injector's host value unchanged internally.
+        auth_url = self.auth_url
+        realm = os.getenv('KEYCLOAK_REALM_NAME', 'allhands')
+        if auth_url and realm and realm != 'allhands':
+            auth_url = f'{auth_url.rstrip("/")}/realms/{quote(realm, safe="")}'
         result = WebClientConfig(
             app_mode=config.app_mode,
             posthog_client_key=self.posthog_client_key,
@@ -413,7 +419,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             db_feature_flags=await _get_db_feature_flags(),
             providers_configured=self.providers_configured,
             maintenance_start_time=self.maintenance_start_time,
-            auth_url=self.auth_url,
+            auth_url=auth_url,
             recaptcha_site_key=self.recaptcha_site_key,
             faulty_models=self.faulty_models,
             error_message=self.error_message,

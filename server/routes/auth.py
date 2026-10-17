@@ -532,16 +532,19 @@ async def keycloak_callback(
         idp, idp_type = idp.rsplit(':', 1)
         idp_type = idp_type.lower()
 
-    # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
-    # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
-    if idp and idp_type != 'saml':
+    # Corporate SSO is login-only for either protocol. Its tokens are not
+    # repository credentials and must not trigger an offline Git authorization.
+    has_provider_tokens = bool(
+        idp and idp != ProviderType.ENTERPRISE_SSO.value and idp_type != 'saml'
+    )
+    if has_provider_tokens:
         await token_manager.store_idp_tokens(
             ProviderType(idp), user_id, keycloak_access_token
         )
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
-        if idp and idp_type != 'saml'
+        if has_provider_tokens
         else True
     )
 

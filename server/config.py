@@ -3,6 +3,7 @@ import hmac
 import os
 import time
 import typing
+from urllib.parse import quote
 
 import jwt
 import requests  # type: ignore
@@ -25,6 +26,7 @@ from server.auth.constants import (
     GITHUB_APP_PRIVATE_KEY,
     GITHUB_APP_WEBHOOK_SECRET,
     GITLAB_APP_CLIENT_ID,
+    KEYCLOAK_REALM_NAME,
     RECAPTCHA_SITE_KEY,
 )
 from server.auth.login_policy import enforce_enterprise_sso
@@ -205,6 +207,11 @@ class SaaSServerConfig(ServerConfig):
 
         if self.auth_url:
             config['AUTH_URL'] = self.auth_url
+            if KEYCLOAK_REALM_NAME and KEYCLOAK_REALM_NAME != 'allhands':
+                # Expose the selected realm to the frontend without changing
+                # AUTH_URL itself: migrations and internal callers use its host.
+                realm = quote(KEYCLOAK_REALM_NAME, safe='')
+                config['AUTH_URL'] = f'{self.auth_url.rstrip("/")}/realms/{realm}'
 
         if RECAPTCHA_SITE_KEY:
             config['RECAPTCHA_SITE_KEY'] = RECAPTCHA_SITE_KEY

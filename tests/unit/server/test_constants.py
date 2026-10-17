@@ -507,3 +507,22 @@ class TestDefaultLlmSettings:
         with p[0], p[1], p[2], p[3], p[4], p[5]:
             assert constants.get_default_llm_model() == 'litellm_proxy/m'
             assert constants.get_default_llm_base_url() == 'http://litellm:4000'
+
+
+@pytest.mark.parametrize(
+    'realm,expected',
+    [
+        ('allhands', 'https://auth.example.com/auth/'),
+        ('', 'https://auth.example.com/auth/'),
+        ('allhands-oidc', 'https://auth.example.com/auth/realms/allhands-oidc'),
+        ('company realm', 'https://auth.example.com/auth/realms/company%20realm'),
+    ],
+)
+def test_frontend_auth_url_tracks_realm_without_mutating_server_host(realm, expected):
+    from server.config import SaaSServerConfig
+
+    config = SaaSServerConfig()
+    config.auth_url = 'https://auth.example.com/auth/'
+    with patch('server.config.KEYCLOAK_REALM_NAME', realm):
+        assert config.get_config()['AUTH_URL'] == expected
+    assert config.auth_url == 'https://auth.example.com/auth/'

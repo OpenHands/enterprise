@@ -36,9 +36,16 @@ export const generateAuthUrl = (
     finalAuthUrl = `https://${finalAuthUrl}`;
   }
 
+  // AUTH_URL may include the realm path. Host-only configurations retain
+  // the legacy allhands realm, including installations with a path prefix.
+  const authBase = finalAuthUrl.replace(/\/+$/, "");
+  const realmBase = /\/realms\/[^/?#]+$/.test(authBase)
+    ? authBase
+    : `${authBase}/realms/allhands`;
+
   const scope = "openid email profile"; // OAuth scope - not user-facing
   const separator = requestUrl.search ? "&" : "?";
   const cleanHref = requestUrl.href.replace(/\/$/, "");
   const state = `${cleanHref}${separator}login_method=${identityProvider}`;
-  return `${finalAuthUrl}/realms/allhands/protocol/openid-connect/auth?client_id=allhands&kc_idp_hint=${identityProvider}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
+  return `${realmBase}/protocol/openid-connect/auth?client_id=allhands&kc_idp_hint=${identityProvider}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
 };

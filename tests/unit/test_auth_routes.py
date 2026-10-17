@@ -436,15 +436,15 @@ async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install
     assert result.headers['location'] == 'http://localhost:8000/install'
 
 
+@pytest.mark.parametrize(
+    'identity_provider',
+    [None, 'enterprise_sso', 'enterprise_sso:saml', 'enterprise_sso:oidc'],
+)
 @pytest.mark.asyncio
-async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
-    mock_request, mock_background_tasks, create_keycloak_user_info
+async def test_keycloak_callback_login_only_identity_skips_provider_token_storage(
+    mock_request, mock_background_tasks, create_keycloak_user_info, identity_provider
 ):
-    """Direct username/password logins have identity_provider=None.
-
-    Token storage and offline-token validation must be skipped, and the
-    redirect should proceed normally.
-    """
+    """Local and corporate logins do not require offline Git credentials."""
     mock_analytics = MagicMock()
     mock_org = MagicMock()
     mock_org.id = 'test_org_id'
@@ -493,12 +493,12 @@ async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
         mock_token_manager.get_keycloak_tokens = AsyncMock(
             return_value=('test_access_token', 'test_refresh_token')
         )
-        # Direct login: no identity_provider
+        # Corporate identity remains available for authorization and analytics
         mock_token_manager.get_user_info = AsyncMock(
             return_value=create_keycloak_user_info(
                 sub='test_user_id',
                 preferred_username='test_user',
-                identity_provider=None,
+                identity_provider=identity_provider,
                 email_verified=True,
             )
         )
@@ -517,7 +517,7 @@ async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
         assert result.status_code == 302
         assert result.headers['location'] == 'test_state'
 
-        # IdP token storage and offline-token validation must NOT run for direct logins
+        # Login-only providers must not trigger Git authorization
         mock_token_manager.store_idp_tokens.assert_not_called()
         mock_token_manager.validate_offline_token.assert_not_called()
 
@@ -530,12 +530,14 @@ async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
             accepted_tos=True,
         )
 
-        # Background analytics task still runs with idp=None
+        # Background analytics retains the login provider
         mock_background_tasks.add_task.assert_called_once()
         background_fn = mock_background_tasks.add_task.call_args[0][0]
         background_kwargs = mock_background_tasks.add_task.call_args[1]
         await background_fn(**background_kwargs)
-        assert background_kwargs['idp'] is None
+        assert background_kwargs['idp'] == (
+            identity_provider.split(':')[0] if identity_provider else None
+        )
 
 
 @pytest.mark.asyncio
