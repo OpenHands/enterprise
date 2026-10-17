@@ -36616,5 +36616,22 @@
     "de": "Failed to delete auth provider.",
     "uk": "Failed to delete auth provider.",
     "ca": "Failed to delete auth provider."
+  },
+  "AUTH$GIT_PROVIDER_LOGIN_FAILED": {
+    "en": "We couldn't refresh your git provider connection. Please sign in again to reconnect it.",
+    "ja": "Gitプロバイダー接続を更新できませんでした。再接続するために、もう一度サインインしてください。",
+    "zh-CN": "我们无法刷新您的 Git 提供商连接。请重新登录以重新连接。",
+    "zh-TW": "我們無法重新整理您的 Git 提供商連線。請重新登入以重新連線。",
+    "ko-KR": "Git 제공업체 연결을 새로고침할 수 없습니다. 다시 연결하려면 다시 로그인하세요.",
+    "no": "Vi kunne ikke oppdatere git-leverandørtilkoblingen din. Logg på igjen for å koble til på nytt.",
+    "ar": "تعذر تحديث اتصال موفر git الخاص بك. يرجى تسجيل الدخول مرة أخرى لإعادة الاتصال.",
+    "de": "Ihre Git-Provider-Verbindung konnte nicht aktualisiert werden. Bitte melden Sie sich erneut an, um die Verbindung wiederherzustellen.",
+    "fr": "Échec de l'actualisation de votre connexion au fournisseur git. Veuillez vous reconnecter pour la rétablir.",
+    "it": "Impossibile aggiornare la connessione al provider git. Accedi di nuovo per riconnetterla.",
+    "pt": "Não foi possível atualizar sua conexão com o provedor git. Faça login novamente para reconectá-la.",
+    "es": "No se pudo actualizar la conexión con tu proveedor de git. Inicia sesión de nuevo para volver a conectarla.",
+    "ca": "No s'ha pogut actualitzar la connexió amb el proveïdor de git. Torna a iniciar la sessió per reconnectar-la.",
+    "tr": "Git sağlayıcı bağlantınız yenilenemedi. Yeniden bağlanmak için lütfen tekrar oturum açın.",
+    "uk": "Не вдалося оновити з'єднання з git-провайдером. Увійдіть знову, щоб підключитися повторно."
   }
 }
