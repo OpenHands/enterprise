@@ -150,7 +150,6 @@ from openhands.sdk.utils.redact import (
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.child_conversation import StartChildConversationTool
 from openhands.tools.preset.default import (
     get_default_tools,
     register_builtins_agents,
@@ -2314,21 +2313,35 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if self.enable_child_conversation_launcher and self.web_url:
                 # Server-side child launches: the tool runs inside the sandbox
                 # and calls back into this app server, which provisions the
-                # child through the normal lifecycle (see webhook_router).
-                # Gated because every sandbox image must carry the tool before
-                # it is attached, and Agent Canvas must know how to treat
-                # server-launched children on Cloud.
-                tools.append(
-                    Tool(
-                        name=StartChildConversationTool.name,
-                        params={
-                            'launch_url': (
-                                f'{self.web_url}/api/v1/webhooks/conversations/'
-                                f'{conversation_id}/children'
-                            )
-                        },
+                # child through the normal lifecycle (see
+                # child_conversation_router). Gated because every sandbox
+                # image must carry the tool before it is attached, and Agent
+                # Canvas must know how to treat server-launched children on
+                # Cloud. Imported here: the pinned openhands-sdk may predate
+                # the tool, in which case the launcher is skipped.
+                try:
+                    from openhands.tools.child_conversation import (
+                        StartChildConversationTool,
                     )
-                )
+                except ImportError:
+                    _logger.warning(
+                        'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
+                        'openhands-sdk has no start_child_conversation tool; '
+                        'conversation %s starts without it',
+                        conversation_id,
+                    )
+                else:
+                    tools.append(
+                        Tool(
+                            name=StartChildConversationTool.name,
+                            params={
+                                'launch_url': (
+                                    f'{self.web_url}/api/v1/webhooks/'
+                                    f'conversations/{conversation_id}/children'
+                                )
+                            },
+                        )
+                    )
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True

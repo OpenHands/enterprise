@@ -3,6 +3,9 @@
 ``POST /api/v1/webhooks/conversations/{id}/children`` is the Cloud launcher
 behind the ``start_child_conversation`` tool: one call must provision exactly
 one child through the normal app-conversation lifecycle, linked to its parent.
+
+The route needs the child-launch contract from ``openhands-sdk``; on a pin
+that predates it the module does not import and this file is skipped.
 """
 
 from contextlib import asynccontextmanager
@@ -14,7 +17,6 @@ import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.models import StartChildConversationRequest
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationStartTask,
@@ -22,16 +24,18 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     ConversationTrigger,
 )
 from openhands.app_server.errors import AuthError
-from openhands.app_server.event_callback.webhook_router import (
-    router,
-    start_child_conversation,
-    valid_sandbox,
-)
+from openhands.app_server.event_callback.webhook_router import valid_sandbox
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
 
-ROUTER = 'openhands.app_server.event_callback.webhook_router'
+ROUTER = 'openhands.app_server.event_callback.child_conversation_router'
+child_conversation_router = pytest.importorskip(
+    ROUTER, reason='openhands-sdk without the child-launch contract'
+)
+router = child_conversation_router.router
+start_child_conversation = child_conversation_router.start_child_conversation
+StartChildConversationRequest = child_conversation_router.StartChildConversationRequest
 CHILD_ID = uuid4()
 READY_SEQUENCE = [
     (AppConversationStartTaskStatus.WORKING, None),

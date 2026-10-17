@@ -2051,6 +2051,7 @@ class TestLiveStatusAppConversationService:
     async def test_build_request_adds_child_conversation_launcher(self, _mock_tools):
         """With the launcher enabled, Cloud agents get start_child_conversation
         pointed back at this app server."""
+        pytest.importorskip('openhands.tools.child_conversation')
         self.mock_user_context.get_user_info.return_value = self.mock_user
         self.service.enable_child_conversation_launcher = True
 
@@ -2082,6 +2083,46 @@ class TestLiveStatusAppConversationService:
                 f'{conversation_id}/children'
             )
         }
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_skips_child_conversation_launcher_without_sdk_tool(
+        self, _mock_tools, monkeypatch
+    ):
+        """An openhands-sdk without the tool cannot host the launcher: the
+        conversation still starts, without it, and the gap is logged."""
+        monkeypatch.setitem(sys.modules, 'openhands.tools.child_conversation', None)
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service.enable_child_conversation_launcher = True
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service._logger'
+        ) as mock_logger:
+            result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=None,
+            )
+
+        assert all(
+            tool.name != 'start_child_conversation' for tool in result.agent.tools
+        )
+        mock_logger.warning.assert_called_once()
+        assert (
+            'no start_child_conversation tool' in mock_logger.warning.call_args.args[0]
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
