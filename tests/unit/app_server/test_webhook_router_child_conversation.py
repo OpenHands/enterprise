@@ -11,17 +11,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, status
+from fastapi.testclient import TestClient
 
 from openhands.agent_server.models import StartChildConversationRequest
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationStartTask,
     AppConversationStartTaskStatus,
+    ConversationTrigger,
 )
 from openhands.app_server.errors import AuthError
 from openhands.app_server.event_callback.webhook_router import (
+    router,
     start_child_conversation,
+    valid_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.auth_user_context import AuthUserContext
@@ -53,16 +57,36 @@ class _FakeAppConversationService:
 
     async def start_app_conversation(self, request):
         self.requests.append(request)
-        for status, detail in self.statuses:
+        for task_status, detail in self.statuses:
             task = AppConversationStartTask(
                 created_by_user_id='user_123',
                 request=request,
-                status=status,
+                status=task_status,
                 detail=detail,
             )
-            if status == AppConversationStartTaskStatus.READY:
+            if task_status == AppConversationStartTaskStatus.READY:
                 task.app_conversation_id = CHILD_ID
             yield task
+
+
+class _RefusingAppConversationService:
+    """Refuses before the first task, as the daily-quota reservation does."""
+
+    async def start_app_conversation(self, request):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={'code': 'daily_conversation_limit_reached'},
+        )
+        yield  # pragma: no cover - makes this an async generator
+
+
+def _client(sandbox_record: SandboxRecord | None) -> TestClient:
+    """The webhook router mounted as in the app, with the sandbox auth overridden."""
+    app = FastAPI()
+    app.include_router(router, prefix='/api/v1')
+    if sandbox_record is not None:
+        app.dependency_overrides[valid_sandbox] = lambda: sandbox_record
+    return TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture
@@ -78,6 +102,7 @@ def parent() -> AppConversationInfo:
         sandbox_id='sandbox_123',
         created_by_user_id='user_123',
         selected_repository='org/repo',
+        trigger=ConversationTrigger.GUI,
     )
 
 
@@ -134,6 +159,7 @@ async def test_provisions_exactly_one_child_linked_to_parent(
     assert len(app_service.requests) == 1
     start_request = app_service.requests[0]
     assert start_request.parent_conversation_id == parent.id
+    assert start_request.trigger == ConversationTrigger.GUI
     assert start_request.title == 'Docs'
     assert start_request.initial_message is not None
     assert start_request.initial_message.content[0].text == 'Write the docs'
@@ -235,3 +261,64 @@ async def test_failed_start_is_surfaced_with_detail(sandbox_record, parent, user
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == 'sandbox exploded'
+
+
+# ---------------------------------------------------------------------------
+# Through the router, as the sandbox's agent-server calls it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_http_creates_child_for_the_calling_sandbox(
+    sandbox_record, parent, user_auth
+):
+    app_service = _FakeAppConversationService(READY_SEQUENCE)
+
+    async with _launcher(parent, app_service, user_auth):
+        response = _client(sandbox_record).post(
+            f'/api/v1/webhooks/conversations/{parent.id}/children',
+            json={'task': 'Write the docs', 'title': 'Docs'},
+        )
+
+    assert response.status_code == 201
+    assert response.json()['conversation_id'] == str(CHILD_ID)
+    assert response.json()['parent_conversation_id'] == str(parent.id)
+    assert len(app_service.requests) == 1
+
+
+def test_http_requires_session_api_key(parent):
+    response = _client(None).post(
+        f'/api/v1/webhooks/conversations/{parent.id}/children',
+        json={'task': 'anything'},
+    )
+
+    assert response.status_code == 401
+    assert 'X-Session-API-Key' in response.json()['detail']
+
+
+@pytest.mark.asyncio
+async def test_http_rejects_parent_from_another_sandbox(parent, user_auth):
+    app_service = _FakeAppConversationService(READY_SEQUENCE)
+    other_sandbox = SandboxRecord(id='sandbox_999', created_by_user_id='user_123')
+
+    async with _launcher(parent, app_service, user_auth):
+        response = _client(other_sandbox).post(
+            f'/api/v1/webhooks/conversations/{parent.id}/children',
+            json={'task': 'anything'},
+        )
+
+    assert response.status_code == 401
+    assert app_service.requests == []
+
+
+@pytest.mark.asyncio
+async def test_http_surfaces_quota_refusal(sandbox_record, parent, user_auth):
+    """A 429 from the daily quota reaches the tool as the launch failure."""
+    async with _launcher(parent, _RefusingAppConversationService(), user_auth):
+        response = _client(sandbox_record).post(
+            f'/api/v1/webhooks/conversations/{parent.id}/children',
+            json={'task': 'anything'},
+        )
+
+    assert response.status_code == 429
+    assert response.json()['detail'] == {'code': 'daily_conversation_limit_reached'}

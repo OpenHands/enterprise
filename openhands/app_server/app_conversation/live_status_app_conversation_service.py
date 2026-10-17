@@ -322,6 +322,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
+    enable_child_conversation_launcher: bool = False
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -2310,10 +2311,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if user.agent_settings.enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
-            if self.web_url:
+            if self.enable_child_conversation_launcher and self.web_url:
                 # Server-side child launches: the tool runs inside the sandbox
                 # and calls back into this app server, which provisions the
                 # child through the normal lifecycle (see webhook_router).
+                # Gated because every sandbox image must carry the tool before
+                # it is attached, and Agent Canvas must know how to treat
+                # server-launched children on Cloud.
                 tools.append(
                     Tool(
                         name=StartChildConversationTool.name,
@@ -3447,6 +3451,9 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
                 httpx_client=httpx_client,
                 web_url=web_url,
+                enable_child_conversation_launcher=(
+                    config.enable_child_conversation_launcher
+                ),
                 openhands_provider_base_url=config.openhands_provider_base_url,
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,

@@ -723,6 +723,9 @@ async def start_child_conversation(
 
     start_request = AppConversationStartRequest(
         parent_conversation_id=parent.id,
+        # Not inherited by the start flow; without it the owner's bearer-style
+        # auth would record the child as an API-triggered conversation.
+        trigger=parent.trigger,
         initial_message=SendMessageRequest(
             role='user', content=[TextContent(text=request.task)]
         ),
