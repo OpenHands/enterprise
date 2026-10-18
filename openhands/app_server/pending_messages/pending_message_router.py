@@ -18,7 +18,9 @@ from openhands.app_server.utils.dependencies import get_dependencies
 logger = logging.getLogger(__name__)
 
 # Type adapter for validating content from request
-_content_type_adapter = TypeAdapter(list[TextContent | ImageContent])
+_content_type_adapter: TypeAdapter[list[TextContent | ImageContent]] = TypeAdapter(
+    list[TextContent | ImageContent]
+)
 
 # Create router with authentication dependencies
 router = APIRouter(
