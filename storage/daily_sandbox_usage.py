@@ -12,9 +12,9 @@ from storage.base import Base
 class DailySandboxUsage(Base):
     """Atomic per-user sandbox-start count for one UTC calendar day."""
 
-    # Physical table/column keep their legacy names: pre-189 pods map
+    # Physical table/column keep their legacy names: pre-193 pods map
     # daily_conversation_usage.conversation_count and must keep working
-    # during rolling deploys (see migration 189).
+    # during rolling deploys (see migration 193).
     __tablename__ = 'daily_conversation_usage'
     __table_args__ = (UniqueConstraint('user_id', 'usage_date'),)
 

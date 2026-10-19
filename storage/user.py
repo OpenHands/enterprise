@@ -55,7 +55,7 @@ class User(Base):
         nullable=True, default=False
     )
     # NULL inherits the deployment-wide daily sandbox limit.
-    # Physical column keeps its legacy name: pre-189 pods map
+    # Physical column keeps its legacy name: pre-193 pods map
     # daily_conversation_limit and must keep working during rolling deploys.
     daily_sandbox_limit: Mapped[int | None] = mapped_column(
         'daily_conversation_limit', nullable=True

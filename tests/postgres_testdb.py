@@ -252,7 +252,8 @@ def run_alembic(server: PostgresServer, database: str, *args: str) -> None:
     )
     if result.returncode != 0:
         raise PostgresUnavailableError(
-            f'alembic {" ".join(args)} failed on {database}:'
+            f'alembic {" ".join(args)} failed on {database}'
+            f' (exit code {result.returncode}):'
             f'\n{result.stdout}\n{result.stderr}'
         )
 

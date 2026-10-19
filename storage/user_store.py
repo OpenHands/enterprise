@@ -93,8 +93,12 @@ class UserStore:
         user_id: str,
         user_info: dict,
         role_id: Optional[int] = None,
+        allow_match_by_email: bool = False,
     ) -> User | None:
         """Create a new user.
+
+        ``allow_match_by_email`` sets the initial value of the one-time
+        ``User.allow_match_by_email`` identity-seeding flag.
 
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
@@ -194,6 +198,7 @@ class UserStore:
                 id=user_uuid,
                 current_org_id=org.id,
                 role_id=role_id,
+                allow_match_by_email=allow_match_by_email,
                 **user_kwargs,
             )
             user.email = user_info.get('email')
@@ -836,9 +841,13 @@ class UserStore:
     async def get_user_by_email_opted_in(email: str) -> Optional[User]:
         """Get a user by email who has opted in to one-time email-match seeding.
 
-        Filters on ``User.email == email.lower().strip()`` AND
-        ``User.allow_match_by_email == True``. Returns the matched ``User`` or
-        ``None``.
+        Filters on ``User.email == email.lower().strip()``,
+        ``User.allow_match_by_email == True`` AND ``User.email_verified == True``.
+        Returns the matched ``User`` or ``None``.
+
+        Only verified emails match: an unverified ``User.email`` is an address
+        nobody has proven they own, so binding a new IDP identity to it could
+        hand the address's real owner an account someone else registered.
 
         Callers must guard against duplicates (see
         :meth:`count_opted_in_users_with_email`): ``User.email`` has no unique
@@ -857,13 +866,17 @@ class UserStore:
                 .filter(
                     User.email == email.lower().strip(),
                     User.allow_match_by_email.is_(True),
+                    User.email_verified.is_(True),
                 )
             )
             return result.scalars().first()
 
     @staticmethod
     async def count_opted_in_users_with_email(email: str) -> int:
-        """Count users with ``allow_match_by_email`` set that share ``email``.
+        """Count users with ``allow_match_by_email`` set and a verified ``email``.
+
+        Unverified rows are excluded so they can neither match nor block a
+        verified user's link with a spurious duplicate.
 
         Defense-in-depth for the duplicate-email guard: ``User.email`` has no
         unique constraint, so the bulk-set operation and the match-time check
@@ -880,6 +893,7 @@ class UserStore:
                 .where(
                     User.email == email.lower().strip(),
                     User.allow_match_by_email.is_(True),
+                    User.email_verified.is_(True),
                 )
             )
 

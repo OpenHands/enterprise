@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -5,12 +6,14 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from integrations.azure_devops.azure_devops_view import (
+    OPENHANDS_COMMENT_MARKER,
     AzureDevOpsFactory,
     AzureDevOpsPRComment,
     AzureDevOpsWorkItemComment,
     _select_project_repo,
     actor_email,
     mark_openhands_comment,
+    mark_openhands_work_item_comment,
 )
 from integrations.models import Message, SourceType
 
@@ -130,6 +133,31 @@ def test_is_work_item_comment_requires_exact_mention():
             )
         )
         is False
+    )
+
+
+def _azure_stored(html: str) -> str:
+    """A work item comment as Azure stores it: HTML comments removed, attribute quotes dropped."""
+    return re.sub(r'<!--.*?-->', '', html, flags=re.S).replace('="1"', '=1')
+
+
+def test_work_item_replies_stay_marked_after_azure_stores_them():
+    reply = 'Done. Ask @openhands again if needed.'
+    stored = _azure_stored(
+        mark_openhands_work_item_comment(mark_openhands_comment(reply))
+    )
+
+    assert OPENHANDS_COMMENT_MARKER not in stored
+    assert (
+        AzureDevOpsFactory.is_work_item_comment(_make_work_item_message(stored))
+        is False
+    )
+    # The comment marker alone does not survive, so the reply would read as a mention.
+    assert (
+        AzureDevOpsFactory.is_work_item_comment(
+            _make_work_item_message(_azure_stored(mark_openhands_comment(reply)))
+        )
+        is True
     )
 
 

@@ -36,11 +36,14 @@ CALLER_USER_ID = str(uuid.uuid4())
 
 
 def _fake_provider(
-    provider_id: int = 1, allow_registration: bool = True
+    provider_id: int = 1,
+    allow_registration: bool = True,
+    allow_match_by_email: bool = True,
 ) -> AuthProvider:
     p = MagicMock()
     p.id = provider_id
     p.allow_registration = allow_registration
+    p.allow_match_by_email = allow_match_by_email
     return p
 
 
@@ -232,6 +235,47 @@ async def test_email_match_no_opted_in_user_falls_through_to_create():
     created_user_id = create.await_args.args[0]
     uuid.UUID(created_user_id)
     assert created_user_id != 'new-idp-sub'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', [True, False])
+async def test_new_user_allow_match_by_email_comes_from_provider(flag):
+    provider = _fake_provider(allow_match_by_email=flag)
+    new_user = _fake_user(uuid.uuid4(), email='alice@example.com')
+
+    with (
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'count_opted_in_users_with_email',
+            new=AsyncMock(return_value=0),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_email_opted_in',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=new_user),
+        ) as create,
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+    ):
+        await _resolve_or_create_user(
+            provider,
+            {
+                'sub': 'new-idp-sub',
+                'email': 'alice@example.com',
+                'email_verified': True,
+            },
+        )
+
+    assert create.await_args.kwargs['allow_match_by_email'] is flag
 
 
 @pytest.mark.asyncio

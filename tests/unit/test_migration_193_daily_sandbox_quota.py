@@ -1,12 +1,12 @@
-"""Real-DB tests for migration 189 (daily sandbox quota).
+"""Real-DB tests for migration 193 (daily sandbox quota).
 
-Migration 189 is an intentional no-op: the quota's Python-side names change
+Migration 193 is an intentional no-op: the quota's Python-side names change
 to sandbox (``DailySandboxUsage``, ``sandbox_count``, ``daily_sandbox_limit``)
 but the physical schema keeps its legacy names so pods on the previous image
 keep working while a rolling deploy runs ``alembic upgrade head`` from the
 new pods' init containers (and a rollback needs no manual downgrade).
 
-These tests pin that contract: upgrading 188 -> 189 and downgrading back
+These tests pin that contract: upgrading 192 -> 193 and downgrading back
 leave tables, columns, history rows, and limit overrides exactly as they
 were, under the legacy physical names the models map.
 """
@@ -120,7 +120,7 @@ def _assert_legacy_schema_and_data(engine: Engine, user_id: str, org_id: str):
     assert org_limit == -1
 
 
-def test_upgrade_189_keeps_legacy_names_and_data(
+def test_upgrade_193_keeps_legacy_names_and_data(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
 ):
@@ -131,13 +131,13 @@ def test_upgrade_189_keeps_legacy_names_and_data(
     _seed_legacy_quota(engine, user_id, org_id)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '189'
+        test_database.server, test_database.name, 'upgrade', '193'
     )
 
     _assert_legacy_schema_and_data(engine, user_id, org_id)
 
 
-def test_downgrade_189_keeps_legacy_names_and_data(
+def test_downgrade_193_keeps_legacy_names_and_data(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
 ):
@@ -147,7 +147,7 @@ def test_downgrade_189_keeps_legacy_names_and_data(
     user_id, org_id = _insert_user_and_org(engine)
     _seed_legacy_quota(engine, user_id, org_id)
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '189'
+        test_database.server, test_database.name, 'upgrade', '193'
     )
 
     postgres_testdb.run_alembic(

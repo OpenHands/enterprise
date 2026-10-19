@@ -21,13 +21,13 @@ carry over untouched with no data movement.
 
 This migration is therefore an intentional no-op that only advances the
 revision. The physical renames can land in a later migration once no
-pre-189 pods remain.
+pre-193 pods remain.
 """
 
 from typing import Sequence
 
-revision: str = '189'
-down_revision: str | None = '188'
+revision: str = '193'
+down_revision: str | None = '192'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

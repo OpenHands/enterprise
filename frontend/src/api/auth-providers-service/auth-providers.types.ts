@@ -29,6 +29,9 @@ export interface OAuthProviderDetails {
   userinfo_url: string | null;
   scopes: string[] | null;
   permitted_drift_seconds: number;
+  /** For a Keycloak-federated login row: the git provider whose real token
+   * is additionally fetched from Keycloak after login. ``null`` otherwise. */
+  legacy_keycloak_type: Exclude<OAuthProviderBrand, "enterprise_sso"> | null;
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the

@@ -41,6 +41,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -59,6 +60,7 @@ from server.auth.provider_identity import (
 from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
+from server.auth.token_manager import TokenManager
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -91,13 +93,25 @@ class OAuthState(BaseModel):
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
+def _require_oauth_provider(provider: AuthProvider) -> None:
+    """404 unless ``provider`` is generic OAuth2.
+
+    Fails closed for any provider kind without a dedicated branch before the
+    call, so a newly added kind can't fall through into the OAuth2 flow.
+    """
+    if not isinstance(provider.details, OAuthProviderDetails):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Provider {provider.id} does not support OAuth2 login',
+        )
+
+
 def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
     """Narrow ``provider.details`` to ``OAuthProviderDetails``.
 
-    Every caller of this helper runs after the generic OAuth2 redirect/token
-    routes have already excluded non-OAuth2 rows (see the ``kind ==
-    PasswordProviderDetails.__name__`` checks in ``oauth_v2_login`` /
-    ``oauth_v2_callback``), so this should never actually mismatch -- the
+    Every caller of this helper runs after ``oauth_v2_login`` /
+    ``oauth_v2_callback`` have excluded non-OAuth2 rows (see
+    ``_require_oauth_provider``), so this should never actually mismatch -- the
     assertion documents that invariant instead of silently reaching into the
     wrong subclass's fields.
     """
@@ -212,6 +226,86 @@ async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
         return response.json()
 
 
+def _epoch_to_datetime(expires_at: int | str | None) -> datetime | None:
+    """Convert a broker-response epoch timestamp to a tz-aware datetime.
+
+    ``get_idp_tokens_from_keycloak`` uses ``0`` for "never expires" (no
+    ``0`` epoch-second sentinel is otherwise reachable); the rest of
+    oauth_v2 uses ``None`` for the same thing -- see ``_parse_token_response``.
+    """
+    if not expires_at:
+        return None
+    return datetime.fromtimestamp(int(expires_at), tz=timezone.utc)
+
+
+async def _store_legacy_keycloak_git_token(
+    provider_type: ProviderType,
+    user_id: uuid.UUID,
+    keycloak_access_token: str,
+) -> None:
+    """Fetch ``provider_type``'s real token via Keycloak's identity-brokering
+    endpoint and store it under the git-provider row of that type.
+
+    Called after a successful OAuth2 exchange against a login row with
+    ``OAuthProviderDetails.legacy_keycloak_type`` set: that row's own
+    ``token_url`` is Keycloak's, so the pair ``_exchange_code`` just
+    returned is a Keycloak access/refresh token, never ``provider_type``'s
+    real one -- Keycloak does not embed the upstream IdP's token in its own
+    OIDC response, it only exposes it via this separate endpoint.
+
+    Best-effort: any failure here is logged and swallowed rather than
+    failing the login/link itself, which already completed successfully
+    with the (perfectly valid, for its own purpose) Keycloak token pair
+    persisted under the login row -- a transient broker/network error
+    should not lock the user out of the app, only leave git-provider repo
+    access unavailable until the next login (or a manual link in
+    Settings > Integrations).
+    """
+    git_provider = await AuthProviderStore().get_provider_by_type(provider_type.value)
+    if git_provider is None:
+        # Should not happen in practice -- migration 189 only seeds a
+        # legacy-Keycloak login row when the matching git-provider row
+        # (migration 168) already exists, gated on the same env var -- but an
+        # admin could have deleted that row since, or hand-created a login
+        # row via the admin API without one.
+        logger.warning(
+            'oauth_v2_legacy_keycloak_no_git_provider_row',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+
+    try:
+        data = await TokenManager().get_idp_tokens_from_keycloak(
+            keycloak_access_token, provider_type
+        )
+    except Exception:
+        logger.exception(
+            'oauth_v2_legacy_keycloak_broker_fetch_failed',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+    if not data:
+        # The broker reported no association for this IdP (e.g. the user
+        # was created by some other means and never actually went through
+        # Keycloak's GitHub/GitLab/Bitbucket federation).
+        logger.info(
+            'oauth_v2_legacy_keycloak_no_broker_token',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+
+    await OAuthTokenStore(
+        user_id=user_id, oauth_provider_id=git_provider.id
+    ).store_tokens(
+        access_token=str(data['access_token']),
+        refresh_token=str(data['refresh_token']),
+        access_token_expires_at=_epoch_to_datetime(data.get('access_token_expires_at')),
+        refresh_token_expires_at=_epoch_to_datetime(
+            data.get('refresh_token_expires_at')
+        ),
+    )
+
+
 # ── routes ────────────────────────────────────────────────────────────────
 
 
@@ -300,6 +394,7 @@ async def oauth_v2_login(
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
 
+    _require_oauth_provider(provider)
     details = _oauth_details(provider)
     auth_url = details.authorization_url
     if not auth_url:
@@ -347,21 +442,10 @@ async def oauth_v2_callback(
     """
     provider = await _get_provider(provider_id)
 
-    # Integrated IDP callbacks are handled by dedicated routes -- checked
+    # Password and SAML callbacks are handled by dedicated routes; checked
     # first, unconditionally, so this 404s on provider kind alone regardless
     # of whatever ``code``/``state`` a caller happens to send.
-    if provider.kind == PasswordProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='Password login callback must use POST with email field',
-        )
-    # SAML's ACS is a POST (the IdP's auto-submitting form) handled by
-    # ``server.routes.saml``, never this GET callback.
-    if provider.kind == SamlProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='SAML callback must use POST /saml/{provider_id}/acs',
-        )
+    _require_oauth_provider(provider)
 
     if error:
         raise HTTPException(
@@ -426,6 +510,22 @@ async def oauth_v2_callback(
         access_token_expires_at=access_exp,
         refresh_token_expires_at=refresh_exp,
     )
+
+    # ``provider`` is a login IDP whose own token exchange only ever yields
+    # a Keycloak token (see ``OAuthProviderDetails.legacy_keycloak_type``) --
+    # additionally fetch and store the real git-provider token so repo
+    # access works the same way it did for the pre-OAuth-v2 Keycloak login
+    # path (``TokenManager.store_idp_tokens``), not just the login session.
+    details = provider.details
+    if (
+        isinstance(details, OAuthProviderDetails)
+        and details.legacy_keycloak_type is not None
+    ):
+        await _store_legacy_keycloak_git_token(
+            provider_type=details.legacy_keycloak_type,
+            user_id=uuid.UUID(user_id),
+            keycloak_access_token=access_token,
+        )
 
     redirect_url = state_data.redirect_url or '/'
 

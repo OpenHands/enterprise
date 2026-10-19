@@ -395,6 +395,46 @@ class SaaSGitLabService(GitLabService):
             logger.warning('Webhook existence check failed', exc_info=True)
             return False, WebhookStatus.INVALID
 
+    async def delete_webhooks_with_url(
+        self, resource_type: GitLabResourceType, resource_id: str, webhook_url: str
+    ) -> tuple[int, WebhookStatus | None]:
+        """Delete every hook on the resource whose URL is ``webhook_url``.
+
+        Returns how many were deleted, and RATE_LIMITED or INVALID if listing
+        or deleting failed part way.
+        """
+        if resource_type == GitLabResourceType.GROUP:
+            url = f'{self.BASE_URL}/groups/{resource_id}/hooks'
+        else:
+            url = f'{self.BASE_URL}/projects/{resource_id}/hooks'
+
+        deleted = 0
+        try:
+            # List every page before deleting, since deleting shifts the pages.
+            hook_ids: list[int] = []
+            page = 1
+            while True:
+                hooks, headers = await self._make_request(
+                    url, params={'per_page': 100, 'page': page}
+                )
+                hook_ids.extend(
+                    hook['id'] for hook in hooks or [] if hook.get('url') == webhook_url
+                )
+                if 'rel="next"' not in headers.get('Link', ''):
+                    break
+                page += 1
+            for hook_id in hook_ids:
+                await self._make_request(
+                    f'{url}/{hook_id}', method=RequestMethod.DELETE
+                )
+                deleted += 1
+            return deleted, None
+        except RateLimitError:
+            return deleted, WebhookStatus.RATE_LIMITED
+        except Exception:
+            logger.warning('Webhook deletion failed', exc_info=True)
+            return deleted, WebhookStatus.INVALID
+
     async def check_user_has_admin_access_to_resource(
         self, resource_type: GitLabResourceType, resource_id: str
     ) -> tuple[bool, WebhookStatus | None]:
