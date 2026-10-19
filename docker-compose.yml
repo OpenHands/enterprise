@@ -330,10 +330,8 @@ services:
         target: /etc/caddy/Caddyfile
     restart: unless-stopped
 
-  # Runs the Postgres-backed Procrastinate tasks that have already been
-  # migrated off Kubernetes CronJobs: sandbox-lifecycle cleanup,
-  # Procrastinate's own housekeeping, and the scheduled jobs enabled below.
-  # See openhands/app_server/worker/app.py and scheduled_jobs.py.
+  # Runs the Postgres-backed Procrastinate tasks that replace Kubernetes
+  # CronJobs. See openhands/app_server/worker/.
   worker:
     build:
       context: .
@@ -360,7 +358,6 @@ services:
       DB_NAME: ${DB_NAME:-openhands}
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
-      # Daily at 03:00 UTC, the chart's appConversationStartTaskClean CronJob schedule.
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
