@@ -359,6 +359,14 @@ services:
       DB_NAME: ${DB_NAME:-openhands}
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
+      OH_WORKER_SCHEDULED_JOBS_INSTALL_GITLAB_WEBHOOKS: ${GITLAB_APP_CLIENT_ID:+true}
+      # The image defaults to the OSS GitLab service, which can't install webhooks.
+      OPENHANDS_GITLAB_SERVICE_CLS: integrations.gitlab.gitlab_service.SaaSGitLabService
+      GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
+      GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
+      GITLAB_HOST: ${GITLAB_HOST:-}
+      # Unset, webhooks would point at app.all-hands.dev instead of this stack.
+      WEB_HOST: ${WEB_HOST:-localhost}
     restart: unless-stopped
 
 # `db-data` / `app-filestore` are declared but currently unused (see the
