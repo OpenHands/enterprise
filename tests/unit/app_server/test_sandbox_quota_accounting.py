@@ -234,3 +234,57 @@ async def test_unattributed_sandbox_is_not_counted(sandbox_quota):
     anon = QuotaUserContext(None, user.current_org_id)
     await start(user_context_override=anon)
     assert await used_today() == 0
+
+
+@dataclass
+class ResolverQuotaUserContext:
+    """Mirrors integrations.ResolverUserContext: carries the targeted org as
+    ``resolver_org_id`` and deliberately has no ``get_effective_org_id``."""
+
+    user_id: str
+    resolver_org_id: UUID
+
+    async def get_user_id(self):
+        return self.user_id
+
+    async def get_user_info(self, **kwargs):
+        return UserInfo(id=self.user_id)
+
+    async def get_default_sandbox_spec_id(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_resolver_start_uses_resolver_org_limit(
+    app_db_session,
+    async_session_maker,
+    create_org,
+    create_user,
+    monkeypatch,
+    sandbox_quota,
+):
+    """A resolver start is governed by the target org's override, not the
+    user's last-selected (current) org.
+
+    Regression: ResolverUserContext has no get_effective_org_id, so org_id
+    was None and get_limit fell back to user.current_org_id. With the
+    personal org inheriting a deployment default of 1 and the resolver
+    target org exempt (-1), the second resolver start wrongly got a 429.
+    """
+    _user, start, _used = sandbox_quota
+    personal_org = create_org()  # inherits the deployment default
+    team_org = create_org(daily_sandbox_limit=-1)  # exempt
+    resolver_user = create_user(current_org_id=personal_org.id)
+    context = ResolverQuotaUserContext(str(resolver_user.id), team_org.id)
+    monkeypatch.setenv('OH_DAILY_SANDBOX_LIMIT', '1')
+
+    # Without the fallback the second start exceeds the default limit of 1.
+    await start(user_context_override=context)
+    await start(user_context_override=context)
+
+    async with async_session_maker() as session:
+        status = await DailySandboxQuotaService(session).get_status(
+            str(resolver_user.id), team_org.id
+        )
+    assert status.daily_limit is None  # exempt via the resolver org
+    assert status.used_today == 0  # reservations are not counted when exempt

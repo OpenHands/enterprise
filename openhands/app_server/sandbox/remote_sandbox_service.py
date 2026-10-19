@@ -436,6 +436,17 @@ class RemoteSandboxService(SandboxService):
         is not metered either — it reuses an existing sandbox rather than
         creating one — so a caller that resumes a single sandbox repeatedly
         allocates pods outside this quota.
+
+        Refund scope: when ``start_sandbox`` fails (HTTP error) or the
+        runtime already reports ERROR, the reservation is released here.
+        When the sandbox starts but never reaches RUNNING it is refunded
+        only if a caller waits on it through this same service instance (the
+        GUI start flow does, via ``wait_for_sandbox_running``). API and
+        automation callers poll from separate requests and therefore
+        separate service instances, so nobody settles their entry and the
+        slot is kept; a pod stuck unscheduled still loads the scheduler.
+        Persisting pending state on the sandbox row so a later status read
+        could settle it is a natural follow-up.
         """
         if not user_id:
             return False
@@ -451,6 +462,14 @@ class RemoteSandboxService(SandboxService):
             return False
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
         org_id = await get_effective_org_id() if get_effective_org_id else None
+        if org_id is None:
+            # ResolverUserContext has no get_effective_org_id; it carries the
+            # org the integration run targets as resolver_org_id. Without
+            # this, a resolver start would fall back to the user's
+            # last-selected org and apply that org's override instead of the
+            # target org's (cf. _get_effective_org_id in
+            # integrations/jira_dc/jira_dc_conversation_secret_enricher.py).
+            org_id = getattr(self.user_context, 'resolver_org_id', None)
         async with a_session_maker() as session:
             return await DailySandboxQuotaService(session).reserve(user_id, org_id)
 

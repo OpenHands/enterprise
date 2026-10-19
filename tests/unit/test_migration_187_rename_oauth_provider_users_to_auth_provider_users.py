@@ -6,41 +6,19 @@ A plain table rename with two renamed indexes and no column/data changes, so
 before/after, data readable under the new/old name, and the index names
 match what the model (``storage.auth_provider_user.AuthProviderUser``)
 expects.
-
-The user row is inserted with raw SQL rather than the ``create_user``
-fixture: at revision 186 the ORM models carry columns from later
-migrations that do not exist yet, so an ORM insert cannot run against
-the downgraded schema.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from typing import Callable
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from storage.user import User
 from tests import postgres_testdb
-
-
-def _insert_user(engine: Engine) -> uuid.UUID:
-    """Insert a bare user row (raw SQL; see module docstring for why)."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                'INSERT INTO org (id, name, org_version, agent_settings, '
-                "conversation_settings) VALUES (:id, :name, 10, '{}', '{}')"
-            ),
-            {'id': org_id, 'name': f'test-org-{str(org_id)[:8]}'},
-        )
-        conn.execute(
-            text('INSERT INTO "user" (id, current_org_id) VALUES (:id, :org_id)'),
-            {'id': user_id, 'org_id': org_id},
-        )
-    return user_id
 
 
 def _insert_provider(engine: Engine) -> int:
@@ -99,16 +77,17 @@ def _index_names(engine: Engine, table_name: str) -> set[str]:
 def test_upgrade_renames_table_and_preserves_row_ids(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
+    create_user: Callable[..., User],
 ):
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user_id = _insert_user(engine)
+    user = create_user()
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,
-        user_id=user_id,
+        user_id=user.id,
         external_subject_id='ext-123',
         external_email='person@example.com',
     )
@@ -132,7 +111,7 @@ def test_upgrade_renames_table_and_preserves_row_ids(
 
     assert row['id'] == link_id
     assert row['oauth_provider_id'] == provider_id
-    assert row['user_id'] == user_id
+    assert row['user_id'] == user.id
     assert row['external_subject_id'] == 'ext-123'
     assert row['external_email'] == 'person@example.com'
 
@@ -158,16 +137,17 @@ def test_upgrade_renames_indexes(
 def test_downgrade_restores_table_name_and_indexes(
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
+    create_user: Callable[..., User],
 ):
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user_id = _insert_user(engine)
+    user = create_user()
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,
-        user_id=user_id,
+        user_id=user.id,
         external_subject_id='ext-456',
     )
 
