@@ -107,9 +107,11 @@ def scheduled_jobs_blueprint(config: ScheduledJobsConfig) -> Blueprint:
     blueprint = Blueprint()
     for name in config.enabled():
         func, cron = SCHEDULES[name]
-        # Runs never overlap, as under the CronJobs' concurrencyPolicy: Forbid, but
-        # one run that comes due meanwhile waits instead of being skipped. No
-        # retry=: a retry returns the failed run to todo, which that waiting run's
+        # Runs don't overlap, as under the CronJobs' concurrencyPolicy: Forbid, but
+        # one run that comes due meanwhile waits instead of being skipped. The
+        # exception is a run that housekeeping ends as stalled while its worker is
+        # still alive: it keeps going beside the next run, so jobs must tolerate that.
+        # No retry=: a retry returns the failed run to todo, which that waiting run's
         # queueing lock forbids, so the failed run would stay doing and hold lock.
         lock = f'{NAMESPACE}:{name}'
         task = blueprint.task(
