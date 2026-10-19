@@ -9,6 +9,7 @@ import psycopg
 import pytest
 from procrastinate import App, PsycopgConnector
 
+import run_budget_maintenance
 from openhands.agent_server.env_parser import from_env
 from openhands.app_server.utils.logger import openhands_logger
 from openhands.app_server.worker import __main__ as worker_main
@@ -32,6 +33,20 @@ CHART_SCHEDULES = {
     'enrich_user_interaction': '*/10 * * * *',
 }
 ALL_ON = ScheduledJobsConfig(**dict.fromkeys(CHART_SCHEDULES, True))
+
+# Each job's CronJob entrypoint; resend_sync's is sync and must run off the loop.
+ENTRYPOINTS = {
+    'budget_maintenance': 'run_budget_maintenance.run',
+    'maintenance_tasks': 'run_maintenance_tasks.main',
+    'app_conversation_start_task_clean': 'sync.clean_app_conversation_start_tasks.main',
+    'proactive_convo_clean': 'sync.clean_proactive_convo_table.main',
+    'resend_sync': 'sync.resend_keycloak.sync_users_to_resend',
+    'install_gitlab_webhooks': 'sync.install_gitlab_webhooks.VerifyWebhookStatus.install_webhooks',
+    'enrich_user_interaction': 'sync.enrich_user_interaction_data.main',
+}
+
+# A lost deadline would otherwise hang the suite on the planted delay=600 row.
+pytestmark = pytest.mark.timeout(60)
 
 
 def test_every_job_is_off_unless_enabled(monkeypatch):
@@ -109,6 +124,33 @@ async def test_worker_takes_scheduled_jobs_only_once_one_is_enabled(
     assert started.scheduled_jobs == ['resend_sync']
 
 
+@pytest.mark.usefixtures('app_db_session', 'restore_app')
+async def test_worker_skips_scheduled_jobs_queue_when_none_is_enabled(monkeypatch):
+    started_with: dict = {}
+
+    async def run_worker_async(**kwargs):
+        started_with.update(kwargs)
+
+    monkeypatch.setattr(app, 'run_worker_async', run_worker_async)
+
+    await worker_main.run()
+
+    assert started_with['queues'] == ['default']
+
+
+def test_budget_cronjob_entrypoint_still_runs_the_job(monkeypatch):
+    ran = []
+
+    async def run():
+        ran.append(True)
+
+    monkeypatch.setattr(run_budget_maintenance, 'run', run)
+
+    run_budget_maintenance.main()
+
+    assert ran == [True]
+
+
 @pytest.fixture
 def conninfo(test_database) -> dict:
     server = test_database.server
@@ -123,17 +165,12 @@ def conninfo(test_database) -> dict:
 
 @contextlib.asynccontextmanager
 async def _open_worker_app(conninfo: dict, config: ScheduledJobsConfig):
+    """Only ``config``'s jobs, so no other job's periodic run comes due mid-test."""
     worker_app = App(
         connector=PsycopgConnector(kwargs=conninfo, min_size=1, max_size=3)
     )
     worker_app.add_tasks_from(scheduled_jobs_blueprint(config), namespace=NAMESPACE)
     async with worker_app.open_async():
-        yield worker_app
-
-
-@pytest.fixture
-async def worker_app(conninfo, app_db_session):
-    async with _open_worker_app(conninfo, ALL_ON) as worker_app:
         yield worker_app
 
 
@@ -159,7 +196,8 @@ async def _run_job(worker_app: App, conninfo: dict, name: str) -> tuple[str, int
     return status, attempts
 
 
-async def test_a_job_runs_its_existing_code_in_the_worker(worker_app, conninfo):
+@pytest.mark.usefixtures('app_db_session')
+async def test_a_job_runs_its_existing_code_in_the_worker(conninfo):
     _sql(
         conninfo,
         'INSERT INTO app_conversation_start_task (id, created_by_user_id, request, created_at) '
@@ -167,35 +205,39 @@ async def test_a_job_runs_its_existing_code_in_the_worker(worker_app, conninfo):
         "(gen_random_uuid(), 'user', '{}', now())",
     )
 
-    status, _ = await _run_job(
-        worker_app, conninfo, 'app_conversation_start_task_clean'
-    )
+    config = ScheduledJobsConfig(app_conversation_start_task_clean=True)
+    async with _open_worker_app(conninfo, config) as worker_app:
+        status, _ = await _run_job(
+            worker_app, conninfo, 'app_conversation_start_task_clean'
+        )
 
     assert status == 'succeeded'
     # Only the row older than a day is gone.
     assert _sql(conninfo, 'SELECT count(*) FROM app_conversation_start_task') == [(1,)]
 
 
+@pytest.mark.usefixtures('app_db_session')
 async def test_a_sync_job_that_exits_fails_and_the_worker_survives(
-    worker_app, conninfo, monkeypatch
+    conninfo, monkeypatch
 ):
     from sync import resend_keycloak
 
     # The job calls sys.exit(1) without its API key, as its CronJob pod did.
     monkeypatch.setattr(resend_keycloak, 'RESEND_API_KEY', None)
 
-    status, attempts = await _run_job(worker_app, conninfo, 'resend_sync')
+    config = ScheduledJobsConfig(resend_sync=True, proactive_convo_clean=True)
+    async with _open_worker_app(conninfo, config) as worker_app:
+        status, attempts = await _run_job(worker_app, conninfo, 'resend_sync')
 
-    assert (status, attempts) == ('failed', 1)
-    # The worker is still usable after the job's SystemExit.
-    status, _ = await _run_job(worker_app, conninfo, 'proactive_convo_clean')
-    assert status == 'succeeded'
+        assert (status, attempts) == ('failed', 1)
+        # The worker is still usable after the job's SystemExit.
+        status, _ = await _run_job(worker_app, conninfo, 'proactive_convo_clean')
+        assert status == 'succeeded'
 
 
+@pytest.mark.usefixtures('app_db_session')
 @pytest.mark.parametrize('name', ['budget_maintenance', 'maintenance_tasks'])
-async def test_a_budget_job_is_stopped_at_its_deadline(
-    worker_app, conninfo, monkeypatch, name
-):
+async def test_a_budget_job_is_stopped_at_its_deadline(conninfo, monkeypatch, name):
     monkeypatch.setattr(scheduled_jobs, 'DEADLINE_SECONDS', 1)
     # run_maintenance_tasks sleeps for a task's delay after processing it, so this
     # row keeps the job running past its deadline.
@@ -206,10 +248,46 @@ async def test_a_budget_job_is_stopped_at_its_deadline(
     )
 
     started = time.monotonic()
-    status, attempts = await _run_job(worker_app, conninfo, name)
+    async with _open_worker_app(
+        conninfo, ScheduledJobsConfig(**{name: True})
+    ) as worker_app:
+        status, attempts = await _run_job(worker_app, conninfo, name)
 
     assert time.monotonic() - started < 30
     assert (status, attempts) == ('failed', 1)
+
+
+@pytest.mark.usefixtures('app_db_session')
+@pytest.mark.parametrize('name', ENTRYPOINTS)
+async def test_each_job_runs_its_cronjobs_entrypoint(conninfo, monkeypatch, name):
+    # enrich_user_interaction_data builds a GitHub App client at import.
+    monkeypatch.setattr(
+        'integrations.github.data_collector.GitHubDataCollector', object
+    )
+    ran_on: list[str] = []
+
+    def record(*args):
+        try:
+            asyncio.get_running_loop()
+            ran_on.append('event loop')
+        except RuntimeError:
+            ran_on.append('thread')
+
+    async def async_record(*args):
+        record()
+
+    entrypoint = record if name == 'resend_sync' else async_record
+    monkeypatch.setattr(ENTRYPOINTS[name], entrypoint)
+
+    async with _open_worker_app(
+        conninfo, ScheduledJobsConfig(**{name: True})
+    ) as worker_app:
+        status, _ = await _run_job(worker_app, conninfo, name)
+
+    assert status == 'succeeded'
+    # Its own periodic run may come due too, so it can run more than once.
+    assert ran_on
+    assert set(ran_on) == {'thread' if name == 'resend_sync' else 'event loop'}
 
 
 async def _wait_for(conninfo: dict, job_id: int, statuses: set[str]) -> str:
