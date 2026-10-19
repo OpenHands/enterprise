@@ -1,5 +1,7 @@
 """The CronJob jobs as periodic worker tasks, run by a real worker on this test's Postgres."""
 
+import asyncio
+import contextlib
 import logging
 import time
 
@@ -50,7 +52,7 @@ def test_only_enabled_jobs_are_scheduled():
     assert scheduled_jobs_blueprint(ScheduledJobsConfig()).tasks == {}
 
 
-def test_each_job_keeps_its_cronjobs_schedule_overlap_policy_and_retries():
+def test_each_job_keeps_its_cronjobs_schedule_and_overlap_policy():
     blueprint = scheduled_jobs_blueprint(ALL_ON)
 
     schedules = {task.name: cron for (task, cron) in _periodic(blueprint).items()}
@@ -58,7 +60,7 @@ def test_each_job_keeps_its_cronjobs_schedule_overlap_policy_and_retries():
     for name, task in blueprint.tasks.items():
         assert task.queue == SCHEDULED_JOBS_QUEUE
         assert task.lock == task.queueing_lock == f'{NAMESPACE}:{name}'
-        assert task.retry_strategy.max_attempts == 3
+        assert task.retry_strategy is None
 
 
 def _periodic(blueprint) -> dict:
@@ -119,13 +121,19 @@ def conninfo(test_database) -> dict:
     }
 
 
-@pytest.fixture
-async def worker_app(conninfo, app_db_session):
+@contextlib.asynccontextmanager
+async def _open_worker_app(conninfo: dict, config: ScheduledJobsConfig):
     worker_app = App(
         connector=PsycopgConnector(kwargs=conninfo, min_size=1, max_size=3)
     )
-    worker_app.add_tasks_from(scheduled_jobs_blueprint(ALL_ON), namespace=NAMESPACE)
+    worker_app.add_tasks_from(scheduled_jobs_blueprint(config), namespace=NAMESPACE)
     async with worker_app.open_async():
+        yield worker_app
+
+
+@pytest.fixture
+async def worker_app(conninfo, app_db_session):
+    async with _open_worker_app(conninfo, ALL_ON) as worker_app:
         yield worker_app
 
 
@@ -168,7 +176,7 @@ async def test_a_job_runs_its_existing_code_in_the_worker(worker_app, conninfo):
     assert _sql(conninfo, 'SELECT count(*) FROM app_conversation_start_task') == [(1,)]
 
 
-async def test_a_sync_job_that_exits_is_retried_and_the_worker_survives(
+async def test_a_sync_job_that_exits_fails_and_the_worker_survives(
     worker_app, conninfo, monkeypatch
 ):
     from sync import resend_keycloak
@@ -178,7 +186,7 @@ async def test_a_sync_job_that_exits_is_retried_and_the_worker_survives(
 
     status, attempts = await _run_job(worker_app, conninfo, 'resend_sync')
 
-    assert (status, attempts) == ('todo', 1)
+    assert (status, attempts) == ('failed', 1)
     # The worker is still usable after the job's SystemExit.
     status, _ = await _run_job(worker_app, conninfo, 'proactive_convo_clean')
     assert status == 'succeeded'
@@ -201,4 +209,48 @@ async def test_a_budget_job_is_stopped_at_its_deadline(
     status, attempts = await _run_job(worker_app, conninfo, name)
 
     assert time.monotonic() - started < 30
-    assert (status, attempts) == ('todo', 1)
+    assert (status, attempts) == ('failed', 1)
+
+
+async def _wait_for(conninfo: dict, job_id: int, statuses: set[str]) -> str:
+    for _ in range(200):
+        [(status,)] = _sql(
+            conninfo, 'SELECT status FROM procrastinate_jobs WHERE id = %s', job_id
+        )
+        if status in statuses:
+            return status
+        await asyncio.sleep(0.1)
+    return status
+
+
+@pytest.mark.usefixtures('app_db_session')
+async def test_a_run_that_fails_while_the_next_waits_lets_the_next_start(
+    conninfo, monkeypatch
+):
+    monkeypatch.setattr(scheduled_jobs, 'DEADLINE_SECONDS', 1)
+    # The first run claims this row and sleeps past its deadline. The second finds
+    # the row claimed, so it has nothing to do and succeeds.
+    _sql(
+        conninfo,
+        'INSERT INTO maintenance_tasks (status, processor_type, processor_json, delay) '
+        "VALUES ('PENDING', 'not.a.processor', '{}', 600)",
+    )
+    config = ScheduledJobsConfig(maintenance_tasks=True)
+    async with _open_worker_app(conninfo, config) as worker_app:
+        task = worker_app.configure_task(f'{NAMESPACE}:maintenance_tasks')
+        first = await task.defer_async(timestamp=0)
+        worker = asyncio.create_task(
+            worker_app.run_worker_async(queues=[SCHEDULED_JOBS_QUEUE], concurrency=2)
+        )
+        try:
+            assert await _wait_for(conninfo, first, {'doing'}) == 'doing'
+            second = await task.defer_async(timestamp=1)
+
+            assert await _wait_for(conninfo, first, {'failed'}) == 'failed'
+            assert await _wait_for(conninfo, second, {'succeeded', 'failed'}) == (
+                'succeeded'
+            )
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker

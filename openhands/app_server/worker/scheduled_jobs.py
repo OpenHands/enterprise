@@ -4,22 +4,20 @@ For installs without CronJobs, such as Docker Compose. Every job is off until
 enabled with ``OH_WORKER_SCHEDULED_JOBS_<JOB>=true``. Never enable a job on a
 database where its CronJob still runs, or both will run it.
 
-Schedules, retries and time limits match the OpenHands-Cloud chart's CronJobs.
+Schedules and time limits match the OpenHands-Cloud chart's CronJobs. A failed
+run isn't retried; the next scheduled run is the retry.
 """
 
 import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from procrastinate import Blueprint, RetryStrategy
+from procrastinate import Blueprint
 from pydantic import BaseModel
 
 from openhands.app_server.worker.housekeeping import SCHEDULED_JOBS_QUEUE
 
 NAMESPACE = 'scheduled_jobs'
-
-# The CronJobs' backoffLimit, and roughly their pod backoff.
-RETRY = RetryStrategy(max_attempts=3, wait=10)
 
 # The CronJobs' activeDeadlineSeconds, set only on the two budget jobs.
 DEADLINE_SECONDS = 1800
@@ -110,7 +108,9 @@ def scheduled_jobs_blueprint(config: ScheduledJobsConfig) -> Blueprint:
     for name in config.enabled():
         func, cron = SCHEDULES[name]
         # Runs never overlap, as under the CronJobs' concurrencyPolicy: Forbid, but
-        # one run that comes due meanwhile waits instead of being skipped.
+        # one run that comes due meanwhile waits instead of being skipped. No
+        # retry=: a retry returns the failed run to todo, which that waiting run's
+        # queueing lock forbids, so the failed run would stay doing and hold lock.
         lock = f'{NAMESPACE}:{name}'
         task = blueprint.task(
             func,
@@ -118,7 +118,6 @@ def scheduled_jobs_blueprint(config: ScheduledJobsConfig) -> Blueprint:
             queue=SCHEDULED_JOBS_QUEUE,
             lock=lock,
             queueing_lock=lock,
-            retry=RETRY,
         )
         blueprint.periodic(cron=cron)(task)
     return blueprint
