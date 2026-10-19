@@ -51,6 +51,10 @@ export interface WebClientFeatureFlags {
    *  page can distinguish "export disabled on this deployment" from "buy credits
    *  to enable" when billing is off. */
   enable_byor_export?: boolean;
+  /** When true, show Super Admin entry points and allow /super-admin/*
+   *  for instance Super Admins. Defaults to false until ENABLE_SUPER_ADMIN
+   *  is set. */
+  enable_super_admin?: boolean;
   /** Whether the integrated, locally-hosted IDP (email+password login) is
    *  available. Mirrors the ENABLE_INTEGRATED_IDP env var — when on, it
    *  takes priority over any configured real IDP rather than only filling
@@ -61,6 +65,12 @@ export interface WebClientFeatureFlags {
    *  point (``/oauth/idp-login``, a backend redirect) instead of the legacy
    *  ``/login`` page. Mirrors the ENABLE_OAUTH_V2_LOGIN env var. */
   enable_oauth_v2_login?: boolean;
+  /** Deployment-wide switch for the bundled/external LiteLLM gateway.
+   *  Defaults to true for backward compatibility with existing installs.
+   *  When false, hide every feature that depends on LiteLLM (Budgets,
+   *  managed/OpenHands models, managed LLM key create/refresh) and show a
+   *  "Please enable LiteLLM to use this feature" placeholder instead. */
+  enable_litellm?: boolean;
 }
 
 export interface ACPModelOption {
@@ -95,6 +105,8 @@ export interface WebClientConfig {
   slack_enabled?: boolean;
   email_enabled?: boolean;
   email_change_enabled?: boolean;
+  /** True when the admin provision-user route is registered on the server. */
+  user_provisioning_enabled?: boolean;
   acp_providers?: ACPProviderConfig[];
   /** Jira DC host when DC OAuth is configured; used to pre-fill + lock the
    *  configure form's host field. Null/absent in email-match mode. */

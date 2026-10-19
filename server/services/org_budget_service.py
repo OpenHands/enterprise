@@ -537,6 +537,27 @@ class OrgBudgetService:
         }
 
     async def run_budget_maintenance(self, org_id: UUID) -> dict:
+        from storage.lite_llm_manager import is_litellm_enabled
+
+        if not await is_litellm_enabled():
+            # Budgets are enforced through LiteLLM; with the gateway
+            # disabled deployment-wide there is nothing to reconcile,
+            # nothing to alert on, and no spend to read. Skip entirely
+            # rather than reading/writing stale reconciliation state.
+            quint_oracle.log(
+                'run_budget_maintenance',
+                'org-budgets',
+                org_id=quint_oracle.In('org', 'ORG_IDS'),
+                cycle_rolled=False,
+            )
+            return {
+                'cycle_start_at': None,
+                'cycle_end_at': None,
+                'cycle_rolled': False,
+                'current_spend': None,
+                'skipped': 'litellm_disabled',
+            }
+
         if await self._is_personal_org(org_id):
             quint_oracle.log(
                 'run_budget_maintenance',
@@ -1480,6 +1501,10 @@ class OrgBudgetService:
             'spend_observed_at': (
                 snapshot.observed_at if snapshot is not None else None
             ),
+            # LiteLLM enforces the organization cap as well as the member's
+            # own, so the page needs both to show what can still be spent.
+            'org_monthly_limit': settings.monthly_limit,
+            'org_current_spend': _litellm_cycle_spend(settings, snapshot),
         }
 
     async def _record_litellm_sync(

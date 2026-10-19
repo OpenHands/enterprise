@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
+import { useConfig } from "#/hooks/query/use-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { openHands } from "#/api/open-hands-axios";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -52,5 +53,131 @@ describe("useLlmApiKey", () => {
       expect(result.current.data?.key).toBe("sk-self-hosted"),
     );
     expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("does not fetch when enable_litellm is off, even with BYOR export enabled", async () => {
+    const defaultConfig = createMockWebClientConfig();
+    const configSpy = vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "oss",
+        feature_flags: {
+          ...defaultConfig.feature_flags,
+          enable_byor_export: true,
+          enable_litellm: false,
+        },
+      }),
+    );
+    const getSpy = vi.spyOn(openHands, "get");
+    useSelectedOrganizationStore.setState({ organizationId: null });
+
+    const { result } = renderHook(() => useLlmApiKey(), {
+      wrapper: createWrapper(),
+    });
+
+    // Wait for the config query to resolve so the byor query's `enabled`
+    // has actually been re-evaluated against the loaded flag, not just its
+    // synchronous initial (pre-config) value.
+    await waitFor(() => expect(configSpy).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["web-client-config"])?.status).toBe(
+        "success",
+      ),
+    );
+
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(result.current.data).toBeUndefined();
+  });
+
+  it("still fetches when enable_litellm is undefined (defaults on for backward compatibility)", async () => {
+    const defaultConfig = createMockWebClientConfig();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "oss",
+        feature_flags: {
+          ...defaultConfig.feature_flags,
+          enable_byor_export: true,
+        },
+      }),
+    );
+    const getSpy = vi
+      .spyOn(openHands, "get")
+      .mockResolvedValue({ data: { key: "sk-flag-undefined" } });
+    useSelectedOrganizationStore.setState({ organizationId: null });
+
+    const { result } = renderHook(() => useLlmApiKey(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() =>
+      expect(result.current.data?.key).toBe("sk-flag-undefined"),
+    );
+    expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("still fetches when enable_litellm is explicitly true", async () => {
+    const defaultConfig = createMockWebClientConfig();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "oss",
+        feature_flags: {
+          ...defaultConfig.feature_flags,
+          enable_byor_export: true,
+          enable_litellm: true,
+        },
+      }),
+    );
+    const getSpy = vi
+      .spyOn(openHands, "get")
+      .mockResolvedValue({ data: { key: "sk-flag-true" } });
+    useSelectedOrganizationStore.setState({ organizationId: null });
+
+    const { result } = renderHook(() => useLlmApiKey(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data?.key).toBe("sk-flag-true"));
+    expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("should fetch the key on SaaS when billing is enabled and an organization is selected", async () => {
+    const defaultConfig = createMockWebClientConfig();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          ...defaultConfig.feature_flags,
+          enable_billing: true,
+        },
+      }),
+    );
+    const getSpy = vi
+      .spyOn(openHands, "get")
+      .mockResolvedValue({ data: { key: "sk-saas" } });
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    const { result } = renderHook(() => useLlmApiKey(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data?.key).toBe("sk-saas"));
+    expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("should not fetch the key on SaaS when billing and BYOR export are both disabled", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    const getSpy = vi.spyOn(openHands, "get");
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    const { result } = renderHook(
+      () => ({ config: useConfig(), llmKey: useLlmApiKey() }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.config.data).toBeDefined());
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(result.current.llmKey.isLoading).toBe(false);
+    expect(result.current.llmKey.data).toBeUndefined();
   });
 });

@@ -96,3 +96,22 @@ def test_foreign_keys_are_enforced(engine: Engine):
             text('INSERT INTO "user" (id, current_org_id) VALUES (:id, :org_id)'),
             {'id': str(uuid.uuid4()), 'org_id': str(uuid.uuid4())},
         )
+
+
+def test_a_failed_alembic_run_reports_its_traceback():
+    """The error says why alembic failed, not only that it failed.
+
+    ``openhands`` sends uncaught exceptions to its own logger, so the traceback
+    is lost if ``migrations/env.py`` turns that logger off.
+    """
+    unreachable = postgres_testdb.PostgresServer(
+        host='127.0.0.1', port=1, user='openhands', password='openhands'
+    )
+
+    with pytest.raises(postgres_testdb.PostgresUnavailableError) as exc_info:
+        postgres_testdb.run_alembic(unreachable, 'oh_test_unreachable', 'current')
+
+    assert 'Traceback (most recent call last)' in str(exc_info.value)
+    assert "Can't create a connection to host 127.0.0.1 and port 1" in str(
+        exc_info.value
+    )

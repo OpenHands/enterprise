@@ -16,10 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth import oauth_v2_refresh
-from storage.oauth_provider import OAuthProvider
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
 
 
 def _make_jwt_service() -> JwtService:
@@ -33,12 +35,15 @@ def jwt_svc():
 
 
 def _fake_provider(*, token_url='https://example.com/token', client_secret='sec'):
-    provider = MagicMock(spec=OAuthProvider)
+    provider = MagicMock(spec=AuthProvider)
     provider.id = 1
-    provider.client_id = 'cid'
-    provider.client_secret = {'v': client_secret} if client_secret else None
-    provider.token_url = token_url
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.GITHUB,
+        client_id='cid',
+        client_secret=SecretStr(client_secret) if client_secret else None,
+        token_url=token_url,
+        permitted_drift_seconds=60,
+    )
     return provider
 
 
@@ -148,6 +153,37 @@ async def test_make_refresh_callback_delegates(jwt_svc):
     assert result['access_token'] == 'at'
 
 
+# ── get_token_url / get_permitted_drift_seconds ─────────────────────────
+
+
+def test_get_token_url_oauth2():
+    provider = _fake_provider(token_url='https://example.com/token')
+    assert oauth_v2_refresh.get_token_url(provider) == 'https://example.com/token'
+
+
+def test_get_token_url_none_for_password_provider():
+    provider = MagicMock(spec=AuthProvider)
+    provider.details = PasswordProviderDetails()
+    assert oauth_v2_refresh.get_token_url(provider) is None
+
+
+def test_get_permitted_drift_seconds_oauth2():
+    provider = _fake_provider()
+    provider.details.permitted_drift_seconds = 42
+    assert oauth_v2_refresh.get_permitted_drift_seconds(provider) == 42
+
+
+def test_get_permitted_drift_seconds_defaults_for_password_provider():
+    from storage.auth_provider_details import DEFAULT_PERMITTED_DRIFT_SECONDS
+
+    provider = MagicMock(spec=AuthProvider)
+    provider.details = PasswordProviderDetails()
+    assert (
+        oauth_v2_refresh.get_permitted_drift_seconds(provider)
+        == DEFAULT_PERMITTED_DRIFT_SECONDS
+    )
+
+
 # ── compute_cookie_max_age ───────────────────────────────────────────────
 
 
@@ -190,21 +226,26 @@ def test_cookie_payload_roundtrip(jwt_svc):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         ate = datetime.now(timezone.utc) + timedelta(hours=1)
         payload = oauth_v2_refresh.create_oauth_v2_cookie_payload(
-            'user-123', ate, accepted_tos=True
+            'user-123', ate, accepted_tos=True, idp_provider_id=3
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
         decoded = jwt_svc.verify_jws_token(signed)
     assert decoded['user_id'] == 'user-123'
     assert decoded['accepted_tos'] is True
     assert decoded['access_token_expires_at'] is not None
+    assert decoded['idp_provider_id'] == 3
 
 
 def test_cookie_payload_none_expiry(jwt_svc):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         payload = oauth_v2_refresh.create_oauth_v2_cookie_payload(
-            'user-123', None, accepted_tos=False
+            'user-123', None, accepted_tos=False, idp_provider_id=None
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
         decoded = jwt_svc.verify_jws_token(signed)
     assert decoded['access_token_expires_at'] is None
     assert decoded['accepted_tos'] is False
+    # Key always present (even None) so decoders can tell this apart from a
+    # pre-idp_provider_id legacy cookie, where the key is absent entirely.
+    assert 'idp_provider_id' in decoded
+    assert decoded['idp_provider_id'] is None

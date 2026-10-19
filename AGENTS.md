@@ -259,6 +259,12 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
   ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
   objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
   of inventing ids
+- In this sandbox the docker daemon is often not running and the venv may be missing `testcontainers` even though
+  it's pinned in `pyproject.toml` (stale `uv sync`). If `uv run pytest tests/unit/storage/...` fails with
+  `ModuleNotFoundError: No module named 'testcontainers'` or a docker socket `FileNotFoundError`, run
+  `uv sync --all-groups` to install the missing group, then start the daemon and fix socket permissions so the
+  non-root sandbox user can reach it: `sudo dockerd > /tmp/docker.log 2>&1 & sleep 5 && sudo chmod 666
+  /var/run/docker.sock`. After that, `uv run pytest tests/unit/storage/...` works normally.
 - Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
   across pytest-xdist workers, and removes it when the run ends
 - Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,

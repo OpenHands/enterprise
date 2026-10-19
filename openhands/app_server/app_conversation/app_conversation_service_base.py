@@ -26,15 +26,17 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.app_conversation.skill_loader import (
     authenticate_marketplace_sources,
+    azure_devops_marketplace_orgs,
     build_org_configs,
     build_sandbox_config,
+    get_azure_devops_bearer_token,
+    is_agent_server_repository_source,
     load_skills_from_agent_server,
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.app_server.utils.git import (
     configure_git_user_settings,
     ensure_valid_git_branch_name,
@@ -55,6 +57,26 @@ from openhands.sdk.skills import Skill
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
+
+
+def _warn_unresolved_marketplace_sources(
+    registered_marketplaces: list[MarketplaceRegistration] | None,
+) -> None:
+    """Log auto-load marketplaces the agent-server will not treat as repositories."""
+    for reg in registered_marketplaces or []:
+        source = getattr(reg, 'source', None)
+        if (
+            getattr(reg, 'auto_load', False) is True
+            and isinstance(source, str)
+            and not is_agent_server_repository_source(source)
+        ):
+            _logger.warning(
+                'Marketplace %r source %r is not a repository address the '
+                'agent-server can clone; it will not load from a repository',
+                reg.name,
+                source,
+            )
+
 
 PRE_COMMIT_HOOK = '.git/hooks/pre-commit'
 PRE_COMMIT_LOCAL = '.git/hooks/pre-commit.local'
@@ -97,6 +119,45 @@ def get_project_dir(
         repo_name = selected_repository.split('/')[-1]
         return f'{working_dir}/{repo_name}'
     return working_dir
+
+
+def _azure_devops_credential_helper_script(sandbox_id: str, web_url: str | None) -> str:
+    """Git credential helper fetching the sandbox's Azure DevOps token on demand.
+
+    The token is never written to disk; only this script and its config are.
+    It needs the session key from the git process environment, so it only works
+    for git run with the agent-server's full (unsanitized) environment.
+    """
+    app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
+    secret_path = f'/api/v1/sandboxes/{sandbox_id}/settings/secrets/azure_devops_token'
+    return f"""#!/bin/sh
+if [ "$1" != "get" ]; then
+  exit 0
+fi
+
+session_api_key="${{OH_SESSION_API_KEYS_0:-${{SESSION_API_KEY:-}}}}"
+webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
+app_base_url={app_base_url}
+if [ -n "$webhook_url" ]; then
+  base_url="${{webhook_url%/api/v1/webhooks}}"
+else
+  base_url="$app_base_url"
+fi
+if [ -z "$session_api_key" ] || [ -z "$base_url" ]; then
+  exit 0
+fi
+
+secret_url="$base_url{secret_path}"
+token="$(curl -fsS \\
+  -H "X-Session-API-Key: $session_api_key" \\
+  "$secret_url" 2>/dev/null)" || exit 0
+if [ -z "$token" ]; then
+  exit 0
+fi
+
+printf '%s\\n' "username=oauth2"
+printf 'password=%s\\n' "$token"
+"""
 
 
 @dataclass
@@ -155,12 +216,17 @@ class AppConversationServiceBase(AppConversationService, ABC):
             # Build sandbox config (exposed URLs)
             sandbox_config = build_sandbox_config(sandbox)
 
+            await self._configure_marketplace_git_credentials(
+                sandbox, agent_server_url, project_dir, registered_marketplaces
+            )
+
             # Swap marketplace sources for authenticated git URLs so the
             # agent-server can clone private marketplace repos. Never raises;
             # unresolvable sources pass through unchanged.
             registered_marketplaces = await authenticate_marketplace_sources(
                 registered_marketplaces, self.user_context
             )
+            _warn_unresolved_marketplace_sources(registered_marketplaces)
 
             # Single API call to agent-server for ALL skills
             all_skills = await load_skills_from_agent_server(
@@ -688,14 +754,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         ):
             return None
 
-        try:
-            token = await self.user_context.get_latest_token(ProviderType.AZURE_DEVOPS)
-        except Exception as exc:
-            _logger.warning(f'Failed to get Azure DevOps token for git: {exc}')
-            return None
-        if token and looks_like_jwt(token):
-            return token
-        return None
+        return await get_azure_devops_bearer_token(self.user_context)
 
     async def _configure_azure_devops_git_credential_helper(
         self,
@@ -712,44 +771,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         org = selected_repository.split('/')[0]
         helper_path = git_dir / '.git' / 'openhands-azure-devops-credential-helper'
-        secret_path = (
-            f'/api/v1/sandboxes/{sandbox.id}/settings/secrets/azure_devops_token'
-        )
         web_url = getattr(self, 'web_url', None)
         if web_url is None:
             _logger.debug(
                 'Azure DevOps git credential helper has no configured web_url; '
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
-        app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
-        helper_script = f"""#!/bin/sh
-if [ "$1" != "get" ]; then
-  exit 0
-fi
-
-session_api_key="${{OH_SESSION_API_KEYS_0:-${{SESSION_API_KEY:-}}}}"
-webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
-app_base_url={app_base_url}
-if [ -n "$webhook_url" ]; then
-  base_url="${{webhook_url%/api/v1/webhooks}}"
-else
-  base_url="$app_base_url"
-fi
-if [ -z "$session_api_key" ] || [ -z "$base_url" ]; then
-  exit 0
-fi
-
-secret_url="$base_url{secret_path}"
-token="$(curl -fsS \\
-  -H "X-Session-API-Key: $session_api_key" \\
-  "$secret_url" 2>/dev/null)" || exit 0
-if [ -z "$token" ]; then
-  exit 0
-fi
-
-printf '%s\\n' "username=oauth2"
-printf 'password=%s\\n' "$token"
-"""
+        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
         helper_path_quoted = shlex.quote(str(helper_path))
         helper_value = shlex.quote(f'!{shlex.quote(str(helper_path))}')
         extraheader_key = shlex.quote(f'http.https://dev.azure.com/{org}/.extraheader')
@@ -771,6 +799,62 @@ printf 'password=%s\\n' "$token"
         if result.exit_code:
             _logger.warning(
                 f'Azure DevOps git credential helper setup failed: {result.stderr}'
+            )
+
+    async def _configure_marketplace_git_credentials(
+        self,
+        sandbox: SandboxInfo,
+        agent_server_url: str,
+        working_dir: str,
+        registered_marketplaces: list[MarketplaceRegistration] | None,
+    ) -> None:
+        """Let the agent-server clone Azure DevOps marketplaces with an Entra token.
+
+        PATs ride in the authenticated source URL; Entra tokens cannot, so the
+        repository credential helper is installed globally for each org instead.
+        This relies on the agent-server running marketplace git commands with its
+        full environment (the SDK's ``_run_git_subprocess``, not ``sanitized_env``).
+        """
+        orgs = await azure_devops_marketplace_orgs(
+            registered_marketplaces, self.user_context
+        )
+        if not orgs or not await get_azure_devops_bearer_token(self.user_context):
+            return
+
+        web_url = getattr(self, 'web_url', None)
+        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
+        commands = [
+            'helper="$HOME/.openhands/azure-devops-credential-helper"',
+            'mkdir -p "$HOME/.openhands"',
+            f'printf %s {shlex.quote(helper_script)} > "$helper"',
+            'chmod 700 "$helper"',
+            'git config --global credential.https://dev.azure.com.useHttpPath true',
+        ]
+        for org in orgs:
+            prefix = f'credential.https://dev.azure.com/{org}'
+            commands += [
+                f'git config --global {shlex.quote(prefix + ".username")} oauth2',
+                'git config --global --replace-all '
+                f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\""',
+            ]
+        try:
+            workspace = AsyncRemoteWorkspace(
+                host=agent_server_url,
+                api_key=sandbox.session_api_key,
+                working_dir=working_dir,
+            )
+            try:
+                result = await workspace.execute_command(' && '.join(commands), '/')
+            finally:
+                await workspace.reset_client()
+            if result.exit_code:
+                _logger.warning(
+                    'Azure DevOps marketplace credential helper setup failed: '
+                    f'{result.stderr}'
+                )
+        except Exception as e:
+            _logger.warning(
+                f'Azure DevOps marketplace credential helper setup failed: {e}'
             )
 
     async def maybe_run_setup_script(

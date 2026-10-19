@@ -3,7 +3,14 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import AfterValidator, BaseModel, Field, SecretStr, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    SecretStr,
+    computed_field,
+    field_validator,
+)
 
 from openhands.agent_server.models import (
     ImageContent,
@@ -31,6 +38,7 @@ from openhands.sdk.conversation.types import (
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.tool import ClientToolSpec
 
 __all__ = ['SandboxGroupingStrategy']
 
@@ -45,6 +53,16 @@ ACP_SERVER_TAG_KEY = 'acpserver'
 # from settings that may have changed. Must satisfy the SDK ^[a-z0-9]+$ tag-key
 # rule — no underscores.
 ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
+
+CLIENT_TOOL_RESERVED_NAMES = frozenset(
+    {
+        'terminal',
+        'file_editor',
+        'task_tracker',
+        'browser_tool_set',
+    }
+)
+
 
 # Conversation-tag keys recording which Agent Profile launched the conversation
 # (provenance). Ride the tags dict + a @computed_field exactly like
@@ -353,6 +371,42 @@ class AppConversationStartRequest(OpenHandsModel):
             'and their skills/MCP config are merged into the agent.'
         ),
     )
+
+    client_tools: list[ClientToolSpec] | None = Field(
+        default=None,
+        description=(
+            'Client-defined tools to register with the runtime agent-server. '
+            'These tools are handled by the browser/client over the event stream '
+            'instead of by a server-side executor.'
+        ),
+    )
+
+    @field_validator('client_tools')
+    @classmethod
+    def _validate_client_tools(
+        cls, client_tools: list[ClientToolSpec] | None
+    ) -> list[ClientToolSpec] | None:
+        if not client_tools:
+            return client_tools
+
+        seen_names: set[str] = set()
+        for tool in client_tools:
+            if tool.name in seen_names:
+                raise ValueError(
+                    f"Duplicate client tool name '{tool.name}' in one request. "
+                    'Client tool names must be unique.'
+                )
+            seen_names.add(tool.name)
+
+        reserved_names = sorted(seen_names & CLIENT_TOOL_RESERVED_NAMES)
+        if reserved_names:
+            names = ', '.join(f"'{name}'" for name in reserved_names)
+            raise ValueError(
+                f'Client tool name collides with a built-in tool: {names}. '
+                'Choose a unique client tool name.'
+            )
+
+        return client_tools
 
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(

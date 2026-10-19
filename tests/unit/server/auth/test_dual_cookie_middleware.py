@@ -58,7 +58,9 @@ def mock_response():
     return MagicMock(spec=Response)
 
 
-def _v2_user_auth(*, refreshed=False, accepted_tos=True, user_id='user-1'):
+def _v2_user_auth(
+    *, refreshed=False, accepted_tos=True, user_id='user-1', idp_provider_id=3
+):
     ua = MagicMock(spec=SaasUserAuth)
     ua.auth_type = AuthType.COOKIE
     ua.oauth_v2_cookie = True
@@ -67,6 +69,7 @@ def _v2_user_auth(*, refreshed=False, accepted_tos=True, user_id='user-1'):
     ua.user_id = user_id
     ua.access_token_expires_at = None
     ua.idp_refresh_token_expires_at = None
+    ua.idp_provider_id = idp_provider_id
     ua.email_verified = True
     ua.get_user_id = AsyncMock(return_value=user_id)
     return ua
@@ -98,6 +101,7 @@ async def test_v2_cookie_remint_on_refresh(middleware, mock_request, mock_respon
     kwargs = mock_set.call_args.kwargs
     assert kwargs['user_id'] == 'user-1'
     assert kwargs['accepted_tos'] is True
+    assert kwargs['idp_provider_id'] == 3
 
 
 @pytest.mark.asyncio

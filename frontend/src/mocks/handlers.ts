@@ -14,8 +14,12 @@ import { CONVERSATION_HANDLERS } from "./conversation-handlers";
 import { AUTH_HANDLERS } from "./auth-handlers";
 import { FEEDBACK_HANDLERS } from "./feedback-handlers";
 import { ANALYTICS_HANDLERS } from "./analytics-handlers";
+import { SUPER_ADMIN_HANDLERS } from "./super-admin-handlers";
+import { AUTH_PROVIDERS_HANDLERS } from "./auth-providers-handlers";
 
 export const handlers = [
+  ...SUPER_ADMIN_HANDLERS,
+  ...AUTH_PROVIDERS_HANDLERS,
   ...ORG_HANDLERS,
   ...API_KEYS_HANDLERS,
   ...BILLING_HANDLERS,

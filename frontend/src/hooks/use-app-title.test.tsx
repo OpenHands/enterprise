@@ -57,6 +57,30 @@ describe("useAppTitle", () => {
     await waitFor(() => expect(result.current).toBe("OpenHands Cloud"));
   });
 
+  it("should return 'OpenHands' for a self-hosted enterprise deployment", async () => {
+    getConfigSpy.mockResolvedValue({
+      app_mode: "saas",
+      // @ts-expect-error - only returning partial config for test
+      feature_flags: { deployment_mode: "self_hosted" },
+    });
+
+    const { result } = renderAppTitleHook();
+
+    await waitFor(() => expect(result.current).toBe("OpenHands"));
+  });
+
+  it("should return 'OpenHands Cloud' for the managed cloud deployment", async () => {
+    getConfigSpy.mockResolvedValue({
+      app_mode: "saas",
+      // @ts-expect-error - only returning partial config for test
+      feature_flags: { deployment_mode: "cloud" },
+    });
+
+    const { result } = renderAppTitleHook();
+
+    await waitFor(() => expect(result.current).toBe("OpenHands Cloud"));
+  });
+
   it("should return '{some title} | OpenHands' if is OSS and in /conversations", async () => {
     // @ts-expect-error - only returning partial config for test
     getConfigSpy.mockResolvedValue({ app_mode: "oss" });
