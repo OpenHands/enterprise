@@ -231,7 +231,7 @@ services:
       # host.docker.internal at this port -- it must match whatever
       # APP_PORT is published as (see `ports`, above), or sandboxes won't
       # be able to reach the app.
-      OH_SANDBOX_HOST_PORT: ${APP_PORT:-3100}
+      SANDBOX_HOST_PORT: ${APP_PORT:-3100}
 
       # Automation service wiring. AUTOMATIONS_SERVICE_KEY lets the
       # automation service mint per-user API keys through /api/service/*, and
@@ -304,7 +304,7 @@ services:
 
       # Callback URL handed to sandbox containers, so it must be reachable
       # from them (not from the browser): the proxy's published port on the
-      # Docker host, like OH_SANDBOX_HOST_PORT on the app.
+      # Docker host, like SANDBOX_HOST_PORT on the app.
       AUTOMATION_BASE_URL: http://host.docker.internal:${APP_PORT:-3100}
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
     healthcheck:

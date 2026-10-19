@@ -61,7 +61,7 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
                 'project_name': repo.get('project', {}).get('name', ''),
                 'updated_date': repo.get('lastUpdateTime'),
             }
-            for repo in response.get('value', [])[:MAX_REPOS]
+            for repo in response.get('value', [])
         ]
 
         # Sort repositories based on the sort parameter
