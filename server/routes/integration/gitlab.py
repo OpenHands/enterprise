@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -20,12 +19,13 @@ from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServic
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
+from storage.gitlab_delivery_store import GitlabDeliveryStore
 from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
-from storage.redis import get_redis_client_async
 
 gitlab_integration_router = APIRouter(prefix='/integration')
 webhook_store = GitlabWebhookStore()
+delivery_store = GitlabDeliveryStore()
 
 token_manager = TokenManager()
 gitlab_manager = GitlabManager(token_manager)
@@ -93,19 +93,12 @@ async def gitlab_events(
             user_id=x_openhands_user_id,
         )
 
-        payload_data = await request.json()
-        object_attributes = payload_data.get('object_attributes', {})
-        dedup_key = object_attributes.get('id')
+        body = await request.body()
+        payload_data = json.loads(body)
 
-        if not dedup_key:
-            # Hash entire payload if payload doesn't contain payload ID
-            dedup_json = json.dumps(payload_data, sort_keys=True)
-            dedup_hash = hashlib.sha256(dedup_json.encode()).hexdigest()
-            dedup_key = f'gitlab_msg: {dedup_hash}'
-
-        redis = get_redis_client_async()
-        created = await redis.set(dedup_key, 1, nx=True, ex=60)
-        if not created:
+        # Keyed on the raw body: X-Gitlab-Event-UUID and Idempotency-Key differ
+        # per hook, so they can't match copies of one event sent by two hooks.
+        if not await delivery_store.record(body):
             logger.info('gitlab_is_duplicate')
             return JSONResponse(
                 status_code=200,
