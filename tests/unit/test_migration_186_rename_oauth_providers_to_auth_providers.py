@@ -12,11 +12,23 @@ untested.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from openhands.app_server.services.jwt_service import JwtServiceInjector
+from storage import encrypt_utils
 from tests import postgres_testdb
+
+
+@pytest.fixture(autouse=True)
+def migration_encryption_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # Alembic cannot inherit the parent's cached JWT service or generated keys.
+    monkeypatch.setenv('JWT_SECRET', 'migration-186-test-secret')
+    service = JwtServiceInjector(persistence_dir=tmp_path).get_jwt_service()
+    monkeypatch.setattr(encrypt_utils, '_jwt_service', service)
 
 
 def _read_details(raw) -> dict:
