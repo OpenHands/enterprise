@@ -2,7 +2,7 @@
 
 For installs without CronJobs, such as Docker Compose. Every job is off until
 enabled with ``OH_WORKER_SCHEDULED_JOBS_<JOB>=true``. Never enable a job on a
-database where its CronJob still runs: the two schedules would overlap.
+database where its CronJob still runs, or both will run it.
 
 Schedules, retries and time limits match the OpenHands-Cloud chart's CronJobs.
 """
@@ -26,7 +26,7 @@ DEADLINE_SECONDS = 1800
 
 
 class ScheduledJobsConfig(BaseModel):
-    """Which jobs the worker schedules; all off by default."""
+    """Which jobs the worker schedules."""
 
     budget_maintenance: bool = False
     maintenance_tasks: bool = False
@@ -40,8 +40,8 @@ class ScheduledJobsConfig(BaseModel):
         return [name for name, on in self.model_dump().items() if on]
 
 
-# Each job imports its module when it runs, so the worker loads the job code
-# only for the jobs it schedules.
+# Each job imports its module when it runs: some modules build API clients or
+# read their settings at import, which a worker not scheduling that job shouldn't do.
 
 
 async def budget_maintenance(timestamp: int) -> None:
@@ -71,7 +71,8 @@ async def proactive_convo_clean(timestamp: int) -> None:
 
 
 def resend_sync(timestamp: int) -> None:
-    # Fully synchronous, so procrastinate runs it in a thread.
+    # A plain def, so procrastinate runs it in a thread where its blocking calls
+    # can't stall the other jobs.
     from sync import resend_keycloak
 
     resend_keycloak.sync_users_to_resend()
@@ -104,14 +105,12 @@ SCHEDULES: dict[str, tuple[Callable[..., Any], str]] = {
 
 
 def scheduled_jobs_blueprint(config: ScheduledJobsConfig) -> Blueprint:
-    """A periodic task for each enabled job.
-
-    ``lock`` and ``queueing_lock`` allow one run waiting and one running, as the
-    CronJobs' ``concurrencyPolicy: Forbid`` does.
-    """
+    """A periodic task for each enabled job."""
     blueprint = Blueprint()
     for name in config.enabled():
         func, cron = SCHEDULES[name]
+        # Runs never overlap, as under the CronJobs' concurrencyPolicy: Forbid, but
+        # one run that comes due meanwhile waits instead of being skipped.
         lock = f'{NAMESPACE}:{name}'
         task = blueprint.task(
             func,

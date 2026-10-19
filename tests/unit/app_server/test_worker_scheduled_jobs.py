@@ -136,7 +136,7 @@ def _sql(conninfo: dict, query: str, *params) -> list[tuple]:
 
 
 async def _run_job(worker_app: App, conninfo: dict, name: str) -> tuple[str, int]:
-    """Run one job to its end on a real worker; its status and attempts after."""
+    """Run one job to its end on a real worker and return its status and attempts."""
     job_id = await worker_app.configure_task(f'{NAMESPACE}:{name}').defer_async(
         timestamp=0
     )
@@ -189,7 +189,8 @@ async def test_a_budget_job_is_stopped_at_its_deadline(
     worker_app, conninfo, monkeypatch, name
 ):
     monkeypatch.setattr(scheduled_jobs, 'DEADLINE_SECONDS', 1)
-    # The run waits out a task's delay after processing it.
+    # run_maintenance_tasks sleeps for a task's delay after processing it, so this
+    # row keeps the job running past its deadline.
     _sql(
         conninfo,
         'INSERT INTO maintenance_tasks (status, processor_type, processor_json, delay) '
