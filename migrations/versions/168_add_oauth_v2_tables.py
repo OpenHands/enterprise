@@ -8,9 +8,24 @@ Three tables:
 - ``oauth_provider_users`` — external-identity → internal-user mapping.
 - ``oauth_tokens`` — per-user credential pair (denormalized, encrypted).
 
-Seeding: one IDP row for Keycloak (from ``KEYCLOAK_*`` env vars) and one row
-per configured git provider (when its ``*_CLIENT_ID`` env var is set).
-``client_secret`` is encrypted at rest via the existing JWE service.
+Seeding: one row per configured git provider (when its ``*_CLIENT_ID`` env
+var is set). ``client_secret`` is encrypted at rest via the existing JWE
+service.
+
+This migration originally also seeded a generic IDP row for Keycloak itself
+(from ``KEYCLOAK_*`` env vars, ``provider_category='enterprise_sso'``). That
+row had no way to point at a specific federated identity provider (GitHub/
+GitLab/Bitbucket/...) configured inside Keycloak -- visiting it just landed
+on Keycloak's own chooser -- so once the OAuth v2 login path rendered one
+button per IDP row, it was the only, uninformatively-labeled button on
+``/login``. Migration 189 removes that seeding (this block used to live
+here, deriving the same ``authorization_url``/``token_url``/``userinfo_url``
+from ``AUTH_URL`` -- falling back to ``AUTH_WEB_HOST``, then
+``auth.{WEB_HOST}`` -- never from ``KEYCLOAK_SERVER_URL``, the in-cluster
+address used for server-to-server admin calls) in favor of seeding one
+``is_idp`` row per git-provider brand that routes through Keycloak via
+``kc_idp_hint`` instead -- see migration 189's module docstring for the
+Keycloak URL/credential resolution logic, now there instead of here.
 
 Revision ID: 168
 Revises: 167
@@ -86,38 +101,13 @@ def _seed_row(
 
 
 def _seed_from_environment() -> None:
-    """Seed oauth_providers from environment variables.
+    """Seed oauth_providers from environment variables: one git-provider row
+    per configured git provider.
 
-    - One IDP row for Keycloak when ``KEYCLOAK_CLIENT_ID`` is set.
-    - One git-provider row per configured git provider.
+    (This used to also seed a generic Keycloak IDP row here -- see the
+    module docstring for why that moved to migration 189.)
     """
     bind = op.get_bind()
-
-    # Keycloak as IDP
-    kc_client_id = os.getenv('KEYCLOAK_CLIENT_ID', '').strip()
-    if kc_client_id:
-        kc_server_url = os.getenv('KEYCLOAK_SERVER_URL', '').rstrip('/')
-        kc_realm = os.getenv('KEYCLOAK_REALM_NAME', '')
-        kc_client_secret = os.getenv('KEYCLOAK_CLIENT_SECRET', '').strip()
-        kc_base = (
-            f'{kc_server_url}/realms/{kc_realm}' if kc_server_url and kc_realm else ''
-        )
-        _seed_row(
-            bind,
-            provider_category='enterprise_sso',
-            display_name='Keycloak',
-            is_idp=True,
-            client_id=kc_client_id,
-            client_secret=kc_client_secret or None,
-            authorization_url=(
-                f'{kc_base}/protocol/openid-connect/auth' if kc_base else None
-            ),
-            token_url=(f'{kc_base}/protocol/openid-connect/token' if kc_base else None),
-            userinfo_url=(
-                f'{kc_base}/protocol/openid-connect/userinfo' if kc_base else None
-            ),
-            scopes=['openid', 'email', 'profile'],
-        )
 
     # GitHub git provider
     gh_client_id = os.getenv('GITHUB_APP_CLIENT_ID', '').strip()

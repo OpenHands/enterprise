@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { useTranslation } from "react-i18next";
+import { KeyRound } from "lucide-react";
 import { I18nKey } from "#/i18n/declaration";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -15,6 +16,16 @@ interface OrganizationMemberRoleContextMenuProps {
   onRoleChange: (role: OrganizationUserRole) => void;
   onRemove?: () => void;
   availableRolesToChangeTo: OrganizationUserRole[];
+  /** Whether the caller has permission to change this member's role or
+   * remove them -- controls whether the role/remove items render at all.
+   * Kept independent of `showCreatePasswordResetLink` so a super admin can
+   * see that option alone without also being granted org-role authority
+   * they don't otherwise have. */
+  showRoleOptions: boolean;
+  /** Only meaningful when `ENABLE_INTEGRATED_IDP` is on -- see
+   * `CreatePasswordResetLinkModal`. */
+  showCreatePasswordResetLink?: boolean;
+  onCreatePasswordResetLink?: () => void;
   /**
    * Trigger element to anchor against. The menu portals to document body with
    * fixed positioning so overflow on the members list cannot clip it.
@@ -27,6 +38,9 @@ export function OrganizationMemberRoleContextMenu({
   onRoleChange,
   onRemove,
   availableRolesToChangeTo,
+  showRoleOptions,
+  showCreatePasswordResetLink,
+  onCreatePasswordResetLink,
   anchorRef,
 }: OrganizationMemberRoleContextMenuProps) {
   const { t } = useTranslation();
@@ -101,6 +115,15 @@ export function OrganizationMemberRoleContextMenu({
     onClose();
   };
 
+  const handleCreatePasswordResetLinkClick = (
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onCreatePasswordResetLink?.();
+    onClose();
+  };
+
   if (typeof document === "undefined" || !portalStyle) {
     return null;
   }
@@ -113,7 +136,7 @@ export function OrganizationMemberRoleContextMenu({
         theme="default"
         className="!static !top-auto !right-auto !mt-0 min-h-fit min-w-[195px] max-w-[195px]"
       >
-        {availableRolesToChangeTo.includes("owner") && (
+        {showRoleOptions && availableRolesToChangeTo.includes("owner") && (
           <ContextMenuListItem
             testId="owner-option"
             onClick={(event) => handleRoleChangeClick(event, "owner")}
@@ -131,7 +154,7 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        {availableRolesToChangeTo.includes("admin") && (
+        {showRoleOptions && availableRolesToChangeTo.includes("admin") && (
           <ContextMenuListItem
             testId="admin-option"
             onClick={(event) => handleRoleChangeClick(event, "admin")}
@@ -149,7 +172,7 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        {availableRolesToChangeTo.includes("member") && (
+        {showRoleOptions && availableRolesToChangeTo.includes("member") && (
           <ContextMenuListItem
             testId="member-option"
             onClick={(event) => handleRoleChangeClick(event, "member")}
@@ -161,15 +184,31 @@ export function OrganizationMemberRoleContextMenu({
             />
           </ContextMenuListItem>
         )}
-        <ContextMenuListItem testId="remove-option" onClick={handleRemoveClick}>
-          <ContextMenuIconText
-            icon={
-              <DeleteIcon width={16} height={16} className="text-red-500" />
-            }
-            text={t(I18nKey.ORG$REMOVE)}
-            className="text-red-500 capitalize"
-          />
-        </ContextMenuListItem>
+        {showCreatePasswordResetLink && (
+          <ContextMenuListItem
+            testId="create-password-reset-link-option"
+            onClick={handleCreatePasswordResetLinkClick}
+          >
+            <ContextMenuIconText
+              icon={<KeyRound size={16} className="text-white" />}
+              text={t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK)}
+            />
+          </ContextMenuListItem>
+        )}
+        {showRoleOptions && (
+          <ContextMenuListItem
+            testId="remove-option"
+            onClick={handleRemoveClick}
+          >
+            <ContextMenuIconText
+              icon={
+                <DeleteIcon width={16} height={16} className="text-red-500" />
+              }
+              text={t(I18nKey.ORG$REMOVE)}
+              className="text-red-500 capitalize"
+            />
+          </ContextMenuListItem>
+        )}
       </ContextMenu>
     </div>,
     document.getElementById("portal-root") || document.body,

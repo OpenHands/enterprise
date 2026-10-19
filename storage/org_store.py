@@ -25,12 +25,15 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
     apply_agent_settings_diff,
 )
+from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
     LITE_LLM_API_URL,
     ORG_SETTINGS_VERSION,
+    get_default_llm_api_key,
     get_default_llm_base_url,
     get_default_llm_model,
+    is_in_cluster_url,
 )
 from server.routes.org_models import OrgUpdate, OrphanedUserError
 from storage.database import a_session_maker
@@ -38,6 +41,7 @@ from storage.lite_llm_manager import (
     LiteLlmManager,
     get_openhands_cloud_key_alias,
     get_org_team_alias,
+    is_litellm_enabled,
 )
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -269,6 +273,13 @@ class OrgStore:
         )
 
     @staticmethod
+    async def set_org_status(org_id: UUID, status: str) -> Org | None:
+        """Set organization lifecycle status (``active`` or ``suspended``)."""
+        if status not in ('active', 'suspended'):
+            raise ValueError(f'Invalid organization status: {status!r}')
+        return await OrgStore._update_org_kwargs(org_id, {'status': status})
+
+    @staticmethod
     async def get_orgs_by_ids(org_ids: list[UUID]) -> list[Org]:
         """Get multiple organizations by IDs in a single query.
 
@@ -401,28 +412,53 @@ class OrgStore:
 
         if normalized_base_url == managed_base_url:
             return True
+        # The bundled proxy's URL, left behind after LiteLLM was turned off.
+        gateway_off_proxy_url = not constants.ENABLE_LEGACY_LITELLM and (
+            normalized_base_url is None or is_in_cluster_url(normalized_base_url)
+        )
         # Public OpenHands provider model with no explicit (or a managed-host)
         # base_url is managed.
         if is_openhands_model(model):
-            return normalized_base_url is None or (
-                'all-hands.dev' in normalized_base_url.lower()
+            return (
+                normalized_base_url is None
+                or 'all-hands.dev' in normalized_base_url.lower()
+                or gateway_off_proxy_url
             )
-        return False
+        return model.startswith('litellm_proxy/') and gateway_off_proxy_url
+
+    @staticmethod
+    def _needs_gateway_off_repair(org: Org) -> bool:
+        """Whether the org still defaults to a LiteLLM model the deployment no longer serves."""
+        model = (dict(org.agent_settings).get('llm') or {}).get('model')
+        return OrgStore._uses_managed_default_llm(org) and (
+            model != get_default_llm_model()
+        )
+
+    @staticmethod
+    def _deployment_default_llm(
+        gateway_enabled: bool,
+    ) -> tuple[dict[str, Any], str | None]:
+        """The deployment default LLM, plus the install key to share when there is no gateway."""
+        llm = {'model': get_default_llm_model(), 'base_url': get_default_llm_base_url()}
+        return llm, None if gateway_enabled else get_default_llm_api_key()
 
     @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
-        if org and org.org_version < ORG_SETTINGS_VERSION:
+        gateway_enabled = await is_litellm_enabled()
+        if org and (
+            org.org_version < ORG_SETTINGS_VERSION
+            or (not gateway_enabled and OrgStore._needs_gateway_off_repair(org))
+        ):
             org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
-                org_kwargs['agent_settings_diff'] = {
-                    'llm': {
-                        'model': get_default_llm_model(),
-                        'base_url': get_default_llm_base_url(),
-                    },
-                }
+                llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
+                org_kwargs['agent_settings_diff'] = {'llm': llm}
+                # The org key outranks members' dead LiteLLM keys.
+                if shared_key:
+                    org_kwargs['llm_api_key'] = shared_key
             org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
             # One-time, best-effort repair of a stale free-tier LiteLLM team
             # allowlist (the version bump is the once-per-org trigger). A
@@ -1024,16 +1060,35 @@ class OrgStore:
         if llm is not None:
             llm_model = llm.model
             llm_base_url = llm.base_url
+            llm_provider_connection_id = getattr(llm, 'provider_connection_id', None)
         else:
             llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
+            llm_provider_connection_id = getattr(
+                llm_settings, 'provider_connection_id', None
+            )
         openhands_type = is_openhands_model(llm_model)
         # Imported locally to avoid a storage-internal circular import.
         from storage.saas_settings_store import managed_llm_key_config_from_model
 
-        config = managed_llm_key_config_from_model(llm_model, llm_base_url)
+        config = managed_llm_key_config_from_model(
+            llm_model, llm_base_url, llm_provider_connection_id
+        )
         if config is None or not config.openhands_type:
+            return None
+
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # verify/rotate/generate a key against. A managed openhands/*
+            # model is virtually every existing org's default, so without
+            # this guard any org-defaults save would otherwise
+            # unconditionally try to mint a key and raise ``ValueError``
+            # out of ``LiteLlmManager.generate_key``.
+            logger.info(
+                'ensure_managed_llm_key_for_user:skipped_litellm_disabled',
+                extra={'user_id': user_id, 'org_id': str(updated_org.id)},
+            )
             return None
 
         # _get_effective_llm_api_key checks org.llm_api_key before the member

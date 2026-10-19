@@ -263,8 +263,10 @@ async def create_org(
     ``CREATE_ORGANIZATION`` permission to create a new organization. In
     practice this permission is only granted via the ``superadmin``
     role; no regular,
-    org-scoped role carries it. The creator is not automatically added
-    as a member; a superadmin can provision the initial org users separately.
+    org-scoped role carries it. When ``owner_user_id`` is given, that user
+    (the caller or an existing user) becomes the organization's owner.
+    Otherwise the creator is not automatically added as a member; a
+    superadmin can provision the initial org users separately.
 
     Args:
         org_data: Organization creation data
@@ -276,6 +278,7 @@ async def create_org(
     Raises:
         HTTPException: 401 if the user is not authenticated
         HTTPException: 403 if the user lacks ``CREATE_ORGANIZATION``
+        HTTPException: 404 if ``owner_user_id`` does not match an existing user
         HTTPException: 409 if organization name already exists
         HTTPException: 500 if creation fails
     """
@@ -287,14 +290,22 @@ async def create_org(
         },
     )
 
+    owner_user_id = org_data.owner_user_id
+    if owner_user_id is not None:
+        owner = await UserStore.get_user_by_id(str(owner_user_id))
+        if owner is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+            )
+
     try:
         # Use service layer to create organization
         org = await OrgService.create_org_with_owner(
             name=org_data.name,
             contact_name=org_data.contact_name,
             contact_email=org_data.contact_email,
-            user_id=user_id,
-            add_creator_as_owner=False,
+            user_id=str(owner_user_id) if owner_user_id else user_id,
+            add_creator_as_owner=owner_user_id is not None,
         )
 
         # Retrieve credits from LiteLLM
@@ -1219,6 +1230,20 @@ async def get_org_members_financial(
         )
 
 
+async def _validate_litellm_enabled_for_budgets() -> None:
+    """Budgets are enforced through LiteLLM; unavailable when ``ENABLE_LEGACY_LITELLM`` is off."""
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    if not await is_litellm_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'Budgets require the LiteLLM integration, which is disabled '
+                'in this environment. Set ENABLE_LEGACY_LITELLM=true to use budgets.'
+            ),
+        )
+
+
 def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     settings = state['settings']
     thresholds = state['thresholds']
@@ -1290,6 +1315,7 @@ async def get_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse:
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1319,6 +1345,7 @@ async def get_my_org_budget(
     The user is taken from the session only, so a caller can never read
     another member's budget.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting own org budget',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1348,6 +1375,7 @@ async def update_org_budget_settings(
 
     A 503 settings body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1384,6 +1412,7 @@ async def upsert_org_budget_override(
 
     A 503 user body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget override',
         extra={
@@ -1428,6 +1457,7 @@ async def delete_org_budget_override(
 
     An empty 503 means deletion was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Deleting org budget override',
         extra={
@@ -2291,6 +2321,13 @@ async def get_org_conversation_user_usage_stats(
         ge=0,
         description='Offset for paginated user rows',
     ),
+    time_window: Annotated[
+        str | None,
+        Query(
+            title='Time window for the conversation count',
+            description='Options: 7d, 30d, 90d. Spend columns keep their own periods.',
+        ),
+    ] = None,
     user_id: str = Depends(require_permission(Permission.VIEW_ORG_CONVERSATIONS)),
     service: OrgConversationService = org_conversation_service_dependency,
 ) -> OrgUserUsageStats:
@@ -2302,6 +2339,7 @@ async def get_org_conversation_user_usage_stats(
         org_id: The organization ID
         limit: Maximum number of user rows to return
         offset: Offset for paginated user rows
+        time_window: Time window for the conversation count (7d, 30d, 90d)
 
     Returns:
         OrgUserUsageStats: Usage statistics aggregated by user
@@ -2313,6 +2351,7 @@ async def get_org_conversation_user_usage_stats(
             'org_id': str(org_id),
             'limit': limit,
             'offset': offset,
+            'time_window': time_window,
         },
     )
 
@@ -2321,6 +2360,7 @@ async def get_org_conversation_user_usage_stats(
             org_id=org_id,
             limit=limit,
             offset=offset,
+            time_window=time_window,
         )
 
         logger.info(

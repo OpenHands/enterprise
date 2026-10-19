@@ -1941,6 +1941,29 @@ class TestRemoteSandboxRunningCleanup:
         assert paused == []
         remote_sandbox_service.pause_sandbox.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_pause_old_sandboxes_never_pauses_the_excluded_sandbox(
+        self, remote_sandbox_service
+    ):
+        """exclude_id is neither counted nor paused, even when it is the oldest."""
+        target = create_stored_sandbox(
+            'target', created_at=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        other = create_stored_sandbox(
+            'other', created_at=datetime(2024, 6, 1, tzinfo=timezone.utc)
+        )
+        remote_sandbox_service._get_user_running_sandboxes = AsyncMock(
+            return_value=[target, other]
+        )
+        remote_sandbox_service.pause_sandbox = AsyncMock(return_value=True)
+
+        paused = await remote_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=0, exclude_id='target'
+        )
+
+        assert paused == ['other']
+        remote_sandbox_service.pause_sandbox.assert_called_once_with('other')
+
 
 def _async_cm_factory(value):
     """Return a callable that yields ``value`` as an async context manager.

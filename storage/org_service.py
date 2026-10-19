@@ -21,7 +21,7 @@ from server.routes.org_models import (
     OrgUpdate,
     OrphanedUserError,
 )
-from storage.lite_llm_manager import LiteLlmManager
+from storage.lite_llm_manager import LiteLlmManager, _is_billing_enabled
 from storage.org import Org
 from storage.org_default_settings import (
     apply_configured_org_condenser_default,
@@ -740,13 +740,17 @@ class OrgService:
         return org
 
     @staticmethod
-    async def verify_owner_authorization(user_id: str, org_id: UUID) -> None:
+    async def verify_owner_authorization(
+        user_id: str, org_id: UUID, *, allow_super_admin: bool = False
+    ) -> None:
         """
         Verify that the user is the owner of the organization.
 
         Args:
             user_id: User ID to check
             org_id: Organization ID
+            allow_super_admin: When True, instance super admins may delete
+                without org ownership (used by ``/api/admin/organizations``).
 
         Raises:
             OrgNotFoundError: If organization doesn't exist
@@ -756,6 +760,23 @@ class OrgService:
         org = await OrgStore.get_org_by_id(org_id)
         if not org:
             raise OrgNotFoundError(str(org_id))
+
+        if allow_super_admin:
+            from server.auth.authorization import (
+                Permission,
+                get_user_super_role,
+                has_permission,
+            )
+
+            super_role = await get_user_super_role(user_id)
+            if super_role and has_permission(
+                super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+            ):
+                logger.debug(
+                    'Super admin authorized for organization deletion',
+                    extra={'user_id': user_id, 'org_id': str(org_id)},
+                )
+                return
 
         # Check if user is a member of the organization
         org_member = await OrgMemberStore.get_org_member(org_id, parse_uuid(user_id))
@@ -775,7 +796,9 @@ class OrgService:
         )
 
     @staticmethod
-    async def delete_org_with_cleanup(user_id: str, org_id: UUID) -> Org:
+    async def delete_org_with_cleanup(
+        user_id: str, org_id: UUID, *, allow_super_admin: bool = False
+    ) -> Org:
         """
         Delete organization with complete cleanup of all associated data.
 
@@ -801,7 +824,9 @@ class OrgService:
         )
 
         # Step 1: Verify user authorization
-        await OrgService.verify_owner_authorization(user_id, org_id)
+        await OrgService.verify_owner_authorization(
+            user_id, org_id, allow_super_admin=allow_super_admin
+        )
 
         # Step 2: Perform database cascade deletion with LiteLLM cleanup in transaction
         try:
@@ -845,6 +870,10 @@ class OrgService:
     ) -> bool:
         """Check if BYOR export is enabled for an organization.
 
+        Export is granted by the ``ENABLE_BYOR_EXPORT`` opt-in or, only when
+        billing is enabled, by the org's persisted flag or a positive credit
+        balance.
+
         Args:
             user_id: User ID (used only as fallback to look up the user's
                 ``current_org_id`` when ``org_id`` is omitted).
@@ -856,6 +885,12 @@ class OrgService:
         """
         if ENABLE_BYOR_EXPORT:
             return True
+
+        # The org flag and the credits check are billing concepts (a completed
+        # Stripe checkout sets the flag; credits are the LiteLLM budget). Without
+        # billing, only the ENABLE_BYOR_EXPORT opt-in above can grant export.
+        if not await _is_billing_enabled():
+            return False
 
         if org_id is None:
             user = await UserStore.get_user_by_id(user_id)
@@ -913,6 +948,23 @@ class OrgService:
         if not org:
             raise OrgNotFoundError(str(org_id))
 
+        from server.auth.authorization import (
+            Permission,
+            get_user_super_role,
+            has_permission,
+        )
+
+        is_super_admin = False
+        super_role = await get_user_super_role(user_id)
+        if super_role and has_permission(
+            super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+        ):
+            is_super_admin = True
+
+        # Suspended orgs are only switchable by instance super admins.
+        if getattr(org, 'status', 'active') == 'suspended' and not is_super_admin:
+            raise OrgAuthorizationError('Organization is suspended')
+
         # Step 2: Validate user is a member of the organization
         if not await OrgService.is_org_member(user_id, org_id):
             logger.warning(
@@ -922,6 +974,21 @@ class OrgService:
             raise OrgAuthorizationError(
                 'User must be a member of the organization to switch to it'
             )
+        else:
+            # Active membership required for non-super users.
+            from uuid import UUID as parse_uuid
+
+            from storage.org_member_store import OrgMemberStore
+
+            membership = await OrgMemberStore.get_org_member(
+                org_id, parse_uuid(user_id)
+            )
+            if (
+                membership is not None
+                and membership.status == 'inactive'
+                and not is_super_admin
+            ):
+                raise OrgAuthorizationError('User membership is suspended')
 
         # Step 3: Update user's current_org_id
         try:

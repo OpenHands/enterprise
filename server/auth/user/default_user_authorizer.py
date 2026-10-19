@@ -15,6 +15,7 @@ from server.auth.user.user_authorizer import (
 )
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
+from storage.user_store import UserStore
 
 logger = logging.getLogger(__name__)
 token_manager = TokenManager()
@@ -24,7 +25,8 @@ token_manager = TokenManager()
 class DefaultUserAuthorizer(UserAuthorizer):
     """Class determining whether a user may be authorized.
 
-    Uses the user_authorizations database table to check whitelist/blacklist rules.
+    Refuses users a Super Admin has disabled, then uses the user_authorizations
+    database table to check whitelist/blacklist rules.
     """
 
     prevent_duplicates: bool
@@ -36,6 +38,14 @@ class DefaultUserAuthorizer(UserAuthorizer):
         email = user_info.email
         provider_type = user_info.identity_provider
         try:
+            if await UserStore.is_user_disabled(user_id):
+                logger.warning(
+                    'Blocked sign-in for disabled user', extra={'user_id': user_id}
+                )
+                return UserAuthorizationResponse(
+                    success=False, error_detail='account_disabled'
+                )
+
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')
                 return UserAuthorizationResponse(

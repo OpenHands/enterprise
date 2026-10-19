@@ -9,20 +9,41 @@ import { areAllEmailsValid, hasDuplicates } from "#/utils/input-validation";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import { BatchInvitationResult, OrganizationUserRole } from "#/types/org";
 import { CopyInviteLinkButton } from "#/components/features/org/copy-invite-link-button";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { usePendingInvitations } from "#/hooks/query/use-pending-invitations";
 
 interface InviteOrganizationMemberModalProps {
   onClose: (event?: React.MouseEvent<HTMLButtonElement>) => void;
+  /**
+   * Super Admin dashboard: the organizations to pick the target from, in
+   * place of the selected one. Super Admins may also invite an owner.
+   */
+  organizations?: { id: string; name: string }[];
+  defaultOrgId?: string;
 }
 
 export function InviteOrganizationMemberModal({
   onClose,
+  organizations,
+  defaultOrgId,
 }: InviteOrganizationMemberModalProps) {
   const { t } = useTranslation();
-  const { mutate: inviteMembers, isPending } = useInviteMembersBatch();
+  const orgOptions = organizations?.map((org) => ({
+    value: org.id,
+    label: org.name,
+  }));
+  const defaultOrgOption =
+    orgOptions?.find((option) => option.value === defaultOrgId) ??
+    orgOptions?.[0];
+  const [pickedOrgId, setPickedOrgId] = React.useState<string>();
+  // Undefined outside the dashboard, so the hooks use the selected org. On the
+  // dashboard, submit stays disabled until there is an org to target.
+  const targetOrgId = pickedOrgId ?? defaultOrgOption?.value;
+  const { mutate: inviteMembers, isPending } =
+    useInviteMembersBatch(targetOrgId);
   // The modal is only reachable with the invite permission, which is what
   // gates the backing endpoint; the response carries auto_add_enabled.
-  const { data: pendingData } = usePendingInvitations(true);
+  const { data: pendingData } = usePendingInvitations(true, targetOrgId);
   const [emails, setEmails] = React.useState<string[]>([]);
   const [role, setRole] = React.useState<OrganizationUserRole>("member");
   const [result, setResult] = React.useState<BatchInvitationResult | null>(
@@ -54,6 +75,7 @@ export function InviteOrganizationMemberModal({
       { emails, role },
       {
         onSuccess: (data) => {
+          notifySuperAdminSetupStep("invite-users");
           // When email delivery works, the invitees are notified and the
           // modal can simply close. Without it, the links are the only way
           // invitees can ever join — keep the modal open so the inviter can
@@ -71,6 +93,9 @@ export function InviteOrganizationMemberModal({
   const roleOptions = [
     { value: "member", label: t(I18nKey.ORG$ROLE_MEMBER) },
     { value: "admin", label: t(I18nKey.ORG$ROLE_ADMIN) },
+    ...(orgOptions
+      ? [{ value: "owner", label: t(I18nKey.ORG$ROLE_OWNER) }]
+      : []),
   ].map((option) => ({
     ...option,
     label: option.label.charAt(0).toLocaleUpperCase() + option.label.slice(1),
@@ -134,7 +159,20 @@ export function InviteOrganizationMemberModal({
       onPrimaryClick={handleSubmit}
       onClose={onClose}
       isLoading={isPending}
+      isPrimaryDisabled={!!orgOptions && !targetOrgId}
     >
+      {orgOptions && (
+        <label className="flex flex-col gap-1 text-sm">
+          {t(I18nKey.COMMON$ORGANIZATION)}
+          <Dropdown
+            key={defaultOrgOption?.value}
+            testId="invite-org-dropdown"
+            options={orgOptions}
+            defaultValue={defaultOrgOption}
+            onChange={(option) => setPickedOrgId(option?.value)}
+          />
+        </label>
+      )}
       {pendingData?.auto_add_enabled && (
         <p
           data-testid="auto-add-enabled-hint"

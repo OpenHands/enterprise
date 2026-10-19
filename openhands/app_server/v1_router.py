@@ -14,6 +14,9 @@ from openhands.app_server.mcp.mcp_oauth_router import (
     router as mcp_oauth_router,
 )
 from openhands.app_server.mcp.mcp_test_router import router as mcp_test_router
+from openhands.app_server.mcp.mcp_tool_call_router import (
+    router as mcp_tool_call_router,
+)
 from openhands.app_server.pending_messages.pending_message_router import (
     router as pending_message_router,
 )
@@ -42,6 +45,7 @@ router.include_router(webhook_router.router)
 router.include_router(web_client_router.router)
 router.include_router(git_router)
 router.include_router(mcp_test_router)
+router.include_router(mcp_tool_call_router)
 router.include_router(mcp_oauth_router)
 router.include_router(mcp_oauth_callback_router)
 router.include_router(config_router)

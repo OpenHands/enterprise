@@ -331,6 +331,12 @@ start-saas-backend:
 	@echo "$(YELLOW)Starting SaaS backend...$(RESET)"
 	@uv run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) --reload --reload-exclude "./workspace"
 
+# Start the background worker, which runs the app's jobs. Needs the database
+# migrated to head, like the backend.
+start-worker:
+	@echo "$(YELLOW)Starting worker...$(RESET)"
+	@$(LOCAL_DB_ENV) uv run python -m openhands.app_server.worker
+
 # Start frontend
 start-frontend:
 	@echo "$(YELLOW)Starting frontend...$(RESET)"
@@ -353,6 +359,8 @@ _run_setup:
 	@echo "$(YELLOW)Starting backend server...$(RESET)"
 	@$(LOCAL_DB_ENV) uv run uvicorn openhands.server.listen:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
 	@$(MAKE) -s _wait_for_backend
+	@echo "$(YELLOW)Starting worker...$(RESET)"
+	@$(LOCAL_DB_ENV) uv run python -m openhands.app_server.worker &
 
 # Run the app (needs `make local-db`, or DB_HOST pointed at your own PostgreSQL)
 run:
@@ -375,6 +383,8 @@ _run_saas_setup:
 	@echo "$(YELLOW)Starting SaaS backend server...$(RESET)"
 	@uv run uvicorn saas_server:app --host $(BACKEND_HOST) --port $(BACKEND_PORT) &
 	@$(MAKE) -s _wait_for_backend
+	@echo "$(YELLOW)Starting worker...$(RESET)"
+	@uv run python -m openhands.app_server.worker &
 
 # Wait for the backgrounded backend to bind its port, giving up rather than
 # hanging forever when it exits during startup (non-callable).
@@ -453,6 +463,7 @@ help:
 	@echo "  $(GREEN)start-backend$(RESET)       - Start the backend server for the OpenHands project."
 	@echo "  $(GREEN)start-frontend$(RESET)      - Start the frontend server for the OpenHands project."
 	@echo "  $(GREEN)start-saas-backend$(RESET)  - Start the SaaS/enterprise backend (saas_server.py)."
+	@echo "  $(GREEN)start-worker$(RESET)        - Start the background worker, which runs the app's jobs."
 	@echo "  $(GREEN)run$(RESET)                 - Run the OpenHands application, starting both backend and frontend servers."
 	@echo "                        Needs a database: run $(GREEN)make local-db$(RESET) first."
 	@echo "  $(GREEN)run-saas$(RESET)            - Run the SaaS app, starting the SaaS backend and the frontend server."
@@ -461,5 +472,5 @@ help:
 	@echo "  $(GREEN)help$(RESET)                - Display this help message, providing information on available targets."
 
 # Phony targets
-.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
+.PHONY: build check-dependencies check-system check-python check-npm check-nodejs check-docker check-uv install-python-dependencies install-frontend-dependencies install-pre-commit-hooks lint-backend lint-frontend lint test-frontend test build-frontend build-agent-canvas prepare-local-frontend local-db reset-db start-backend start-saas-backend start-worker start-frontend _run_setup _run_saas_setup _wait_for_backend run run-saas setup-config setup-config-prompts setup-config-basic docker-dev clean help
 .PHONY: kind

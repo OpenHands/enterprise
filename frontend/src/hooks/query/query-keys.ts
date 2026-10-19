@@ -8,6 +8,8 @@ import { SettingsScope } from "#/types/settings";
 export const QUERY_KEYS = {
   /** Web client configuration from the server */
   WEB_CLIENT_CONFIG: ["web-client-config"] as const,
+  /** Whether the current user has a dev-IDP password set */
+  IDP_HAS_PASSWORD: ["idp-has-password"] as const,
 } as const;
 
 export const SETTINGS_QUERY_KEYS = {
@@ -21,6 +23,12 @@ export const SETTINGS_QUERY_KEYS = {
 export const ORGANIZATION_APP_SETTINGS_KEYS = {
   byOrg: (organizationId: string | null | undefined) =>
     ["organization-app-settings", organizationId] as const,
+} as const;
+
+export const PROVIDER_CONNECTIONS_QUERY_KEYS = {
+  all: ["provider-connections"] as const,
+  byOrg: (organizationId: string | null | undefined) =>
+    ["provider-connections", organizationId] as const,
 } as const;
 
 /** Cache configuration shared across all config-related queries */
