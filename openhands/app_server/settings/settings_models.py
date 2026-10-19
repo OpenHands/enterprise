@@ -47,7 +47,12 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
-from openhands.sdk.tool.defaults import fold_retired_tool_switches
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+    fold_retired_tool_switches,
+)
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 logger = logging.getLogger(__name__)
@@ -666,6 +671,42 @@ def agent_llm(agent_settings: AgentSettingsConfig) -> LLM | None:
     ``llm`` that ACP settings used to carry.
     """
     return getattr(agent_settings, 'llm', None)
+
+
+# From this schema version on, rows hold sub-agents in ``tools`` and any
+# retired switch beside them is a stale copy.
+_SWITCHES_FOLDED_SCHEMA_VERSION = 8
+
+
+def normalize_member_agent_settings_diff(diff: dict[str, Any]) -> dict[str, Any]:
+    """Prepare a member's stored agent settings for merging over the org's dump.
+
+    The org's dump is at the current schema version, so a member diff without
+    its own ``schema_version`` gets no SDK migrations once merged. The retired
+    tool switches are folded into ``tools`` when the diff has no version,
+    dropped when ``tools`` already holds them, and otherwise left for the SDK's
+    migrations.
+    """
+    if not any(key in diff for key in RETIRED_TOOL_SWITCHES):
+        return diff
+    version = diff.get('schema_version')
+    if version is None:
+        return fold_retired_tool_switches_into_json(diff)
+    if isinstance(version, int) and version >= _SWITCHES_FOLDED_SCHEMA_VERSION:
+        return drop_retired_tool_switches(diff)
+    return diff
+
+
+def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]:
+    """Fold a sparse diff's retired tool switches into JSON ``tools`` entries."""
+    folded = fold_retired_tool_switches(diff, sparse=True)
+    tools = folded.get('tools')
+    if isinstance(tools, list):
+        folded['tools'] = [
+            tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
+            for tool in tools
+        ]
+    return folded
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:

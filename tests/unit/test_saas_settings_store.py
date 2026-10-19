@@ -3130,6 +3130,20 @@ async def _load_member(
             False,
         ),
         (_ACP_ROW, 'acp', False),
+        # A schema-9 row that kept an older row's switches, and a diff with no
+        # schema version: merged over the org's schema-9 dump, the SDK no longer
+        # migrates either.
+        (
+            {
+                'schema_version': 9,
+                'agent_kind': 'openhands',
+                'enable_sub_agents': False,
+                'enable_switch_llm_tool': True,
+            },
+            'openhands',
+            False,
+        ),
+        ({'enable_sub_agents': True}, 'openhands', True),
     ],
     ids=[
         'sdk1.50-sub-agents-on',
@@ -3137,6 +3151,8 @@ async def _load_member(
         'sdk1.55',
         'sdk1.50-acp',
         'sdk1.56-acp',
+        'schema9-with-switches',
+        'no-schema-version',
     ],
 )
 async def test_load_reads_member_rows_saved_by_each_sdk(
@@ -3215,3 +3231,71 @@ async def test_managed_key_helpers_treat_acp_members_as_not_managed(
         rotation = await store.rotate_managed_llm_key()
 
     assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sub_agents', [False, True], ids=['off', 'on'])
+async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
+    session_maker, async_session_maker, org_with_multiple_members_fixture, sub_agents
+):
+    """A save writes schema 9, so the older row's switches must not outlive it.
+
+    The org and member rows are shaped as enterprise 1.72 left them on a live
+    install: schema 6, still carrying both retired switches.
+    """
+    from sqlalchemy import update
+
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    switches = {'enable_sub_agents': sub_agents, 'enable_switch_llm_tool': True}
+    with session_maker() as session:
+        session.execute(
+            update(Org)
+            .where(Org.id == fixture['org_id'])
+            .values(
+                agent_settings={
+                    'schema_version': 6,
+                    'agent_kind': 'openhands',
+                    'enable_sub_agents': False,
+                    'enable_switch_llm_tool': True,
+                }
+            )
+        )
+        session.commit()
+    store, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        fixture,
+        {
+            'schema_version': 6,
+            'agent_kind': 'openhands',
+            'tool_concurrency_limit': 1,
+            **switches,
+        },
+    )
+    assert loaded is not None
+    loaded.update({'agent_settings_diff': {'tool_concurrency_limit': 3}})
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        await store.store(loaded)
+        reloaded = await store.load()
+
+    assert reloaded is not None
+    assert reloaded.agent_settings.tool_concurrency_limit == 3
+    tools = reloaded.agent_settings.tools
+    assert (
+        tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME)
+    ) is sub_agents
+    with session_maker() as session:
+        row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
+        assert row is not None
+        assert row.agent_settings_diff['schema_version'] == 9
+        assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)

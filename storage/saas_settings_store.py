@@ -15,7 +15,11 @@ from openhands.app_server.settings.llm_profiles import (
     has_real_api_key,
     resolve_profile_llm,
 )
-from openhands.app_server.settings.settings_models import Settings, agent_llm
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    agent_llm,
+    normalize_member_agent_settings_diff,
+)
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
@@ -24,6 +28,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
+from openhands.sdk.tool.defaults import drop_retired_tool_switches
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
@@ -438,7 +443,9 @@ class SaasSettingsStore(SettingsStore):
             )
             return None
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        member_agent_settings_diff = dict(org_member.agent_settings_diff)
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
         member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
 
@@ -902,7 +909,12 @@ class SaasSettingsStore(SettingsStore):
             )
 
             member_mcp_config = org_member.effective_mcp_config
-            member_agent_settings_diff = dict(org_member.agent_settings_diff)
+            # The dump merged in below holds sub-agents in ``tools`` and carries
+            # the current schema version, under which the SDK rejects the
+            # retired switches an older row may still have.
+            member_agent_settings_diff = drop_retired_tool_switches(
+                org_member.agent_settings_diff
+            )
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
             # Single assignment so SQLAlchemy tracks the JSON column change.
