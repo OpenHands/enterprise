@@ -6,10 +6,17 @@ for an unknown ``sub`` when that user's ``allow_match_by_email`` is true;
 otherwise it mints a duplicate user. Pre-existing users have the column at
 its ``false`` default, so their first v2 login created a second account.
 
-This sets the flag on every user that has no ``auth_provider_users`` row yet.
-The flag self-clears on the first successful email link, so each user's
-email-match window is one login wide. Users that already have a link are left
-alone because they resolve by ``sub`` and never need the match.
+This sets the flag on every user whose stored email is verified and who has no
+``auth_provider_users`` row yet. The flag self-clears on the first successful
+email link, so each user's email-match window is one login wide.
+
+Only ``email_verified = true`` users qualify. The v1 login creates the ``user``
+row before email verification is enforced, so ``email`` can be one nobody has
+proven they own (``email_verified`` false or NULL). Linking such a row to
+whoever later logs in via v2 with that address would hand them an account
+someone else registered. Those users get a fresh account on their v2 login
+instead. Users that already have a link resolve by ``sub`` and never need the
+match.
 
 Revision ID: 192
 Revises: 191
@@ -34,6 +41,7 @@ def upgrade() -> None:
             UPDATE "user"
             SET allow_match_by_email = true
             WHERE allow_match_by_email = false
+              AND email_verified = true
               AND NOT EXISTS (
                   SELECT 1 FROM auth_provider_users apu
                   WHERE apu.user_id = "user".id

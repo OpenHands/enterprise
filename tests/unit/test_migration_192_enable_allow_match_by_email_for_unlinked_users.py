@@ -9,6 +9,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
@@ -63,7 +64,7 @@ def _run_upgrade(engine: Engine) -> None:
 
 
 def test_upgrade_enables_flag_for_unlinked_users(engine: Engine, create_user):
-    user = create_user(email='unlinked@example.com')
+    user = create_user(email='unlinked@example.com', email_verified=True)
 
     _run_upgrade(engine)
 
@@ -71,7 +72,7 @@ def test_upgrade_enables_flag_for_unlinked_users(engine: Engine, create_user):
 
 
 def test_upgrade_leaves_linked_users_untouched(engine: Engine, create_user):
-    linked = create_user(email='linked@example.com')
+    linked = create_user(email='linked@example.com', email_verified=True)
     _link_user(engine, linked.id)
 
     _run_upgrade(engine)
@@ -79,8 +80,19 @@ def test_upgrade_leaves_linked_users_untouched(engine: Engine, create_user):
     assert _flag(engine, linked.id) is False
 
 
+@pytest.mark.parametrize('email_verified', [False, None])
+def test_upgrade_skips_users_without_verified_email(
+    engine: Engine, create_user, email_verified
+):
+    user = create_user(email='unverified@example.com', email_verified=email_verified)
+
+    _run_upgrade(engine)
+
+    assert _flag(engine, user.id) is False
+
+
 def test_upgrade_is_idempotent(engine: Engine, create_user):
-    user = create_user(email='unlinked@example.com')
+    user = create_user(email='unlinked@example.com', email_verified=True)
 
     _run_upgrade(engine)
     _run_upgrade(engine)
