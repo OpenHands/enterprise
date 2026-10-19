@@ -11,6 +11,9 @@ from pydantic import SecretStr
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
     BitbucketDCService,
 )
+from openhands.app_server.integrations.bitbucket_data_center.service import (
+    base as bbdc_base,
+)
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
@@ -139,6 +142,19 @@ async def test_get_headers_uses_bearer_for_raw_oauth_token():
 # ── get_git_credentials ───────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _empty_git_username_cache(monkeypatch):
+    # Tests reuse a server and token with different outcomes.
+    monkeypatch.setattr(bbdc_base, '_git_usernames', {})
+
+
+async def _token_user(url, params=None, **kwargs):
+    """A server whose whoami is empty but whose X-AUSERNAME names the token's user."""
+    if url.endswith('/plugins/servlet/applinks/whoami'):
+        return '', {}
+    return {'values': []}, {'X-AUSERNAME': 'project_7_bot'}
+
+
 def _login_check(status_code: int):
     """Patch the Basic login check; returns the mock to inspect its headers."""
     return patch(
@@ -179,15 +195,9 @@ async def test_git_credentials_use_x_token_auth_when_accepted(token):
 async def test_git_credentials_use_token_user_when_x_token_auth_rejected(token):
     # Personal tokens, and project and repository tokens on 8.x
     svc = BitbucketDCService(token=SecretStr(token), base_domain='host.example.com')
-
-    async def mock_make_request(url, params=None, **kwargs):
-        if url.endswith('/plugins/servlet/applinks/whoami'):
-            return '', {}
-        return {'values': []}, {'X-AUSERNAME': 'project_7_bot'}
-
     with (
         _login_check(401),
-        patch.object(svc, '_make_request', side_effect=mock_make_request),
+        patch.object(svc, '_make_request', side_effect=_token_user),
     ):
         assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
 
@@ -206,6 +216,70 @@ async def test_git_credentials_fall_back_to_x_token_auth_when_server_unreachable
         patch.object(svc, '_make_request', side_effect=httpx.ConnectError('down')),
     ):
         assert await svc.get_git_credentials() == ('x-token-auth', 'BBDC-abc')
+
+
+def _service(token: str = 'BBDC-abc', domain: str = 'host.example.com'):
+    return BitbucketDCService(token=SecretStr(token), base_domain=domain)
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_reuse_the_answer_for_the_same_server_and_token():
+    # Each request builds its own service, so the answer must outlive one.
+    with (
+        _login_check(401) as get,
+        patch.object(
+            BitbucketDCService, '_make_request', side_effect=_token_user
+        ) as lookup,
+    ):
+        assert await _service().get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+        assert await _service().get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+    get.assert_awaited_once()
+    assert lookup.await_count == 2  # whoami, then X-AUSERNAME, both once
+    assert 'BBDC-abc' not in repr(bbdc_base._git_usernames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'token, domain', [('BBDC-xyz', 'host.example.com'), ('BBDC-abc', 'other.com')]
+)
+async def test_git_credentials_check_again_for_another_token_or_server(token, domain):
+    with _login_check(200) as get:
+        await _service().get_git_credentials()
+        assert await _service(token, domain).get_git_credentials() == (
+            'x-token-auth',
+            token,
+        )
+    assert get.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status_code', [429, 503])
+async def test_git_credentials_check_again_after_an_inconclusive_check(status_code):
+    svc = _service()
+    with (
+        _login_check(status_code) as get,
+        patch.object(svc, '_make_request', side_effect=_token_user),
+    ):
+        assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+        assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+    assert get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_answer_expires_after_ten_minutes():
+    with _login_check(200) as get, patch.object(bbdc_base, 'time') as clock:
+        clock.monotonic.return_value = 1000.0
+        await _service().get_git_credentials()
+        clock.monotonic.return_value = 1599.0
+        await _service().get_git_credentials()
+        assert get.await_count == 1
+        clock.monotonic.return_value = 1600.0
+        await _service().get_git_credentials()
+        assert get.await_count == 2
+        clock.monotonic.return_value = 2200.0
+        await _service('BBDC-xyz').get_git_credentials()
+    # Expired answers are dropped when a new one is kept.
+    assert len(bbdc_base._git_usernames) == 1
 
 
 @pytest.mark.asyncio

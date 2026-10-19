@@ -7,7 +7,7 @@ import { useOrganizations } from "#/hooks/query/use-organizations";
 import { I18nKey } from "#/i18n/declaration";
 import { OrganizationSuspensionReason } from "#/stores/suspended-organization-store";
 import { Organization } from "#/types/org";
-import OpenHandsLogo from "#/assets/branding/openhands-logo.svg?react";
+import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
 
 interface SuspendedOrganizationModalProps {
   organizationId: string;
@@ -37,7 +37,7 @@ export function SuspendedOrganizationModal({
         testID="suspended-organization-modal"
         className="border border-tertiary"
       >
-        <OpenHandsLogo width={68} height={46} />
+        <OpenHandsLogoWhite width={56} height={56} />
         <div className="flex flex-col gap-2 w-full items-center text-center">
           <h1 className="text-2xl font-bold">
             {t(I18nKey.ORG$ACCESS_SUSPENDED)}
