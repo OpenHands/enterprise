@@ -17,10 +17,22 @@ from openhands.app_server.config import get_global_config  # noqa: E402
 from openhands.app_server.utils.logger import openhands_logger  # noqa: E402
 from openhands.app_server.worker.app import QUEUES, WorkerConfig, app  # noqa: E402
 from openhands.app_server.worker.database import build_connector  # noqa: E402
+from openhands.app_server.worker.housekeeping import SCHEDULED_JOBS_QUEUE  # noqa: E402
+from openhands.app_server.worker.scheduled_jobs import (  # noqa: E402
+    NAMESPACE,
+    scheduled_jobs_blueprint,
+)
 
 
 async def run() -> None:
     config: WorkerConfig = from_env(WorkerConfig, 'OH_WORKER')
+    scheduled = config.scheduled_jobs.enabled()
+    queues = list(QUEUES)
+    if scheduled:
+        app.add_tasks_from(
+            scheduled_jobs_blueprint(config.scheduled_jobs), namespace=NAMESPACE
+        )
+        queues.append(SCHEDULED_JOBS_QUEUE)
     connector = build_connector(
         get_global_config().db_session,
         # One connection per running job, plus the worker's own queries.
@@ -30,9 +42,13 @@ async def run() -> None:
         async with app.open_async():
             openhands_logger.info(
                 'worker.started',
-                extra={'concurrency': config.concurrency, 'queues': QUEUES},
+                extra={
+                    'concurrency': config.concurrency,
+                    'queues': queues,
+                    'scheduled_jobs': scheduled,
+                },
             )
-            await app.run_worker_async(concurrency=config.concurrency, queues=QUEUES)
+            await app.run_worker_async(concurrency=config.concurrency, queues=queues)
 
 
 def main() -> None:
