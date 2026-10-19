@@ -8,21 +8,32 @@
 # (OH_LLM_MODEL_KIND). See OHE-3376.
 #
 # Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
-# the `proxy` service (Caddy): `/api/automation/*` goes to the automation
-# service and everything else to the app, mirroring the cloud ingress. Agent
-# Canvas calls same-origin `/api/automation/v1/...`, so no extra port or CORS
-# setup is needed. `/api/service/*` is deliberately not reachable through the
-# proxy (see the `caddyfile` config at the bottom).
+# the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
+# goes to the automation service, `/canvas*` to Agent Canvas, and everything
+# else to the app. Agent Canvas calls same-origin `/api/automation/v1/...`, so
+# no extra port or CORS setup is needed. `/api/service/*` is deliberately not
+# reachable through the proxy (see the `caddyfile` config at the bottom).
 #
 # First run: open http://localhost:3100/oauth/idp/signup to create the admin
 # account, then add an LLM under Settings. `/` then redirects to Agent Canvas
-# at /canvas, which this stack builds into the image (AGENT_CANVAS=1, below)
-# and locks to this app's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it
-# authenticates via your existing session cookie instead of prompting to
-# connect to OpenHands Cloud. This means `docker compose build` clones and
-# builds OpenHands/OpenHands over the network -- see containers/app/Dockerfile
-# and scripts/build-agent-canvas.sh; it is fail-soft, so a build without
-# network access still produces a working app, just without /canvas.
+# at /canvas, which is served by the `canvas-server` service and locked to this
+# stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
+# existing session cookie instead of prompting to connect to OpenHands Cloud.
+#
+# By default this stack runs RELEASED images (pinned below) and builds nothing.
+# To use other versions, set these (shell or `.env`):
+#   APP_IMAGE          enterprise-server image for `app` and `worker`
+#   AUTOMATION_IMAGE   automation service image
+#   AGENT_CANVAS_IMAGE Agent Canvas image
+# e.g. `APP_IMAGE=ghcr.io/openhands/enterprise-server:main` runs the latest
+# `main` build, and `...:pr-123` / `...:sha-<sha>` run a PR / commit build.
+# To build `app` and `worker` from this checkout instead, layer on
+# docker-compose.build.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+# (or set COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml in `.env`).
+# The compose file and the app image are versioned together, since this file
+# sets env vars the app code reads; keep the pinned tag in step with the
+# release (release-please bumps the annotated `x-app-image` line below).
 #
 # Known gaps, tracked separately rather than worked around here:
 #   * Redis-backed features (MCP OAuth connections, conversation-export
@@ -37,6 +48,9 @@
 #     migrated so far). Tracked by OHE-3425 / OHE-3451; skip until that work
 #     produces something Compose-suitable instead of reimplementing
 #     Kubernetes-style scheduling here.
+
+# enterprise-server tag must match the release this file ships with.
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.72.1} # x-release-please-version
 
 services:
   db:
@@ -65,34 +79,8 @@ services:
     restart: unless-stopped
 
   app:
-    build:
-      context: .
-      dockerfile: containers/app/Dockerfile
-      args:
-        # Builds Agent Canvas (OpenHands/OpenHands) into this image and locks
-        # it to this app's own origin, so it authenticates via the existing
-        # session cookie (POST /api/authenticate) instead of prompting to
-        # "Connect instantly to OpenHands Cloud". See containers/app/Dockerfile
-        # and scripts/build-agent-canvas.sh for the full mechanism.
-        #
-        # AGENT_CANVAS_LOCK_TO_CLOUD must be the *exact* origin the browser
-        # will load -- scheme, host, and port -- or Canvas's cookie-auth
-        # detection won't match and this falls back to the cloud-connect
-        # prompt. If you access this stack via anything other than
-        # http://localhost:<APP_PORT> (a different hostname, a reverse proxy,
-        # etc.), override AGENT_CANVAS_LOCK_TO_CLOUD to match and rebuild.
-        AGENT_CANVAS: '1'
-        AGENT_CANVAS_LOCK_TO_CLOUD: ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
-        # Build Canvas from the tip of its `main` branch for now, not the tag
-        # pinned in scripts/build-agent-canvas.sh. `git` makes BuildKit fetch
-        # AGENT_CANVAS_REF and cache on its commit, so `docker compose up
-        # --build` picks up new commits on `main` but reuses the layer
-        # otherwise. Set AGENT_CANVAS_REF to a tag (e.g. v1.21.0) to pin a
-        # release; AGENT_CANVAS_SOURCE can be dropped once the stack only
-        # builds released versions.
-        AGENT_CANVAS_SOURCE: git
-        AGENT_CANVAS_REF: ${AGENT_CANVAS_REF:-main}
-    # containers/app/Dockerfile ends on `USER openhands` (its production,
+    image: *app-image
+    # the enterprise-server image ends on `USER openhands` (its production,
     # Kubernetes-oriented default), so the container itself must be told to
     # run as root -- `ENV SANDBOX_USER_ID=0` baked into the image only
     # affects entrypoint.sh's own branching (see containers/app/entrypoint.sh),
@@ -254,7 +242,7 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ghcr.io/openhands/automation:1.20.0
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.20.0}
     # The image is only published for linux/amd64. Pinning the platform makes
     # Docker Desktop on Apple Silicon run it under emulation instead of
     # failing with "no matching manifest for linux/arm64"; it's a no-op on
@@ -314,6 +302,46 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Agent Canvas (OpenHands/OpenHands), served at /canvas. Named
+  # `canvas-server`, not `agent-canvas`, for the same DNS search-domain reason
+  # as `automation-server`.
+  #
+  # The released agent-canvas image is an all-in-one (agent server + automation
+  # + static server); only the static server is wanted here, so the entrypoint
+  # is replaced to run just that. It has no `--route`, so nothing is proxied to
+  # a bundled agent server. The cloud lock is injected into index.html at
+  # runtime (--lock-to-cloud), so it must be the *exact* origin the browser
+  # loads -- scheme, host and port -- or Canvas's cookie-auth detection won't
+  # match and it falls back to the cloud-connect prompt. If you reach this
+  # stack via anything other than http://localhost:<APP_PORT> (a different
+  # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
+  # Telemetry is disabled at runtime: the released bundle has a PostHog key.
+  canvas-server:
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.28.0}
+    init: true
+    entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
+    # The static server only accepts `--flag value`, not `--flag=value`.
+    command:
+      - --port
+      - '8000'
+      - --host
+      - 0.0.0.0
+      - --dir
+      - /opt/agent-canvas/frontend
+      - --base-path
+      - /canvas
+      - --lock-to-cloud
+      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+      - --disable-telemetry
+    expose:
+      - '8000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8000/canvas/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   # Single entry point on APP_PORT. Caddy handles WebSocket upgrades and
   # streams event-stream responses without extra configuration.
   proxy:
@@ -322,6 +350,8 @@ services:
       app:
         condition: service_started
       automation-server:
+        condition: service_healthy
+      canvas-server:
         condition: service_healthy
     ports:
       - '${APP_PORT:-3100}:80'
@@ -334,18 +364,7 @@ services:
   # migrated off Kubernetes CronJobs: sandbox-lifecycle cleanup and
   # Procrastinate's own housekeeping. See openhands/app_server/worker/app.py.
   worker:
-    build:
-      context: .
-      dockerfile: containers/app/Dockerfile
-      # Identical to the `app` service's build args (see above) so this build
-      # reuses the same Docker layer cache instead of rebuilding everything
-      # from scratch under a different cache key. The worker never serves
-      # HTTP, so it doesn't use the Canvas bundle it ends up carrying.
-      args:
-        AGENT_CANVAS: '1'
-        AGENT_CANVAS_LOCK_TO_CLOUD: ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
-        AGENT_CANVAS_SOURCE: git
-        AGENT_CANVAS_REF: ${AGENT_CANVAS_REF:-main}
+    image: *app-image
     # See the `app` service above: the image defaults to `USER openhands`,
     # so entrypoint.sh's root check needs this override too.
     user: '0:0'
@@ -390,6 +409,13 @@ configs:
         @automation path /api/automation /api/automation/*
         handle @automation {
           reverse_proxy automation-server:8000
+        }
+
+        # Served by the `canvas-server` service, which mounts its SPA under
+        # /canvas itself, so the path is forwarded unchanged.
+        @canvas path /canvas /canvas/*
+        handle @canvas {
+          reverse_proxy canvas-server:8000
         }
 
         handle {
