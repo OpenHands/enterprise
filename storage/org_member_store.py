@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.settings_models import Settings, agent_llm
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
@@ -215,7 +215,7 @@ class OrgMemberStore:
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
         """Return kwargs for OrgMember construction (keys match column names)."""
         return {
-            'llm_api_key': settings.agent_settings.llm.api_key,
+            'llm_api_key': getattr(agent_llm(settings.agent_settings), 'api_key', None),
             'agent_settings_diff': {},
             'mcp_config': serialize_mcp_config(settings.agent_settings.mcp_config),
             'conversation_settings_diff': {},

@@ -36,6 +36,7 @@ from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
     ACPAgentSettings,
@@ -46,6 +47,7 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
+from openhands.sdk.tool.defaults import fold_retired_tool_switches
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 logger = logging.getLogger(__name__)
@@ -651,9 +653,19 @@ def _load_persisted_agent_settings(
     Routes the raw payload through :func:`validate_agent_settings`, which
     applies registered schema migrations, canonicalizes the legacy
     ``agent_kind: 'llm'`` tag to ``'openhands'``, and validates against the
-    discriminated :data:`AgentSettingsConfig` union.
+    discriminated :data:`AgentSettingsConfig` union. Rows without a
+    ``schema_version`` are migrated as legacy rows, not rejected as requests.
     """
-    return validate_agent_settings(data or {})
+    return validate_agent_settings(data or {}, persisted=True)
+
+
+def agent_llm(agent_settings: AgentSettingsConfig) -> LLM | None:
+    """The OpenHands agent's LLM, or None for an ACP agent.
+
+    ACP agents make their own model calls, and SDK 1.56 removed the unused
+    ``llm`` that ACP settings used to carry.
+    """
+    return getattr(agent_settings, 'llm', None)
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
@@ -834,7 +846,8 @@ class Settings(BaseModel):
 
     @property
     def llm_api_key_is_set(self) -> bool:
-        raw = self.agent_settings.llm.api_key
+        llm = agent_llm(self.agent_settings)
+        raw = llm.api_key if llm is not None else None
         if raw is None:
             return False
         secret_value = (
@@ -877,6 +890,9 @@ class Settings(BaseModel):
 
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
+            # Older clients still send the SDK's retired tool switches, which it
+            # now rejects; fold them into ``tools`` as the SDK used to.
+            agent_update = fold_retired_tool_switches(agent_update, sparse=True)
             coerced: dict[str, Any] = {}
             for key, value in agent_update.items():
                 coerced[key] = (
@@ -1018,9 +1034,12 @@ class Settings(BaseModel):
         # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
         # update value is shared with ``llm_profiles.profiles[name]``.
         llm = self.llm_profiles.require(name)
-        self.agent_settings = self.agent_settings.model_copy(
-            update={'llm': llm.model_copy()}
-        )
+        # ACP settings have no ``llm``; the profile stays active for the
+        # OpenHands agent.
+        if isinstance(self.agent_settings, OpenHandsAgentSettings):
+            self.agent_settings = self.agent_settings.model_copy(
+                update={'llm': llm.model_copy()}
+            )
         self.llm_profiles.active = name
 
     def delete_profile(self, name: str) -> bool:

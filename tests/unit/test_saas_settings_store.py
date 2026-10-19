@@ -3056,3 +3056,162 @@ def test_managed_llm_key_config_treats_linked_llm_as_byok():
         )
         is None
     )
+
+
+# ── SDK 1.56: member rows saved by older SDKs, and ACP members ──────────────
+
+_SUB_AGENT_TOOLS = [
+    {'name': name, 'params': {}}
+    for name in ('terminal', 'file_editor', 'task_tracker', 'task_tool_set')
+]
+_ACP_ROW = {'schema_version': 9, 'agent_kind': 'acp', 'acp_server': 'claude-code'}
+
+
+async def _load_member(
+    session_maker, async_session_maker, fixture, member_diff, org_profiles=None
+):
+    """Store ``member_diff`` as member1's row, then load member1's settings."""
+    from storage.org import Org
+
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        assert org is not None
+        if org_profiles is not None:
+            org.llm_profiles = org_profiles
+        member = next(
+            m for m in org.org_members if m.user_id == fixture['member1_user_id']
+        )
+        member.agent_settings_diff = member_diff
+        session.commit()
+
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        return store, await store.load()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'member_diff, agent_kind, sub_agents',
+    [
+        # SDK 1.50 (enterprise 1.71 and earlier) kept sub-agents as a switch.
+        (
+            {'schema_version': 6, 'agent_kind': 'openhands', 'enable_sub_agents': True},
+            'openhands',
+            True,
+        ),
+        (
+            {
+                'schema_version': 6,
+                'agent_kind': 'openhands',
+                'enable_sub_agents': False,
+            },
+            'openhands',
+            False,
+        ),
+        # SDK 1.55 (enterprise 1.72) folded the switch into ``tools``.
+        (
+            {'schema_version': 8, 'agent_kind': 'openhands', 'tools': _SUB_AGENT_TOOLS},
+            'openhands',
+            True,
+        ),
+        # ACP rows carried an unused ``llm`` before SDK 1.51, and none from 1.56.
+        (
+            {
+                'schema_version': 6,
+                'agent_kind': 'acp',
+                'acp_server': 'claude-code',
+                'llm': {'model': 'gpt-5.6'},
+            },
+            'acp',
+            False,
+        ),
+        (_ACP_ROW, 'acp', False),
+    ],
+    ids=[
+        'sdk1.50-sub-agents-on',
+        'sdk1.50-sub-agents-off',
+        'sdk1.55',
+        'sdk1.50-acp',
+        'sdk1.56-acp',
+    ],
+)
+async def test_load_reads_member_rows_saved_by_each_sdk(
+    session_maker,
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    member_diff,
+    agent_kind,
+    sub_agents,
+):
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import selects_tool
+
+    _, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        org_with_multiple_members_fixture,
+        member_diff,
+    )
+
+    assert loaded is not None
+    assert loaded.agent_settings.agent_kind == agent_kind
+    tools = getattr(loaded.agent_settings, 'tools', None)
+    assert (
+        tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME)
+    ) is sub_agents
+
+
+@pytest.mark.asyncio
+async def test_load_acp_member_while_org_default_profile_is_active(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """The active ``Default`` profile sets the LLM for the OpenHands agent only."""
+    profiles = {
+        'profiles': {
+            'Default': {'model': 'openhands/claude-sonnet-4-5-20250929'},
+        },
+        'active': 'Default',
+    }
+    with patch(
+        'storage.saas_settings_store.get_openhands_default_model_name',
+        AsyncMock(return_value='claude-sonnet-4-5-20250929'),
+    ):
+        _, loaded = await _load_member(
+            session_maker,
+            async_session_maker,
+            org_with_multiple_members_fixture,
+            _ACP_ROW,
+            org_profiles=profiles,
+        )
+
+    assert loaded is not None
+    assert loaded.agent_settings.agent_kind == 'acp'
+    assert loaded.llm_profiles.active == 'Default'
+
+
+@pytest.mark.asyncio
+async def test_managed_key_helpers_treat_acp_members_as_not_managed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """ACP agents make their own model calls, so there is no managed key."""
+    from storage.saas_settings_store import ManagedLlmKeyStatus
+
+    store, loaded = await _load_member(
+        session_maker, async_session_maker, org_with_multiple_members_fixture, _ACP_ROW
+    )
+    assert loaded is not None
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        assert await store.get_current_managed_llm_key() is None
+        assert await store.clear_stale_org_level_llm_key_if_managed() is False
+        rotation = await store.rotate_managed_llm_key()
+
+    assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
