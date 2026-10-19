@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
+import anyio
 import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
@@ -113,6 +114,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -157,10 +159,15 @@ from openhands.tools.preset.planning import (
     get_planning_tools,
 )
 
-_conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+# Upper bound for the provider lookup of a repository started without a
+# provider, so a slow git provider cannot hold up the conversation start.
+_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -424,14 +431,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if quota_reserved:
                     if task.status == AppConversationStartTaskStatus.ERROR:
-                        await self._release_daily_conversation_quota(quota_user_id)
+                        with anyio.CancelScope(shield=True):
+                            await self._release_daily_conversation_quota(quota_user_id)
                         quota_reserved = False
                     elif task.status == AppConversationStartTaskStatus.READY:
                         quota_reserved = False
                 yield task
         except BaseException:
             if quota_reserved:
-                await self._release_daily_conversation_quota(quota_user_id)
+                with anyio.CancelScope(shield=True):
+                    await self._release_daily_conversation_quota(quota_user_id)
             raise
 
     async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
@@ -489,6 +498,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._inherit_configuration_from_parent(request, parent_info)
 
         self._apply_suggested_task(request)
+        self._apply_default_trigger(request)
 
         # Resolved once: validation, the build and provenance must see one revision.
         user = await self.user_context.get_user_info(
@@ -548,6 +558,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             ):
                 yield updated_task
 
+            # Resolve the provider before the agent-server starts the
+            # conversation, so the save below is not delayed while the
+            # "started" webhook may already be writing the row. The agent
+            # gets the same provider, so its PLAN.md path matches the one
+            # that sub-conversations inherit from the saved row.
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
+
             _logger.info(
                 'app_conversation_start:building_start_request',
                 extra={
@@ -567,7 +588,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     conversation_id,
                     request.initial_message,
                     request.system_message_suffix,
-                    request.git_provider,
+                    git_provider,
                     working_dir,
                     request.agent_type,
                     request.llm_model,
@@ -677,8 +698,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
-            if request.git_provider:
-                conversation_tags['git_provider'] = request.git_provider.value
+            if git_provider:
+                conversation_tags['git_provider'] = git_provider.value
             if request.selected_branch:
                 conversation_tags['selected_branch'] = request.selected_branch
 
@@ -692,7 +713,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # Git parameters
                 selected_repository=request.selected_repository,
                 selected_branch=request.selected_branch,
-                git_provider=request.git_provider,
+                git_provider=git_provider,
                 trigger=request.trigger,
                 pr_number=request.pr_number,
                 parent_conversation_id=request.parent_conversation_id,
@@ -1220,6 +1241,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
 
+    def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
+        """Default the trigger when the caller did not supply one.
+
+        Mirrors the V0 endpoint: bearer (API key) auth is ``REMOTE_API_KEY``,
+        everything else is ``GUI``.
+        """
+        if request.trigger is not None:
+            return
+        user_auth = getattr(self.user_context, 'user_auth', None)
+        auth_type = user_auth.get_auth_type() if user_auth is not None else None
+        if auth_type == AuthType.BEARER:
+            request.trigger = ConversationTrigger.REMOTE_API_KEY
+        else:
+            request.trigger = ConversationTrigger.GUI
+
     def _apply_suggested_task(self, request: AppConversationStartRequest) -> None:
         """Apply suggested task defaults to the start request."""
         suggested_task: SuggestedTask | None = request.suggested_task
@@ -1450,7 +1486,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',
@@ -2843,6 +2881,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             f'Successfully updated agent-server conversation {conversation_id} title to "{new_title}"'
         )
 
+    async def _resolve_git_provider(self, repository: str) -> ProviderType | None:
+        """Return the provider of a repository that was started without one.
+
+        The clone already resolves the provider from the user's tokens, but the
+        start request may not carry it (e.g. API clients). Best effort: returns
+        None when the provider cannot be found in time, so the start never fails.
+        """
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            repo = await asyncio.wait_for(
+                provider_handler.verify_repo_provider(repository, is_optional=True),
+                timeout=_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS,
+            )
+            return repo.git_provider
+        except Exception:
+            _logger.warning(
+                f'Could not resolve the git provider of {repository}', exc_info=True
+            )
+            return None
+
     def _validate_repository_update(
         self,
         request: AppConversationUpdateRequest,
@@ -2861,10 +2919,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if 'selected_repository' in request.model_fields_set:
             repo = request.selected_repository
             if repo is not None:
-                # Validate repository format (owner/repo)
-                if '/' not in repo or repo.count('/') != 1:
+                # Validate repository format: owner/repo, or more segments for
+                # Azure DevOps (org/project/repo) and GitLab subgroups.
+                segments = repo.split('/')
+                if len(segments) < 2 or not all(segments):
                     raise ValueError(
-                        f"Invalid repository format: '{repo}'. Expected 'owner/repo'."
+                        f"Invalid repository format: '{repo}'. Expected 'owner/repo' "
+                        "or more path segments (e.g. 'org/project/repo')."
                     )
 
                 # Sanitize: check for dangerous characters

@@ -14,11 +14,14 @@ import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import { I18nKey } from "#/i18n/declaration";
 import {
+  LiteLlmStatusBadge,
   PillBadge,
   SpendMeter,
   StatusPill,
   UserProgressBar,
 } from "./budgets-components";
+import type { LiteLlmStatus } from "./budgets-components";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
 import {
   formControlFieldClassName,
@@ -30,6 +33,7 @@ import {
   settingsListDividerClassName,
   settingsListIconActionButtonClassName,
   settingsListRowClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableCellClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
@@ -63,14 +67,17 @@ const BILLING_CYCLE_ITEMS = [
   { key: "15th", label: "15th of each month" },
 ];
 
-const STATUS_FILTER_ITEMS = [
+const STATUS_FILTER_ITEMS: (
+  | { key: string; label: string }
+  | { key: string; labelKey: I18nKey }
+)[] = [
   { key: "all", label: "All statuses" },
   { key: "over80", label: "Over 80%" },
   { key: "over90", label: "Over 90%" },
   { key: "overCap", label: "Over cap" },
   { key: "onTrack", label: "On track" },
   { key: "noCap", label: "No cap" },
-  { key: "disabled", label: "Disabled" },
+  { key: "disabled", labelKey: I18nKey.SETTINGS$BUDGETS_UNLIMITED },
 ];
 
 interface OrganizationBudgetTabProps {
@@ -157,13 +164,6 @@ export function OrganizationBudgetTab({
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
-  const reconciliationStyle = {
-    healthy: "border-green-500/30 bg-green-500/10 text-green-300",
-    inactive: "border-[#262626] bg-[#0B0F17] text-[#8C8C8C]",
-    pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-    degraded: "border-red-500/30 bg-red-500/10 text-red-300",
-    failed: "border-red-500/30 bg-red-500/10 text-red-300",
-  }[reconciliationState];
   const reconciliationMessage = {
     inactive: "Inactive — no organization budget is being enforced.",
     pending:
@@ -174,6 +174,61 @@ export function OrganizationBudgetTab({
     failed:
       "Failed — the applied LiteLLM policy could not be read or verified.",
   }[reconciliationState];
+  const reconciliationDetail = [
+    reconciliationMessage,
+    desiredTeamMaxBudget !== null
+      ? `Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`
+      : null,
+    appliedTeamMaxBudget !== null
+      ? `Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`
+      : null,
+    reconciliationError,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const syncNote =
+    syncStatus === "error" && !reconciliationError
+      ? `Budget enforcement reconciliation needs attention. Existing caps are preserved until a verified synchronization succeeds.${
+          syncError ? ` ${syncError}` : ""
+        }`
+      : null;
+  let spendMessage =
+    "Spend data is temporarily unavailable. LiteLLM remains the enforcement point, but this page cannot confirm current usage.";
+  if (spendStatus !== "unavailable") {
+    spendMessage = `${
+      spendStatus === "stale"
+        ? "Showing the last successful LiteLLM snapshot"
+        : "Spend reported by LiteLLM"
+    }${observedAtLabel ? ` from ${observedAtLabel}.` : "."} LiteLLM performs final request admission, so the latest request may not appear here yet.`;
+  }
+  let teamCapHelper: string | null = null;
+  if (desiredTeamMaxBudget !== null) {
+    teamCapHelper =
+      cycleStartSpend !== null && cycleStartSpend > 0
+        ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
+            cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
+            priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`,
+          })
+        : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER);
+  }
+  // A stale or unavailable spend means the live LiteLLM read failed, even
+  // when the policy was verified from a cached snapshot.
+  const litellmStatus: LiteLlmStatus =
+    reconciliationState === "degraded" ||
+    reconciliationState === "failed" ||
+    spendStatus !== "live"
+      ? "degraded"
+      : reconciliationState;
+  let degradedDetail = reconciliationError ?? syncError;
+  if (degradedDetail === null) {
+    degradedDetail =
+      reconciliationState === "degraded" || reconciliationState === "failed"
+        ? reconciliationMessage
+        : spendMessage;
+  }
 
   return (
     <div className="space-y-6">
@@ -188,78 +243,33 @@ export function OrganizationBudgetTab({
               : "Track total spend across your organization against its monthly cap."}
           </p>
         </div>
+        <LiteLlmStatusBadge
+          status={litellmStatus}
+          tooltip={
+            <div className="space-y-2 p-1">
+              <p>{reconciliationDetail}</p>
+              {syncNote && <p>{syncNote}</p>}
+              <p>{spendMessage}</p>
+              {teamCapHelper && <p>{teamCapHelper}</p>}
+              <p>
+                Includes app, automation, and SDK requests routed through this
+                deployment&apos;s LiteLLM proxy. Requests sent directly to an
+                external provider are outside this budget.
+              </p>
+            </div>
+          }
+        />
       </div>
 
       <div className="rounded-lg border border-border-subtle bg-base-secondary p-6">
-        <div
-          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
-            spendStatus === "live"
-              ? "border-[var(--oh-border)] bg-tertiary text-muted"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-300"
-          }`}
-        >
-          {spendStatus === "unavailable" ? (
-            <span>
-              Spend data is temporarily unavailable. LiteLLM remains the
-              enforcement point, but this page cannot confirm current usage.
-            </span>
-          ) : (
-            <span>
-              {spendStatus === "stale"
-                ? "Showing the last successful LiteLLM snapshot"
-                : "Spend reported by LiteLLM"}
-              {observedAtLabel ? ` from ${observedAtLabel}.` : "."} LiteLLM
-              performs final request admission, so the latest request may not
-              appear here yet.
-            </span>
-          )}
-        </div>
-        <div
-          role={
-            reconciliationState === "healthy" ||
-            reconciliationState === "inactive"
-              ? "status"
-              : "alert"
-          }
-          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${reconciliationStyle}`}
-        >
-          <span>{reconciliationMessage}</span>
-          {desiredTeamMaxBudget !== null && (
-            <span>{` Desired team cap: $${desiredTeamMaxBudget.toLocaleString()}.`}</span>
-          )}
-          {appliedTeamMaxBudget !== null && (
-            <span>{` Applied team cap: $${appliedTeamMaxBudget.toLocaleString()}.`}</span>
-          )}
-          {reconciliationError ? ` ${reconciliationError}` : ""}
-        </div>
-        {desiredTeamMaxBudget !== null && (
-          <p className="mb-4 text-xs text-[var(--oh-muted)]">
-            {cycleStartSpend !== null && cycleStartSpend > 0
-              ? t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND, {
-                  cap: `$${desiredTeamMaxBudget.toLocaleString()}`,
-                  priorSpend: `$${cycleStartSpend.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}`,
-                })
-              : t(I18nKey.SETTINGS$BUDGETS_TEAM_CAP_HELPER)}
-          </p>
-        )}
-        {syncStatus === "error" && !reconciliationError && (
+        {litellmStatus === "degraded" && (
           <div
             role="alert"
             className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300"
           >
-            Budget enforcement reconciliation needs attention. Existing caps are
-            preserved until a verified synchronization succeeds.
-            {syncError ? ` ${syncError}` : ""}
+            {degradedDetail}
           </div>
         )}
-        <p className="mb-4 text-xs text-[var(--oh-muted)]">
-          Includes app, automation, and SDK requests routed through this
-          deployment&apos;s LiteLLM proxy. Requests sent directly to an external
-          provider are outside this budget.
-        </p>
         {unmappedMemberCount !== null && unmappedMemberCount > 0 && (
           <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
             {`${unmappedMemberCount} LiteLLM ${
@@ -695,6 +705,7 @@ export function UserOverridesTab({
   isLoading,
   onPageChange,
 }: UserOverridesTabProps) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div>
@@ -702,8 +713,7 @@ export function UserOverridesTab({
           User budget overrides
         </h2>
         <p className="text-sm text-muted">
-          Override the default for individual users — increase, decrease, or
-          disable.
+          {t(I18nKey.SETTINGS$BUDGETS_USER_OVERRIDES_DESCRIPTION)}
         </p>
       </div>
 
@@ -724,7 +734,10 @@ export function UserOverridesTab({
           <SettingsDropdownInput
             testId="budget-status-filter"
             name="budget-status-filter"
-            items={STATUS_FILTER_ITEMS}
+            items={STATUS_FILTER_ITEMS.map((item) => ({
+              key: item.key,
+              label: "labelKey" in item ? t(item.labelKey) : item.label,
+            }))}
             selectedKey={statusFilter}
             isClearable={false}
             onSelectionChange={(key) => {
@@ -737,191 +750,193 @@ export function UserOverridesTab({
       <div
         className={cn(
           settingsListContainerClassName,
-          "min-w-0 overflow-x-auto",
+          settingsListScrollFadeFromClassName,
+          "min-w-0",
         )}
       >
-        <table className="w-full min-w-max">
-          <thead className={settingsListTableHeadClassName}>
-            <tr>
-              <th className={settingsListTableHeaderCellClassName}>User</th>
-              <th className={settingsListTableHeaderCellClassName}>Budget</th>
-              <th className={settingsListTableHeaderCellClassName}>Usage</th>
-              <th className={settingsListTableHeaderCellClassName}>Status</th>
-              <th
-                className={cn(
-                  settingsListTableHeaderCellClassName,
-                  "text-right",
-                )}
-              >
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {userRows.map((user) => {
-              const isEditing = editingUserId === user.user_id;
-              const overrideValue = Number(overrideAmount);
-              const canSaveOverride =
-                overrideDisabled ||
-                (!!overrideAmount &&
-                  !Number.isNaN(overrideValue) &&
-                  overrideValue > 0);
-
-              return (
-                <tr
-                  key={user.user_id}
-                  className={settingsListTableRowClassName}
+        <HorizontalScrollFade>
+          <table className="w-full min-w-max">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={settingsListTableHeaderCellClassName}>User</th>
+                <th className={settingsListTableHeaderCellClassName}>Budget</th>
+                <th className={settingsListTableHeaderCellClassName}>Usage</th>
+                <th className={settingsListTableHeaderCellClassName}>Status</th>
+                <th
+                  className={cn(
+                    settingsListTableHeaderCellClassName,
+                    "text-right",
+                  )}
                 >
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {userRows.map((user) => {
+                const isEditing = editingUserId === user.user_id;
+                const overrideValue = Number(overrideAmount);
+                const canSaveOverride =
+                  overrideDisabled ||
+                  (!!overrideAmount &&
+                    !Number.isNaN(overrideValue) &&
+                    overrideValue > 0);
+
+                return (
+                  <tr
+                    key={user.user_id}
+                    className={settingsListTableRowClassName}
                   >
-                    <div>
-                      <div className="text-foreground font-medium">
-                        {user.name}
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
+                      <div>
+                        <div className="text-foreground font-medium">
+                          {user.name}
+                        </div>
+                        <div className="text-sm text-[var(--oh-muted)]">
+                          {user.email || "-"}
+                        </div>
                       </div>
-                      <div className="text-sm text-[var(--oh-muted)]">
-                        {user.email || "-"}
-                      </div>
-                    </div>
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
-                  >
-                    {isEditing ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className={cn(formControlShellClassName, "w-28")}
-                          >
-                            <span
-                              className="ml-3 shrink-0 text-tertiary-alt"
-                              aria-hidden
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
+                      {isEditing ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <div
+                              className={cn(formControlShellClassName, "w-28")}
                             >
-                              $
+                              <span
+                                className="ml-3 shrink-0 text-tertiary-alt"
+                                aria-hidden
+                              >
+                                $
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={overrideAmount}
+                                onChange={(event) =>
+                                  onOverrideAmountChange(event.target.value)
+                                }
+                                disabled={overrideDisabled}
+                                className={cn(
+                                  formControlInlineInputClassName,
+                                  "text-white",
+                                )}
+                              />
+                            </div>
+                            <span className="text-xs text-[var(--oh-muted)]">
+                              / month
                             </span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={overrideAmount}
-                              onChange={(event) =>
-                                onOverrideAmountChange(event.target.value)
-                              }
-                              disabled={overrideDisabled}
-                              className={cn(
-                                formControlInlineInputClassName,
-                                "text-white",
-                              )}
-                            />
                           </div>
-                          <span className="text-xs text-[var(--oh-muted)]">
-                            / month
-                          </span>
+                          <label className="flex items-center gap-2 text-xs text-muted">
+                            <input
+                              type="checkbox"
+                              checked={overrideDisabled}
+                              onChange={(event) =>
+                                onOverrideDisabledChange(event.target.checked)
+                              }
+                              className="accent-primary"
+                            />
+                            {t(I18nKey.SETTINGS$BUDGETS_UNLIMITED_FOR_USER)}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <BrandButton
+                              type="button"
+                              variant="primary"
+                              onClick={() => onSaveOverride(user.user_id)}
+                              isDisabled={!canSaveOverride || isSavingOverride}
+                            >
+                              Save
+                            </BrandButton>
+                            <BrandButton
+                              type="button"
+                              variant="secondary"
+                              onClick={onCancelEditing}
+                            >
+                              Cancel
+                            </BrandButton>
+                          </div>
                         </div>
-                        <label className="flex items-center gap-2 text-xs text-muted">
-                          <input
-                            type="checkbox"
-                            checked={overrideDisabled}
-                            onChange={(event) =>
-                              onOverrideDisabledChange(event.target.checked)
-                            }
-                            className="accent-primary"
-                          />
-                          Disable budget for this user
-                        </label>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="text-foreground">
-                          {user.budgetLabel}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-[var(--oh-muted)]">
-                          {user.is_override && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                          )}
-                          {user.budgetNote}
-                        </div>
-                      </>
-                    )}
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3 min-w-[180px]",
-                    )}
-                  >
-                    <UserBudgetUsage user={user} />
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3",
-                    )}
-                  >
-                    <StatusPill status={user.status} />
-                  </td>
-                  <td
-                    className={cn(
-                      settingsListTableCellClassName,
-                      "h-auto py-3 text-right",
-                    )}
-                  >
-                    {isEditing ? (
-                      <div className="flex items-center justify-end gap-2">
-                        <BrandButton
-                          type="button"
-                          variant="primary"
-                          onClick={() => onSaveOverride(user.user_id)}
-                          isDisabled={!canSaveOverride || isSavingOverride}
-                        >
-                          Save
-                        </BrandButton>
-                        <BrandButton
-                          type="button"
-                          variant="secondary"
-                          onClick={onCancelEditing}
-                        >
-                          Cancel
-                        </BrandButton>
-                      </div>
-                    ) : (
-                      <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
-                        <button
-                          type="button"
-                          onClick={() => onStartEditing(user)}
-                          aria-label={`Edit budget for ${user.name}`}
-                          className={settingsListIconActionButtonClassName}
-                        >
-                          <EditIcon width={16} height={16} />
-                        </button>
-                        {user.is_override && (
+                      ) : (
+                        <>
+                          <div className="text-foreground">
+                            {user.budgetLabel}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-[var(--oh-muted)]">
+                            {user.is_override && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                            )}
+                            {user.budgetNote}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3 min-w-[180px]",
+                      )}
+                    >
+                      <UserBudgetUsage user={user} />
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3",
+                      )}
+                    >
+                      <StatusPill status={user.status} />
+                    </td>
+                    <td
+                      className={cn(
+                        settingsListTableCellClassName,
+                        "h-auto py-3 text-right",
+                      )}
+                    >
+                      {!isEditing && (
+                        <div className="ml-auto flex w-fit items-center justify-end gap-0.5">
                           <button
                             type="button"
-                            onClick={() => onRemoveOverride(user.user_id)}
-                            disabled={isDeletingOverride}
-                            aria-label={`Remove override for ${user.name}`}
-                            className={cn(
-                              settingsListIconActionButtonClassName,
-                              "disabled:opacity-60",
-                            )}
+                            onClick={() => onStartEditing(user)}
+                            aria-label={`Edit budget for ${user.name}`}
+                            className={settingsListIconActionButtonClassName}
                           >
-                            <DeleteIcon width={16} height={16} />
+                            <EditIcon width={16} height={16} />
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                          {user.is_override && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveOverride(user.user_id)}
+                              disabled={isDeletingOverride}
+                              aria-label={`Remove override for ${user.name}`}
+                              className={cn(
+                                settingsListIconActionButtonClassName,
+                                "disabled:opacity-60",
+                              )}
+                            >
+                              <DeleteIcon width={16} height={16} />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
 
       {usersTotal > 0 && (

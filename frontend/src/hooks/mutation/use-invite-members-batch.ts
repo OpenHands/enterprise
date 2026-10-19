@@ -10,9 +10,12 @@ import {
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { OrganizationUserRole } from "#/types/org";
 
-export const useInviteMembersBatch = () => {
+/** Invites into `orgId` when given, otherwise into the selected org. */
+export const useInviteMembersBatch = (orgId?: string) => {
   const queryClient = useQueryClient();
-  const { organizationId } = useSelectedOrganizationId();
+  const { organizationId: selectedOrganizationId } =
+    useSelectedOrganizationId();
+  const organizationId = orgId ?? selectedOrganizationId;
   const { t } = useTranslation();
 
   return useMutation({

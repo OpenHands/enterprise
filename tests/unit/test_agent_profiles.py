@@ -1081,15 +1081,15 @@ class TestPersistedVsResolvedSettingsView:
             settings = await store.load()
             assert settings is not None
             settings.agent_settings = settings.agent_settings.model_copy(
-                update={'enable_sub_agents': True}
+                update={'tool_concurrency_limit': 4}
             )
             await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
-        assert member.agent_settings_diff.get('enable_sub_agents') is True
+        assert member.agent_settings_diff.get('tool_concurrency_limit') == 4
 
         org = await _read_org_raw(async_session_maker, org_id)
-        assert (org.agent_settings or {}).get('enable_sub_agents') is not True
+        assert (org.agent_settings or {}).get('tool_concurrency_limit') != 4
 
     @pytest.mark.asyncio
     async def test_resolved_load_is_launch_view_and_store_refuses_it(
@@ -1269,6 +1269,10 @@ def agent_profiles_app():
         patch(
             'server.auth.authorization.get_user_super_role',
             AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.auth.authorization.is_org_suspended',
+            AsyncMock(return_value=False),
         ),
     ):
         yield app

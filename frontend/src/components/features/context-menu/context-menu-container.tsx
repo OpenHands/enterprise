@@ -15,12 +15,24 @@ export function ContextMenuContainer({
   testId,
   className,
 }: ContextMenuContainerProps) {
-  const ref = useClickOutsideElement<HTMLDivElement>(onClose);
+  // Children rendered through a portal (e.g. the org selector's dropdown
+  // menu) bubble clicks through the React tree but not the DOM tree, so the
+  // document-level outside-click check would otherwise close the menu.
+  const lastInsideClick = React.useRef<Event | null>(null);
+  const ref = useClickOutsideElement<HTMLDivElement>((event) => {
+    if (event === lastInsideClick.current) {
+      return;
+    }
+    onClose();
+  });
 
   return (
     <div
       ref={ref}
       data-testid={testId}
+      onClickCapture={(event) => {
+        lastInsideClick.current = event.nativeEvent;
+      }}
       className={cn(
         // Base styling - same for ALL modes (SaaS, OSS, mobile, desktop)
         "absolute rounded-[12px] p-[25px]",

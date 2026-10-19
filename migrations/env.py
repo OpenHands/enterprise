@@ -127,6 +127,10 @@ if config.config_file_name is not None and config.attributes.get(
     'configure_logger', True
 ):
     fileConfig(config.config_file_name)
+    # fileConfig turns off every logger that already exists. Turn the
+    # ``openhands`` logger back on: it logs uncaught exceptions, so without it
+    # a failed migration prints no traceback.
+    logging.getLogger('openhands').disabled = False
 
 # Re-apply SQLAlchemy engine log suppression after fileConfig, which may override
 # our earlier settings from alembic.ini. This ensures DEBUG-level SQL result logging

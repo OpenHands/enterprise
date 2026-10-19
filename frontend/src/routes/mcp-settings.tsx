@@ -12,6 +12,7 @@ import { I18nKey } from "#/i18n/declaration";
 
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 import { MCPServerModal } from "#/components/features/settings/mcp-settings/mcp-server-modal";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { KeyStatusIcon } from "#/components/features/settings/key-status-icon";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
@@ -160,7 +161,10 @@ function MCPSettingsScreen() {
 
   const handleAddServer = (serverConfig: MCPServerConfig) => {
     addMcpServer(serverConfig, {
-      onSuccess: closeServerModal,
+      onSuccess: () => {
+        notifySuperAdminSetupStep("add-integration");
+        closeServerModal();
+      },
     });
   };
 

@@ -2,7 +2,7 @@
 Store class for managing organization-member relationships.
 """
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -22,6 +22,9 @@ from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 from utils.sql import escape_ilike
+
+if TYPE_CHECKING:
+    from storage.org import Org
 
 _MISSING = object()
 
@@ -164,6 +167,49 @@ class OrgMemberStore:
             await session.delete(org_member)
             await session.commit()
             return True
+
+    @staticmethod
+    async def set_all_membership_statuses(
+        user_id: UUID,
+        status: str,
+        org_ids: list[UUID] | None = None,
+    ) -> int:
+        """Set ``status`` on memberships for ``user_id``.
+
+        ``org_ids`` limits the update to those organizations. When it is
+        omitted, every membership for the user is updated.
+
+        Returns the number of membership rows updated.
+        """
+        if status not in ('active', 'inactive', 'invited'):
+            raise ValueError(f'Invalid membership status: {status!r}')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember).filter(OrgMember.user_id == user_id)
+            )
+            members = list(result.scalars().all())
+            if org_ids is not None:
+                allowed = set(org_ids)
+                members = [member for member in members if member.org_id in allowed]
+            for member in members:
+                member.status = status
+            await session.commit()
+            return len(members)
+
+    @staticmethod
+    async def list_memberships_with_orgs(
+        user_id: UUID,
+    ) -> list[tuple[OrgMember, 'Org']]:
+        """Return ``(OrgMember, Org)`` pairs for a user."""
+        from storage.org import Org
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember, Org)
+                .join(Org, Org.id == OrgMember.org_id)
+                .filter(OrgMember.user_id == user_id)
+            )
+            return list(result.all())
 
     @staticmethod
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:

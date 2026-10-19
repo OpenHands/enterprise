@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { integrationService } from "#/api/integration-service/integration-service.api";
 import type { AzureDevOpsWebhookInstallationResult } from "#/api/integration-service/integration-service.types";
@@ -7,20 +8,24 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
-export function useReinstallAzureDevOpsWebhook() {
+export function useReinstallAzureDevOpsWebhook(organization?: string) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation<
     AzureDevOpsWebhookInstallationResult,
-    Error,
+    AxiosError,
     void,
     unknown
   >({
-    mutationFn: () => integrationService.reinstallAzureDevOpsWebhook(),
+    mutationFn: () =>
+      integrationService.reinstallAzureDevOpsWebhook(organization),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["azure-devops-resources"] });
+      queryClient.invalidateQueries({
+        queryKey: ["azure-devops-resources", organization],
+      });
 
       if (data.success) {
         displaySuccessToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS));
@@ -32,7 +37,8 @@ export function useReinstallAzureDevOpsWebhook() {
     },
     onError: (error) => {
       displayErrorToast(
-        error?.message || t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_FAILED),
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_FAILED),
       );
     },
   });

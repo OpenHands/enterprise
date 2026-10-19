@@ -10,6 +10,7 @@ import {
   resetTestHandlersMockSettings,
 } from "#/mocks/handlers";
 import MCPSettingsScreen, { clientLoader } from "#/routes/mcp-settings";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Settings } from "#/types/settings";
 
@@ -192,6 +193,38 @@ describe("MCPSettingsScreen", () => {
     await waitFor(() => {
       expect(screen.queryAllByTestId("mcp-server-item")).toHaveLength(0);
     });
+  });
+
+  it("tells the setup guide when an MCP server is added", async () => {
+    // Arrange
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        agent_settings: {
+          mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
+        },
+      }),
+    );
+    vi.spyOn(SettingsService, "saveSettings").mockResolvedValue(true);
+    const steps: string[] = [];
+    const onStep = (event: Event) =>
+      steps.push((event as CustomEvent<{ id: string }>).detail.id);
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+    renderMcpSettingsScreen();
+    await screen.findByText("SETTINGS$MCP_NO_SERVERS");
+
+    // Act
+    await userEvent.click(
+      screen.getByRole("button", { name: "SETTINGS$MCP_ADD_SERVER" }),
+    );
+    await userEvent.type(
+      await screen.findByTestId("url-input"),
+      "https://mcp.example.com/sse",
+    );
+    await userEvent.click(screen.getByTestId("submit-button"));
+
+    // Assert
+    await waitFor(() => expect(steps).toEqual(["add-integration"]));
+    window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
   });
 });
 

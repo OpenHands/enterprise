@@ -15,6 +15,17 @@ from storage.redis import get_redis_client_async
 # multiple windows are separated by ';', e.g. "10/second; 100/minute".
 RATE_LIMIT_AUTH_WINDOWS = os.environ.get('RATE_LIMIT_AUTH_WINDOWS', '')
 
+# Master switch for every Redis-backed rate limiter in this module (and, via
+# create_redis_rate_limiter, server.rate_limit). Redis-less deployments (e.g.
+# the Docker Compose evaluation stack) already fail open with a logged
+# warning on every Redis error -- this flag just skips the doomed Redis round
+# trip (and its log noise) outright, rather than changing behavior anywhere
+# Redis is actually available.
+RATE_LIMITING_ENABLED = os.environ.get('RATE_LIMITING_ENABLED', 'true').lower() in (
+    'true',
+    '1',
+)
+
 # Generic fallback windows used by check_rate_limit_by_user_id when a caller does
 # not pass its own values.
 RATE_LIMIT_USER_SECONDS = int(
@@ -79,6 +90,9 @@ async def check_rate_limit_by_user_id(
     Raises:
         HTTPException: If rate limit is exceeded (429 status code)
     """
+    if not RATE_LIMITING_ENABLED:
+        return
+
     try:
         redis = get_redis_client_async()
         if not redis:

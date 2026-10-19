@@ -35,6 +35,12 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { useAppTitle } from "#/hooks/use-app-title";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
 import { usePostHogIdentify } from "#/hooks/use-posthog-identify";
+import { SuperAdminSetupFloatingWidget } from "#/components/features/super-admin/super-admin-setup-guide";
+import { SuspendedOrganizationModal } from "#/components/features/org/suspended-organization-modal";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { useSuspendedOrganizationStore } from "#/stores/suspended-organization-store";
+import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-mismatch-store";
+import { InvitationEmailMismatchModal } from "#/components/features/org/invitation-email-mismatch-modal";
 
 export function ErrorBoundary() {
   const error = useRouteError();
@@ -90,6 +96,14 @@ export default function MainApp() {
     isLoading: isAuthLoading,
     isError: isAuthError,
   } = useIsAuthed();
+
+  const selectedOrganizationId = useSelectedOrganizationStore(
+    (state) => state.organizationId,
+  );
+  const suspension = useSuspendedOrganizationStore((state) => state.suspension);
+  const invitationEmailMismatch = useInvitationEmailMismatchStore(
+    (state) => state.isOpen,
+  );
 
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
@@ -229,39 +243,26 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     !loginMethodExists;
 
-  const enableOauthV2Login = config.data?.feature_flags?.enable_oauth_v2_login;
-
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
       // Include search params in returnTo to preserve query string (e.g., user_code for device OAuth)
       const searchString = searchParams.toString();
       const fullPath = searchString ? `${pathname}?${searchString}` : pathname;
 
-      if (enableOauthV2Login) {
-        // /oauth/idp-login is a backend-only redirect endpoint (not a
-        // frontend route), so it needs a full page navigation rather than
-        // client-side routing.
-        const redirectUrl =
-          fullPath === "/"
-            ? "/oauth/idp-login"
-            : `/oauth/idp-login?redirect_url=${encodeURIComponent(fullPath)}`;
-        window.location.href = redirectUrl;
-        return;
-      }
-
+      // Both branches route through the SPA `/login` page rather than
+      // straight to the backend's `/oauth/idp-login` redirect endpoint, so
+      // that page can render a "choose how to sign in" screen -- populated
+      // from `auth_providers` branding -- when more than one login IDP is
+      // configured. `/login` itself auto-redirects to the single configured
+      // IDP when there is exactly one, so the common single-provider case
+      // behaves the same as before, just with one extra same-origin hop.
       const loginUrl =
         fullPath === "/"
           ? "/login"
           : `/login?returnTo=${encodeURIComponent(fullPath)}`;
       navigate(loginUrl, { replace: true });
     }
-  }, [
-    shouldRedirectToLogin,
-    pathname,
-    searchParams,
-    navigate,
-    enableOauthV2Login,
-  ]);
+  }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
 
   // Show loading spinner while loading OR when about to redirect
   if (isLoading || shouldRedirectToLogin) {
@@ -294,16 +295,31 @@ export default function MainApp() {
     );
   }
 
-  // Settings owns its own gutters (aside pl-8 + main pr-[14px]), matching
+  // The server refused the selected organization (suspended org or
+  // membership). Unmount the app tree for the same reason as above; switching
+  // to another organization changes the selection and lifts the block.
+  if (suspension && suspension.orgId === selectedOrganizationId) {
+    return (
+      <div className="min-h-screen bg-base">
+        <SuspendedOrganizationModal
+          organizationId={suspension.orgId}
+          reason={suspension.reason}
+        />
+      </div>
+    );
+  }
+
+  // Settings and Super Admin own their own gutters (aside + main), matching
   // agent-canvas. Other non-home routes keep the legacy md:p-3 shell padding.
-  const isSettingsRoute = pathname.startsWith("/settings");
+  const isFlushChromeRoute =
+    pathname.startsWith("/settings") || pathname.startsWith("/super-admin");
 
   return (
     <div
       data-testid="root-layout"
       className={cn(
         "h-screen lg:min-w-5xl flex flex-col bg-base overflow-hidden",
-        pathname === "/" || isSettingsRoute ? "p-0" : "p-0 md:p-3",
+        pathname === "/" || isFlushChromeRoute ? "p-0" : "p-0 md:p-3",
       )}
     >
       <title>{appTitle}</title>
@@ -328,6 +344,12 @@ export default function MainApp() {
           <OnboardingGuard>
             <EmailVerificationGuard>
               <Outlet />
+              {/* The guide reads the API, which signs out a session that has
+                  not accepted the TOS yet, so wait until the user is signed
+                  in and past the intermediate pages. */}
+              {config.data?.app_mode === "saas" &&
+                isAuthed === true &&
+                !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
             </EmailVerificationGuard>
           </OnboardingGuard>
         </div>
@@ -346,6 +368,7 @@ export default function MainApp() {
           onClose={() => setSettingsModalIsOpen(false)}
         />
       )}
+      {invitationEmailMismatch && <InvitationEmailMismatchModal />}
     </div>
   );
 }

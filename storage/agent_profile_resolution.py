@@ -12,12 +12,13 @@ Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 from openhands.app_server.settings.agent_profiles import AgentProfiles
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.mcp.config import MCPServer
 from storage.mcp_config import coerce_persisted_mcp_config
@@ -53,6 +54,54 @@ def load_llm_profiles(org: Org) -> LLMProfiles:
     except ValidationError as exc:
         logger.warning('Failed to load org LLM profiles for %s: %s', org.id, exc)
         return LLMProfiles()
+
+
+def load_provider_connections(org: Org) -> ProviderConnections:
+    """Load ``ProviderConnections`` from the org row, defaulting to empty if unset.
+
+    Degrades to empty on schema drift rather than raising, matching
+    :func:`load_llm_profiles`.
+    """
+    if org.provider_connections is None:
+        return ProviderConnections()
+    try:
+        return ProviderConnections.model_validate(org.provider_connections)
+    except Exception as exc:  # noqa: BLE001 - parity with load_llm_profiles
+        logger.warning(
+            'Failed to load org provider connections for %s: %s', org.id, exc
+        )
+        return ProviderConnections()
+
+
+def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str, Any]:
+    """Overlay a linked provider connection's credentials onto an LLM payload.
+
+    Read-at-use resolution for the settings load path: when ``llm_payload``
+    carries a ``provider_connection_id``, the connection's ``api_key`` and
+    ``base_url`` win over whatever the composed settings hold, so every member
+    launching with a linked LLM (the org default or an activated profile) uses
+    the shared credential, and rotating the connection applies on the next
+    load. A dangling id is logged and the payload returned unchanged, so a
+    deleted connection degrades to the stored settings instead of bricking
+    the load.
+    """
+    connection_id = llm_payload.get('provider_connection_id')
+    if not connection_id:
+        return llm_payload
+    connection = load_provider_connections(org).get(connection_id)
+    if connection is None:
+        logger.warning(
+            'LLM settings reference missing provider connection %s on org %s',
+            connection_id,
+            org.id,
+        )
+        return llm_payload
+    resolved = dict(llm_payload)
+    resolved['base_url'] = connection.base_url
+    api_key = connection.api_key_value()
+    if api_key is not None:
+        resolved['api_key'] = api_key
+    return resolved
 
 
 class OrgLLMProfileLoader:
