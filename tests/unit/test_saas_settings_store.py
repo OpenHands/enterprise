@@ -1132,11 +1132,9 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         session.commit()
 
     acp_settings = _make_settings(
-        model='anthropic/claude-sonnet-4',
-        base_url='https://api.anthropic.com/v1',
-        api_key='member1-byor-key',
         agent_kind='acp',
         acp_server='codex',
+        acp_model='gpt-5-codex',
     )
 
     # Act - member 1 saves their own settings.
@@ -1171,7 +1169,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
     member1_diff = members[member1_user_id].agent_settings_diff
     assert member1_diff['agent_kind'] == 'acp'
     assert member1_diff['acp_server'] == 'codex'
-    assert member1_diff['llm']['model'] == 'anthropic/claude-sonnet-4'
+    assert member1_diff['acp_model'] == 'gpt-5-codex'
 
 
 @pytest.mark.asyncio

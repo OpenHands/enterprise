@@ -33,6 +33,9 @@ export interface MarketplaceCheckResponse {
     | null;
   plugin_count: number;
   skill_count: number;
+  // How a repository that passed will be read: through its marketplace file,
+  // as a plain folder of skills, or as a plugin whose skills alone will load.
+  layout?: "marketplace" | "skills" | "plugin" | null;
 }
 
 class SkillsService {

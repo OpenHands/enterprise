@@ -913,6 +913,27 @@ class TestMarketplaceSkillsPlainRepository:
         assert result.errors == []
 
     @pytest.mark.asyncio
+    async def test_skips_skills_conversations_cannot_load(self, tmp_path):
+        """A skill the SDK can't load is not listed, as conversations skip it."""
+        # Arrange
+        skills_dir = tmp_path / 'repo' / 'skills'
+        _write_skill_dir(skills_dir / 'greet', 'greet')
+        bad_frontmatter = skills_dir / 'deploy'
+        bad_frontmatter.mkdir()
+        (bad_frontmatter / 'SKILL.md').write_text(
+            '---\nname: deploy\ndescription: Use when: deploying\n---\nDeploy.'
+        )
+        _write_skill_dir(skills_dir / 'tools', 'tools')
+        (skills_dir / 'tools' / '.mcp.json').write_text('{not json')
+
+        # Act
+        result = await _preview_marketplace(tmp_path / 'repo', tmp_path / 'global')
+
+        # Assert
+        assert [skill.name for skill in result.skills] == ['greet']
+        assert result.errors == []
+
+    @pytest.mark.asyncio
     async def test_reports_repository_without_manifest_or_skills(self, tmp_path):
         """A repository a conversation would load nothing from is an error."""
         # Arrange
@@ -929,6 +950,50 @@ class TestMarketplaceSkillsPlainRepository:
             'acme: no marketplace manifest or skill folders found (expected '
             '.plugin/marketplace.json or skills/<name>/SKILL.md)'
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'plugin_manifest, layout',
+        [
+            (None, 'skills'),
+            ('.claude-plugin/plugin.json', 'plugin'),
+            ('.plugin/plugin.json', 'plugin'),
+        ],
+    )
+    async def test_reports_how_a_repository_without_manifest_is_read(
+        self, tmp_path, plugin_manifest, layout
+    ):
+        """A plugin without a marketplace manifest is told apart from a skills
+        folder, since conversations load only its skills."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'greet', 'greet')
+        if plugin_manifest:
+            manifest = repo_dir / plugin_manifest
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({'name': 'acme'}))
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert [skill.name for skill in result.skills] == ['greet']
+        assert result.marketplace_layouts == {'acme': layout}
+
+    @pytest.mark.asyncio
+    async def test_repository_with_manifest_is_read_as_marketplace(self, tmp_path):
+        """A marketplace manifest wins over the plugin and skill folders."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'custom', 'custom')
+        _write_marketplace_manifest(repo_dir, 'skill', './skills/custom')
+        (repo_dir / '.plugin' / 'plugin.json').write_text(json.dumps({'name': 'x'}))
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert result.marketplace_layouts == {'acme': 'marketplace'}
 
     @pytest.mark.asyncio
     async def test_invalid_manifest_is_not_read_as_plain_repository(self, tmp_path):
@@ -953,7 +1018,9 @@ _ROUTER = 'openhands.app_server.user.skills_router'
 
 
 def _preview(
-    plugins: int = 0, errors: list[str] | None = None
+    plugins: int = 0,
+    errors: list[str] | None = None,
+    layout: str | None = None,
 ) -> MarketplaceSkillsPreviewResponse:
     return MarketplaceSkillsPreviewResponse(
         skills=[],
@@ -965,6 +1032,7 @@ def _preview(
         ],
         marketplace_skills={},
         errors=errors or [],
+        marketplace_layouts={'acme': layout} if layout else {},
     )
 
 
@@ -1042,6 +1110,12 @@ class TestMarketplaceCheck:
                 'ref_not_found',
             ),
             ('acme: Repo path not found: plugins', 'error', 'path_not_found'),
+            (
+                'acme: no marketplace manifest or skill folders found (expected '
+                '.plugin/marketplace.json or skills/<name>/SKILL.md)',
+                'error',
+                'empty',
+            ),
             ('acme: Git clone timed out', 'unchecked', 'failed'),
             ('acme: Clone failed: unexpected', 'unchecked', 'failed'),
         ],
@@ -1056,6 +1130,43 @@ class TestMarketplaceCheck:
         result, _ = await _check('github:acme/skills', preview=_preview(0))
 
         assert (result.status, result.reason) == ('error', 'empty')
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('layout', ['marketplace', 'skills', 'plugin'])
+    async def test_reports_how_a_repository_that_loads_is_read(self, layout):
+        result, _ = await _check(
+            'github:acme/skills', preview=_preview(1, layout=layout)
+        )
+
+        assert (result.status, result.layout) == ('ok', layout)
+
+    @pytest.mark.asyncio
+    async def test_plugin_without_marketplace_manifest_is_reported(self, tmp_path):
+        """End to end through the preview: the plugin's skills pass the check,
+        and the layout says only they will load."""
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'greet', 'greet')
+        (repo_dir / '.claude-plugin').mkdir()
+        (repo_dir / '.claude-plugin' / 'plugin.json').write_text('{"name": "acme"}')
+        marketplace = MarketplaceRegistration(name='acme', source='github:acme/skills')
+
+        # Act
+        with (
+            patch(
+                f'{_ROUTER}.authenticate_marketplace_sources',
+                AsyncMock(side_effect=lambda regs, _ctx: regs),
+            ),
+            patch(
+                f'{_ROUTER}._clone_marketplace_repo',
+                AsyncMock(return_value=(repo_dir, '')),
+            ),
+            patch(f'{_ROUTER}.GLOBAL_SKILLS_DIR', tmp_path / 'global'),
+        ):
+            result = await check_marketplace(marketplace, user_context=MagicMock())
+
+        # Assert
+        assert (result.status, result.skill_count, result.layout) == ('ok', 1, 'plugin')
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

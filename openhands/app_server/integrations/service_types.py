@@ -141,6 +141,17 @@ class PaginatedBranchesResponse(BaseModel):
     total_count: int | None = None  # Some APIs don't provide total count
 
 
+class BranchSearchPage(BaseModel):
+    """One page of branch search results.
+
+    next_page_id is an opaque, provider-specific token. Pass it back as page_id
+    to get the next page. None means there are no more pages.
+    """
+
+    branches: list[Branch]
+    next_page_id: str | None = None
+
+
 class Repository(BaseModel):
     id: str
     full_name: str
@@ -300,9 +311,16 @@ class GitService(Protocol):
         """Get branches for a repository with pagination"""
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:
-        """Search for branches within a repository"""
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
+        """Search for branches within a repository.
+
+        page_id is the next_page_id of the previous page, or None for page 1.
+        """
 
     async def get_pr_details(self, repository: str, pr_number: int) -> dict:
         """Get detailed information about a specific pull request/merge request

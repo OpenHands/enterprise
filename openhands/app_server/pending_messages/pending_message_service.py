@@ -21,7 +21,9 @@ from openhands.app_server.utils.sql_utils import Base, UtcDateTime
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 # Type adapter for deserializing content from JSON
-_content_type_adapter = TypeAdapter(list[TextContent | ImageContent])
+_content_type_adapter: TypeAdapter[list[TextContent | ImageContent]] = TypeAdapter(
+    list[TextContent | ImageContent]
+)
 
 
 class StoredPendingMessage(Base):
