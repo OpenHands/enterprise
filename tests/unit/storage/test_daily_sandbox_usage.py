@@ -6,7 +6,8 @@ from storage.user import User
 
 def test_user_has_nullable_daily_sandbox_limit(engine):
     # The attribute is daily_sandbox_limit; the physical column keeps its
-    # legacy name so pre-188 pods keep working during rolling deploys.
+    # legacy name so pods on pre-change images keep working during rolling
+    # deploys.
     column = next(
         column
         for column in inspect(engine).get_columns(User.__tablename__)
