@@ -18,6 +18,23 @@ from openhands.app_server.integrations.service_types import (
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 
+X_TOKEN_AUTH = 'x-token-auth'
+
+
+def split_bitbucket_dc_token(token_value: str) -> tuple[str | None, str]:
+    """Split a stored token into (username, secret).
+
+    ``username:secret`` has a username. A bare token, or one stored in the
+    Bitbucket Cloud style ``x-token-auth:<token>``, has none: it is an access
+    or OAuth token.
+    """
+    username, colon, secret = token_value.partition(':')
+    if not colon:
+        return None, token_value
+    if username == X_TOKEN_AUTH:
+        return None, secret
+    return username, secret
+
 
 class BitbucketDCMixinBase(BaseGitService, HTTPClient):
     """
@@ -76,28 +93,63 @@ class BitbucketDCMixinBase(BaseGitService, HTTPClient):
         the header would be ``Authorization: Basic `` with an empty base64
         payload and httpx rejects it as ``Illegal header value``.
 
-        Tokens in ``username:secret`` form (e.g. ``x-token-auth:<PAT>`` or
-        ``user:pass``) use HTTP Basic auth. Raw OAuth 2.0 access tokens
-        (no colon) use Bearer per RFC 6750 — this is the format the SaaS
-        broker flow returns from Keycloak.
+        Tokens in ``username:secret`` form (e.g. ``user:<PAT>`` or
+        ``user:pass``) use HTTP Basic auth. Access and OAuth tokens, bare or
+        as ``x-token-auth:<token>``, use Bearer: Data Center accepts them
+        that way on every version, but rejects ``x-token-auth`` Basic for
+        personal tokens, and for project and repository tokens on 8.x.
         """
         if not self.token or not self.token.get_secret_value():
             latest_token = await self.get_latest_token()
             if latest_token:
                 self.token = latest_token
 
-        token_value = self.token.get_secret_value()
+        username, secret = split_bitbucket_dc_token(self.token.get_secret_value())
 
-        if ':' in token_value:
-            auth_str = base64.b64encode(token_value.encode()).decode()
+        if username is not None:
+            auth_str = base64.b64encode(f'{username}:{secret}'.encode()).decode()
             return {
                 'Authorization': f'Basic {auth_str}',
                 'Accept': 'application/json',
             }
         return {
-            'Authorization': f'Bearer {token_value}',
+            'Authorization': f'Bearer {secret}',
             'Accept': 'application/json',
         }
+
+    async def get_git_credentials(self) -> tuple[str, str]:
+        """The username and password to put in a git URL for this token.
+
+        A git URL cannot carry a Bearer token, and the Basic username Data
+        Center accepts depends on the token and the version: OAuth tokens,
+        and on 9.x project and repository tokens, accept ``x-token-auth``;
+        personal tokens, and on 8.x project and repository tokens, need the
+        token's own user. So use ``x-token-auth`` when the server accepts it,
+        otherwise that user.
+        """
+        username, secret = split_bitbucket_dc_token(self.token.get_secret_value())
+        if username is not None:
+            return username, secret
+        if await self._accepts_basic_auth(X_TOKEN_AUTH, secret):
+            return X_TOKEN_AUTH, secret
+        owner = await self._get_authenticated_username()
+        return owner or X_TOKEN_AUTH, secret
+
+    async def _accepts_basic_auth(self, username: str, secret: str) -> bool:
+        if not self.BASE_URL:
+            return False
+        auth_str = base64.b64encode(f'{username}:{secret}'.encode()).decode()
+        try:
+            async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
+                response = await client.get(
+                    f'{self.BASE_URL}/projects',
+                    params={'limit': '0'},
+                    headers={'Authorization': f'Basic {auth_str}'},
+                )
+        except Exception as e:
+            logger.warning(f'Bitbucket data center login check failed: {e}')
+            return False
+        return response.status_code == 200
 
     async def _make_request(
         self,
