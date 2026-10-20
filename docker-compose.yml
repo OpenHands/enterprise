@@ -29,14 +29,10 @@
 #     locking) are not wired up for Compose. Redis-backed *rate limiting* is
 #     explicitly disabled below (RATE_LIMITING_ENABLED=false) since it adds no
 #     value in a single-evaluator environment with no Redis.
-#   * The remaining Helm CronJobs (maintenance-tasks, budget-maintenance,
-#     resend-sync, install-gitlab-webhooks, enrich-user-interaction) are not
-#     included: they are standalone script entrypoints, not yet ported to the
-#     Postgres-backed Procrastinate worker (`worker`, below, only runs the
-#     sandbox-lifecycle and task-queue housekeeping jobs that have been
-#     migrated so far). Tracked by OHE-3425 / OHE-3451; skip until that work
-#     produces something Compose-suitable instead of reimplementing
-#     Kubernetes-style scheduling here.
+#   * These Helm CronJobs don't run here: maintenance-tasks,
+#     budget-maintenance, resend-sync, enrich-user-interaction. The `worker`
+#     can schedule them (OH_WORKER_SCHEDULED_JOBS_*) but leaves them off.
+#     Tracked by OHE-3425 / OHE-3451.
 
 services:
   db:
@@ -330,9 +326,8 @@ services:
         target: /etc/caddy/Caddyfile
     restart: unless-stopped
 
-  # Runs the Postgres-backed Procrastinate tasks that have already been
-  # migrated off Kubernetes CronJobs: sandbox-lifecycle cleanup and
-  # Procrastinate's own housekeeping. See openhands/app_server/worker/app.py.
+  # Runs the Postgres-backed Procrastinate tasks that replace Kubernetes
+  # CronJobs. See openhands/app_server/worker/.
   worker:
     build:
       context: .
