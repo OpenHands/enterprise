@@ -455,8 +455,40 @@ describe("Super Admin Auth Providers page", () => {
           details: expect.objectContaining({
             kind: "OAuthProviderDetails",
             client_id: "github-client-id-2",
-            client_secret: null,
           }),
+        }),
+      ),
+    );
+    const { details } = updateAuthProvider.mock.calls[0][0];
+    expect(details).not.toHaveProperty("client_secret");
+  });
+
+  it("sends the new client secret when one is typed while editing", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-1"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-client-secret"),
+      "new-secret",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({ client_secret: "new-secret" }),
         }),
       ),
     );
