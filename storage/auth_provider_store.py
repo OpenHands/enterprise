@@ -116,6 +116,23 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
+    async def get_git_provider_by_type(self, provider_type: str) -> AuthProvider | None:
+        """Return the git provider row (``is_idp=False``) for ``provider_type``.
+
+        If several match, the lowest ``id`` wins.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .where(
+                    AuthProvider.is_idp.is_(False),
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+                .order_by(AuthProvider.id)
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
             result = await session.execute(select(AuthProvider))

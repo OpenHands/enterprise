@@ -14,9 +14,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from urllib.parse import parse_qs
+from uuid import UUID
 
 import httpx
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
@@ -24,7 +26,8 @@ from storage.auth_provider_details import (
     DEFAULT_PERMITTED_DRIFT_SECONDS,
     OAuthProviderDetails,
 )
-from storage.oauth_token_store import RefreshResult
+from storage.auth_provider_store import AuthProviderStore
+from storage.oauth_token_store import OAuthTokenStore, RefreshResult
 
 # HTTP timeout for external token-endpoint refresh calls.
 REFRESH_HTTP_TIMEOUT = 15.0
@@ -171,6 +174,26 @@ def make_refresh_callback(
         return await refresh_oauth_token(provider, refresh_token)
 
     return _callback
+
+
+async def get_oauth_v2_git_token(
+    user_id: str, provider_type: ProviderType
+) -> str | None:
+    """``user_id``'s access token at their ``provider_type`` git provider, from
+    ``oauth_tokens``, refreshed if due.
+
+    ``None`` when there is no such git provider or the user has no token for
+    it. Never calls Keycloak.
+    """
+    provider = await AuthProviderStore().get_git_provider_by_type(provider_type.value)
+    if provider is None:
+        return None
+    return await OAuthTokenStore(
+        user_id=UUID(user_id), oauth_provider_id=provider.id
+    ).get_valid_access_token(
+        permitted_drift_seconds=get_permitted_drift_seconds(provider),
+        refresh=make_refresh_callback(provider),
+    )
 
 
 def create_oauth_v2_cookie_payload(
