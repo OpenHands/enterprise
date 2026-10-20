@@ -41,3 +41,5 @@ def test_invalidate_tolerates_a_concurrent_invalidation():
 
     with patch.object(svc, '_index_exists', return_value=True):
         svc._invalidate_index(Path('users/test_user/v1_conversations/abc'))
+
+    bucket.rename_blob.assert_called_once()
