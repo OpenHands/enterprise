@@ -54,6 +54,8 @@ from server.auth.email_validation import (
 from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
 from server.auth.oauth_v2_refresh import get_oauth_v2_git_token
 from server.logger import logger
+from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
 from storage.github_app_installation import GithubAppInstallation
@@ -681,6 +683,21 @@ class TokenManager:
     async def get_user_id_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
+        """The user who linked the ``idp`` account ``idp_user_id``.
+
+        Reads ``auth_provider_users`` for the ``idp`` git provider first
+        (filled by OAuth v2 linking), then Keycloak if it is configured.
+        """
+        provider = await AuthProviderStore().get_git_provider_by_type(idp.value)
+        if provider is not None:
+            # Webhook callers pass the provider's numeric user id.
+            link = await AuthProviderUserStore().get(provider.id, str(idp_user_id))
+            if link is not None:
+                return str(link.user_id)
+        if not KEYCLOAK_SERVER_URL:
+            logger.info(f'{idp.value} user with IDP ID {idp_user_id} not linked.')
+            return None
+
         keycloak_admin = get_keycloak_admin(self.external)
         users = await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'})
         if not users:
