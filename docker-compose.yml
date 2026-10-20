@@ -96,18 +96,23 @@ services:
       - '3000'
     # The Docker sandbox backend creates sibling containers via the host's
     # Docker daemon (same pattern as containers/dev/compose.yml), so the app
-    # container needs the socket -- not `privileged: true`, since it runs as
-    # root (via `user: '0:0'`, above) and root can always reach the socket.
-    volumes:
+    # and `worker` containers need the socket -- not `privileged: true`, since
+    # they run as root (via `user: '0:0'`, above) and root can always reach
+    # the socket.
+    volumes: &app-volumes
       - /var/run/docker.sock:/var/run/docker.sock
       # `app-filestore` intentionally not mounted for now: this stack is
       # meant to be completely ephemeral, so /.openhands starts empty on
       # every `docker compose up --build` instead of surviving it via a
       # Docker named volume.
       # - app-filestore:/.openhands
-    extra_hosts:
+    # Sandboxes publish their ports on the Docker host, and the app and
+    # `worker` reach them through host.docker.internal.
+    extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
-    environment:
+    # `worker` shares this environment, so both build the same sandbox
+    # backend and lifecycle settings.
+    environment: &app-environment
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: ${DB_NAME:-openhands}
@@ -362,6 +367,9 @@ services:
 
   # Runs the Postgres-backed Procrastinate tasks that replace Kubernetes
   # CronJobs. See openhands/app_server/worker/.
+  # The lifecycle jobs pause and delete sandboxes through the same Docker
+  # backend as the app, so the worker gets the app's socket, hosts and
+  # environment.
   worker:
     image: *app-image
     # See the `app` service above: the image defaults to `USER openhands`,
@@ -371,12 +379,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes: *app-volumes
+    extra_hosts: *app-extra-hosts
     environment:
-      DB_HOST: db
-      DB_PORT: '5432'
-      DB_NAME: ${DB_NAME:-openhands}
-      DB_USER: ${DB_USER:-openhands}
-      DB_PASS: ${DB_PASS:-openhands}
+      <<: *app-environment
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
