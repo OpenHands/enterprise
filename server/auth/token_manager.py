@@ -631,16 +631,17 @@ class TokenManager:
     async def get_idp_token_for_user(
         self, user_id: str, idp: ProviderType
     ) -> str | None:
-        """``user_id``'s token at ``idp``, for work done without their session.
+        """Git token for background work done without the user's session.
 
-        Reads ``oauth_tokens`` first (filled by OAuth v2 login and linking),
-        then falls back to the user's Keycloak offline session. Without
-        Keycloak, users have no offline token, so the fallback returns
-        ``None`` without calling Keycloak.
+        ``oauth_tokens`` wins over the Keycloak offline session. Installs
+        without Keycloak store no offline tokens, so the fallback returns
+        ``None`` without a Keycloak call.
         """
         try:
             token = await get_oauth_v2_git_token(user_id, idp)
         except Exception:
+            # Unlike the signed-in path, keep the token row: the failure may be
+            # transient and there is no user here to re-link.
             logger.warning(
                 'oauth_v2_git_token_unavailable',
                 extra={'user_id': user_id, 'provider': idp.value},
