@@ -536,3 +536,25 @@ async def test_processor_skips_current_version_target_without_litellm_calls(
     verify.assert_not_awaited()
     delete_alias.assert_not_awaited()
     generate.assert_not_awaited()
+
+
+def test_effective_config_reads_member_rows_with_retired_switches():
+    """A member row saved before SDK 1.51 has no ``schema_version`` and still
+    carries ``enable_sub_agents``. SDK 1.56 rejects it unless it is folded."""
+    org = Org(
+        id=uuid4(),
+        name='retired-switch-org',
+        agent_settings={
+            'agent_kind': 'openhands',
+            'llm': {'model': 'openhands/test-model'},
+        },
+    )
+    member = OrgMember(
+        org_id=org.id,
+        user_id=uuid4(),
+        agent_settings_diff={'enable_sub_agents': True},
+    )
+
+    config = ManagedLlmKeyOwnershipProcessor._effective_managed_key_config(org, member)
+
+    assert config is not None
