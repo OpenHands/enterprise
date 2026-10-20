@@ -6,6 +6,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, ClassVar
+from urllib.parse import urlparse
 
 import base62
 import docker
@@ -62,6 +63,8 @@ _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 STOP_TIMEOUT_SECONDS = 10
 MAX_PORT_ATTEMPTS = 100
+# The agent server passes this to openvscode-server as --server-base-path.
+VSCODE_BASE_PATH_VARIABLE = 'OH_VSCODE_BASE_PATH'
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
 # managed containers so that one with no row can be found.
@@ -78,6 +81,11 @@ def _get_use_host_network_default() -> bool:
     """
     value = os.getenv('AGENT_SERVER_USE_HOST_NETWORK', '')
     return value.lower() in ('true', '1', 'yes')
+
+
+def _get_network_default() -> str | None:
+    """Get the default Docker network for sandbox containers from the environment."""
+    return os.getenv('SANDBOX_DOCKER_NETWORK') or None
 
 
 def _get_kvm_enabled_default() -> bool:
@@ -129,6 +137,7 @@ class DockerSandboxService(ManagedSandboxService):
     docker_client: docker.DockerClient = field(default_factory=get_docker_client)
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
+    network: str | None = None
     kvm_enabled: bool = False
 
     def _managed_containers_by_name(self) -> dict[str, object]:
@@ -526,6 +535,21 @@ class DockerSandboxService(ManagedSandboxService):
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
+        # When the URL pattern routes by path (a reverse proxy at
+        # /runtime/{port}), VS Code must know its path to build asset URLs.
+        vscode_port = next((p for p in self.exposed_ports if p.name == VSCODE), None)
+        if vscode_port is not None:
+            public_port = (
+                port_mappings[vscode_port.container_port]
+                if port_mappings is not None
+                else vscode_port.container_port
+            )
+            base_path = urlparse(
+                self.container_url_pattern.format(port=public_port)
+            ).path.rstrip('/')
+            if base_path:
+                env_vars[VSCODE_BASE_PATH_VARIABLE] = base_path
+
         # Labels tag the container so it can be found without a row. The row
         # below is the ownership record.
         labels = {
@@ -591,6 +615,9 @@ class DockerSandboxService(ManagedSandboxService):
                 else None,
                 # Network mode: 'host' for host networking, None for default bridge
                 network_mode=network_mode,
+                # A user-defined network lets the sandbox resolve the other
+                # containers on it by name
+                network=self.network if not self.use_host_network else None,
                 # Device passthrough for KVM hardware virtualization
                 devices=devices,
             )
@@ -772,6 +799,16 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'is problematic. Configure via AGENT_SERVER_USE_HOST_NETWORK environment variable.'
         ),
     )
+    network: str | None = Field(
+        default_factory=_get_network_default,
+        description=(
+            'Docker network to attach agent-server containers to instead of the '
+            'default bridge. Containers on a user-defined network resolve each '
+            'other by name, so sandboxes can reach Docker Compose services by '
+            'their service names. Ports are still published. Ignored with host '
+            'networking. Configure via SANDBOX_DOCKER_NETWORK environment variable.'
+        ),
+    )
     kvm_enabled: bool = Field(
         default_factory=_get_kvm_enabled_default,
         description=(
@@ -822,6 +859,7 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
                 extra_hosts=self.extra_hosts,
                 startup_grace_seconds=self.startup_grace_seconds,
                 use_host_network=self.use_host_network,
+                network=self.network,
                 kvm_enabled=self.kvm_enabled,
                 lifecycle=self.lifecycle,
             )
