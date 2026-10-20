@@ -160,6 +160,13 @@ services:
       WEB_HOST: ${WEB_HOST:-localhost}
       OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
 
+      # Sandboxes reach the app through this URL instead of OH_WEB_URL. The
+      # agent uses it to call the automation API and the default MCP server,
+      # and `localhost` inside a sandbox is the sandbox itself. It points at
+      # the proxy's published port, because only the proxy routes
+      # /api/automation.
+      OH_SANDBOX_WEB_URL: ${SANDBOX_WEB_URL:-http://host.docker.internal:${APP_PORT:-3100}}
+
       # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
       # defaults to 'true'. With it on, storage/lite_llm_manager.py's
       # create_entries() tries to provision every new user a LiteLLM gateway
