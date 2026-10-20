@@ -510,9 +510,7 @@ def test_posting_service_uses_bot_token_when_set():
         svc = manager._posting_service()
 
     # Built with no per-user auth; the raw bot token is set directly so the
-    # service sends Bearer. NOT via external_auth_id, and NOT via the token=
-    # constructor arg (which would downgrade it to x-token-auth HTTP Basic,
-    # rejected by Bitbucket Data Center).
+    # service sends Bearer. NOT via external_auth_id.
     service_cls.assert_called_once_with()
     assert 'external_auth_id' not in service_cls.call_args.kwargs
     assert svc.token.get_secret_value() == 'bot-pat-123'

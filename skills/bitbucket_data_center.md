@@ -8,20 +8,18 @@ triggers:
 - bitbucket data center
 ---
 
-You have access to an environment variable, `BITBUCKET_DATA_CENTER_TOKEN`, which contains
-a basic auth token in the format `username:your-token` that allows you to interact with the git repository.
-
-You can also use this token to interact with Bitbucket Data Center's REST API:
-```bash
-curl -u "${BITBUCKET_DATA_CENTER_TOKEN}" https://{domain}/rest/api/1.0/...
-```
+You have access to an environment variable, `BITBUCKET_DATA_CENTER_TOKEN`, which holds your
+Bitbucket Data Center credential. Use it to interact with Bitbucket Data Center's REST API:
+- If its value has no colon, or starts with `x-token-auth:`, it is an access or OAuth token — use a Bearer header: `curl -H "Authorization: Bearer ${BITBUCKET_DATA_CENTER_TOKEN#x-token-auth:}" https://{domain}/rest/api/1.0/...`
+- Otherwise it is in `username:token` form — use HTTP Basic auth: `curl -u "${BITBUCKET_DATA_CENTER_TOKEN}" https://{domain}/rest/api/1.0/...`
 
 <IMPORTANT>
 ALWAYS use the Bitbucket Data Center API for operations instead of a web browser.
 ALWAYS use the `create_bitbucket_data_center_pr` tool to open a pull request
 </IMPORTANT>
 
-If you encounter authentication issues when pushing to Bitbucket Data Center (such as password prompts or permission errors), the old token may have expired. In such case, update the remote URL to include the current token: `git remote set-url origin https://${BITBUCKET_DATA_CENTER_TOKEN}@{domain}/scm/{project_lower}/{repo}.git`
+If you encounter authentication issues when pushing to Bitbucket Data Center (such as password prompts or permission errors) and the token is in `username:token` form, the old token may have expired. In such case, update the remote URL to include the current token: `git remote set-url origin https://${BITBUCKET_DATA_CENTER_TOKEN}@{domain}/scm/{project_lower}/{repo}.git`
+Don't do this for an access or OAuth token: the git username it needs depends on the server, and the remote URL you were given already has the right one.
 
 The repository format for Bitbucket Data Center is `PROJECT/repo_slug` (project key, slash, repo slug).
 

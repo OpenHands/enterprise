@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
-import anyio
 import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
@@ -244,6 +243,8 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 def _exception_detail(exc: Exception) -> str:
     """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
     detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
     return detail if isinstance(detail, str) else str(exc)
 
 
@@ -415,63 +416,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        quota_user_id = await self.user_context.get_user_id()
-        quota_reserved = bool(
-            getattr(self.user_context, '_daily_quota_reserved', False)
-        )
-        if quota_reserved:
-            setattr(self.user_context, '_daily_quota_reserved', False)
-        elif quota_user_id:
-            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
-
-        try:
-            async for task in self._start_app_conversation(request):
-                await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                    task
-                )
-                if quota_reserved:
-                    if task.status == AppConversationStartTaskStatus.ERROR:
-                        with anyio.CancelScope(shield=True):
-                            await self._release_daily_conversation_quota(quota_user_id)
-                        quota_reserved = False
-                    elif task.status == AppConversationStartTaskStatus.READY:
-                        quota_reserved = False
-                yield task
-        except BaseException:
-            if quota_reserved:
-                with anyio.CancelScope(shield=True):
-                    await self._release_daily_conversation_quota(quota_user_id)
-            raise
-
-    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
-        try:
-            from openhands.app_server.shared import server_config
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
+        async for task in self._start_app_conversation(request):
+            await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                task
             )
-            from storage.database import a_session_maker
-        except ImportError:
-            return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if server_config.app_mode.value != 'saas' or org_id is None:
-            return False
-        async with a_session_maker() as session:
-            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
-
-    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
-        if not user_id:
-            return
-        try:
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
-            )
-            from storage.database import a_session_maker
-
-            async with a_session_maker() as session:
-                await DailyConversationQuotaService(session).release(user_id)
-        except Exception:
-            _logger.exception('Failed to release daily conversation quota reservation')
+            yield task
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
