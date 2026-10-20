@@ -23,7 +23,7 @@ export interface OAuthProviderDetails {
   kind: "OAuthProviderDetails";
   provider_type: OAuthProviderBrand;
   client_id: string;
-  client_secret: string | null;
+  client_secret?: string | null;
   authorization_url: string | null;
   token_url: string | null;
   userinfo_url: string | null;
