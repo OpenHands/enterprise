@@ -285,8 +285,6 @@ def create_git_provider(
 
 @pytest.fixture
 def store_oauth_token(oauth_v2_stores) -> Callable[..., Awaitable[None]]:
-    """Store a user's token for a provider in ``oauth_tokens``."""
-
     async def _store(
         user_id: UUID,
         provider: AuthProvider,
@@ -311,8 +309,8 @@ def _fail_keycloak(*args, **kwargs):
 
 @pytest.fixture
 def no_keycloak() -> Iterator[None]:
-    """Fail the test on any call to Keycloak. Reading offline tokens from the
-    database is allowed: without Keycloak, users simply have none."""
+    """Fail on any Keycloak call. Offline-token reads from the database stay
+    allowed, since an install without Keycloak simply has none."""
     with (
         patch('server.auth.token_manager.get_keycloak_admin', _fail_keycloak),
         patch('server.auth.token_manager.get_keycloak_openid', _fail_keycloak),
