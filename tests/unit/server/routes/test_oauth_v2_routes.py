@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -889,7 +890,10 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
     assert response.status_code == 302
     # No auth cookie on link flow, and the one-shot nonce cookie is cleared.
     assert 'openhands_auth' not in response.cookies
-    assert f'{oauth_v2.LINK_NONCE_COOKIE}=""' in response.headers['set-cookie']
+    cleared = SimpleCookie(response.headers['set-cookie'])[oauth_v2.LINK_NONCE_COOKIE]
+    assert cleared.value == ''
+    assert cleared['max-age'] == '0'
+    assert cleared['path'] == '/oauth'
     link.assert_awaited_once_with(
         oauth_provider_id=provider.id, user_id=user_id, external_subject_id='ext-2'
     )
@@ -996,14 +1000,21 @@ def test_callback_link_missing_user_id_in_state_400(client, jwt_svc):
         patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
     ):
         state = oauth_v2._encrypt_state(
-            {'redirect_url': '/s', 'mode': 'link', 'nonce': 'n'}
+            {
+                'redirect_url': '/s',
+                'mode': 'link',
+                'nonce': 'nonce-1',
+                'issued_at': time.time(),
+            }
         )
         response = client.get(
             '/oauth/1/callback',
             params={'code': 'c', 'state': state},
+            headers=_nonce_cookie(),
             follow_redirects=False,
         )
     assert response.status_code == 400
+    assert response.json()['detail'] == 'Link flow missing user_id in state'
 
 
 # ── link (authenticated) ────────────────────────────────────────────────
@@ -1079,17 +1090,20 @@ def test_link_returns_start_url(app, client, jwt_svc):
 
     # The state is bound to this browser by a nonce cookie the provider's
     # cross-site redirect back to the callback still carries.
-    set_cookie = response.headers['set-cookie']
-    assert response.cookies[oauth_v2.LINK_NONCE_COOKIE] == state['nonce']
+    cookie = SimpleCookie(response.headers['set-cookie'])[oauth_v2.LINK_NONCE_COOKIE]
+    assert cookie.value == state['nonce']
     assert len(state['nonce']) >= 32
-    assert 'HttpOnly' in set_cookie
-    assert 'SameSite=lax' in set_cookie
-    assert 'Path=/oauth' in set_cookie
-    assert f'Max-Age={oauth_v2.LINK_NONCE_COOKIE_MAX_AGE}' in set_cookie
+    assert cookie['httponly'] is True
+    assert cookie['secure'] is True
+    assert cookie['samesite'].lower() == 'lax'
+    assert cookie['path'] == '/oauth'
+    assert cookie['max-age'] == str(oauth_v2.LINK_NONCE_COOKIE_MAX_AGE)
     assert oauth_v2.LINK_NONCE_COOKIE_MAX_AGE > oauth_v2.LINK_STATE_TTL_SECONDS
 
 
-def test_link_start_url_completes_in_the_browser_that_started_it(app, client, jwt_svc):
+def test_link_start_url_completes_in_the_browser_that_started_it(app, jwt_svc):
+    # https, so the jar sends the Secure nonce cookie back; it applies Path too.
+    client = TestClient(app, base_url='https://testserver')
     provider = _fake_provider()
     user_id = uuid4()
     with (
@@ -1106,11 +1120,9 @@ def test_link_start_url_completes_in_the_browser_that_started_it(app, client, jw
         _override_user_context(app, user_id)
         start = client.post('/oauth/1/link')
         state = parse_qs(urlsplit(start.json()['start_url']).query)['state'][0]
-        nonce = start.cookies[oauth_v2.LINK_NONCE_COOKIE]
         response = client.get(
             '/oauth/1/callback',
             params={'code': 'c', 'state': state},
-            headers=_nonce_cookie(nonce),
             follow_redirects=False,
         )
 
