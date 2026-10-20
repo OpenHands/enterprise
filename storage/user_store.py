@@ -26,7 +26,7 @@ from server.constants import (
     get_default_llm_model,
 )
 from server.logger import logger
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
     decrypt_legacy_model,
@@ -1484,8 +1484,8 @@ class UserStore:
                     )
                 )
                 await session.execute(
-                    delete(DailyConversationUsage).where(
-                        DailyConversationUsage.user_id == target_uuid
+                    delete(DailySandboxUsage).where(
+                        DailySandboxUsage.user_id == target_uuid
                     )
                 )
                 await session.execute(

@@ -49,38 +49,20 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
         """Get repositories for the authenticated user."""
         MAX_REPOS = 1000
 
-        # Get all projects first
-        projects_url = f'{self.base_url}/_apis/projects?api-version=7.1'
-        projects_response, _ = await self._make_request(projects_url)
-        projects = projects_response.get('value', [])
+        # One organization-wide call lists every project's repositories. The
+        # projects endpoint returns only its first 100 projects per call.
+        url = f'{self.base_url}/_apis/git/repositories?api-version=7.1'
+        response, _ = await self._make_request(url)
 
-        all_repos = []
-
-        # For each project, get its repositories
-        for project in projects:
-            project_name = project.get('name')
-            project_enc = self._encode_url_component(project_name)
-            repos_url = (
-                f'{self.base_url}/{project_enc}/_apis/git/repositories?api-version=7.1'
-            )
-            repos_response, _ = await self._make_request(repos_url)
-            repos = repos_response.get('value', [])
-
-            for repo in repos:
-                all_repos.append(
-                    {
-                        'id': repo.get('id'),
-                        'name': repo.get('name'),
-                        'project_name': project_name,
-                        'updated_date': repo.get('lastUpdateTime'),
-                    }
-                )
-
-                if len(all_repos) >= MAX_REPOS:
-                    break
-
-            if len(all_repos) >= MAX_REPOS:
-                break
+        all_repos = [
+            {
+                'id': repo.get('id'),
+                'name': repo.get('name'),
+                'project_name': repo.get('project', {}).get('name', ''),
+                'updated_date': repo.get('lastUpdateTime'),
+            }
+            for repo in response.get('value', [])
+        ]
 
         # Sort repositories based on the sort parameter
         if sort == 'updated':

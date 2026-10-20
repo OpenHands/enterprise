@@ -15,7 +15,7 @@ from openhands.app_server.settings.settings_models import Settings
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.device_code import DeviceCode
 from storage.instance_settings import InstanceSettings
 from storage.org import Org
@@ -2966,10 +2966,10 @@ async def _seed_user_to_delete(
             )
         session.add_all(
             [
-                DailyConversationUsage(
+                DailySandboxUsage(
                     user_id=user_id,
                     usage_date=date.today(),
-                    conversation_count=1,
+                    sandbox_count=1,
                     created_at=now,
                     updated_at=now,
                 ),
@@ -3072,7 +3072,7 @@ async def test_delete_user_and_owned_data_removes_the_account_and_its_rows_in_ev
         OrgMember.user_id == user_id,
         StoredConversationMetadataSaas.user_id == user_id,
         StoredConversationMetadata.conversation_id.in_(['conv-personal', 'conv-team']),
-        DailyConversationUsage.user_id == user_id,
+        DailySandboxUsage.user_id == user_id,
         QuotaIncreaseRequest.user_id == user_id,
         OrgUserBudgetOverride.user_id == user_id,
         AuthTokens.keycloak_user_id == str(user_id),
@@ -3373,7 +3373,7 @@ async def test_delete_user_clears_other_fk_references(async_session_maker):
     """Every other (non-cascading) FK onto ``user.id`` is released rather
     than blocking the delete -- verifies the invariant called out in
     ``delete_user``'s docstring."""
-    from storage.daily_conversation_usage import DailyConversationUsage
+    from storage.daily_sandbox_usage import DailySandboxUsage
     from storage.org_git_claim import OrgGitClaim
     from storage.org_invitation import OrgInvitation
     from storage.org_user_budget_override import OrgUserBudgetOverride
@@ -3414,10 +3414,10 @@ async def test_delete_user_clears_other_fk_references(async_session_maker):
                     claimed_at=datetime.now(),
                 ),
                 OrgUserBudgetOverride(org_id=org_id, user_id=user_uuid),
-                DailyConversationUsage(
+                DailySandboxUsage(
                     user_id=user_uuid,
                     usage_date=datetime.now().date(),
-                    conversation_count=1,
+                    sandbox_count=1,
                     created_at=datetime.now(),
                     updated_at=datetime.now(),
                 ),
@@ -3477,9 +3477,7 @@ async def test_delete_user_clears_other_fk_references(async_session_maker):
 
         assert (
             await session.execute(
-                select(DailyConversationUsage).filter(
-                    DailyConversationUsage.user_id == user_uuid
-                )
+                select(DailySandboxUsage).filter(DailySandboxUsage.user_id == user_uuid)
             )
         ).scalars().first() is None
 

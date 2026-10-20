@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from openhands.app_server.sandbox.lifecycle.tasks import lifecycle
 from openhands.app_server.worker.housekeeping import housekeeping
+from openhands.app_server.worker.scheduled_jobs import ScheduledJobsConfig
 
 
 class WorkerConfig(BaseModel):
@@ -12,6 +13,11 @@ class WorkerConfig(BaseModel):
 
     concurrency: int = Field(
         default=10, description='How many jobs the worker runs at once.'
+    )
+    scheduled_jobs: ScheduledJobsConfig = Field(
+        default_factory=ScheduledJobsConfig,
+        description='The CronJob jobs this worker schedules, from '
+        '``OH_WORKER_SCHEDULED_JOBS_<JOB>``.',
     )
 
 

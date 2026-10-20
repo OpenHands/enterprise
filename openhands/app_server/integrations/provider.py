@@ -22,6 +22,7 @@ from openhands.app_server.integrations.bitbucket.bitbucket_service import (
     BitBucketServiceImpl,
 )
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
+    BitbucketDCService,
     BitbucketDCServiceImpl,
 )
 from openhands.app_server.integrations.forgejo.forgejo_service import ForgejoServiceImpl
@@ -30,7 +31,7 @@ from openhands.app_server.integrations.gitlab.constants import GITLAB_HOST
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
-    Branch,
+    BranchSearchPage,
     GitService,
     InstallationsService,
     PaginatedBranchesResponse,
@@ -296,26 +297,29 @@ class ProviderHandler:
         repository: str,
         query: str,
         per_page: int = 30,
-    ) -> list[Branch]:
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search for branches within a repository using the appropriate provider service."""
         if selected_provider:
             service = self.get_service(selected_provider)
             try:
-                return await service.search_branches(repository, query, per_page)
+                return await service.search_branches(
+                    repository, query, per_page, page_id
+                )
             except Exception as e:
                 logger.warning(
                     f'Error searching branches from selected provider {selected_provider}: {e}'
                 )
-                return []
+                return BranchSearchPage(branches=[])
 
         # If provider not specified, determine provider by verifying repository access
         try:
             repo_details = await self.verify_repo_provider(repository)
             service = self.get_service(repo_details.git_provider)
-            return await service.search_branches(repository, query, per_page)
+            return await service.search_branches(repository, query, per_page, page_id)
         except Exception as e:
             logger.warning(f'Error searching branches for {repository}: {e}')
-            return []
+            return BranchSearchPage(branches=[])
 
     async def search_repositories(
         self,
@@ -564,22 +568,17 @@ class ProviderHandler:
                         # Access token format: use x-token-auth
                         remote_url = f'{protocol}://x-token-auth:{quote(token_value, safe="")}@{domain}/{repo_name}.git'
                 elif provider == ProviderType.BITBUCKET_DATA_CENTER:
-                    # DC uses HTTP Basic auth — token must be in username:token format
                     project, repo_slug = (
                         repo_name.split('/', 1)
                         if '/' in repo_name
                         else (repo_name, repo_name)
                     )
                     scm_path = f'scm/{project.lower()}/{repo_slug}.git'
+                    service = cast(BitbucketDCService, self.get_service(provider))
+                    dc_user, dc_pass = await service.get_git_credentials()
                     # Percent-encode each credential part so special characters
                     # (e.g. @, #, /) don't break the URL.
-                    if ':' in token_value:
-                        dc_user, dc_pass = token_value.split(':', 1)
-                        url_creds = (
-                            f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
-                        )
-                    else:
-                        url_creds = f'x-token-auth:{quote(token_value, safe="")}'
+                    url_creds = f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
                     remote_url = f'{protocol}://{url_creds}@{domain}/{scm_path}'
                 elif provider == ProviderType.AZURE_DEVOPS:
                     # Entra OAuth tokens work with Azure Repos through a Bearer

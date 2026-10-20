@@ -156,6 +156,11 @@ def _actor_username(actor: dict[str, Any]) -> str:
 
 def actor_email(actor: dict[str, Any]) -> str:
     unique_name = str(actor.get('uniqueName') or '').strip()
+    # Work item service hooks send "Display Name <uniqueName>". The display
+    # name is free text, so only the trailing <...> part is the account.
+    account = re.search(r'<([^<>\s]+@[^<>\s]+)>$', unique_name)
+    if account:
+        return account.group(1)
     if '@' in unique_name:
         return unique_name
     display_name = str(actor.get('displayName') or '').strip()
