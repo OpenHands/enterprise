@@ -1,8 +1,4 @@
-"""Mapping the git provider user behind a webhook to an OpenHands user:
-``auth_provider_users`` first, then Keycloak if it is configured.
-
-Runs against the test database.
-"""
+"""Mapping a webhook's git sender to an OpenHands user, against the test database."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
