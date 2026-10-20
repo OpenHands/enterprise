@@ -29,6 +29,7 @@ from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
     is_bundled_proxy_base_url,
+    should_use_direct_llm_defaults,
 )
 from server.logger import logger
 from server.routes.org_models import (
@@ -572,7 +573,18 @@ class SaasSettingsStore(SettingsStore):
         seeded_payload: dict[str, Any] | None = None
         if not (kwargs.get('llm_profiles') or {}).get('profiles'):
             legacy_llm = merged_agent_settings.get('llm')
-            if isinstance(legacy_llm, dict) and legacy_llm.get('model'):
+            # With no gateway and no install default there is no default LLM:
+            # a new org holds the SDK's placeholder model until someone saves
+            # an LLM, and the UI saves that LLM as its own profile, so a
+            # seeded Default would be a profile nobody added.
+            has_default_llm = (
+                await is_litellm_enabled() or should_use_direct_llm_defaults()
+            )
+            if (
+                has_default_llm
+                and isinstance(legacy_llm, dict)
+                and legacy_llm.get('model')
+            ):
                 seeded_payload = {
                     'profiles': {'Default': dict(legacy_llm)},
                     'active': 'Default',
