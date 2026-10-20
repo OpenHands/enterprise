@@ -2909,7 +2909,7 @@ def test_profile_sync_skips_non_openhands_agent_kind():
 
 
 async def _seed_litellm_off_member(
-    async_session_maker, fixture, *, org_llm: dict, member_key: str
+    async_session_maker, fixture, *, org_llm: dict, member_key: str | None
 ) -> None:
     """One member in the shape signup leaves: model on the org, key on the member."""
     from sqlalchemy import select, text
@@ -2942,8 +2942,11 @@ async def _seed_litellm_off_member(
         await session.commit()
 
 
-async def _launch_settings(async_session_maker, user_id, *, litellm: bool):
+async def _launch_settings(
+    async_session_maker, user_id, *, litellm: bool, install_default: bool = True
+):
     store = SaasSettingsStore(str(user_id))
+    direct = not litellm and install_default
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch('storage.user_store.a_session_maker', async_session_maker),
@@ -2952,16 +2955,16 @@ async def _launch_settings(async_session_maker, user_id, *, litellm: bool):
         patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
         patch(
             'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
-            None if litellm else 'direct',
+            'direct' if direct else None,
         ),
         patch(
             'server.constants.OPENHANDS_DEFAULT_LLM_MODEL',
-            None if litellm else 'anthropic/claude-x',
+            'anthropic/claude-x' if direct else None,
         ),
         patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
         patch(
             'server.constants.OPENHANDS_DEFAULT_LLM_API_KEY',
-            None if litellm else 'sk-install',
+            'sk-install' if direct else None,
         ),
     ):
         return await store.load(resolve_agent_profile=True)
@@ -3037,6 +3040,72 @@ async def test_litellm_on_member_still_launches_openhands_default(
     assert loaded.agent_settings.llm.api_key.get_secret_value() == (
         'sk-litellm-virtual-key'
     )
+
+
+@pytest.mark.parametrize(
+    'org_llm,member_key',
+    [
+        pytest.param(
+            {'model': 'gpt-5.6', 'base_url': None},
+            None,
+            id='new org on the SDK placeholder',
+        ),
+        pytest.param(
+            {'model': 'anthropic/claude-sonnet-4-5-20250929', 'base_url': None},
+            'sk-user',
+            id='org whose first LLM was just saved',
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_load_without_a_default_llm_adds_no_default_profile(
+    async_session_maker, org_with_multiple_members_fixture, org_llm, member_key
+):
+    """With no LiteLLM gateway and no install default there is no default LLM,
+    so load() must not add a Default profile nobody created (OHE-3662)."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker, fixture, org_llm=org_llm, member_key=member_key
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker,
+        fixture['admin_user_id'],
+        litellm=False,
+        install_default=False,
+    )
+
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+    assert loaded is not None
+    assert loaded.llm_profiles.profiles == {}
+    assert not (org.llm_profiles or {}).get('profiles')
+
+
+@pytest.mark.asyncio
+async def test_load_with_direct_install_default_still_seeds_default_profile(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """An install default is a default LLM, so a profile-less org on a
+    LiteLLM-off install still gets its Default profile."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker,
+        fixture,
+        org_llm={'model': 'anthropic/claude-x', 'base_url': None},
+        member_key='sk-install',
+    )
+
+    await _launch_settings(async_session_maker, fixture['admin_user_id'], litellm=False)
+
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+    assert set(org.llm_profiles['profiles']) == {'Default'}
+    assert org.llm_profiles['profiles']['Default']['model'] == 'anthropic/claude-x'
 
 
 def test_managed_llm_key_config_treats_linked_llm_as_byok():

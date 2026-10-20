@@ -29,7 +29,11 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.http_session import httpx_verify_option
-from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_models
+from openhands.app_server.utils.llm import (
+    VERIFIED_PROVIDERS,
+    ModelsResponse,
+    get_supported_llm_models,
+)
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
@@ -210,8 +214,14 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         # is not. Require the openhands/ prefix so a catalogue model whose bare
         # name collides with a proxy one (openai/gpt-5 vs proxy gpt-5) isn't
         # falsely verified.
-        return model_name.startswith(_OPENHANDS_PREFIX) and name in set(
-            models_response.verified_models
+        if model_name.startswith(_OPENHANDS_PREFIX):
+            return name in set(models_response.verified_models)
+        # Without a managed proxy the catalogue's providers are the verified
+        # ones, so their SDK-verified models are too.
+        provider = model_name.split('/', 1)[0]
+        return (
+            provider in models_response.verified_providers
+            and super()._is_model_verified(model_name, name, models_response)
         )
 
     async def _litellm_enabled(self) -> bool:
@@ -234,9 +244,13 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             # LiteLLM disabled deployment-wide: the OpenHands/managed models
             # (served through the bundled proxy) are hidden entirely rather
             # than fetched -- only direct provider configurations (BYOK) are
-            # offered. Never touches the network.
+            # offered, with the SDK's verified providers marked verified. Never
+            # touches the network.
             direct_only = self._build_response([]).model_copy(
-                update={'default_model': get_default_llm_model()}
+                update={
+                    'default_model': get_default_llm_model(),
+                    'verified_providers': VERIFIED_PROVIDERS,
+                }
             )
             return await self._union_with_catalogue(direct_only)
 

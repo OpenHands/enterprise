@@ -61,6 +61,15 @@ async function chooseModel(
   }
 }
 
+async function openStep(
+  user: ReturnType<typeof userEvent.setup>,
+  stepId: string,
+) {
+  const step = await screen.findByTestId(`sa-nux-starter-step-${stepId}`);
+  await user.click(step);
+  return document.getElementById(step.getAttribute("aria-controls") ?? "");
+}
+
 describe("SuperAdminGroupSetupModal", () => {
   beforeEach(() => {
     resetSuperAdminNux();
@@ -263,5 +272,37 @@ describe("SuperAdminGroupSetupModal", () => {
 
     // Assert
     expect(screen.queryByTestId("sa-nux-llm-api-key")).not.toBeInTheDocument();
+  });
+
+  it("tells the admin that Get started saves the LLM and opens the automation step", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+
+    // Act
+    const panel = await openStep(user, "automation");
+
+    // Assert
+    expect(panel).toHaveAttribute("aria-hidden", "false");
+    expect(panel).toHaveTextContent("SA_NUX$STARTER_AUTOMATION_DETAIL");
+    expect(translations.SA_NUX$STARTER_AUTOMATION_DETAIL.en).toContain(
+      "Get started saves your LLM and takes you there",
+    );
+  });
+
+  it("points the admin to the Setup guide in the lower-right corner for the rest of setup", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+
+    // Act
+    const panel = await openStep(user, "others");
+
+    // Assert
+    expect(panel).toHaveAttribute("aria-hidden", "false");
+    expect(panel).toHaveTextContent("SA_NUX$STARTER_OTHERS_DETAIL");
+    expect(translations.SA_NUX$STARTER_OTHERS_DETAIL.en).toContain(
+      "from the Setup guide in the lower-right corner",
+    );
   });
 });
