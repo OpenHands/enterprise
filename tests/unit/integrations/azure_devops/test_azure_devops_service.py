@@ -50,29 +50,19 @@ async def test_get_latest_token_updates_cached_token_from_external_auth_id():
         token=SecretStr('expired-token'),
     )
 
-    with (
-        patch.object(
-            service.token_manager,
-            'load_offline_token',
-            new_callable=AsyncMock,
-            return_value='offline-token',
-        ) as mock_load_offline_token,
-        patch.object(
-            service.token_manager,
-            'get_idp_token_from_offline_token',
-            new_callable=AsyncMock,
-            return_value='fresh-token',
-        ) as mock_get_idp_token_from_offline_token,
-    ):
+    with patch.object(
+        service.token_manager,
+        'get_idp_token_for_user',
+        new_callable=AsyncMock,
+        return_value='fresh-token',
+    ) as mock_get_idp_token_for_user:
         token = await service.get_latest_token()
 
     assert token is not None
     assert token.get_secret_value() == 'fresh-token'
     assert service.token.get_secret_value() == 'fresh-token'
-    mock_load_offline_token.assert_awaited_once_with('external-auth-id')
-    mock_get_idp_token_from_offline_token.assert_awaited_once_with(
-        'offline-token',
-        ProviderType.AZURE_DEVOPS,
+    mock_get_idp_token_for_user.assert_awaited_once_with(
+        'external-auth-id', ProviderType.AZURE_DEVOPS
     )
 
 

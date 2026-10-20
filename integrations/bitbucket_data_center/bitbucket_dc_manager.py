@@ -362,18 +362,8 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'in {bitbucket_view.full_repo_name}#{bitbucket_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket DC] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET_DATA_CENTER
+                user_token = await self.token_manager.get_idp_token_for_user(
+                    user_info.keycloak_user_id, ProviderType.BITBUCKET_DATA_CENTER
                 )
                 if not user_token:
                     logger.warning(
