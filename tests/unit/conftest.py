@@ -1,8 +1,9 @@
 import os
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -21,7 +22,10 @@ from sqlalchemy.pool import NullPool
 from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
     StoredAppConversationStartTask,  # noqa: F401
 )
-from server.auth.token_manager import KeycloakUserInfo
+from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.auth.token_manager import KeycloakUserInfo, TokenManager
 from server.constants import ORG_SETTINGS_VERSION
 from server.verified_models.verified_model_service import (
     StoredVerifiedModel,  # noqa: F401
@@ -30,7 +34,8 @@ from server.verified_models.verified_model_service import (
 # Imported for their side effect: SQLAlchemy can only configure mappers once
 # every model a relationship refers to has been imported.
 from storage.api_key import ApiKey  # noqa: F401
-from storage.auth_provider import AuthProvider  # noqa: F401
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails
 from storage.auth_provider_user import AuthProviderUser  # noqa: F401
 from storage.billing_session import BillingSession
 from storage.conversation_work import ConversationWork
@@ -39,6 +44,7 @@ from storage.device_code import DeviceCode  # noqa: F401
 from storage.feedback import Feedback
 from storage.github_app_installation import GithubAppInstallation
 from storage.oauth_token import OAuthToken  # noqa: F401
+from storage.oauth_token_store import OAuthTokenStore
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings  # noqa: F401
 from storage.org_budget_threshold import OrgBudgetThreshold  # noqa: F401
@@ -228,6 +234,92 @@ def create_user(
         return user
 
     return _create
+
+
+@pytest.fixture
+def oauth_v2_stores(async_session_maker: async_sessionmaker) -> Iterator[None]:
+    """Point the stores behind background git-token reads at the test database."""
+    jwt_svc = JwtService(
+        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
+    )
+    with (
+        patch('storage.database.a_session_maker', async_session_maker),
+        patch('storage.auth_provider_store.a_session_maker', async_session_maker),
+        patch('storage.oauth_token_store.a_session_maker', async_session_maker),
+        patch('storage.offline_token_store.a_session_maker', async_session_maker),
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+    ):
+        yield
+
+
+@pytest.fixture
+def create_git_provider(
+    oauth_v2_stores, async_session_maker: async_sessionmaker
+) -> Callable[..., Awaitable[AuthProvider]]:
+    """Factory for OAuth2 ``auth_providers`` rows, git providers by default."""
+
+    async def _create(
+        provider_type: ProviderType = ProviderType.GITLAB, is_idp: bool = False
+    ) -> AuthProvider:
+        host = f'https://{provider_type.value}.example.com'
+        provider = AuthProvider(
+            title=provider_type.value,
+            is_idp=is_idp,
+            details=OAuthProviderDetails(
+                provider_type=provider_type,
+                client_id='client',
+                client_secret=SecretStr('secret'),
+                authorization_url=f'{host}/oauth/authorize',
+                token_url=f'{host}/oauth/token',
+                userinfo_url=f'{host}/user',
+            ),
+        )
+        async with async_session_maker() as session:
+            session.add(provider)
+            await session.commit()
+            await session.refresh(provider)
+        return provider
+
+    return _create
+
+
+@pytest.fixture
+def store_oauth_token(oauth_v2_stores) -> Callable[..., Awaitable[None]]:
+    """Store a user's token for a provider in ``oauth_tokens``."""
+
+    async def _store(
+        user_id: UUID,
+        provider: AuthProvider,
+        access_token: str,
+        access_token_expires_at: datetime | None = None,
+    ) -> None:
+        await OAuthTokenStore(
+            user_id=user_id, oauth_provider_id=provider.id
+        ).store_tokens(
+            access_token=access_token,
+            refresh_token='refresh',
+            access_token_expires_at=access_token_expires_at,
+            refresh_token_expires_at=None,
+        )
+
+    return _store
+
+
+def _fail_keycloak(*args, **kwargs):
+    raise AssertionError('Keycloak must not be used')
+
+
+@pytest.fixture
+def no_keycloak() -> Iterator[None]:
+    """Fail the test on any call to Keycloak. Reading offline tokens from the
+    database is allowed: without Keycloak, users simply have none."""
+    with (
+        patch('server.auth.token_manager.get_keycloak_admin', _fail_keycloak),
+        patch('server.auth.token_manager.get_keycloak_openid', _fail_keycloak),
+        patch.object(TokenManager, 'get_idp_token', _fail_keycloak),
+        patch.object(TokenManager, 'get_idp_token_from_offline_token', _fail_keycloak),
+    ):
+        yield
 
 
 def add_minimal_fixtures(session_maker):

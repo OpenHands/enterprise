@@ -72,15 +72,8 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             )
             logger.debug('Got Azure DevOps token via external_auth_token')
         elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            azure_devops_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.AZURE_DEVOPS
-                )
-                if offline_token
-                else None
+            azure_devops_token_str = await self.token_manager.get_idp_token_for_user(
+                self.external_auth_id, ProviderType.AZURE_DEVOPS
             )
             azure_devops_token = (
                 SecretStr(azure_devops_token_str) if azure_devops_token_str else None
