@@ -46,6 +46,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -538,6 +539,15 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             keycloak_access_token=access_token,
         )
+
+    # Password sessions never refresh an IdP token, so the middleware never
+    # starts this sync for them. Keep it after the GitLab token is stored: the
+    # sync reads that token from ``oauth_tokens``.
+    if isinstance(details, OAuthProviderDetails) and (
+        (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
+        or details.legacy_keycloak_type == ProviderType.GITLAB
+    ):
+        schedule_gitlab_repo_sync(user_id)
 
     redirect_url = state_data.redirect_url or '/'
 

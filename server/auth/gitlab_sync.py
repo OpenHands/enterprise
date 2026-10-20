@@ -1,4 +1,5 @@
 import asyncio
+from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -9,26 +10,35 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 
 
 async def _user_has_gitlab_provider(user_id: str) -> bool:
-    """Check if the user has authenticated with GitLab.
-
-    Args:
-        user_id: The Keycloak user ID
-
-    Returns:
-        True if the user has a GitLab provider token, False otherwise
+    """Check if the user has a GitLab token, either through Keycloak or in
+    ``oauth_tokens`` for the GitLab git provider.
     """
     # Lazy import to avoid circular dependency issues at module load time
+    from storage.auth_provider import AuthProvider
     from storage.auth_tokens import AuthTokens
     from storage.database import a_session_maker
+    from storage.oauth_token import OAuthToken
 
     async with a_session_maker() as session:
         result = await session.execute(
-            select(AuthTokens).where(
+            select(AuthTokens.id).where(
                 AuthTokens.keycloak_user_id == user_id,
                 AuthTokens.identity_provider == ProviderType.GITLAB.value,
             )
         )
-        return result.scalars().first() is not None
+        if result.first() is not None:
+            return True
+        result = await session.execute(
+            select(OAuthToken.id)
+            .join(AuthProvider, AuthProvider.id == OAuthToken.oauth_provider_id)
+            .where(
+                OAuthToken.user_id == UUID(user_id),
+                AuthProvider.is_idp.is_(False),
+                AuthProvider.details['provider_type'].as_string()
+                == ProviderType.GITLAB.value,
+            )
+        )
+        return result.first() is not None
 
 
 def schedule_gitlab_repo_sync(

@@ -991,6 +991,123 @@ def test_callback_error_param_400(client, jwt_svc):
     assert response.status_code == 400
 
 
+# ── callback: GitLab repo sync ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ('category', 'expect_sync'), [('gitlab', True), ('github', False)]
+)
+def test_callback_link_schedules_gitlab_repo_sync(
+    client, jwt_svc, category, expect_sync
+):
+    provider = _fake_provider(category=category)
+    user_id = uuid4()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, {'id': 42}),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'schedule_gitlab_repo_sync') as schedule_sync,
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    if expect_sync:
+        schedule_sync.assert_called_once_with(str(user_id))
+    else:
+        schedule_sync.assert_not_called()
+
+
+def test_callback_legacy_keycloak_gitlab_login_syncs_after_storing_real_token(
+    client, jwt_svc
+):
+    """The sync reads the GitLab token from the git provider row, so it must
+    start only once the broker-fetched token is stored there."""
+    provider = _fake_provider(
+        provider_id=1,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='gitlab',
+    )
+    git_provider = MagicMock()
+    git_provider.id = 42
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+    stored_git_tokens_at_sync: list[int] = []
+
+    _FakeTokenStore.reset()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_provider_by_type',
+            new=AsyncMock(return_value=git_provider),
+        ),
+        _patch_httpx(
+            {'access_token': 'kc-at', 'refresh_token': 'kc-rt'},
+            {'sub': 'ext-sub-1', 'email': 'a@b.com'},
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(oauth_v2, 'OAuthTokenStore', _FakeTokenStore),
+        patch.object(
+            oauth_v2.TokenManager,
+            'get_idp_tokens_from_keycloak',
+            new=AsyncMock(
+                return_value={'access_token': 'gl-at', 'refresh_token': 'gl-rt'}
+            ),
+        ),
+        patch.object(
+            oauth_v2,
+            'schedule_gitlab_repo_sync',
+            side_effect=lambda _user_id: stored_git_tokens_at_sync.append(
+                len(_FakeTokenStore.calls_for(42))
+            ),
+        ) as schedule_sync,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    schedule_sync.assert_called_once_with(str(fake_user.id))
+    assert stored_git_tokens_at_sync == [1]
+
+
 def test_callback_link_missing_user_id_in_state_400(client, jwt_svc):
     provider = _fake_provider()
     with (
