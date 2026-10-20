@@ -10,7 +10,7 @@ import types
 import zipfile
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -55,6 +55,9 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
+from openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service import (
+    DynamicRemoteSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -68,6 +71,7 @@ from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
     Settings,
     _load_persisted_agent_settings,
+    grouped_workspace_dir,
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import AuthType
@@ -3378,6 +3382,108 @@ class TestLiveStatusAppConversationService:
             == current_key
         )
         assert rotated
+
+    async def test_start_app_conversation_in_sandbox_whose_image_is_no_longer_advertised(
+        self,
+    ):
+        """A sandbox created before an image bump has no spec once runtime-api
+        advertises only the new image; the start must use the default spec."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.55.1-python'
+        conversation_id = uuid4()
+        with (
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+            ) as mock_remote_workspace_class,
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+            ) as mock_conversation_info_class,
+        ):
+            self._arrange_start_app_conversation(
+                conversation_id,
+                mock_conversation_info_class,
+                mock_remote_workspace_class,
+            )
+            self.mock_sandbox.sandbox_spec_id = old_image
+            self.service._process_pending_messages = AsyncMock()
+            profile_listing = Mock(raise_for_status=Mock())
+            profile_listing.json.return_value = {'profiles': []}
+            self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
+            self.service.sandbox_spec_service = DynamicRemoteSandboxSpecService(
+                api_url='https://runtime-api.example.com',
+                api_key='k',
+                default_spec_name='',
+                cache_ttl_seconds=60,
+            )
+            runtime_api_response = MagicMock()
+            runtime_api_response.raise_for_status.return_value = None
+            runtime_api_response.json.return_value = {
+                'configs': [
+                    {
+                        'name': 'v1_current',
+                        'image': current_image,
+                        'command': ['--port', '60000'],
+                        'environment': {},
+                        'working_dir': '/workspace/project',
+                    }
+                ]
+            }
+            runtime_api_client = AsyncMock()
+            runtime_api_client.get = AsyncMock(return_value=runtime_api_response)
+            runtime_api_ctx = MagicMock()
+            runtime_api_ctx.__aenter__ = AsyncMock(return_value=runtime_api_client)
+            runtime_api_ctx.__aexit__ = AsyncMock(return_value=False)
+
+            with patch('httpx.AsyncClient', return_value=runtime_api_ctx):
+                tasks = [
+                    task
+                    async for task in self.service._start_app_conversation(
+                        AppConversationStartRequest(
+                            title='Old sandbox', conversation_id=conversation_id
+                        )
+                    )
+                ]
+
+        assert (
+            await self.service.sandbox_spec_service.get_sandbox_spec(old_image) is None
+        )
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        assert mock_remote_workspace_class.call_args.kwargs[
+            'working_dir'
+        ] == grouped_workspace_dir(
+            '/workspace/project',
+            SandboxGroupingStrategy.ADD_TO_ANY,
+            conversation_id.hex,
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_error_when_no_spec_is_available(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """With neither the sandbox's spec nor a default, the start task must
+        fail with a message, not the empty detail a bare assert produced."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+            side_effect=SandboxError('No sandbox specs available!')
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='No spec')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert tasks[-1].detail == 'No sandbox specs available!'
 
     def _arrange_start_app_conversation(
         self,
