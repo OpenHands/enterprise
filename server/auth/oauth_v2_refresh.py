@@ -180,11 +180,14 @@ async def get_oauth_v2_git_token(
     user_id: str, provider_type: ProviderType
 ) -> str | None:
     """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak."""
-    provider = await AuthProviderStore().get_git_provider_by_type(provider_type.value)
+    user_uuid = UUID(user_id)
+    provider = await AuthProviderStore().get_linked_git_provider(
+        user_uuid, provider_type.value
+    )
     if provider is None:
         return None
     return await OAuthTokenStore(
-        user_id=UUID(user_id), oauth_provider_id=provider.id
+        user_id=user_uuid, oauth_provider_id=provider.id
     ).get_valid_access_token(
         permitted_drift_seconds=get_permitted_drift_seconds(provider),
         refresh=make_refresh_callback(provider),
