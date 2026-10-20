@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { useConfig } from "#/hooks/query/use-config";
 import { useDisconnectGitProvider } from "#/hooks/mutation/use-disconnect-git-provider";
-import { generateIdpLinkUrl } from "#/utils/generate-idp-link-url";
+import { useConnectGitProvider } from "#/hooks/mutation/use-connect-git-provider";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -37,13 +37,27 @@ export function GitProviderConnection({
   const { data: config } = useConfig();
   const { mutate: disconnectGitProvider, isPending } =
     useDisconnectGitProvider();
+  const { mutate: connectGitProvider, isPending: isConnecting } =
+    useConnectGitProvider();
   const [confirmDisconnect, setConfirmDisconnect] = React.useState(false);
 
   const handleConnect = () => {
-    window.location.href = generateIdpLinkUrl(
-      provider,
-      new URL(window.location.href),
-      config?.auth_url,
+    connectGitProvider(
+      {
+        provider,
+        requestUrl: new URL(window.location.href),
+        authUrl: config?.auth_url,
+      },
+      {
+        onSuccess: (url) => {
+          window.location.href = url;
+        },
+        onError: (error) => {
+          displayErrorToast(
+            retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
+          );
+        },
+      },
     );
   };
 
@@ -83,6 +97,7 @@ export function GitProviderConnection({
             type="button"
             variant="primary"
             className={settingsListRowActionButtonClassName}
+            isDisabled={isConnecting}
             onClick={handleConnect}
           >
             {t(I18nKey.BUTTON$CONNECT)}

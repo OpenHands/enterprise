@@ -1,5 +1,5 @@
 import { generateAuthUrl } from "./generate-auth-url";
-import { getLoginMethod } from "./local-storage";
+import { getLoginMethod, LoginMethod } from "./local-storage";
 import { Provider } from "#/types/settings";
 
 /**
@@ -16,10 +16,21 @@ export const generateIdpLinkUrl = (
   provider: Provider,
   requestUrl: URL,
   authUrl?: string | null,
+  reauthenticationProvider?: string | null,
 ) => {
   // Hint Keycloak towards the method the user signed in with, so that a forced
   // re-authentication goes to their own IdP rather than the provider being linked.
-  const loginMethod = getLoginMethod();
+  // The account's provider attribute can be overwritten by a Git link. Never
+  // let it replace browser login history or route back to the provider to link.
+  const savedLoginMethod = getLoginMethod();
+  const loginMethod =
+    Object.values(LoginMethod).find(
+      (method) => method === savedLoginMethod && method !== provider,
+    ) ??
+    (reauthenticationProvider === LoginMethod.ENTERPRISE_SSO &&
+    provider !== LoginMethod.ENTERPRISE_SSO
+      ? LoginMethod.ENTERPRISE_SSO
+      : null);
   const url = new URL(
     generateAuthUrl(loginMethod ?? provider, requestUrl, authUrl),
   );
