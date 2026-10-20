@@ -14,8 +14,10 @@
 # no extra port or CORS setup is needed. `/api/service/*` is deliberately not
 # reachable through the proxy (see the `caddyfile` config at the bottom).
 #
-# First run: open http://localhost:3100/oauth/idp/signup to create the admin
-# account, then add an LLM under Settings. `/` then redirects to Agent Canvas
+# First run: the app pulls the agent server image before it starts serving, so
+# http://localhost:3100 is not reachable until that pull finishes (the app logs
+# show its progress). Then open http://localhost:3100/oauth/idp/signup to create
+# the admin account, and add an LLM under Settings. `/` then redirects to Agent Canvas
 # at /canvas, which is served by the `canvas-server` service and locked to this
 # stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
 # existing session cookie instead of prompting to connect to OpenHands Cloud.
@@ -232,6 +234,15 @@ services:
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+    # The app opens its port only after startup, which pulls the agent server
+    # image if the Docker host does not have it. That pull can take many
+    # minutes on the first run, hence the long start_period.
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 1h
     restart: unless-stopped
 
   # Scheduled and event-driven automations (OpenHands/automation). It
@@ -348,7 +359,7 @@ services:
     image: caddy:2
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
       automation-server:
         condition: service_healthy
       canvas-server:
