@@ -32,11 +32,10 @@ async def test_a_run_uses_the_users_oauth_v2_gitlab_token(
         token = await gitlab_service.get_latest_token()
         tokens[resource_id] = token.get_secret_value()
 
-    # Deployments set OPENHANDS_GITLAB_SERVICE_CLS to SaaSGitLabService; the
-    # GitLab API calls are what's faked.
     with (
         patch('storage.gitlab_webhook_store.a_session_maker', async_session_maker),
         patch('sync.install_gitlab_webhooks.a_session_maker', async_session_maker),
+        # Deployments set OPENHANDS_GITLAB_SERVICE_CLS to SaaSGitLabService.
         patch('sync.install_gitlab_webhooks.GitLabServiceImpl', SaaSGitLabService),
         patch(
             'sync.install_gitlab_webhooks.install_claimed_webhook',

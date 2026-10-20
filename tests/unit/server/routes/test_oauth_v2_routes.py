@@ -1031,8 +1031,8 @@ def test_callback_link_schedules_gitlab_repo_sync(
 def test_callback_legacy_keycloak_gitlab_login_syncs_after_storing_real_token(
     client, jwt_svc
 ):
-    """The sync reads the GitLab token from the git provider row, so it must
-    start only once the broker-fetched token is stored there."""
+    """The sync reads the GitLab token fetched from Keycloak, so it must start
+    only after that token is stored."""
     provider = _fake_provider(
         provider_id=1,
         category='enterprise_sso',

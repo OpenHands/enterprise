@@ -10,9 +10,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 
 
 async def _user_has_gitlab_provider(user_id: str) -> bool:
-    """Check if the user has a GitLab token, either through Keycloak or in
-    ``oauth_tokens`` for the GitLab git provider.
-    """
+    """Whether the user has a GitLab token from Keycloak or an OAuth v2 link."""
     # Lazy import to avoid circular dependency issues at module load time
     from storage.auth_provider import AuthProvider
     from storage.auth_tokens import AuthTokens

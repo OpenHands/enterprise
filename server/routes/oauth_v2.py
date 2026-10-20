@@ -540,9 +540,9 @@ async def oauth_v2_callback(
             keycloak_access_token=access_token,
         )
 
-    # Password sessions never refresh an IdP token, so the middleware never
-    # starts this sync for them. Keep it after the GitLab token is stored: the
-    # sync reads that token from ``oauth_tokens``.
+    # Password sessions never refresh a login token, so the middleware never
+    # starts this sync for them. Must run after the GitLab token is stored:
+    # the sync reads it from ``oauth_tokens``.
     if isinstance(details, OAuthProviderDetails) and (
         (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
         or details.legacy_keycloak_type == ProviderType.GITLAB
