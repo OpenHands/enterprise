@@ -31177,6 +31177,23 @@
     "uk": "Setup is complete. The Setup guide will be removed from the left navigation. You can show it again from Instance.",
     "ca": "Setup is complete. The Setup guide will be removed from the left navigation. You can show it again from Instance."
   },
+  "SUPER_ADMIN$SETUP_DISMISS_CONFIRM": {
+    "en": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "ja": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "zh-CN": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "zh-TW": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "ko-KR": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "no": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "it": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "pt": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "es": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "ar": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "fr": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "tr": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "de": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "uk": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings.",
+    "ca": "Hide the Setup guide? You can turn it back on in Super Admin Instance Settings."
+  },
   "SUPER_ADMIN$SETUP_OPEN": {
     "en": "Open",
     "ja": "Open",
