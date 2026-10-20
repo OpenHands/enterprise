@@ -1,9 +1,5 @@
-"""Git tokens for work done without the user's session: ``oauth_tokens``
-first, then the user's Keycloak offline session.
-
-Runs against the test database. Only the git providers' HTTP endpoints and,
-where a test says so, Keycloak are faked.
-"""
+"""Runs against the test database. Only the git providers' token endpoints
+and, where a test says so, Keycloak are faked."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
