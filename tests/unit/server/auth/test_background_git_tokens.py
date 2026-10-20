@@ -467,6 +467,18 @@ async def test_an_oauth_v2_gitlab_token_counts_as_gitlab_for_the_repo_sync(
 
 
 @pytest.mark.asyncio
+async def test_a_gitlab_login_provider_token_does_not_count_for_the_repo_sync(
+    create_git_provider, store_oauth_token, create_user
+):
+    # The sync reads git-provider tokens only, so a login token is no use to it.
+    gitlab_login = await create_git_provider(ProviderType.GITLAB, is_idp=True)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab_login, 'glpat-login')
+
+    assert await _user_has_gitlab_provider(str(user.id)) is False
+
+
+@pytest.mark.asyncio
 async def test_a_keycloak_gitlab_token_still_counts_for_the_repo_sync(
     oauth_v2_stores, async_session_maker, create_user
 ):

@@ -995,12 +995,19 @@ def test_callback_error_param_400(client, jwt_svc):
 
 
 @pytest.mark.parametrize(
-    ('category', 'expect_sync'), [('gitlab', True), ('github', False)]
+    ('category', 'is_idp', 'flag', 'expect_sync'),
+    [
+        ('gitlab', False, 'oauth_v2_login_on', True),
+        ('github', False, 'oauth_v2_login_on', False),
+        ('gitlab', True, 'oauth_v2_login_on', False),
+        ('gitlab', False, 'oauth_v2_login_off', False),
+    ],
 )
 def test_callback_link_schedules_gitlab_repo_sync(
-    client, jwt_svc, category, expect_sync
+    request, client, jwt_svc, category, is_idp, flag, expect_sync
 ):
-    provider = _fake_provider(category=category)
+    request.getfixturevalue(flag)
+    provider = _fake_provider(category=category, is_idp=is_idp)
     user_id = uuid4()
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -1029,7 +1036,7 @@ def test_callback_link_schedules_gitlab_repo_sync(
 
 
 def test_callback_legacy_keycloak_gitlab_login_syncs_after_storing_real_token(
-    client, jwt_svc
+    oauth_v2_login_on, client, jwt_svc
 ):
     """The sync reads the GitLab token fetched from Keycloak, so it must start
     only after that token is stored."""

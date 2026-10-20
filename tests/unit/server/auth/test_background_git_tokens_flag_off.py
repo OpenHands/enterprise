@@ -1,8 +1,10 @@
-"""With ``ENABLE_OAUTH_V2_LOGIN`` off, background git-token reads take the
-Keycloak path exactly as before, even when an ``oauth_tokens`` row exists.
+"""With ``ENABLE_OAUTH_V2_LOGIN`` off, background git-token reads and the GitLab
+repo sync take the Keycloak path exactly as before, even when an
+``oauth_tokens`` row exists.
 Runs against the test database. Keycloak is faked: tests have no Keycloak
 server."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -26,7 +28,12 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
 )
 from server.auth.constants import is_oauth_v2_login_enabled
+from server.auth.gitlab_sync import (
+    _user_has_gitlab_provider,
+    schedule_gitlab_repo_sync,
+)
 from server.auth.token_manager import TokenManager
+from storage.auth_tokens import AuthTokens
 
 pytestmark = pytest.mark.usefixtures('oauth_v2_login_off')
 
@@ -225,3 +232,52 @@ async def test_managers_start_jobs_with_the_keycloak_token(
 
     provider_tokens = view.create_new_conversation.await_args.args[1]
     assert provider_tokens[provider_type].token.get_secret_value() == 'from-keycloak'
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_v2_gitlab_token_does_not_count_for_the_repo_sync(
+    create_git_provider, store_oauth_token, create_user
+):
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat')
+
+    assert await _user_has_gitlab_provider(str(user.id)) is False
+
+
+@pytest.mark.asyncio
+async def test_a_keycloak_gitlab_token_counts_for_the_repo_sync(
+    oauth_v2_stores, async_session_maker, create_user
+):
+    user_id = str(create_user().id)
+    async with async_session_maker() as session:
+        session.add(
+            AuthTokens(
+                keycloak_user_id=user_id,
+                identity_provider=ProviderType.GITLAB.value,
+                access_token='a',
+                refresh_token='r',
+                access_token_expires_at=0,
+                refresh_token_expires_at=0,
+            )
+        )
+        await session.commit()
+
+    assert await _user_has_gitlab_provider(user_id) is True
+
+
+@pytest.mark.asyncio
+async def test_the_repo_sync_skips_a_user_with_only_an_oauth_v2_gitlab_token(
+    create_git_provider, store_oauth_token, create_user
+):
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat')
+    list_repositories = AsyncMock()
+
+    before = asyncio.all_tasks()
+    with patch.object(SaaSGitLabService, 'get_all_repositories', new=list_repositories):
+        schedule_gitlab_repo_sync(str(user.id))
+        await asyncio.gather(*(asyncio.all_tasks() - before))
+
+    list_repositories.assert_not_awaited()

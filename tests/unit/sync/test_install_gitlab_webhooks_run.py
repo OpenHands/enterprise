@@ -1,4 +1,5 @@
-"""A webhook installer run, against the test database, without Keycloak."""
+"""A webhook installer run, against the test database, without Keycloak and
+with ``ENABLE_OAUTH_V2_LOGIN`` on."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -8,6 +9,8 @@ from integrations.gitlab.gitlab_service import SaaSGitLabService
 from openhands.app_server.integrations.service_types import ProviderType
 from storage.gitlab_webhook import GitlabWebhook
 from sync.install_gitlab_webhooks import VerifyWebhookStatus
+
+pytestmark = pytest.mark.usefixtures('oauth_v2_login_on')
 
 
 @pytest.mark.asyncio
