@@ -1,11 +1,12 @@
 # Local/evaluation Docker Compose stack for OpenHands Enterprise (OHE).
 #
-# `docker compose up` is meant to be the entire setup: the app migrates its
-# own database on startup (RUN_MIGRATIONS_ON_STARTUP), uses the built-in
-# password-based admin login instead of Keycloak (ENABLE_INTEGRATED_IDP +
-# OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN), and lets each user
-# configure their own LLM in Settings instead of requiring a LiteLLM proxy
-# (OH_LLM_MODEL_KIND). See OHE-3376.
+# `docker compose up` is meant to be the entire setup: the app and the
+# automation service migrate their own databases on startup
+# (RUN_MIGRATIONS_ON_STARTUP, AUTOMATION_RUN_MIGRATIONS_ON_STARTUP), the app
+# uses the built-in password-based admin login instead of Keycloak
+# (ENABLE_INTEGRATED_IDP + OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN),
+# and lets each user configure their own LLM in Settings instead of requiring
+# a LiteLLM proxy (OH_LLM_MODEL_KIND). See OHE-3376.
 #
 # Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
 # the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
@@ -59,12 +60,6 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
-    # The automation service needs its own database: it and the app both run
-    # Alembic against an `alembic_version` table, so sharing one database
-    # would collide. `POSTGRES_DB` only creates one, hence this init script.
-    configs:
-      - source: automation-db-init
-        target: /docker-entrypoint-initdb.d/10-automation-db.sql
     # Intentionally no `db-data` volume mount here for now: this stack is
     # meant to be completely ephemeral (see OHE-3376 investigation into the
     # Docker named volume surviving `docker compose down`). Every
@@ -242,18 +237,15 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.20.0}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:sha-ab675eb}
     # The image is only published for linux/amd64. Pinning the platform makes
     # Docker Desktop on Apple Silicon run it under emulation instead of
     # failing with "no matching manifest for linux/arm64"; it's a no-op on
     # amd64 hosts. Drop this once the image is published multi-arch.
     platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
-    # here. The service only auto-migrates SQLite, so migrate Postgres first.
-    command:
-      - sh
-      - -c
-      - alembic upgrade head && exec uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
+    # here.
+    command: ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
       db:
         condition: service_healthy
@@ -273,6 +265,13 @@ services:
       # loopback (nothing listens there) to the sandbox's published port.
       - 'localhost:host-gateway'
     environment:
+      # The automation service needs its own database: it and the app both run
+      # Alembic against an `alembic_version` table, so sharing one database
+      # would collide. The service creates that database if it is missing and
+      # migrates it on startup. DB_USER is the Postgres superuser, so it is
+      # allowed to create databases.
+      AUTOMATION_RUN_MIGRATIONS_ON_STARTUP: 'true'
+      AUTOMATION_CREATE_DATABASE_IF_MISSING: 'true'
       AUTOMATION_DB_HOST: db
       AUTOMATION_DB_PORT: '5432'
       AUTOMATION_DB_NAME: ${AUTOMATION_DB_NAME:-automations}
@@ -387,9 +386,6 @@ services:
 #   app-filestore:
 
 configs:
-  automation-db-init:
-    content: |
-      CREATE DATABASE "${AUTOMATION_DB_NAME:-automations}";
   caddyfile:
     content: |
       {
