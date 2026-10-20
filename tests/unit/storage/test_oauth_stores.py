@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -778,9 +778,7 @@ class TestOAuthTokenStoreLocking:
     async def test_lock_timeout_raises_token_refresh_error(
         self, patched_session, make_provider, create_user
     ):
-        """A lock timeout (simulated) surfaces as ``TokenRefreshError``."""
-        from sqlalchemy.exc import OperationalError
-
+        """A row lock held past ``lock_timeout`` surfaces as ``TokenRefreshError``."""
         from server.auth.auth_error import TokenRefreshError
 
         provider = await make_provider()
@@ -793,46 +791,20 @@ class TestOAuthTokenStoreLocking:
             access_token_expires_at=past,
             refresh_token_expires_at=None,
         )
+        refresh = AsyncMock()
 
-        async def refresh(rt, at_exp, rt_exp):
-            return {
-                'access_token': 'new',
-                'refresh_token': 'new',
-                'access_token_expires_at': datetime.now(timezone.utc)
-                + timedelta(hours=1),
-                'refresh_token_expires_at': None,
-            }
-
-        # The fast path must succeed (read the expired token); only the slow
-        # path's session entry raises to mimic ``lock_timeout`` aborting
-        # ``SELECT FOR UPDATE``. Delegate the first invocation to the real
-        # (already-patched) session maker; raise on the second.
-        real_maker = patched_session
-        call_count = {'n': 0}
-
-        class _FakeSessionMaker:
-            async def __aenter__(self_inner):
-                call_count['n'] += 1
-                if call_count['n'] == 1:
-                    # Fast path: delegate to the real session maker.
-                    self_inner._real = real_maker()
-                    return await self_inner._real.__aenter__()
-
-                raise OperationalError(
-                    'SELECT FOR UPDATE', {}, Exception('lock timeout')
-                )
-
-            async def __aexit__(self_inner, *exc):
-                real = getattr(self_inner, '_real', None)
-                if real is not None:
-                    return await real.__aexit__(*exc)
-                return False
-
-            def __call__(self_inner, **kwargs):
-                return self_inner
-
-        with patch('storage.oauth_token_store.a_session_maker', _FakeSessionMaker()):
-            with pytest.raises(TokenRefreshError):
+        async with patched_session() as other_worker, other_worker.begin():
+            await other_worker.execute(
+                select(OAuthToken)
+                .where(OAuthToken.oauth_provider_id == provider.id)
+                .with_for_update()
+            )
+            with (
+                patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 1),
+                pytest.raises(TokenRefreshError),
+            ):
                 await store.get_valid_access_token(
                     permitted_drift_seconds=60, refresh=refresh
                 )
+
+        refresh.assert_not_awaited()
