@@ -64,7 +64,7 @@ For a local evaluation or development, `docker-compose.yml` starts the whole sta
 docker compose up -d
 ```
 
-Then open <http://localhost:3100/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:3100/canvas/>. The stack is ephemeral: `docker compose down` removes all data. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
+Then open <http://localhost:3100/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:3100/canvas/>. By default the stack is ephemeral and no data is stored on the host. To keep data across `docker compose down`, set `OH_PERSISTENCE_DIR` to a host directory (see below). If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
 
 To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
 
@@ -81,6 +81,14 @@ To run other published versions, set any of these (shell or `.env`):
 | `APP_IMAGE` | `ghcr.io/openhands/enterprise-server:<release>` | `ghcr.io/openhands/enterprise-server:main` (latest `main`), `:pr-<n>`, `:sha-<sha>` |
 | `AUTOMATION_IMAGE` | `ghcr.io/openhands/automation:<version>` | `ghcr.io/openhands/automation:main` |
 | `AGENT_CANVAS_IMAGE` | `ghcr.io/openhands/agent-canvas:<version>` | `ghcr.io/openhands/agent-canvas:main` |
+
+To keep the database, app file store and automation files across `docker compose down`, set `OH_PERSISTENCE_DIR` to an absolute host directory (they are stored in its `db`, `app` and `automation` subdirectories):
+
+```bash
+OH_PERSISTENCE_DIR=/var/lib/openhands docker compose up -d
+```
+
+To reset, run `docker compose down` and delete that directory. Without `OH_PERSISTENCE_DIR`, no data directory is bind-mounted and `docker compose down -v` removes all data.
 
 For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
 
