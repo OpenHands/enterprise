@@ -683,14 +683,10 @@ class TokenManager:
     async def get_user_id_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
-        """The user who linked the ``idp`` account ``idp_user_id``.
-
-        Reads ``auth_provider_users`` for the ``idp`` git provider first
-        (filled by OAuth v2 linking), then Keycloak if it is configured.
-        """
+        # OAuth v2 linking records accounts in auth_provider_users, not Keycloak.
         provider = await AuthProviderStore().get_git_provider_by_type(idp.value)
         if provider is not None:
-            # Webhook callers pass the provider's numeric user id.
+            # Webhook payloads can carry the id as an int; the column is text.
             link = await AuthProviderUserStore().get(provider.id, str(idp_user_id))
             if link is not None:
                 return str(link.user_id)
