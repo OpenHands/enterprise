@@ -179,12 +179,7 @@ def make_refresh_callback(
 async def get_oauth_v2_git_token(
     user_id: str, provider_type: ProviderType
 ) -> str | None:
-    """``user_id``'s access token at their ``provider_type`` git provider, from
-    ``oauth_tokens``, refreshed if due.
-
-    ``None`` when there is no such git provider or the user has no token for
-    it. Never calls Keycloak.
-    """
+    """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak."""
     provider = await AuthProviderStore().get_git_provider_by_type(provider_type.value)
     if provider is None:
         return None
