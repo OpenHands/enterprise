@@ -462,6 +462,36 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='client_tools are not supported for ACP agent launches',
             )
+        if request.llm_profile:
+            if not isinstance(agent_settings, OpenHandsAgentSettings):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='llm_profile is not supported for ACP agent launches',
+                )
+            profile_llm = user.llm_profiles.get(request.llm_profile)
+            if profile_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Profile '{request.llm_profile}' not found",
+                )
+            # Imported lazily: settings_router transitively imports this service,
+            # so a module-level import would be circular.
+            from openhands.app_server.settings.settings_router import (
+                LITE_LLM_API_URL,
+            )
+
+            # Resolve the profile as switch_profile does, and copy rather than
+            # mutate: the user context may cache the resolved settings.
+            agent_settings = agent_settings.model_copy(
+                update={
+                    'llm': resolve_profile_llm(
+                        profile_llm,
+                        managed_proxy_url=LITE_LLM_API_URL,
+                        fallback_api_key=agent_settings.llm.api_key,
+                    )
+                }
+            )
+            user = user.model_copy(update={'agent_settings': agent_settings})
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
