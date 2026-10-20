@@ -20,7 +20,6 @@ from openhands.app_server.git.git_models import (
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import (
-    Branch,
     ProviderType,
     Repository,
     SuggestedTask,
@@ -233,7 +232,7 @@ async def search_branches(
 ) -> BranchPage:
     """Search branches in a repository.
 
-    Returns a paginated list of branches, or one page of matches if query is provided.
+    Returns a paginated list of branches matching the search query.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -251,28 +250,23 @@ async def search_branches(
         external_auth_id=user_id,
     )
 
-    page = 1
-    decoded_page_id = decode_page_id(page_id)
-    if decoded_page_id is not None:
-        page = decoded_page_id
-
     if query:
-        if page != 1:
-            # TODO(#13883): Support pagination for branch search after refactoring.
-            # The search_branches method does not support paging in the same way as
-            # get_branches - those should be merged into a single paginated method
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Pagination not yet supported for branch search queries. Use empty query to list all branches with pagination.',
-            )
-        branches: list[Branch] = await client.search_branches(
+        # Each provider makes its own page_id (a page number or a cursor)
+        search_page = await client.search_branches(
             selected_provider=provider,
             repository=repository,
             query=query,
             per_page=limit,
+            page_id=page_id,
         )
-        # Search results are a single page, so there is no next page.
-        return BranchPage(items=branches, next_page_id=None)
+        return BranchPage(
+            items=search_page.branches, next_page_id=search_page.next_page_id
+        )
+
+    page = 1
+    decoded_page_id = decode_page_id(page_id)
+    if decoded_page_id is not None:
+        page = decoded_page_id
 
     # The providers use page-number pagination, so per_page must be equal to
     # limit. A larger per_page moves each page window and skips items.

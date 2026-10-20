@@ -14,6 +14,7 @@ from openhands.app_server.settings.settings_models import (
     Settings,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
+    agent_llm,
 )
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
@@ -25,6 +26,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
     apply_agent_settings_diff,
 )
+from openhands.sdk.tool.defaults import fold_retired_tool_switches
 from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -564,7 +566,11 @@ class OrgStore:
         (OpenHands or ACP) rather than a coerced OpenHands shape.
         """
         if settings_type is OpenHandsAgentSettings:
-            return apply_agent_settings_diff(current_settings or {}, settings_diff)
+            # Older clients may still send the SDK's retired tool switches.
+            return apply_agent_settings_diff(
+                current_settings or {},
+                fold_retired_tool_switches(settings_diff, sparse=True),
+            )
 
         base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
         merged_settings = deep_merge(
@@ -1062,7 +1068,9 @@ class OrgStore:
             llm_base_url = llm.base_url
             llm_provider_connection_id = getattr(llm, 'provider_connection_id', None)
         else:
-            llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
+            llm_settings = agent_llm(OrgStore.get_agent_settings_from_org(updated_org))
+            if llm_settings is None:  # ACP agents make their own model calls
+                return None
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
             llm_provider_connection_id = getattr(

@@ -37,10 +37,10 @@ COPY frontend ./
 # clones a second repository over the network (scripts/build-agent-canvas.sh),
 # which cloud doesn't need (it serves /canvas from a separate service behind
 # an ingress rule) and which would add a network dependency to every image
-# build otherwise. Opt in with `--build-arg AGENT_CANVAS=1`, which
-# docker-compose.yml's local stack does, since it has no ingress and instead
-# bakes /canvas into this image, served by the app.py/saas_server.py static
-# mount at /canvas once frontend/build/canvas exists.
+# build otherwise. Opt in with `--build-arg AGENT_CANVAS=1` to bake /canvas
+# into this image, served by the app.py/saas_server.py static mount at /canvas
+# once frontend/build/canvas exists. docker-compose.yml does not: it runs the
+# released agent-canvas image as its own service behind the proxy.
 ARG AGENT_CANVAS=
 # `none` (default): scripts/build-agent-canvas.sh clones its own pinned ref.
 # `git`: build the source fetched by the agent-canvas-source-git stage above.

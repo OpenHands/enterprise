@@ -21,6 +21,7 @@ from openhands.app_server.git.git_router import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
     ProviderType,
     Repository,
@@ -758,20 +759,19 @@ class TestSearchBranches:
 
     @pytest.mark.asyncio
     @patch('openhands.app_server.git.git_router.ProviderHandler')
-    async def test_search_results_are_a_single_page(self, mock_handler_cls):
-        """Branch search with a query returns every result and no next_page_id.
-
-        Branch search returns 400 for a page after the first, so a next page
-        must not be advertised.
-        """
+    async def test_search_returns_provider_next_page_id(self, mock_handler_cls):
+        """Branch search with a query returns the provider's next_page_id."""
         # Arrange
         mock_handler = MagicMock()
         mock_handler.search_branches = AsyncMock(
-            return_value=[
-                Branch(name='main', commit_sha='abc123', protected=False),
-                Branch(name='develop', commit_sha='def456', protected=False),
-                Branch(name='feature-branch', commit_sha='ghi789', protected=False),
-            ]
+            return_value=BranchSearchPage(
+                branches=[
+                    Branch(name='main', commit_sha='abc123', protected=False),
+                    Branch(name='develop', commit_sha='def456', protected=False),
+                    Branch(name='feature-branch', commit_sha='ghi789', protected=False),
+                ],
+                next_page_id='CURSOR2',
+            )
         )
         mock_handler_cls.return_value = mock_handler
 
@@ -798,6 +798,41 @@ class TestSearchBranches:
             'develop',
             'feature-branch',
         ]
+        assert result.next_page_id == 'CURSOR2'
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_search_passes_page_id_to_provider(self, mock_handler_cls):
+        """Branch search with a query sends page_id to the provider as it is."""
+        # Arrange
+        mock_handler = MagicMock()
+        mock_handler.search_branches = AsyncMock(
+            return_value=BranchSearchPage(
+                branches=[Branch(name='main', commit_sha='abc123', protected=False)]
+            )
+        )
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        result = await search_branches(
+            provider=ProviderType.GITHUB,
+            repository='user/repo',
+            query='main',
+            page_id='CURSOR1',
+            limit=2,
+            user_context=mock_context,
+        )
+
+        # Assert
+        assert mock_handler.search_branches.call_args.kwargs['page_id'] == 'CURSOR1'
+        assert [branch.name for branch in result.items] == ['main']
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -806,7 +841,9 @@ class TestSearchBranches:
         """Test that all parameters are passed through to the provider."""
         # Arrange
         mock_handler = MagicMock()
-        mock_handler.search_branches = AsyncMock(return_value=[])
+        mock_handler.search_branches = AsyncMock(
+            return_value=BranchSearchPage(branches=[])
+        )
         mock_handler_cls.return_value = mock_handler
 
         mock_context = _make_mock_user_context(

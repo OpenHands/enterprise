@@ -369,6 +369,79 @@ describe("MarketplaceModal", () => {
     expect(checkSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("notes a skills-only repository and saves it", async () => {
+    checkSpy.mockResolvedValue(
+      checkResult({ layout: "skills", plugin_count: 0, skill_count: 3 }),
+    );
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user);
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(screen.getByTestId("marketplace-check-message")).toHaveTextContent(
+      "SETTINGS$MARKETPLACE_CHECK_SKILLS_ONLY",
+    );
+  });
+
+  it("adds no note for a repository with a marketplace file", async () => {
+    checkSpy.mockResolvedValue(checkResult({ layout: "marketplace" }));
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user);
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(
+      screen.queryByTestId("marketplace-check-message"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns that a plugin without a marketplace file loads only its skills", async () => {
+    checkSpy.mockResolvedValue(
+      checkResult({ layout: "plugin", plugin_count: 0, skill_count: 2 }),
+    );
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user);
+
+    expect(
+      await screen.findByTestId("marketplace-check-message"),
+    ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_PLUGIN_SKILLS_ONLY");
+    expect(screen.getByTestId("marketplace-save-button")).toHaveTextContent(
+      "SETTINGS$MARKETPLACE_SAVE_ANYWAY",
+    );
+    expect(onSave).not.toHaveBeenCalled();
+
+    // Saving anyway saves without checking again.
+    await user.click(screen.getByTestId("marketplace-save-button"));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(checkSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks again when the plugin's repository changes", async () => {
+    checkSpy.mockResolvedValueOnce(
+      checkResult({ layout: "plugin", plugin_count: 0, skill_count: 2 }),
+    );
+    renderWithProviders(<MarketplaceModal {...baseProps} />);
+    const user = userEvent.setup();
+
+    await fillAndSave(user);
+    await screen.findByTestId("marketplace-check-message");
+
+    await user.type(screen.getByPlaceholderText("github:owner/repo"), "-v2");
+
+    expect(screen.getByTestId("marketplace-save-button")).toHaveTextContent(
+      "BUTTON$SAVE",
+    );
+    await user.click(screen.getByTestId("marketplace-save-button"));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(checkSpy).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     [
       "the request fails",

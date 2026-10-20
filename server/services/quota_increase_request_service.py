@@ -9,8 +9,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.services.daily_conversation_quota_service import (
-    DailyConversationQuotaService,
+from server.services.daily_sandbox_quota_service import (
+    DailySandboxQuotaService,
 )
 from server.services.free_email_domains import is_free_email_domain
 from storage.quota_increase_request import QuotaIncreaseRequest
@@ -63,7 +63,7 @@ class QuotaIncreaseRequestService:
                 status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
             )
 
-        quota_service = DailyConversationQuotaService(self.db_session)
+        quota_service = DailySandboxQuotaService(self.db_session)
         base_default = await quota_service.get_default_limit(org_id)
         if base_default is None or base_default <= 0:
             raise HTTPException(
@@ -72,8 +72,8 @@ class QuotaIncreaseRequestService:
             )
 
         effective_limit = (
-            user.daily_conversation_limit
-            if user.daily_conversation_limit is not None
+            user.daily_sandbox_limit
+            if user.daily_sandbox_limit is not None
             else base_default
         )
 
@@ -169,7 +169,7 @@ class QuotaIncreaseRequestService:
             select(User).where(User.id == request.user_id)
         )
         if user is not None:
-            user.daily_conversation_limit = request.requested_limit
+            user.daily_sandbox_limit = request.requested_limit
             user.work_email_verified_at = now
 
         await self.db_session.commit()

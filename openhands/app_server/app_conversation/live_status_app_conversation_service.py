@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
-import anyio
 import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
@@ -140,10 +139,11 @@ from openhands.sdk.marketplace.registration import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool import ClientToolSpec
+from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec
 from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import selects_tool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
@@ -159,7 +159,9 @@ from openhands.tools.preset.planning import (
     get_planning_tools,
 )
 
-_conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
@@ -242,6 +244,8 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 def _exception_detail(exc: Exception) -> str:
     """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
     detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
     return detail if isinstance(detail, str) else str(exc)
 
 
@@ -413,63 +417,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        quota_user_id = await self.user_context.get_user_id()
-        quota_reserved = bool(
-            getattr(self.user_context, '_daily_quota_reserved', False)
-        )
-        if quota_reserved:
-            setattr(self.user_context, '_daily_quota_reserved', False)
-        elif quota_user_id:
-            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
-
-        try:
-            async for task in self._start_app_conversation(request):
-                await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                    task
-                )
-                if quota_reserved:
-                    if task.status == AppConversationStartTaskStatus.ERROR:
-                        with anyio.CancelScope(shield=True):
-                            await self._release_daily_conversation_quota(quota_user_id)
-                        quota_reserved = False
-                    elif task.status == AppConversationStartTaskStatus.READY:
-                        quota_reserved = False
-                yield task
-        except BaseException:
-            if quota_reserved:
-                with anyio.CancelScope(shield=True):
-                    await self._release_daily_conversation_quota(quota_user_id)
-            raise
-
-    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
-        try:
-            from openhands.app_server.shared import server_config
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
+        async for task in self._start_app_conversation(request):
+            await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                task
             )
-            from storage.database import a_session_maker
-        except ImportError:
-            return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if server_config.app_mode.value != 'saas' or org_id is None:
-            return False
-        async with a_session_maker() as session:
-            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
-
-    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
-        if not user_id:
-            return
-        try:
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
-            )
-            from storage.database import a_session_maker
-
-            async with a_session_maker() as session:
-                await DailyConversationQuotaService(session).release(user_id)
-        except Exception:
-            _logger.exception('Failed to release daily conversation quota reservation')
+            yield task
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
@@ -1408,23 +1360,22 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Configured LLM instance
         """
-        model: str = (
-            llm_model
-            or user.agent_settings.llm.model
-            or LLM.model_fields['model'].default
-        )
+        # ACP conversations return before the LLM is configured.
+        assert isinstance(user.agent_settings, OpenHandsAgentSettings)
+        user_llm = user.agent_settings.llm
+        model: str = llm_model or user_llm.model or LLM.model_fields['model'].default
 
         base_url = resolve_provider_llm_base_url(
             model,
-            user.agent_settings.llm.base_url,
+            user_llm.base_url,
             provider_base_url=self.openhands_provider_base_url,
         )
 
-        return user.agent_settings.llm.model_copy(
+        return user_llm.model_copy(
             update={
                 'model': model,
                 'base_url': base_url,
-                'api_key': user.agent_settings.llm.api_key,
+                'api_key': user_llm.api_key,
                 'usage_id': 'agent',
                 # Force streaming on (the SDK LLM defaults stream=False).
                 'stream': True,
@@ -2303,11 +2254,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             tools = get_planning_tools(plan_path=plan_path)
         else:
             register_builtins_agents(enable_browser=True)
+            # Sub-agents are on when the saved tools include the task tool set,
+            # as the SDK's retired ``enable_sub_agents`` property decided.
+            enable_sub_agents = user.agent_settings.tools is not None and selects_tool(
+                user.agent_settings.tools, SUB_AGENT_TOOL_NAME
+            )
             tools = get_default_tools(
                 enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
+                enable_sub_agents=enable_sub_agents,
             )
-            if user.agent_settings.enable_sub_agents:
+            if enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
@@ -2650,14 +2606,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Isolate the CLI data dir onto the durable /workspace tree so the SDK
         # self-resumes the provider session (session/load from base_state.json)
         # across pause/resume — matching the regular-agent lifecycle (#1274).
-        # Strip llm.api_key/base_url to prevent proxy settings from leaking
-        # into the subprocess env (ACP CLIs handle their own LLM calls).
-        settings_update: dict[str, Any] = {
-            'acp_isolate_data_dir': True,
-            'llm': acp_settings.llm.model_copy(
-                update={'api_key': None, 'base_url': None}
-            ),
-        }
+        # ACP settings carry no LLM: ACP CLIs handle their own LLM calls.
+        settings_update: dict[str, Any] = {'acp_isolate_data_dir': True}
         # Forward the resolved profile's / user's custom MCP servers to the ACP
         # subprocess (#15044 §7). Only custom servers — the system OpenHands MCP
         # server (Tavily proxy) is runtime-internal and unreachable by an external

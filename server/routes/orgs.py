@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -127,11 +128,10 @@ async def _maybe_rotate_managed_key_for_org_update(
         )
 
         loaded = await settings_store.load()
-        if loaded is None:
+        llm = agent_llm(loaded.agent_settings) if loaded else None
+        if llm is None:
             return
-        await _maybe_rotate_stale_managed_key(
-            loaded.agent_settings.llm, settings_store, user_id
-        )
+        await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
     except Exception:
         logger.warning(
             'org_settings:managed_key_rotation_failed',

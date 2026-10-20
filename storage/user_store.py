@@ -26,7 +26,7 @@ from server.constants import (
     get_default_llm_model,
 )
 from server.logger import logger
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
     decrypt_legacy_model,
@@ -841,9 +841,13 @@ class UserStore:
     async def get_user_by_email_opted_in(email: str) -> Optional[User]:
         """Get a user by email who has opted in to one-time email-match seeding.
 
-        Filters on ``User.email == email.lower().strip()`` AND
-        ``User.allow_match_by_email == True``. Returns the matched ``User`` or
-        ``None``.
+        Filters on ``User.email == email.lower().strip()``,
+        ``User.allow_match_by_email == True`` AND ``User.email_verified == True``.
+        Returns the matched ``User`` or ``None``.
+
+        Only verified emails match: an unverified ``User.email`` is an address
+        nobody has proven they own, so binding a new IDP identity to it could
+        hand the address's real owner an account someone else registered.
 
         Callers must guard against duplicates (see
         :meth:`count_opted_in_users_with_email`): ``User.email`` has no unique
@@ -862,13 +866,17 @@ class UserStore:
                 .filter(
                     User.email == email.lower().strip(),
                     User.allow_match_by_email.is_(True),
+                    User.email_verified.is_(True),
                 )
             )
             return result.scalars().first()
 
     @staticmethod
     async def count_opted_in_users_with_email(email: str) -> int:
-        """Count users with ``allow_match_by_email`` set that share ``email``.
+        """Count users with ``allow_match_by_email`` set and a verified ``email``.
+
+        Unverified rows are excluded so they can neither match nor block a
+        verified user's link with a spurious duplicate.
 
         Defense-in-depth for the duplicate-email guard: ``User.email`` has no
         unique constraint, so the bulk-set operation and the match-time check
@@ -885,6 +893,7 @@ class UserStore:
                 .where(
                     User.email == email.lower().strip(),
                     User.allow_match_by_email.is_(True),
+                    User.email_verified.is_(True),
                 )
             )
 
@@ -1475,8 +1484,8 @@ class UserStore:
                     )
                 )
                 await session.execute(
-                    delete(DailyConversationUsage).where(
-                        DailyConversationUsage.user_id == target_uuid
+                    delete(DailySandboxUsage).where(
+                        DailySandboxUsage.user_id == target_uuid
                     )
                 )
                 await session.execute(
@@ -1778,9 +1787,14 @@ class UserStore:
         Returns:
             A new UserSettings object populated from the entities
         """
+        from openhands.app_server.settings.settings_models import (
+            normalize_member_agent_settings_diff,
+        )
         from storage.org_store import OrgStore
 
-        member_agent_settings_diff = dict(org_member.agent_settings_diff)
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
         member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)

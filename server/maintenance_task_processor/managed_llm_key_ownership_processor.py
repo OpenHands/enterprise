@@ -4,6 +4,9 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from openhands.app_server.settings.settings_models import (
+    normalize_member_agent_settings_diff,
+)
 from openhands.sdk.settings import apply_agent_settings_diff
 from server.logger import logger
 from storage.database import a_session_maker, session_maker
@@ -37,7 +40,9 @@ class ManagedLlmKeyOwnershipProcessor(MaintenanceTaskProcessor):
     @staticmethod
     def _effective_managed_key_config(org: Org, member: OrgMember):
         org_settings = OrgStore.get_agent_settings_from_org(org)
-        member_diff = dict(member.agent_settings_diff or {})
+        member_diff = normalize_member_agent_settings_diff(
+            dict(member.agent_settings_diff or {})
+        )
         member_diff.pop('mcp_config', None)
         effective_settings = apply_agent_settings_diff(org_settings, member_diff)
         llm = getattr(effective_settings, 'llm', None)
