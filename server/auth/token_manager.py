@@ -51,6 +51,7 @@ from server.auth.email_validation import (
     matches_base_email,
 )
 from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
+from server.auth.oauth_v2_refresh import get_oauth_v2_git_token
 from server.logger import logger
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
@@ -619,19 +620,43 @@ class TokenManager:
             return None
 
         try:
-            offline_token = await self.load_offline_token(user_id=user_id)
-            if not offline_token:
-                logger.warning(f'No offline token found for user_id: {user_id}')
-                return None
-            return await self.get_idp_token_from_offline_token(
-                offline_token=offline_token, idp=idp
-            )
+            return await self.get_idp_token_for_user(user_id, idp)
         except KeycloakConnectionError:
             logger.exception(
                 f'KeycloakConnectionError when getting IDP token for IDP user_id {idp_user_id}',
                 stack_info=True,
             )
             raise
+
+    async def get_idp_token_for_user(
+        self, user_id: str, idp: ProviderType
+    ) -> str | None:
+        """``user_id``'s token at ``idp``, for work done without their session.
+
+        Reads ``oauth_tokens`` first (filled by OAuth v2 login and linking),
+        then falls back to the user's Keycloak offline session. Without
+        Keycloak, users have no offline token, so the fallback returns
+        ``None`` without calling Keycloak.
+        """
+        try:
+            token = await get_oauth_v2_git_token(user_id, idp)
+        except Exception:
+            logger.warning(
+                'oauth_v2_git_token_unavailable',
+                extra={'user_id': user_id, 'provider': idp.value},
+                exc_info=True,
+            )
+            token = None
+        if token:
+            return token
+
+        offline_token = await self.load_offline_token(user_id=user_id)
+        if not offline_token:
+            logger.warning(f'No offline token found for user_id: {user_id}')
+            return None
+        return await self.get_idp_token_from_offline_token(
+            offline_token=offline_token, idp=idp
+        )
 
     async def get_user_id_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
