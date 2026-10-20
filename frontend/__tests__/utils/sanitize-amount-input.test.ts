@@ -9,6 +9,8 @@ describe("sanitizeAmountInput", () => {
     ["$1,000", "1000"],
     [".5", "0.5"],
     [".", "0."],
+    ["100.00000", "100.00"],
+    ["12.345", "12.34"],
     ["abc", ""],
   ])("turns %j into %j", (input, expected) => {
     expect(sanitizeAmountInput(input)).toBe(expected);
