@@ -9,6 +9,7 @@ import { organizationService } from "#/api/organization-service/organization-ser
 import OrgProfilesService from "#/api/organization-service/org-profiles-service.api";
 import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { SuperAdminGroupSetupModal } from "#/components/features/super-admin/super-admin-group-setup-modal";
+import translations from "#/i18n/translation.json";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import {
@@ -100,6 +101,20 @@ describe("SuperAdminGroupSetupModal", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     resetSuperAdminNux();
+  });
+
+  it("tells the admin the basic setup is for the organization they just named", async () => {
+    // Arrange
+    renderModal();
+
+    // Act
+    const body = await screen.findByText("SA_NUX$STARTER_BODY");
+
+    // Assert
+    expect(body).toBeVisible();
+    expect(translations.SA_NUX$STARTER_BODY.en).toContain(
+      "basic setup for this organization",
+    );
   });
 
   it("lists the provider's models from the server, verified models first", async () => {
