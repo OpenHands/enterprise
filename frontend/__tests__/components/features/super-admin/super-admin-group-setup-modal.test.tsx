@@ -112,6 +112,20 @@ describe("SuperAdminGroupSetupModal", () => {
     resetSuperAdminNux();
   });
 
+  it("tells the admin the basic setup is for the organization they just named", async () => {
+    // Arrange
+    renderModal();
+
+    // Act
+    const body = await screen.findByText("SA_NUX$STARTER_BODY");
+
+    // Assert
+    expect(body).toBeVisible();
+    expect(translations.SA_NUX$STARTER_BODY.en).toContain(
+      "basic setup for this organization",
+    );
+  });
+
   it("lists the provider's models from the server, verified models first", async () => {
     // Arrange
     const user = userEvent.setup();

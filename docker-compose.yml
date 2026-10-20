@@ -1,11 +1,12 @@
 # Local/evaluation Docker Compose stack for OpenHands Enterprise (OHE).
 #
-# `docker compose up` is meant to be the entire setup: the app migrates its
-# own database on startup (RUN_MIGRATIONS_ON_STARTUP), uses the built-in
-# password-based admin login instead of Keycloak (ENABLE_INTEGRATED_IDP +
-# OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN), and lets each user
-# configure their own LLM in Settings instead of requiring a LiteLLM proxy
-# (OH_LLM_MODEL_KIND). See OHE-3376.
+# `docker compose up` is meant to be the entire setup: the app and the
+# automation service migrate their own databases on startup
+# (RUN_MIGRATIONS_ON_STARTUP, AUTOMATION_RUN_MIGRATIONS_ON_STARTUP), the app
+# uses the built-in password-based admin login instead of Keycloak
+# (ENABLE_INTEGRATED_IDP + OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN),
+# and lets each user configure their own LLM in Settings instead of requiring
+# a LiteLLM proxy (OH_LLM_MODEL_KIND). See OHE-3376.
 #
 # Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
 # the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
@@ -14,8 +15,10 @@
 # no extra port or CORS setup is needed. `/api/service/*` is deliberately not
 # reachable through the proxy (see the `caddyfile` config at the bottom).
 #
-# First run: open http://localhost:3100/oauth/idp/signup to create the admin
-# account, then add an LLM under Settings. `/` then redirects to Agent Canvas
+# First run: the app pulls the agent server image before it starts serving, so
+# http://localhost:3100 is not reachable until that pull finishes (the app logs
+# show its progress). Then open http://localhost:3100/oauth/idp/signup to create
+# the admin account, and add an LLM under Settings. `/` then redirects to Agent Canvas
 # at /canvas, which is served by the `canvas-server` service and locked to this
 # stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
 # existing session cookie instead of prompting to connect to OpenHands Cloud.
@@ -59,12 +62,6 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
-    # The automation service needs its own database: it and the app both run
-    # Alembic against an `alembic_version` table, so sharing one database
-    # would collide. `POSTGRES_DB` only creates one, hence this init script.
-    configs:
-      - source: automation-db-init
-        target: /docker-entrypoint-initdb.d/10-automation-db.sql
     # Intentionally no `db-data` volume mount here for now: this stack is
     # meant to be completely ephemeral (see OHE-3376 investigation into the
     # Docker named volume surviving `docker compose down`). Every
@@ -96,18 +93,23 @@ services:
       - '3000'
     # The Docker sandbox backend creates sibling containers via the host's
     # Docker daemon (same pattern as containers/dev/compose.yml), so the app
-    # container needs the socket -- not `privileged: true`, since it runs as
-    # root (via `user: '0:0'`, above) and root can always reach the socket.
-    volumes:
+    # and `worker` containers need the socket -- not `privileged: true`, since
+    # they run as root (via `user: '0:0'`, above) and root can always reach
+    # the socket.
+    volumes: &app-volumes
       - /var/run/docker.sock:/var/run/docker.sock
       # `app-filestore` intentionally not mounted for now: this stack is
       # meant to be completely ephemeral, so /.openhands starts empty on
       # every `docker compose up --build` instead of surviving it via a
       # Docker named volume.
       # - app-filestore:/.openhands
-    extra_hosts:
+    # Sandboxes publish their ports on the Docker host, and the app and
+    # `worker` reach them through host.docker.internal.
+    extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
-    environment:
+    # `worker` shares this environment, so both build the same sandbox
+    # backend and lifecycle settings.
+    environment: &app-environment
       DB_HOST: db
       DB_PORT: '5432'
       DB_NAME: ${DB_NAME:-openhands}
@@ -232,6 +234,15 @@ services:
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+    # The app opens its port only after startup, which pulls the agent server
+    # image if the Docker host does not have it. That pull can take many
+    # minutes on the first run, hence the long start_period.
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 1h
     restart: unless-stopped
 
   # Scheduled and event-driven automations (OpenHands/automation). It
@@ -242,18 +253,15 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.20.0}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.0}
     # The image is only published for linux/amd64. Pinning the platform makes
     # Docker Desktop on Apple Silicon run it under emulation instead of
     # failing with "no matching manifest for linux/arm64"; it's a no-op on
     # amd64 hosts. Drop this once the image is published multi-arch.
     platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
-    # here. The service only auto-migrates SQLite, so migrate Postgres first.
-    command:
-      - sh
-      - -c
-      - alembic upgrade head && exec uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
+    # here.
+    command: ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
       db:
         condition: service_healthy
@@ -273,6 +281,13 @@ services:
       # loopback (nothing listens there) to the sandbox's published port.
       - 'localhost:host-gateway'
     environment:
+      # The automation service needs its own database: it and the app both run
+      # Alembic against an `alembic_version` table, so sharing one database
+      # would collide. The service creates that database if it is missing and
+      # migrates it on startup. DB_USER is the Postgres superuser, so it is
+      # allowed to create databases.
+      AUTOMATION_RUN_MIGRATIONS_ON_STARTUP: 'true'
+      AUTOMATION_CREATE_DATABASE_IF_MISSING: 'true'
       AUTOMATION_DB_HOST: db
       AUTOMATION_DB_PORT: '5432'
       AUTOMATION_DB_NAME: ${AUTOMATION_DB_NAME:-automations}
@@ -348,7 +363,7 @@ services:
     image: caddy:2
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
       automation-server:
         condition: service_healthy
       canvas-server:
@@ -360,9 +375,11 @@ services:
         target: /etc/caddy/Caddyfile
     restart: unless-stopped
 
-  # Runs the Postgres-backed Procrastinate tasks that have already been
-  # migrated off Kubernetes CronJobs: sandbox-lifecycle cleanup and
-  # Procrastinate's own housekeeping. See openhands/app_server/worker/app.py.
+  # Runs the Postgres-backed Procrastinate tasks that replace Kubernetes
+  # CronJobs. See openhands/app_server/worker/.
+  # The lifecycle jobs pause and delete sandboxes through the same Docker
+  # backend as the app, so the worker gets the app's socket, hosts and
+  # environment.
   worker:
     image: *app-image
     # See the `app` service above: the image defaults to `USER openhands`,
@@ -372,12 +389,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes: *app-volumes
+    extra_hosts: *app-extra-hosts
     environment:
-      DB_HOST: db
-      DB_PORT: '5432'
-      DB_NAME: ${DB_NAME:-openhands}
-      DB_USER: ${DB_USER:-openhands}
-      DB_PASS: ${DB_PASS:-openhands}
+      <<: *app-environment
+      OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
 # `db-data` / `app-filestore` are declared but currently unused (see the
@@ -387,9 +403,6 @@ services:
 #   app-filestore:
 
 configs:
-  automation-db-init:
-    content: |
-      CREATE DATABASE "${AUTOMATION_DB_NAME:-automations}";
   caddyfile:
     content: |
       {
