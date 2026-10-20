@@ -853,6 +853,17 @@ class SaasUserAuth(UserAuth):
                     provider_tokens[idp_type] = ProviderToken(
                         token=SecretStr(token), user_id=None, host=host
                     )
+                except TokenRefreshError:
+                    # Lock timeout: another request or a background job is
+                    # refreshing this row. Deleting it would discard their result.
+                    logger.warning(
+                        'v2 provider token refresh lock timeout',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.details.provider_type.value,
+                        },
+                    )
+                    raise
                 except Exception:
                     logger.exception(
                         'Error refreshing v2 provider token',
