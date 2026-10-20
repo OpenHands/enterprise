@@ -16,7 +16,6 @@ import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
-import { FREE_MODEL_BADGE_LABEL } from "#/utils/format-model-name";
 import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
 import { FreeOpenHandsModelsNote } from "#/components/shared/free-models-note";
 
@@ -162,6 +161,16 @@ export function ModelSelector({
   const isSelectedModelFree = Boolean(
     selectedModel && freeModelNameSet.has(selectedModel),
   );
+  // Current text of the model search input. `null` means the user hasn't
+  // typed, so the selected-model badge stays anchored to the (unchanged)
+  // input text; once typing starts, the badge only shows while the typed
+  // text still matches the selected model.
+  const [modelInputValue, setModelInputValue] = React.useState<string | null>(
+    null,
+  );
+  const showSelectedFreeModelBadge =
+    isSelectedModelFree &&
+    (modelInputValue === null || modelInputValue === selectedModel);
   const selectedModelMeasureRef = React.useRef<HTMLSpanElement>(null);
   const [selectedModelTextWidth, setSelectedModelTextWidth] = React.useState(0);
 
@@ -292,6 +301,7 @@ export function ModelSelector({
             onSelectionChange={(e) => {
               if (e?.toString()) handleChangeModel(e.toString());
             }}
+            onInputChange={(value) => setModelInputValue(value)}
             isDisabled={isDisabled || !selectedProvider}
             selectedKey={selectedModel}
             defaultSelectedKey={selectedModel ?? undefined}
@@ -319,7 +329,7 @@ export function ModelSelector({
                     <span className="truncate">{model.name}</span>
                     {showFreeModelUI && model.free ? (
                       <span className={freeModelBadgeClassName}>
-                        {FREE_MODEL_BADGE_LABEL}
+                        {t(I18nKey.SETTINGS$FREE_MODEL_BADGE)}
                       </span>
                     ) : null}
                   </span>
@@ -346,7 +356,7 @@ export function ModelSelector({
               </AutocompleteSection>
             ) : null}
           </Autocomplete>
-          {isSelectedModelFree && selectedModel ? (
+          {showSelectedFreeModelBadge && selectedModel ? (
             <>
               <span
                 ref={selectedModelMeasureRef}
@@ -365,7 +375,7 @@ export function ModelSelector({
                   left: `calc(0.75rem + ${selectedModelTextWidth}px + 0.5rem)`,
                 }}
               >
-                {FREE_MODEL_BADGE_LABEL}
+                {t(I18nKey.SETTINGS$FREE_MODEL_BADGE)}
               </span>
             </>
           ) : null}

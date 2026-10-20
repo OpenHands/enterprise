@@ -8,6 +8,7 @@ import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useConfig } from "#/hooks/query/use-config";
 import { useIsOnIntermediatePage } from "#/hooks/use-is-on-intermediate-page";
+import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
 
 /**
  * Provider whose models carry free / default metadata. Both are
@@ -83,6 +84,10 @@ const useOpenHandsModels = () => {
     ],
     queryFn: async () => fetchAllOpenHandsModels(null, new Set(), 0),
     enabled:
+      // The free/default flags are an OpenHands-hosted concept; don't spend a
+      // model-search request (or join the post-login burst) on self-hosted
+      // installs, where every render site hides the UI anyway.
+      isOpenHandsHostedDomain() &&
       !isOnIntermediatePage &&
       !!userIsAuthenticated &&
       (isOss || !!organizationId),

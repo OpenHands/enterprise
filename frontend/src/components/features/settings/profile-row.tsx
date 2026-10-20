@@ -45,7 +45,11 @@ export function ProfileRow({
   const showFreeModelUI = isOpenHandsHostedDomain();
   const displayModel =
     showFreeModelUI && profile.model
-      ? formatModelNameForDisplay(profile.model, freeModels)
+      ? formatModelNameForDisplay(
+          profile.model,
+          freeModels,
+          t(I18nKey.SETTINGS$FREE_MODEL_SUFFIX),
+        )
       : profile.model;
 
   return (

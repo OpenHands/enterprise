@@ -16,6 +16,7 @@ describe("isOpenHandsHostedDomain", () => {
   it.each([
     "app.all-hands.dev",
     "staging.all-hands.dev",
+    "dev.all-hands.dev",
     "pr-123.staging.all-hands.dev",
     "pr-1.staging.all-hands.dev",
   ])("returns true for hosted domain %s", (hostname) => {
@@ -29,6 +30,7 @@ describe("isOpenHandsHostedDomain", () => {
     "enterprise.example.com",
     "openhands.internal.corp",
     "app.all-hands.dev.evil.com",
+    "dev.all-hands.dev.evil.com",
     "pr-staging.all-hands.dev",
     "pr-.staging.all-hands.dev",
     "pr-abc.staging.all-hands.dev",
