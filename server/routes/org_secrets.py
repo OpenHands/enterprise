@@ -2,9 +2,9 @@
 
 Org-shared secrets are usable by all members of the org in conversations
 and automations, but only Admins/Owners (``MANAGE_ORG_SECRETS``) can
-create, edit, or delete them. The secret value is write-once: it can be
-set on creation and rotated only by deleting and re-creating the secret —
-no endpoint returns the raw value.
+create, edit, or delete them. Values can be set on creation or replaced
+atomically through the dedicated value endpoint. The metadata PUT never
+changes values. There is no management read operation for raw values.
 """
 
 from typing import Annotated
@@ -20,8 +20,10 @@ from openhands.app_server.utils.env_var_validation import is_valid_env_var_name
 from openhands.app_server.utils.models import EditResponse
 from server.auth.authorization import Permission, require_permission
 from server.routes.org_secret_validation import OrgSecretValidationRoute
+from server.routes.org_secret_values import org_secret_values_router
 from storage.org_secrets_store import (
     OrgSecretAlreadyExistsError,
+    OrgSecretConflictError,
     OrgSecretNotFoundError,
     OrgSecretsStore,
 )
@@ -44,6 +46,7 @@ org_secrets_router = APIRouter(
     tags=['Org Secrets'],
     route_class=OrgSecretValidationRoute,
 )
+org_secrets_router.include_router(org_secret_values_router)
 
 
 class OrgSecretCreate(BaseModel):
@@ -57,9 +60,8 @@ class OrgSecretCreate(BaseModel):
 class OrgSecretUpdate(BaseModel):
     """Request body for updating an org-shared secret (name/description only).
 
-    The secret value is never accepted on update — the write-once,
-    never-read guarantee means only metadata can change after creation.
-    To rotate the value, delete and re-create the secret.
+    Only metadata can change through this endpoint. To replace a value,
+    use the dedicated conditional value-replacement endpoint.
     """
 
     model_config = ConfigDict(extra='forbid')
@@ -148,6 +150,8 @@ async def update_org_secret(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+    except OrgSecretConflictError:
+        raise HTTPException(409, detail='Shared secret name is ambiguous') from None
     return EditResponse(message='Org-shared secret updated successfully')
 
 
