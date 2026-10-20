@@ -25,10 +25,6 @@
 # network access still produces a working app, just without /canvas.
 #
 # Known gaps, tracked separately rather than worked around here:
-#   * Redis-backed features (MCP OAuth connections, conversation-export
-#     locking) are not wired up for Compose. Redis-backed *rate limiting* is
-#     explicitly disabled below (RATE_LIMITING_ENABLED=false) since it adds no
-#     value in a single-evaluator environment with no Redis.
 #   * The remaining Helm CronJobs (maintenance-tasks, budget-maintenance,
 #     resend-sync, install-gitlab-webhooks, enrich-user-interaction) are not
 #     included: they are standalone script entrypoints, not yet ported to the
@@ -62,6 +58,16 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    restart: unless-stopped
+
+  # The app runs in SaaS mode (OH_APP_MODE, below), which expects Redis the
+  # way every Helm install provides it: personal secret writes take a Redis
+  # lock and fail with a 503 when Redis is unreachable (OHE-3668), and MCP
+  # OAuth connections and conversation exports use it too. Same image the
+  # Helm chart pins for its Valkey option. No auth and no volume: it only
+  # holds locks and short-lived state, and this stack is ephemeral anyway.
+  redis:
+    image: valkey/valkey:9.1.2-alpine
     restart: unless-stopped
 
   app:
@@ -103,6 +109,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     # Not published: reached through `proxy`, which owns APP_PORT.
     expose:
       - '3000'
@@ -210,11 +218,12 @@ services:
       # No billing/Stripe in this stack.
       ENABLE_BILLING: 'false'
 
-      # Redis-backed rate limiting adds no value without Redis in a
-      # single-evaluator environment; see server/utils/rate_limit_utils.py.
-      # (Everything else that touches Redis already fails open with a log
-      # warning when Redis is unreachable -- this flag just avoids the
-      # doomed connection attempt and its log noise.)
+      # The `redis` service, above. REDIS_PORT and REDIS_PASSWORD keep their
+      # defaults (6379, no auth).
+      REDIS_HOST: redis
+
+      # Redis-backed rate limiting adds no value in a single-evaluator
+      # environment; see server/utils/rate_limit_utils.py.
       RATE_LIMITING_ENABLED: 'false'
 
       # Optional: telemetry is already force-disabled for self-hosted
