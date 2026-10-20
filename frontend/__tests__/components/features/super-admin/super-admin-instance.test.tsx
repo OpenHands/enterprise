@@ -7,6 +7,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminInstance } from "#/components/features/super-admin/super-admin-pages";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
+import translations from "#/i18n/translation.json";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { readImageFileAsDataUrl } from "#/utils/org/instance-logo";
 
@@ -169,6 +170,26 @@ describe("Super Admin Instance page", () => {
       ).not.toBeInTheDocument(),
     );
     expect(updateInstanceSettings).toHaveBeenCalledWith({ logo: null });
+  });
+
+  it("tells the admin the company name shows at the top of the Settings left navigation", async () => {
+    // Arrange
+    mockSuperAdminConfig();
+    vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+      company_name: null,
+      logo: null,
+    });
+
+    // Act
+    await renderInstancePage();
+
+    // Assert
+    expect(screen.getByTestId("instance-company-name-hint")).toHaveTextContent(
+      "SUPER_ADMIN$INSTANCE_COMPANY_NAME_HINT",
+    );
+    expect(translations.SUPER_ADMIN$INSTANCE_COMPANY_NAME_HINT.en).toContain(
+      "at the top of the Settings left navigation",
+    );
   });
 
   it("saves the trimmed company name when the field loses focus", async () => {
