@@ -40,7 +40,7 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
-    get_for_user as get_user_auth_for_user,
+    get_for_sandbox as get_user_auth_for_sandbox,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.git import configure_git_user_settings
@@ -246,13 +246,13 @@ async def _valid_sandbox_from_session_key(
 
 
 async def _get_user_context(sandbox_info: SandboxInfo) -> AuthUserContext:
-    """Build an ``AuthUserContext`` for the sandbox owner."""
+    """Build a credential context from the persisted sandbox identity."""
     if not sandbox_info.created_by_user_id:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             detail='Sandbox has no associated user',
         )
-    user_auth = await get_user_auth_for_user(sandbox_info.created_by_user_id)
+    user_auth = await get_user_auth_for_sandbox(sandbox_info)
     return AuthUserContext(user_auth=user_auth)
 
 

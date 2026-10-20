@@ -57,6 +57,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     REMOTE_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     search_stored_sandboxes,
@@ -214,6 +215,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxInfo(
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
+            credential_org_id=stored.credential_org_id,
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -423,6 +425,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
@@ -534,6 +537,7 @@ class RemoteSandboxService(SandboxService):
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
         user_id = await self.user_context.get_user_id()
+        credential_org_id = await get_credential_org_id(self.user_context)
         quota_reserved = await self._reserve_daily_sandbox_quota(user_id)
         try:
             # Enforce sandbox limits by cleaning up old sandboxes
@@ -556,6 +560,7 @@ class RemoteSandboxService(SandboxService):
                 id=sandbox_id,
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
+                credential_org_id=credential_org_id,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )
