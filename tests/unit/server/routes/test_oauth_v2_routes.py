@@ -897,19 +897,27 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
 
 
 @pytest.mark.parametrize(
-    ('headers', 'issued_at'),
+    ('headers', 'issued_at', 'detail'),
     [
-        pytest.param({}, None, id='no-nonce-cookie'),
-        pytest.param(_nonce_cookie('someone-else'), None, id='mismatched-nonce'),
+        pytest.param(
+            {}, None, 'Link flow was not started by this browser', id='no-nonce-cookie'
+        ),
+        pytest.param(
+            _nonce_cookie('someone-else'),
+            None,
+            'Link flow was not started by this browser',
+            id='mismatched-nonce',
+        ),
         pytest.param(
             _nonce_cookie(),
             time.time() - oauth_v2.LINK_STATE_TTL_SECONDS - 1,
+            'Link flow expired; start it again',
             id='expired-state',
         ),
     ],
 )
 def test_callback_link_rejects_state_not_bound_to_this_browser(
-    client, jwt_svc, headers, issued_at
+    client, jwt_svc, headers, issued_at, detail
 ):
     """A link ``start_url`` sent to another browser must not link that
     browser's provider identity to the user named in the state."""
@@ -935,6 +943,7 @@ def test_callback_link_rejects_state_not_bound_to_this_browser(
         )
 
     assert response.status_code == 400
+    assert response.json()['detail'] == detail
     exchange.assert_not_awaited()
     link.assert_not_awaited()
     store_tokens.assert_not_awaited()
@@ -1076,7 +1085,8 @@ def test_link_returns_start_url(app, client, jwt_svc):
     assert 'HttpOnly' in set_cookie
     assert 'SameSite=lax' in set_cookie
     assert 'Path=/oauth' in set_cookie
-    assert f'Max-Age={oauth_v2.LINK_STATE_TTL_SECONDS}' in set_cookie
+    assert f'Max-Age={oauth_v2.LINK_NONCE_COOKIE_MAX_AGE}' in set_cookie
+    assert oauth_v2.LINK_NONCE_COOKIE_MAX_AGE > oauth_v2.LINK_STATE_TTL_SECONDS
 
 
 def test_link_start_url_completes_in_the_browser_that_started_it(app, client, jwt_svc):

@@ -80,6 +80,9 @@ OAUTH_HTTP_TIMEOUT = 15.0
 # Binds a link flow's state to the browser that started it.
 LINK_NONCE_COOKIE = 'openhands_oauth_link_nonce'
 LINK_STATE_TTL_SECONDS = 600
+# Outlives the state, so a late callback still carries the cookie and gets
+# "expired" instead of "not started by this browser".
+LINK_NONCE_COOKIE_MAX_AGE = LINK_STATE_TTL_SECONDS + 60
 
 oauth_v2_router = APIRouter(prefix='/oauth', tags=['OAuth v2'])
 
@@ -640,7 +643,7 @@ async def oauth_v2_link(
     response.set_cookie(
         key=LINK_NONCE_COOKIE,
         value=link_state.nonce,
-        max_age=LINK_STATE_TTL_SECONDS,
+        max_age=LINK_NONCE_COOKIE_MAX_AGE,
         path='/oauth',
         secure=web_url.startswith('https'),
         httponly=True,
