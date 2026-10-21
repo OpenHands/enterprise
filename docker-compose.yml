@@ -447,11 +447,8 @@ configs:
         }
 
         # Sandboxes: /runtime/<port>/... goes to the sandbox port published on
-        # the Docker host as <port>, without the /runtime/<port> prefix. Only
-        # 32768-60999, the Linux ephemeral range the app picks sandbox ports
-        # from, is matched, so other services on the Docker host stay out of
-        # reach.
-        @runtime path_regexp runtime ^/runtime/(3276[89]|327[7-9]\d|32[89]\d{2}|3[3-9]\d{3}|[45]\d{4}|60\d{3})(/.*)?$$
+        # the Docker host as <port>, without the /runtime/<port> prefix.
+        @runtime path_regexp runtime ^/runtime/(\d+)(/.*)?$$
         handle @runtime {
           uri strip_prefix /runtime/{re.runtime.1}
           reverse_proxy host.docker.internal:{re.runtime.1}
