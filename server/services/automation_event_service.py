@@ -47,7 +47,8 @@ from storage.redis import get_redis_client_async
 
 # Cache TTL constants
 ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
-USER_ID_CACHE_TTL_SECONDS = 86400  # 24 hours for user ID mappings (never change)
+# OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
+USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
 DEFAULT_ORG_FALLBACK_CACHE_TTL_SECONDS = 300
 REQUESTED_EVENT_TYPES_CACHE_TTL_SECONDS = int(
@@ -60,6 +61,24 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
+
+
+def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
+    return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+async def invalidate_user_id_cache(
+    provider: ProviderType, provider_user_id: int | str
+) -> None:
+    """Drop the cached provider user → OpenHands user mapping, hit or miss."""
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(_user_id_cache_key(provider, provider_user_id))
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate user ID cache for '
+            f'{provider.value} user {provider_user_id}: {e}'
+        )
 
 
 @dataclass
@@ -648,14 +667,14 @@ class AutomationEventService:
         """
         Convert a provider user ID to a Keycloak user ID.
 
-        Uses Redis caching with 24-hour TTL since this mapping never changes.
-        Caches negative results to avoid repeated Keycloak queries.
+        Uses Redis caching with a 24-hour TTL, including negative results to
+        avoid repeated lookups. OAuth v2 link and unlink invalidate the entry.
 
         Args:
             provider: The Git provider type
             provider_user_id: The user ID from the provider
         """
-        cache_key = f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+        cache_key = _user_id_cache_key(provider, provider_user_id)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)
