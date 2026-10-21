@@ -109,8 +109,9 @@ services:
       # every `docker compose up --build` instead of surviving it via a
       # Docker named volume.
       # - app-filestore:/.openhands
-    # The app and `worker` reach a sandbox through the proxy's published port:
-    # they rewrite `localhost` in the sandbox's URL to host.docker.internal.
+    # The app and `worker` reach a sandbox at its URL. With the default
+    # WEB_URL, they rewrite `localhost` in it to host.docker.internal, which
+    # reaches the proxy's published port.
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
     # `worker` shares this environment, so both build the same sandbox
@@ -241,8 +242,9 @@ services:
 
       # Sandbox URLs go through the proxy, which sends /runtime/<port> to the
       # sandbox port published on the Docker host as <port>. The browser
-      # reaches every sandbox on the same origin as the app.
-      SANDBOX_CONTAINER_URL_PATTERN: http://localhost:${APP_PORT:-3100}/runtime/{port}
+      # reaches every sandbox on the same origin as the app, so this follows
+      # WEB_URL.
+      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{port}
 
       # Automation runs connect to the agent server in their sandbox on this
       # port. The SDK otherwise uses the remote runtime's port, 60000.
@@ -298,7 +300,7 @@ services:
       - /data:uid=42420,gid=42420
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-      # The app reports each sandbox's URL as
+      # With the default WEB_URL, the app reports each sandbox's URL as
       # http://localhost:<APP_PORT>/runtime/<port> (the browser needs that),
       # and the automation service uses it as-is to reach the sandbox, unlike
       # the app, which rewrites localhost to host.docker.internal. Resolving
