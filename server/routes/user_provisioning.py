@@ -143,6 +143,7 @@ from keycloak.exceptions import KeycloakError
 from pydantic import BaseModel, EmailStr, Field, SecretStr
 from sqlalchemy import select
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID
@@ -731,7 +732,9 @@ async def provision_user(
                 settings = await OrgService.create_litellm_integration(
                     target_org_id, resolved_kc_user_id
                 )
-                llm_api_key_secret = settings.agent_settings.llm.api_key
+                llm_api_key_secret = getattr(
+                    agent_llm(settings.agent_settings), 'api_key', None
+                )
                 # ``api_key`` is typed ``str | SecretStr | None`` on
                 # the SDK side; org_invitation_service.py handles it
                 # the same way. Defaulting to empty string lets

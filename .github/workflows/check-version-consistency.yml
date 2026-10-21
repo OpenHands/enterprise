@@ -100,6 +100,28 @@ jobs:
                   else:
                       print(f"  ✔ {filepath} image tag: {tag}")
 
+          # ── 4b. Check docker-compose.yml pins this release's app image ────
+          # release-please bumps the `x-release-please-version` line on release;
+          # the stack's env vars are coupled to the app code at that version.
+          with open("docker-compose.yml") as f:
+              compose = f.read()
+          m = re.search(
+              r"ghcr\.io/openhands/enterprise-server:([^}\s]+)\}\s+# x-release-please-version",
+              compose,
+          )
+          if not m:
+              errors.append(
+                  "docker-compose.yml: no enterprise-server image tag found on the "
+                  "`# x-release-please-version` line"
+              )
+          elif m.group(1) != version:
+              errors.append(
+                  f"docker-compose.yml enterprise-server tag is '{m.group(1)}', "
+                  f"expected '{version}'"
+              )
+          else:
+              print(f"  ✔ docker-compose.yml enterprise-server tag: {m.group(1)}")
+
           # ── 5. Report ─────────────────────────────────────────────────────
           print()
           if warnings:

@@ -56,11 +56,8 @@ class ResendSyncedUserStore:
         email: str,
         audience_id: str,
         user_id: Optional[str] = None,
-    ) -> ResendSyncedUser:
+    ) -> bool:
         """Mark a user as synced to a specific audience.
-
-        Uses upsert to handle race conditions - if the user is already
-        marked as synced, this is a no-op.
 
         Args:
             email: The email address of the user.
@@ -68,10 +65,9 @@ class ResendSyncedUserStore:
             user_id: Optional OpenHands user ID. Stored in the legacy keycloak_user_id column.
 
         Returns:
-            The ResendSyncedUser record.
-
-        Raises:
-            RuntimeError: If the record could not be created or retrieved.
+            True if this call inserted the record. False if one already existed,
+            for example because another sync run marked the user first; that
+            run owns the user.
         """
         with self.session_maker() as session:
             stmt = (
@@ -83,28 +79,11 @@ class ResendSyncedUserStore:
                     synced_at=datetime.now(UTC),
                 )
                 .on_conflict_do_nothing(constraint='uq_resend_synced_email_audience')
-                .returning(ResendSyncedUser)
+                .returning(ResendSyncedUser.id)
             )
-            result = session.execute(stmt)
+            inserted = session.execute(stmt).first() is not None
             session.commit()
-
-            row = result.first()
-            if row:
-                return row[0]
-
-            # on_conflict_do_nothing triggered, fetch the existing record
-            existing = session.execute(
-                select(ResendSyncedUser).where(
-                    ResendSyncedUser.email == email.lower(),
-                    ResendSyncedUser.audience_id == audience_id,
-                )
-            ).first()
-            if existing:
-                return existing[0]
-
-            raise RuntimeError(
-                f'Failed to create or retrieve synced user record for {email}'
-            )
+            return inserted
 
     def remove_synced_user(self, email: str, audience_id: str) -> bool:
         """Remove a user's synced status for a specific audience.

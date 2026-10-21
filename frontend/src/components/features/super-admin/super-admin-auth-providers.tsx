@@ -382,7 +382,10 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
     kind: KIND_OAUTH,
     provider_type: form.providerType,
     client_id: form.clientId.trim(),
-    client_secret: form.clientSecret ? form.clientSecret : null,
+    // Omitted (not ``null``) when blank: the server treats an explicit
+    // ``null`` as "unset the secret" but keeps the existing one for an
+    // omitted field (``_carry_forward_unset_oauth_fields``).
+    ...(form.clientSecret && { client_secret: form.clientSecret }),
     authorization_url: form.authorizationUrl.trim() || null,
     token_url: form.tokenUrl.trim() || null,
     userinfo_url: form.userinfoUrl.trim() || null,

@@ -81,7 +81,7 @@ def enqueue_budget_tasks(batch_size: int = BATCH_SIZE) -> int:
         return len(org_ids)
 
 
-def main() -> None:
+async def run() -> None:
     # Guard against LiteLLM's interactive device login on this headless entrypoint
     # (OpenHands/enterprise#565); run_maintenance_tasks.main() installs it too, but
     # this keeps the protection local to the entrypoint and is idempotent.
@@ -97,7 +97,11 @@ def main() -> None:
     else:
         logger.info('No org budget settings found; skipping maintenance enqueue')
 
-    asyncio.run(run_maintenance_tasks.main())
+    await run_maintenance_tasks.main()
+
+
+def main() -> None:
+    asyncio.run(run())
 
 
 if __name__ == '__main__':

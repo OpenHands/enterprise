@@ -361,12 +361,13 @@ def _backfill_existing_resend_contacts(
 
         backfilled_count = 0
         for email in resend_contacts:
-            if email.lower() not in already_synced_emails:
+            if email.lower() not in already_synced_emails and (
                 synced_user_store.mark_user_synced(
                     email=email,
                     audience_id=audience_id,
                     user_id=None,  # Backfilled Resend contacts have no local user ID.
                 )
+            ):
                 backfilled_count += 1
                 logger.debug(f'Backfilled existing Resend contact: {email}')
 
@@ -461,7 +462,7 @@ def sync_users_to_resend():
                     continue
 
                 try:
-                    synced_user_store.mark_user_synced(
+                    inserted = synced_user_store.mark_user_synced(
                         email=email,
                         audience_id=RESEND_AUDIENCE_ID,
                         user_id=user.id,
@@ -471,6 +472,14 @@ def sync_users_to_resend():
                         f'Failed to mark user {email} as synced', stack_info=True
                     )
                     stats['errors'] += 1
+                    continue
+
+                if not inserted:
+                    # Another run marked the user after this run read the
+                    # synced emails; that run adds the contact and sends the
+                    # welcome email, and removes its mark if the add fails.
+                    logger.info(f'User {email} is being synced by another run')
+                    stats['already_synced'] += 1
                     continue
 
                 try:

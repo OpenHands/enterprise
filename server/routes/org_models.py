@@ -511,6 +511,8 @@ class OrgDefaultsSettingsResponse(BaseModel):
     def _prepare_llm_for_response(agent_settings: AgentSettingsConfig) -> None:
         """Strip response-only LLM fields and show bundled-proxy routes by their
         public ``openhands/`` name."""
+        if not isinstance(agent_settings, OpenHandsAgentSettings):
+            return  # ACP settings have no ``llm``
         llm = agent_settings.llm
         if llm.model:
             llm.model = canonicalize_bundled_proxy_llm(

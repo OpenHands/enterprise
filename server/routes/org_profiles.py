@@ -28,6 +28,7 @@ from openhands.app_server.settings.llm_profiles import (
 )
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
+    agent_llm,
 )
 from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -318,7 +319,13 @@ async def save_profile(
             # Snapshot current org LLM settings. Route through the persisted
             # loader so legacy/canonical ``agent_kind`` discriminator values
             # ('llm' vs 'openhands') both validate.
-            llm = _load_persisted_agent_settings(org.agent_settings).llm
+            org_llm = agent_llm(_load_persisted_agent_settings(org.agent_settings))
+            if org_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='ACP agents have no LLM settings to save as a profile',
+                )
+            llm = org_llm
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.

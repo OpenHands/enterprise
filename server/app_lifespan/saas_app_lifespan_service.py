@@ -1,8 +1,9 @@
 """SaaS-specific application lifespan service.
 
-On startup, optionally migrates the database and initializes PostHog analytics.
-On clean shutdown, flushes buffered events so none are lost when the server
-exits gracefully.
+On startup, optionally migrates the database, initializes PostHog analytics and
+prepares the sandbox specs (the Docker backend pulls missing images). On clean
+shutdown, flushes buffered events so none are lost when the server exits
+gracefully.
 """
 
 from __future__ import annotations
@@ -59,7 +60,8 @@ class SaasAppLifespanService(AppLifespanService):
     """Lifespan service for the SaaS server.
 
     On enter: runs ``alembic upgrade head`` when RUN_MIGRATIONS_ON_STARTUP is
-    set, then initialises the PostHog analytics singleton from environment vars.
+    set, then initialises the PostHog analytics singleton from environment vars,
+    then prepares the sandbox specs. Uvicorn opens the port only after this.
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
@@ -83,7 +85,15 @@ class SaasAppLifespanService(AppLifespanService):
             deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
         )
         await self._reconcile_org_condenser_defaults()
+        await self._prepare_sandbox_specs()
         return self
+
+    async def _prepare_sandbox_specs(self) -> None:
+        from openhands.app_server.config import get_global_config
+
+        sandbox_spec = get_global_config().sandbox_spec
+        assert sandbox_spec is not None
+        await sandbox_spec.prepare()
 
     async def _run_migrations(self) -> None:
         # The advisory lock in migrations/env.py makes other workers and replicas

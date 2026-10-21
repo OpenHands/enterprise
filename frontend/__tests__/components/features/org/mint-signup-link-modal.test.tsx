@@ -47,4 +47,26 @@ describe("MintSignupLinkModal", () => {
     );
     window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
   });
+
+  it("should not let typed text replace the selected role", async () => {
+    // Arrange
+    renderMintSignupLinkModal();
+    const roleDropdown = within(
+      screen.getByTestId("mint-signup-link-modal"),
+    ).getByTestId("signup-link-role-dropdown");
+    const roleInput = within(roleDropdown).getByRole("combobox");
+
+    // Act
+    await userEvent.click(within(roleDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.type(roleInput, "guest", { skipClick: true });
+
+    // Assert
+    expect(roleInput).toHaveValue("ORG$ROLE_MEMBER");
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_MEMBER" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_ADMIN" }),
+    ).toBeInTheDocument();
+  });
 });

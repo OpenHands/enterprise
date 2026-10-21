@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from openhands.app_server.utils.llm import ModelsResponse
+from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 from server.verified_models import litellm_proxy_model_router as router_module
 from server.verified_models.litellm_proxy_model_router import (
     LiteLLMProxyModelService,
@@ -564,6 +565,44 @@ class TestLiteLLMDisabled:
         page = await LiteLLMProxyModelService().search_llm_models(limit=100)
 
         assert page.items == []
+
+    async def test_byok_on_marks_sdk_verified_providers_verified(
+        self, monkeypatch, litellm_off
+    ):
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={'models': [*STUB_CATALOGUE.models, 'cohere/command-r']}
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_providers(limit=100)
+
+        assert [(p.name, p.verified) for p in page.items] == [
+            ('anthropic', True),
+            ('gemini', True),
+            ('openai', True),
+            ('cohere', False),
+        ]
+
+    async def test_byok_on_marks_sdk_verified_models_verified(
+        self, monkeypatch, litellm_off
+    ):
+        sdk_verified = VERIFIED_MODELS['anthropic'][0]
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={
+                'models': [
+                    f'anthropic/{sdk_verified}',
+                    'anthropic/not-a-verified-model',
+                ]
+            }
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_llm_models(limit=100)
+
+        assert [(m.name, m.verified) for m in page.items] == [
+            (sdk_verified, True),
+            ('not-a-verified-model', False),
+        ]
 
 
 class TestInjector:
