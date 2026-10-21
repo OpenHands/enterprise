@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.services.saml_metadata import (
     SamlIdpMetadata,
     SamlMetadataFetchError,
@@ -546,7 +547,8 @@ async def update_auth_provider_user(
     provider -- same cleanup ``oauth_v2_unlink`` does -- so they don't keep
     a token for an identity they no longer own.
     """
-    if await AuthProviderStore().get_by_id(provider_id) is None:
+    provider = await AuthProviderStore().get_by_id(provider_id)
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
         )
@@ -588,6 +590,10 @@ async def update_auth_provider_user(
 
     token_store = OAuthTokenStore(user_id=old_user_id, oauth_provider_id=provider_id)
     await token_store.delete_tokens()
+    if isinstance(provider.details, OAuthProviderDetails):
+        await invalidate_user_id_cache(
+            provider.details.provider_type, updated.external_subject_id
+        )
 
     logger.info(
         'oauth_providers_admin:update_user_link',

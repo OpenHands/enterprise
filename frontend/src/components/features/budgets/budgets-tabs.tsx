@@ -507,6 +507,8 @@ export function OrganizationBudgetTab({
               {slackConnected ? (
                 <p className="text-xs text-[var(--oh-muted)] mt-2">
                   Used by any threshold with &apos;Post to Slack&apos; enabled.
+                  Enter a channel name or a channel ID, and invite the OpenHands
+                  app to the channel.
                 </p>
               ) : (
                 <p className="text-xs text-muted mt-2">
