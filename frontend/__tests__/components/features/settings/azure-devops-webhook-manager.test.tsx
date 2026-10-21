@@ -19,6 +19,8 @@ const status = (
     canManage = true,
     recorded = false,
     installedAt = null as string | null,
+    automationEnabled = false,
+    automationInstalled = false,
   } = {},
 ) => ({
   organization,
@@ -34,6 +36,8 @@ const status = (
   install_recorded: recorded,
   installed_at: installedAt,
   last_verified_at: recorded ? "2026-10-21T09:00:00Z" : null,
+  automation_events_enabled: automationEnabled,
+  automation_webhooks_installed: automationInstalled,
 });
 
 function renderManager() {
@@ -220,6 +224,57 @@ describe("Azure DevOps organization management", () => {
     ).toBeEnabled();
     expect(
       alpha.queryByTestId("azure-devops-webhook-permission-note"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks to reinstall when the automation hooks are missing", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, true, {
+          automationEnabled: true,
+          automationInstalled: org === "Beta",
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_PARTIAL),
+    ).toBeInTheDocument();
+    expect(
+      alpha.getByTestId("azure-devops-automation-hooks-missing"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_AUTOMATION_HOOKS_MISSING);
+    expect(
+      alpha.getByRole("button", {
+        name: I18nKey.AZURE_DEVOPS$WEBHOOK_REINSTALL,
+      }),
+    ).toBeEnabled();
+
+    const beta = await row("Beta");
+    expect(
+      await beta.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      beta.queryByTestId("azure-devops-automation-hooks-missing"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not ask members who can't view the hooks to reinstall", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, false, {
+          canView: false,
+          canManage: false,
+          recorded: true,
+          automationEnabled: true,
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      alpha.queryByTestId("azure-devops-automation-hooks-missing"),
     ).not.toBeInTheDocument();
   });
 

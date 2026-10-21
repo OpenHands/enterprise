@@ -530,17 +530,90 @@ async def test_events_route_does_not_forward_unauthenticated_events(monkeypatch)
     background_tasks.add_task.assert_not_called()
 
 
+_PR_UPDATED_EVENT = {
+    'id': 'evt-3',
+    'subscriptionId': 'sub-2',
+    'eventType': 'git.pullrequest.updated',
+    'resourceContainers': {'account': {'baseUrl': 'https://dev.azure.com/fabrikam/'}},
+}
+
+
+async def _forwarded_and_resolver_payloads(monkeypatch, notification_type):
+    fake_manager, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=True
+    )
+    background_tasks = MagicMock()
+
+    await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_UPDATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+        x_openhands_notification_type=notification_type,
+    )
+
+    calls = background_tasks.add_task.call_args_list
+    forwarded = next(
+        call.kwargs['payload']
+        for call in calls
+        if call.args[0] is fake_forwarder.forward_event
+    )
+    message = next(
+        call.args[1] for call in calls if call.args[0] is fake_manager.receive_message
+    )
+    return forwarded, message.message['payload']
+
+
+@pytest.mark.asyncio
+async def test_events_route_names_the_kind_of_pull_request_update(monkeypatch):
+    forwarded, resolver_payload = await _forwarded_and_resolver_payloads(
+        monkeypatch, 'ReviewerVoteNotification'
+    )
+
+    assert forwarded == {
+        **_PR_UPDATED_EVENT,
+        'openhands': {'notificationType': 'ReviewerVoteNotification'},
+    }
+    # The resolver gets the payload as Azure DevOps sent it.
+    assert resolver_payload == _PR_UPDATED_EVENT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('notification_type', [None, 'SomethingElse'])
+async def test_events_route_forwards_other_events_unchanged(
+    monkeypatch, notification_type
+):
+    forwarded, _ = await _forwarded_and_resolver_payloads(
+        monkeypatch, notification_type
+    )
+
+    assert forwarded == _PR_UPDATED_EVENT
+
+
 _HOOK_URL = 'https://app.example.com/integration/azure-devops/events'
 
 
-def _hook(subscription_id, event_type, status='enabled'):
+def _hook(subscription_id, event_type, status='enabled', notification_type=None):
     return {
         'id': subscription_id,
         'status': status,
         'eventType': event_type,
-        'publisherInputs': {},
+        'publisherInputs': (
+            {'notificationType': notification_type} if notification_type else {}
+        ),
         'consumerInputs': {'url': _HOOK_URL},
     }
+
+
+def _automation_hooks(prefix):
+    """One hook per AUTOMATION_HOOKS entry, keyed '<prefix>-<event or update kind>'."""
+    hooks = {}
+    for event_type, notification_type in azure_devops.AUTOMATION_HOOKS:
+        subscription_id = f'{prefix}-{notification_type or event_type}'
+        hooks[subscription_id] = _hook(
+            subscription_id, event_type, notification_type=notification_type
+        )
+    return hooks
 
 
 class _InMemoryAzureOrg:
@@ -571,14 +644,16 @@ class _InMemoryAzureOrg:
             raise RuntimeError('delete failed')
         self.hooks.pop(subscription_id)
 
-    def _create(self, kind, event_type):
+    def _create(self, kind, event_type, notification_type=None):
         self.calls.append(('create', kind))
         if self.fail_create == kind:
             raise AzureDevOpsApiError(
                 400, 'The user does not have permission to edit subscriptions.'
             )
         subscription_id = f'new-{kind}'
-        self.hooks[subscription_id] = _hook(subscription_id, event_type)
+        self.hooks[subscription_id] = _hook(
+            subscription_id, event_type, notification_type=notification_type
+        )
         return {'id': subscription_id}
 
     async def create_pr_comment_service_hook(self, **_):
@@ -586,6 +661,13 @@ class _InMemoryAzureOrg:
 
     async def create_work_item_comment_service_hook(self, **_):
         return self._create('wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT)
+
+    async def create_automation_service_hook(
+        self, *, event_type, notification_type=None, **_
+    ):
+        return self._create(
+            notification_type or event_type, event_type, notification_type
+        )
 
 
 def _use_service(monkeypatch, service):
@@ -663,6 +745,129 @@ async def test_reinstall_succeeds_when_old_hook_cleanup_fails(monkeypatch):
     assert response.success is True
     assert response.pr_subscription_id == 'new-pr'
     assert set(service.hooks) == {'old-pr', 'new-pr', 'new-wi'}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_adds_automation_hooks_when_events_are_forwarded(monkeypatch):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg()
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert response.success is True
+    assert service.hooks == {
+        'new-pr': _hook('new-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+        'new-wi': _hook('new-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT),
+        **_automation_hooks('new'),
+    }
+    assert response.automation_subscription_ids == list(_automation_hooks('new'))
+
+
+@pytest.mark.asyncio
+async def test_reinstall_replaces_automation_hooks_after_creating_new_ones(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert set(service.hooks) == {'new-pr', 'new-wi', *_automation_hooks('new')}
+    first_delete = next(
+        index for index, call in enumerate(service.calls) if call[0] == 'delete'
+    )
+    assert len(service.calls[:first_delete]) == 2 + len(azure_devops.AUTOMATION_HOOKS)
+
+
+@pytest.mark.asyncio
+async def test_reinstall_rolls_back_every_new_hook_when_an_automation_hook_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg(fail_create='ReviewerVoteNotification')
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert set(service.hooks) == {'old-pr', 'old-wi', *_automation_hooks('old')}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_removes_automation_hooks_when_events_are_not_forwarded(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', False)
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert set(service.hooks) == {'new-pr', 'new-wi'}
+    assert response.automation_subscription_ids == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'forwarding_enabled,disabled_hook,expected',
+    [
+        (True, None, (True, True)),
+        (True, 'old-ReviewerVoteNotification', (True, False)),
+        (False, None, (False, False)),
+    ],
+    ids=['all-installed', 'one-disabled', 'forwarding-off'],
+)
+async def test_resources_reports_automation_hooks(
+    monkeypatch, forwarding_enabled, disabled_hook, expected
+):
+    monkeypatch.setattr(
+        azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', forwarding_enabled
+    )
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    if disabled_hook:
+        service.hooks[disabled_hook]['status'] = 'disabledBySystem'
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert (
+        status.automation_events_enabled,
+        status.automation_webhooks_installed,
+    ) == expected
+
+
+@pytest.mark.asyncio
+async def test_uninstall_deletes_automation_hooks(monkeypatch):
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.uninstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert service.hooks == {}
+    assert sorted(response.automation_subscription_ids) == sorted(
+        _automation_hooks('old')
+    )
 
 
 @pytest.mark.asyncio
