@@ -34,6 +34,7 @@ const GITHUB_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "github",
