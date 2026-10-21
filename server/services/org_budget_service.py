@@ -2127,7 +2127,15 @@ class OrgBudgetService:
         must_check = activates('slack_enabled') or destination_changed
         if not must_check and team_id:
             return None
-        team_id = await self._resolve_slack_team_id(team_id, settings.org_id)
+        # Look the workspace up again, so an org that moved workspaces can
+        # switch by changing the channel. Keep the stored one if none resolves.
+        explicit_team_id = (
+            update_data.slack_team_id if 'slack_team_id' in fields else None
+        )
+        team_id = (
+            await self._resolve_slack_team_id(explicit_team_id, settings.org_id)
+            or team_id
+        )
         connected = bool(await self._get_slack_bot_token(team_id))
         if must_check:
             if not connected:

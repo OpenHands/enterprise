@@ -348,71 +348,114 @@ async def test_slack_alert_never_resolves_workspace_from_member_links(
     client.assert_not_called()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('already_enabled', [False, True])
-async def test_api_save_stores_resolved_slack_workspace(
-    alert_http, alert_service, monkeypatch, link_slack, already_enabled
-):
-    """Saving pins the workspace, also for orgs that enabled Slack before."""
-    from sqlalchemy import select
+async def save_slack_alert(client, org_id, links, channel: str):
+    """PATCH the budget with a Slack alert, as the org-budget Save does.
 
+    The linked users are org members, so LiteLLM must report them too.
+    """
     from storage.lite_llm_manager import LiteLlmManager
-    from storage.org_budget_threshold import OrgBudgetThreshold
 
-    enable_slack(monkeypatch)
-    client, org_id = alert_http
-    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
-    link = await link_slack(org_id, 'T_TARGET')
-    # The linked user is an org member, so LiteLLM must know them too.
+    member = {'spend': 0.0, 'max_budget': None, 'uses_shared_budget': True}
     financial_data = {
         'team_spend': 0,
         'team_max_budget': None,
-        'members': {
-            link.keycloak_user_id: {
-                'spend': 0.0,
-                'max_budget': None,
-                'uses_shared_budget': True,
-            }
-        },
+        'members': {link.keycloak_user_id: member for link in links},
     }
-    if already_enabled:
-        session = alert_service.db_session
-        settings = (
-            await session.execute(
-                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-            )
-        ).scalar_one()
-        threshold = (
-            await session.execute(
-                select(OrgBudgetThreshold).where(OrgBudgetThreshold.org_id == org_id)
-            )
-        ).scalar_one()
-        settings.slack_channel = '#alerts'
-        threshold.slack_enabled = True
-    await alert_service.db_session.commit()
-
     with patch.object(
         LiteLlmManager,
         'get_team_members_financial_data',
         AsyncMock(return_value=financial_data),
     ):
-        response = await client.patch(
+        return await client.patch(
             f'/api/organizations/{org_id}/budgets',
             json={
-                'slack_channel': '#alerts',
+                'slack_channel': channel,
                 'thresholds': [
                     {'percentage': 80, 'email_enabled': False, 'slack_enabled': True}
                 ],
             },
         )
 
-    assert response.status_code == 200, response.text
-    settings = (
+
+async def enable_stored_slack_alert(alert_service, org_id, team_id=None):
+    """Turn on the Slack alert that ``alert_http`` seeds, as an earlier save did."""
+    from sqlalchemy import select
+
+    from storage.org_budget_threshold import OrgBudgetThreshold
+
+    session = alert_service.db_session
+    settings = await stored_settings(alert_service, org_id)
+    threshold = (
+        await session.execute(
+            select(OrgBudgetThreshold).where(OrgBudgetThreshold.org_id == org_id)
+        )
+    ).scalar_one()
+    settings.slack_channel = '#alerts'
+    settings.slack_team_id = team_id
+    threshold.slack_enabled = True
+
+
+async def stored_settings(alert_service, org_id) -> OrgBudgetSettings:
+    from sqlalchemy import select
+
+    return (
         await alert_service.db_session.execute(
             select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
         )
     ).scalar_one()
-    assert settings.slack_team_id == 'T_TARGET'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('already_enabled', [False, True])
+async def test_api_save_stores_resolved_slack_workspace(
+    alert_http, alert_service, monkeypatch, link_slack, already_enabled
+):
+    """Saving pins the workspace, also for orgs that enabled Slack before."""
+    enable_slack(monkeypatch)
+    client, org_id = alert_http
+    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
+    link = await link_slack(org_id, 'T_TARGET')
+    if already_enabled:
+        await enable_stored_slack_alert(alert_service, org_id)
+    await alert_service.db_session.commit()
+
+    response = await save_slack_alert(client, org_id, [link], '#alerts')
+
+    assert response.status_code == 200, response.text
+    assert (await stored_settings(alert_service, org_id)).slack_team_id == 'T_TARGET'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('linked_team_ids', 'expected_team_id'),
+    [
+        # The org moved workspaces: changing the channel switches to the new one.
+        (['T_NEW'], 'T_NEW'),
+        # Members' links are ambiguous: keep the stored workspace.
+        (['T_NEW', 'T_SIDE'], 'T_OLD'),
+    ],
+)
+async def test_api_channel_change_resolves_slack_workspace_again(
+    alert_http,
+    alert_service,
+    monkeypatch,
+    link_slack,
+    linked_team_ids,
+    expected_team_id,
+):
+    enable_slack(monkeypatch)
+    client, org_id = alert_http
+    install_slack_teams(alert_service, 'T_OLD', 'T_NEW', 'T_SIDE')
+    links = [await link_slack(org_id, team_id) for team_id in linked_team_ids]
+    await enable_stored_slack_alert(alert_service, org_id, team_id='T_OLD')
+    await alert_service.db_session.commit()
+
+    response = await save_slack_alert(client, org_id, links, '#new-alerts')
+
+    assert response.status_code == 200, response.text
+    assert (
+        await stored_settings(alert_service, org_id)
+    ).slack_team_id == expected_team_id
 
 
 @pytest.mark.asyncio
