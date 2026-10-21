@@ -4,7 +4,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18n from "i18next";
 import { createRoutesStub } from "react-router";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
 import type {
   AuthProvider,
@@ -155,9 +163,7 @@ describe("Super Admin Auth Provider User Links page", () => {
     vi.spyOn(authProvidersService, "listAuthProviderUsers").mockResolvedValue(
       USER_PAGE,
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
-      DIRECTORY_USERS,
-    );
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(DIRECTORY_USERS);
   });
 
   afterEach(() => {
@@ -171,9 +177,7 @@ describe("Super Admin Auth Provider User Links page", () => {
     expect(
       await screen.findByText("Identity links to accounts for GitHub."),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("alice@example.com (user-1)"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("alice@example.com (user-1)")).toBeInTheDocument();
     expect(
       screen.getByText("alice@old-email.com (gh-alice)"),
     ).toBeInTheDocument();
@@ -245,6 +249,42 @@ describe("Super Admin Auth Provider User Links page", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: "alice@example.com (user-1)" }),
+    ).toBeInTheDocument();
+  });
+});
+
+// These tests don't `vi.spyOn` any service method, so every request -- the
+// provider list, the user-links page, and the "re-point to" dropdown's
+// directory lookup -- goes through the real MSW handlers in `src/mocks/`
+// (the same ones `npm run dev:mock:saas` uses). The service-layer-mocked
+// tests above can't catch a missing handler for a new endpoint; this is
+// what actually exercises that path end to end.
+describe("Super Admin Auth Provider User Links page (network-level MSW handlers)", () => {
+  afterEach(() => {
+    currentUserId.value = "self-id";
+  });
+
+  it("loads the user-links table and the re-point dropdown's options over the network", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText("Identity links to accounts for GitHub."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("me@acme.org (99)")).toBeInTheDocument();
+    expect(screen.getByText("me-old@acme.org (gh-109284)")).toBeInTheDocument();
+    expect(screen.getByText("alex@acme.org (u-2)")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByTestId("super-admin-auth-provider-user-edit-101"),
+    );
+    const dialog = screen.getByTestId(
+      "super-admin-auth-provider-user-edit-modal",
+    );
+    await user.click(within(dialog).getByTestId("dropdown-trigger"));
+
+    expect(
+      await screen.findByRole("option", { name: "alex@acme.org (u-2)" }),
     ).toBeInTheDocument();
   });
 });
