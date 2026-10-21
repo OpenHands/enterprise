@@ -42,6 +42,15 @@ class SaaSBitBucketService(BitBucketService):
             and bool(external_auth_id)
             and is_oauth_v2_login_enabled()
         )
+        # Set by the 401 retry, read once by get_latest_token.
+        self._rejected_token: str | None = None
+
+    def _has_token_expired(self, status_code: int) -> bool:
+        # Only the base class's 401 retry calls this, so record the refused token.
+        expired = super()._has_token_expired(status_code)
+        if expired:
+            self._rejected_token = self.token.get_secret_value() or None
+        return expired
 
     async def get_latest_token(self) -> SecretStr | None:
         bitbucket_token = None
@@ -56,16 +65,14 @@ class SaaSBitBucketService(BitBucketService):
                 f'Got BitBucket token {bitbucket_token} from access token: {self.external_auth_token}'
             )
         elif self.external_auth_id:
-            # A token already in hand means the provider just refused it.
+            rejected, self._rejected_token = self._rejected_token, None
             bitbucket_token_str = await self.token_manager.get_idp_token_for_user(
-                self.external_auth_id,
-                ProviderType.BITBUCKET,
-                rejected=self.token.get_secret_value() or None,
+                self.external_auth_id, ProviderType.BITBUCKET, rejected=rejected
             )
             bitbucket_token = (
                 SecretStr(bitbucket_token_str) if bitbucket_token_str else None
             )
-            if bitbucket_token and self.refresh:
+            if bitbucket_token and rejected:
                 self.token = bitbucket_token  # the retry reads self.token
             logger.info(
                 f'Got BitBucket token {bitbucket_token} from external auth user ID: {self.external_auth_id}'
