@@ -46,6 +46,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import SUPER_ADMIN_EMAILS
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -544,6 +545,14 @@ async def oauth_v2_callback(
         # the user row so the cookie reflects the real TOS state, and
         # redirect to the TOS page when it has not been accepted yet.
         user = await UserStore.get_user_by_id(user_id)
+        if user is not None and user.email and user.email.lower() in SUPER_ADMIN_EMAILS:
+            # Escape hatch: configured emails always hold the super-admin
+            # role. Idempotent -- a no-op once already granted -- so it's
+            # cheap to self-heal on every login rather than only at account
+            # creation (``UserStore.create_user``'s first-user path), which
+            # covers both pre-existing accounts and an email added to
+            # ``SUPER_ADMIN_EMAILS`` after the account already existed.
+            await UserStore.grant_super_admin(user_id)
         has_accepted_tos = user is not None and user.accepted_tos is not None
         if not has_accepted_tos:
             encoded_redirect_url = quote(redirect_url, safe='')
