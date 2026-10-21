@@ -27,6 +27,7 @@ const GITHUB_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "github",
@@ -51,6 +52,7 @@ const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "enterprise_sso",
@@ -75,6 +77,7 @@ const PASSWORD_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: { kind: "PasswordProviderDetails" },
   created_at: "2024-01-02T00:00:00Z",
   updated_at: "2024-01-02T00:00:00Z",
@@ -88,6 +91,7 @@ const SAML_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "SamlProviderDetails",
     metadata_url: "https://idp.example.com/metadata",
@@ -356,6 +360,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
         details: { kind: "PasswordProviderDetails" },
       }),
     );
@@ -422,6 +427,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
       }),
     );
   });
@@ -696,6 +702,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
         details: {
           kind: "SamlProviderDetails",
           metadata_url: null,
@@ -1019,6 +1026,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
       }),
     );
   });

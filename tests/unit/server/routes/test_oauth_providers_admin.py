@@ -72,6 +72,7 @@ def _fake_provider(
     icon: str | None = None,
     color: str = DEFAULT_AUTH_PROVIDER_COLOR,
     allow_registration: bool = True,
+    allow_match_by_email: bool = True,
     legacy_keycloak_type: ProviderType | None = None,
 ) -> AuthProvider:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -81,6 +82,7 @@ def _fake_provider(
         icon=icon,
         color=color,
         allow_registration=allow_registration,
+        allow_match_by_email=allow_match_by_email,
         details=OAuthProviderDetails(
             provider_type=ProviderType(category),
             client_id=client_id,
@@ -227,6 +229,7 @@ async def test_create_integrated_idp_provider(mock_app, grant_manage_oauth_provi
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration=True,
+        allow_match_by_email=True,
         details=PasswordProviderDetails(),
     )
     created.id = 3
@@ -607,6 +610,7 @@ def _fake_password_provider(provider_id: int = 1, title: str = 'Password Login')
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration=True,
+        allow_match_by_email=True,
         details=PasswordProviderDetails(),
     )
     provider.id = provider_id
@@ -812,6 +816,7 @@ def _fake_saml_provider(
         is_idp=is_idp,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration=True,
+        allow_match_by_email=True,
         details=SamlProviderDetails(
             sp_private_key=SecretStr(sp_private_key) if sp_private_key else None,
             sp_x509_cert=sp_x509_cert,

@@ -115,6 +115,10 @@ export interface AuthProvider {
    * authenticates through this provider, or whether only an already-linked
    * account may sign in through it. */
   allow_registration: boolean;
+  /** Initial value of a new user's `allow_match_by_email` flag when they are
+   * first created by a login through this provider -- see the backend's
+   * `server.auth.provider_identity.resolve_or_create_user`. */
+  allow_match_by_email: boolean;
   details: AuthProviderDetails;
   created_at: string;
   updated_at: string;
@@ -126,6 +130,7 @@ export interface CreateAuthProviderParams {
   icon?: string | null;
   color?: string;
   allow_registration?: boolean;
+  allow_match_by_email?: boolean;
   details: AuthProviderDetails;
 }
 

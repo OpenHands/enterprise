@@ -35835,6 +35835,23 @@
     "uk": "Accept new registrations",
     "ca": "Accept new registrations"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL": {
+    "en": "Match new users by email",
+    "ja": "Match new users by email",
+    "zh-CN": "Match new users by email",
+    "zh-TW": "Match new users by email",
+    "ko-KR": "Match new users by email",
+    "no": "Match new users by email",
+    "it": "Match new users by email",
+    "pt": "Match new users by email",
+    "es": "Match new users by email",
+    "ar": "Match new users by email",
+    "fr": "Match new users by email",
+    "tr": "Match new users by email",
+    "de": "Match new users by email",
+    "uk": "Match new users by email",
+    "ca": "Match new users by email"
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_BRAND": {
     "en": "Provider",
     "ja": "Provider",

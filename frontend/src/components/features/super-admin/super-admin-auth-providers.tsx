@@ -203,6 +203,10 @@ interface AuthProviderFormState {
    * authenticates through this provider, or only an already-linked account
    * may sign in through it. */
   allowRegistration: boolean;
+  /** Initial value of a new user's ``User.allow_match_by_email`` flag when
+   * they are first created by a login through this provider -- see
+   * ``server.auth.provider_identity.resolve_or_create_user``. */
+  allowMatchByEmail: boolean;
   providerType: OAuthProviderBrand;
   clientId: string;
   clientSecret: string;
@@ -241,6 +245,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   icon: "",
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allowRegistration: true,
+  allowMatchByEmail: true,
   providerType: "enterprise_sso",
   clientId: "",
   clientSecret: "",
@@ -272,6 +277,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       icon: provider.icon ?? "",
       color: provider.color,
       allowRegistration: provider.allow_registration,
+      allowMatchByEmail: provider.allow_match_by_email,
       providerType: details.provider_type,
       clientId: details.client_id,
       authorizationUrl: details.authorization_url ?? "",
@@ -292,6 +298,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       icon: provider.icon ?? "",
       color: provider.color,
       allowRegistration: provider.allow_registration,
+      allowMatchByEmail: provider.allow_match_by_email,
       metadataUrl: details.metadata_url ?? "",
       idpEntityId: details.idp_entity_id ?? "",
       ssoUrl: details.sso_url ?? "",
@@ -311,6 +318,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
     icon: provider.icon ?? "",
     color: provider.color,
     allowRegistration: provider.allow_registration,
+    allowMatchByEmail: provider.allow_match_by_email,
   };
 }
 
@@ -606,6 +614,15 @@ function AuthProviderFormModal({
           }
         >
           {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
+        </SettingsSwitch>
+        <SettingsSwitch
+          testId="super-admin-auth-provider-allow-match-by-email"
+          isToggled={form.allowMatchByEmail}
+          onToggle={(value) =>
+            setForm((prev) => ({ ...prev, allowMatchByEmail: value }))
+          }
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL)}
         </SettingsSwitch>
         {form.kind === KIND_OAUTH ? (
           <>
@@ -960,6 +977,7 @@ function buildUpdatePayload(
     icon: form.icon.trim() || null,
     color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
     allow_registration: form.allowRegistration,
+    allow_match_by_email: form.allowMatchByEmail,
     ...(detailsChanged && { details: buildDetails(form) }),
   };
 }
@@ -1013,6 +1031,7 @@ export function SuperAdminAuthProviders() {
         icon: form.icon.trim() || null,
         color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: form.allowRegistration,
+        allow_match_by_email: form.allowMatchByEmail,
         details: buildDetails(form),
       };
       createProvider.mutate(payload, { onSuccess: closeForm });
