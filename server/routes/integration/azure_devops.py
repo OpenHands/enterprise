@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import secrets
+from datetime import datetime
 from typing import Any, Callable
 
 from fastapi import (
@@ -32,11 +33,14 @@ from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AZURE_DEVOPS_WEBHOOK_SECRET
+from storage.azure_devops_webhook import AzureDevOpsWebhook
+from storage.azure_devops_webhook_store import AzureDevOpsWebhookStore
 from storage.redis import get_redis_client_async
 
 azure_devops_integration_router = APIRouter(prefix='/integration')
 
 _azure_devops_manager = None
+azure_devops_webhook_store = AzureDevOpsWebhookStore()
 
 
 def azure_devops_webhook_url() -> str:
@@ -56,6 +60,11 @@ class AzureDevOpsWebhookStatus(BaseModel):
     # Hooks, so the installed flags above can't be trusted.
     can_view_webhooks: bool = True
     can_manage_webhooks: bool = True
+    # From OpenHands' own record, so members who can't view the hooks in Azure
+    # still see whether and when they were set up.
+    install_recorded: bool = False
+    installed_at: datetime | None = None
+    last_verified_at: datetime | None = None
 
 
 class AzureDevOpsWebhookInstallationResult(BaseModel):
@@ -233,16 +242,16 @@ async def _service_for_organization(
 
 async def _service_hook_permissions(
     service: SaaSAzureDevOpsService,
-) -> tuple[bool, bool]:
-    """Return (can_view, can_manage) for the org's Service Hooks."""
+) -> tuple[bool, bool, bool]:
+    """Return (can_view, can_manage, confirmed) for the org's Service Hooks."""
     try:
         can_view, can_edit = await service.get_service_hook_permissions()
     except Exception as e:
         # Unknown permissions keep the listing-based status and actions.
         logger.warning(f'Could not evaluate Azure DevOps Service Hook permissions: {e}')
-        return True, True
+        return True, True, False
     # Install and uninstall list the hooks first, so managing needs both.
-    return can_view, can_view and can_edit
+    return can_view, can_view and can_edit, True
 
 
 def _is_access_denied(error: Exception) -> bool:
@@ -250,6 +259,34 @@ def _is_access_denied(error: Exception) -> bool:
     return isinstance(error, AuthenticationError) or (
         isinstance(error, AzureDevOpsApiError) and error.status_code == 403
     )
+
+
+async def _sync_install_record(
+    organization: str,
+    *,
+    installed: bool | None,
+    pr_subscription_id: str | None,
+    work_item_subscription_id: str | None,
+) -> AzureDevOpsWebhook | None:
+    """Bring the install record in line with what the user saw in Azure.
+
+    ``installed`` is None when the user couldn't see the hooks; the record is
+    then only read. Failures never break the status response.
+    """
+    try:
+        if installed is None:
+            return await azure_devops_webhook_store.get_webhook(organization)
+        if installed:
+            return await azure_devops_webhook_store.record_verified(
+                organization,
+                pr_subscription_id=pr_subscription_id,
+                work_item_subscription_id=work_item_subscription_id,
+            )
+        await azure_devops_webhook_store.delete_webhook(organization)
+        return None
+    except Exception:
+        logger.exception('Could not sync the Azure DevOps webhook install record')
+        return None
 
 
 @azure_devops_integration_router.get('/azure-devops/organizations')
@@ -289,7 +326,7 @@ async def get_azure_devops_resources(
         service = await _service_for_organization(user_id, organization)
         webhook_url = azure_devops_webhook_url()
 
-        can_view, can_manage = await _service_hook_permissions(service)
+        can_view, can_manage, confirmed = await _service_hook_permissions(service)
         subscriptions: list[dict[str, Any]] = []
         if can_view:
             try:
@@ -316,22 +353,43 @@ async def get_azure_devops_resources(
         # hook exists but won't deliver resolver events).
         pr_enabled = _subscription_is_enabled(pr_subscription)
         work_item_enabled = _subscription_is_enabled(work_item_subscription)
+        webhook_installed = pr_enabled and work_item_enabled
+        pr_subscription_id = (
+            _subscription_id(pr_subscription) if pr_subscription else None
+        )
+        work_item_subscription_id = (
+            _subscription_id(work_item_subscription) if work_item_subscription else None
+        )
+
+        # Only clear the record when Azure confirmed the user can view the hooks
+        # and none exist; disabled or probation hooks may recover, and an
+        # unconfirmed empty listing may just be hiding them.
+        observed: bool | None = None
+        if can_view and webhook_installed:
+            observed = True
+        elif can_view and confirmed and not (pr_subscription or work_item_subscription):
+            observed = False
+        record = await _sync_install_record(
+            service.organization,
+            installed=observed,
+            pr_subscription_id=pr_subscription_id,
+            work_item_subscription_id=work_item_subscription_id,
+        )
 
         return AzureDevOpsWebhookStatus(
             organization=service.organization,
-            webhook_installed=pr_enabled and work_item_enabled,
+            webhook_installed=webhook_installed,
             pr_webhook_installed=pr_enabled,
             work_item_webhook_installed=work_item_enabled,
-            pr_subscription_id=_subscription_id(pr_subscription)
-            if pr_subscription
-            else None,
-            work_item_subscription_id=_subscription_id(work_item_subscription)
-            if work_item_subscription
-            else None,
+            pr_subscription_id=pr_subscription_id,
+            work_item_subscription_id=work_item_subscription_id,
             webhook_url=webhook_url,
             webhook_secret_set=bool(IS_LOCAL_DEPLOYMENT or AZURE_DEVOPS_WEBHOOK_SECRET),
             can_view_webhooks=can_view,
             can_manage_webhooks=can_manage,
+            install_recorded=record is not None,
+            installed_at=record.installed_at if record else None,
+            last_verified_at=record.last_verified_at if record else None,
         )
 
     except HTTPException:
@@ -419,6 +477,16 @@ async def reinstall_azure_devops_webhook(
             reason='replaced',
         )
 
+        try:
+            await azure_devops_webhook_store.record_install(
+                service.organization,
+                user_id=user_id,
+                pr_subscription_id=pr_subscription_id,
+                work_item_subscription_id=work_item_subscription_id,
+            )
+        except Exception:
+            logger.exception('Could not record the Azure DevOps webhook install')
+
         logger.info(
             '[Azure DevOps] Resolver hooks installed',
             extra={
@@ -479,6 +547,11 @@ async def uninstall_azure_devops_webhook(
             ):
                 await service.delete_service_hook_subscription(subscription_id)
                 deleted_work_item_subscription_id = subscription_id
+
+        try:
+            await azure_devops_webhook_store.delete_webhook(service.organization)
+        except Exception:
+            logger.exception('Could not delete the Azure DevOps webhook install record')
 
         logger.info(
             '[Azure DevOps] Resolver hooks uninstalled',

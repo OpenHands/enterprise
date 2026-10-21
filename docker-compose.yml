@@ -30,6 +30,11 @@
 # stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
 # existing session cookie instead of prompting to connect to OpenHands Cloud.
 #
+# Data persists across `docker compose down` and `up` in named volumes
+# (`db-data`, `app-filestore`, `automation-data`). `docker compose down -v`
+# removes them and resets everything. The database keeps the credentials it was
+# first created with, so changing DB_USER/DB_PASS later requires a reset.
+#
 # By default this stack runs RELEASED images (pinned below) and builds nothing.
 # To use other versions, set these (shell or `.env`):
 #   APP_IMAGE          enterprise-server image for `app` and `worker`
@@ -69,12 +74,8 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
-    # Intentionally no `db-data` volume mount here for now: this stack is
-    # meant to be completely ephemeral (see OHE-3376 investigation into the
-    # Docker named volume surviving `docker compose down`). Every
-    # `docker compose up --build` starts from a fresh, empty database.
-    # volumes:
-    #   - db-data:/var/lib/postgresql/data
+    volumes:
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
       interval: 5s
@@ -105,11 +106,7 @@ services:
     # the socket.
     volumes: &app-volumes
       - /var/run/docker.sock:/var/run/docker.sock
-      # `app-filestore` intentionally not mounted for now: this stack is
-      # meant to be completely ephemeral, so /.openhands starts empty on
-      # every `docker compose up --build` instead of surviving it via a
-      # Docker named volume.
-      # - app-filestore:/.openhands
+      - app-filestore:/.openhands
     # The app and `worker` reach a sandbox at its URL. With the default
     # WEB_URL, they rewrite `localhost` in it to host.docker.internal, which
     # reaches the proxy's published port.
@@ -288,17 +285,24 @@ services:
     # amd64 hosts. Drop this once the image is published multi-arch.
     platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
-    # here.
-    command: ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
+    # here. It starts as root only so it can hand the (root-owned, since the
+    # image has no /data) volume to the service user, then drops to that user.
+    user: '0:0'
+    command:
+      - sh
+      - -c
+      - |
+        chown 42420:999 /data
+        exec setpriv --reuid 42420 --regid 999 --clear-groups uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
     depends_on:
       db:
         condition: service_healthy
     expose:
       - '8000'
     # The image runs as uid 42420 with no home directory, so tarball storage
-    # needs an explicitly writable path. tmpfs keeps this stack ephemeral.
-    tmpfs:
-      - /data:uid=42420,gid=42420
+    # needs an explicitly writable path.
+    volumes:
+      - automation-data:/data
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       # With the default WEB_URL, the app reports each sandbox's URL as
@@ -425,11 +429,10 @@ services:
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
-# `db-data` / `app-filestore` are declared but currently unused (see the
-# commented-out mounts above) while this stack is kept completely ephemeral.
-# volumes:
-#   db-data:
-#   app-filestore:
+volumes:
+  db-data:
+  app-filestore:
+  automation-data:
 
 configs:
   caddyfile:
