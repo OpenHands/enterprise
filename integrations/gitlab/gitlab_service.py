@@ -43,6 +43,8 @@ class SaaSGitLabService(GitLabService):
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
+        # On a 401 the base class calls get_latest_token() again and retries.
+        self.refresh = True
 
     async def get_latest_token(self) -> SecretStr | None:
         gitlab_token = None
@@ -56,10 +58,15 @@ class SaaSGitLabService(GitLabService):
                 f'Got GitLab token {gitlab_token} from access token: {self.external_auth_token}'
             )
         elif self.external_auth_id:
+            # A token already in hand means the provider just refused it.
             gitlab_token_str = await self.token_manager.get_idp_token_for_user(
-                self.external_auth_id, ProviderType.GITLAB
+                self.external_auth_id,
+                ProviderType.GITLAB,
+                rejected=self.token.get_secret_value() or None,
             )
             gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
+            if gitlab_token:
+                self.token = gitlab_token  # the retry reads self.token
             logger.info(
                 f'Got GitLab token {gitlab_token} from external auth user ID: {self.external_auth_id}'
             )
