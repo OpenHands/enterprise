@@ -2151,9 +2151,9 @@ class OrgBudgetService:
         """Pick the Slack workspace for an org's budget alerts.
 
         An explicit ``slack_team_id`` wins. With ``org_id``, use the one
-        workspace that the org's members linked through the Slack OAuth flow.
-        Otherwise, or if no member linked one, fall back to the only installed
-        workspace.
+        workspace that the org's members linked through the Slack OAuth flow;
+        if they linked several, return None. Otherwise, or if no member linked
+        one, fall back to the only installed workspace.
         """
         if team_id:
             return team_id
