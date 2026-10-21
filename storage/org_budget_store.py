@@ -22,10 +22,15 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 class OrgBudgetStore:
     db_session: AsyncSession
 
-    async def get_settings(self, org_id: UUID) -> OrgBudgetSettings | None:
-        result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
+    async def get_settings(
+        self, org_id: UUID, *, for_update: bool = False
+    ) -> OrgBudgetSettings | None:
+        statement = select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        if for_update:
+            statement = statement.with_for_update().execution_options(
+                populate_existing=True
+            )
+        result = await self.db_session.execute(statement)
         return result.scalar_one_or_none()
 
     async def create_settings(
@@ -75,15 +80,39 @@ class OrgBudgetStore:
         existing: list[OrgBudgetThreshold],
         new_thresholds,
     ) -> None:
+        # A threshold's identity is its percentage, because the once-per-cycle
+        # alert latch lives on the row.
+        wanted = {threshold.percentage: threshold for threshold in new_thresholds}
+        kept: set[int] = set()
+        # No unique index backs (org_id, percentage), so the table can hold duplicate
+        # rows for one percentage. Process the most-recently latched row first so the
+        # loop keeps the latch and drops the duplicates, rather than keeping whichever
+        # row the query happened to return first.
+        existing = sorted(
+            existing,
+            key=lambda t: t.last_triggered_cycle_start
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         for threshold in existing:
-            await self.db_session.delete(threshold)
-        for threshold in new_thresholds:
+            update = wanted.get(threshold.percentage)
+            # Drop rows for percentages no longer wanted, and drop the already-seen
+            # duplicates so one percentage collapses onto a single (latched) row.
+            if update is None or threshold.percentage in kept:
+                await self.db_session.delete(threshold)
+                continue
+            threshold.email_enabled = update.email_enabled
+            threshold.slack_enabled = update.slack_enabled
+            kept.add(threshold.percentage)
+        for percentage, update in wanted.items():
+            if percentage in kept:
+                continue
             self.db_session.add(
                 OrgBudgetThreshold(
                     org_id=org_id,
-                    percentage=threshold.percentage,
-                    email_enabled=threshold.email_enabled,
-                    slack_enabled=threshold.slack_enabled,
+                    percentage=percentage,
+                    email_enabled=update.email_enabled,
+                    slack_enabled=update.slack_enabled,
                 )
             )
         await self.db_session.flush()

@@ -12,7 +12,7 @@ from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from pydantic import Field, SecretStr, TypeAdapter
 
 from openhands.agent_server.models import (
@@ -57,6 +57,9 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.conversation_links import (
+    get_conversation_ui_url,
+)
 from openhands.app_server.app_conversation.conversation_secret_enricher import (
     ConversationSecretEnricher,
 )
@@ -75,6 +78,9 @@ from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_service import (
     EventCallbackService,
+)
+from openhands.app_server.event_callback.memory_change_callback_processor import (
+    MemoryChangeCallbackProcessor,
 )
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
@@ -107,6 +113,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -132,9 +139,11 @@ from openhands.sdk.marketplace.registration import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
+from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec
 from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import selects_tool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
@@ -150,10 +159,15 @@ from openhands.tools.preset.planning import (
     get_planning_tools,
 )
 
-_conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
+# Upper bound for the provider lookup of a repository started without a
+# provider, so a slow git provider cannot hold up the conversation start.
+_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -230,6 +244,8 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 def _exception_detail(exc: Exception) -> str:
     """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
     detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
     return detail if isinstance(detail, str) else str(exc)
 
 
@@ -305,7 +321,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         default_factory=ConversationSecretEnricher
     )
     app_mode: str | None = None
-    export_max_events: int = 10000
+    export_max_events: int = 0
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
@@ -335,6 +351,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 20,
@@ -348,6 +365,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
             sort_order=sort_order,
             page_id=page_id,
             limit=limit,
@@ -366,6 +384,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         return await self.app_conversation_info_service.count_app_conversation_info(
             title__contains=title__contains,
@@ -374,6 +393,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
     async def get_app_conversation(
@@ -397,61 +417,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        quota_user_id = await self.user_context.get_user_id()
-        quota_reserved = bool(
-            getattr(self.user_context, '_daily_quota_reserved', False)
-        )
-        if quota_reserved:
-            setattr(self.user_context, '_daily_quota_reserved', False)
-        elif quota_user_id:
-            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
-
-        try:
-            async for task in self._start_app_conversation(request):
-                await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                    task
-                )
-                if quota_reserved:
-                    if task.status == AppConversationStartTaskStatus.ERROR:
-                        await self._release_daily_conversation_quota(quota_user_id)
-                        quota_reserved = False
-                    elif task.status == AppConversationStartTaskStatus.READY:
-                        quota_reserved = False
-                yield task
-        except BaseException:
-            if quota_reserved:
-                await self._release_daily_conversation_quota(quota_user_id)
-            raise
-
-    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
-        try:
-            from openhands.app_server.shared import server_config
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
+        async for task in self._start_app_conversation(request):
+            await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                task
             )
-            from storage.database import a_session_maker
-        except ImportError:
-            return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if server_config.app_mode.value != 'saas' or org_id is None:
-            return False
-        async with a_session_maker() as session:
-            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
-
-    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
-        if not user_id:
-            return
-        try:
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
-            )
-            from storage.database import a_session_maker
-
-            async with a_session_maker() as session:
-                await DailyConversationQuotaService(session).release(user_id)
-        except Exception:
-            _logger.exception('Failed to release daily conversation quota reservation')
+            yield task
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
@@ -478,13 +448,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._inherit_configuration_from_parent(request, parent_info)
 
         self._apply_suggested_task(request)
+        self._apply_default_trigger(request)
 
         # Resolved once: validation, the build and provenance must see one revision.
         user = await self.user_context.get_user_info(
             resolve_agent_profile=True,
             override_agent_profile_id=request.agent_profile_id,
         )
-        validate_acp_provider_surfaced(user.agent_settings)
+        agent_settings = user.agent_settings
+        validate_acp_provider_surfaced(agent_settings)
+        if isinstance(agent_settings, ACPAgentSettings) and request.client_tools:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='client_tools are not supported for ACP agent launches',
+            )
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -502,12 +479,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
-
-            # Mirror the user's LLM profiles into the sandbox so the agent's
-            # built-in switch_llm tool can resolve them (in SaaS profiles live
-            # on the app-server, not the sandbox filesystem). Before conversation
-            # creation, so the tool is enabled; re-runs on every start/resume.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # Get the working dir
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
@@ -537,6 +508,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             ):
                 yield updated_task
 
+            # Resolve the provider before the agent-server starts the
+            # conversation, so the save below is not delayed while the
+            # "started" webhook may already be writing the row. The agent
+            # gets the same provider, so its PLAN.md path matches the one
+            # that sub-conversations inherit from the saved row.
+            git_provider = request.git_provider
+            if request.selected_repository and git_provider is None:
+                git_provider = await self._resolve_git_provider(
+                    request.selected_repository
+                )
+
             _logger.info(
                 'app_conversation_start:building_start_request',
                 extra={
@@ -556,7 +538,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     conversation_id,
                     request.initial_message,
                     request.system_message_suffix,
-                    request.git_provider,
+                    git_provider,
                     working_dir,
                     request.agent_type,
                     request.llm_model,
@@ -565,6 +547,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     selected_repository=request.selected_repository,
                     selected_branch=request.selected_branch,
                     plugins=request.plugins,
+                    client_tools=request.client_tools,
                     api_secrets=request.secrets,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
@@ -573,6 +556,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_span_name=request.observability_span_name,
                 )
             )
+
+            # Build before seeding, which can refresh the captured user's LLM key.
+            # Profiles must still be available before the conversation is created.
+            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
@@ -658,11 +645,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 llm_model = request_agent.llm.model
                 agent_kind = 'openhands'
 
-            conversation_tags: dict[str, str] = dict(tags)
+            conversation_tags: dict[str, str] = {**(request.tags or {}), **tags}
             if request.selected_repository:
                 conversation_tags['repo_name'] = request.selected_repository
-            if request.git_provider:
-                conversation_tags['git_provider'] = request.git_provider.value
+            if git_provider:
+                conversation_tags['git_provider'] = git_provider.value
             if request.selected_branch:
                 conversation_tags['selected_branch'] = request.selected_branch
 
@@ -676,7 +663,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 # Git parameters
                 selected_repository=request.selected_repository,
                 selected_branch=request.selected_branch,
-                git_provider=request.git_provider,
+                git_provider=git_provider,
                 trigger=request.trigger,
                 pr_number=request.pr_number,
                 parent_conversation_id=request.parent_conversation_id,
@@ -698,6 +685,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 if not has_set_title_processor:
                     processors.append(SetTitleCallbackProcessor())
+
+            # Register MemoryChangeCallbackProcessor when the user has
+            # enterprise persistent memory enabled. ``enable_memory_context``
+            # is a top-level user setting (not the SDK's ``load_memory``, which
+            # lives inside agent_settings.agent_context and is dropped by the
+            # fresh AgentContext built in _build_start_conversation_request).
+            if getattr(user, 'enable_memory_context', False):
+                has_memory_processor = any(
+                    isinstance(processor, MemoryChangeCallbackProcessor)
+                    for processor in processors
+                )
+                if not has_memory_processor:
+                    processors.append(MemoryChangeCallbackProcessor())
 
             # Save processors
             for processor in processors:
@@ -853,6 +853,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox_status=sandbox_status,
             execution_status=execution_status,
             conversation_url=conversation_url,
+            conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
             session_api_key=session_api_key,
         )
 
@@ -1190,6 +1191,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
 
+    def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
+        """Default the trigger when the caller did not supply one.
+
+        Mirrors the V0 endpoint: bearer (API key) auth is ``REMOTE_API_KEY``,
+        everything else is ``GUI``.
+        """
+        if request.trigger is not None:
+            return
+        user_auth = getattr(self.user_context, 'user_auth', None)
+        auth_type = user_auth.get_auth_type() if user_auth is not None else None
+        if auth_type == AuthType.BEARER:
+            request.trigger = ConversationTrigger.REMOTE_API_KEY
+        else:
+            request.trigger = ConversationTrigger.GUI
+
     def _apply_suggested_task(self, request: AppConversationStartRequest) -> None:
         """Apply suggested task defaults to the start request."""
         suggested_task: SuggestedTask | None = request.suggested_task
@@ -1344,23 +1360,22 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Configured LLM instance
         """
-        model: str = (
-            llm_model
-            or user.agent_settings.llm.model
-            or LLM.model_fields['model'].default
-        )
+        # ACP conversations return before the LLM is configured.
+        assert isinstance(user.agent_settings, OpenHandsAgentSettings)
+        user_llm = user.agent_settings.llm
+        model: str = llm_model or user_llm.model or LLM.model_fields['model'].default
 
         base_url = resolve_provider_llm_base_url(
             model,
-            user.agent_settings.llm.base_url,
+            user_llm.base_url,
             provider_base_url=self.openhands_provider_base_url,
         )
 
-        return user.agent_settings.llm.model_copy(
+        return user_llm.model_copy(
             update={
                 'model': model,
                 'base_url': base_url,
-                'api_key': user.agent_settings.llm.api_key,
+                'api_key': user_llm.api_key,
                 'usage_id': 'agent',
                 # Force streaming on (the SDK LLM defaults stream=False).
                 'stream': True,
@@ -1370,9 +1385,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
-        This intentionally only runs for SaaS managed LiteLLM keys that are the
-        current member's stored managed key. BYOK/custom keys and OSS/local
-        deployments are left untouched.
+        Uses the current member's managed key if a concurrent start replaced
+        the captured credential. BYOK/custom keys and OSS/local deployments
+        are left untouched.
         """
         _logger.debug(
             'managed_llm_key_refresh:evaluate',
@@ -1420,7 +1435,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        managed_config = managed_llm_key_config_from_model(llm.model, llm.base_url)
+        managed_config = managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
         if managed_config is None:
             _logger.debug(
                 'managed_llm_key_refresh:skip_non_managed_base_url',
@@ -1478,6 +1495,67 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_store = await SaasSettingsStore.get_instance(
                 user.id, effective_org_id=org_id
             )
+            # Heal orgs left broken by #421: a stale org-level BYOR key shadows
+            # the member's managed key. PR #425 prevents new occurrences; this
+            # restores already-broken users on their next load. Clearing the
+            # stale field flips the effective key off the dummy, then we
+            # force-rotate a fresh managed key so the returned LLM carries it
+            # (otherwise the existing verify path would skip on key mismatch).
+            # Gate to the All-Hands-managed cloud: ``app_mode == 'saas'`` is also
+            # true on self-hosted OHE, where clearing an org-level key breaks a
+            # legitimately managed enterprise org. ``DEPLOYMENT_MODE`` is the axis
+            # that actually separates cloud from self-hosted.
+            from server.constants import DEPLOYMENT_MODE
+
+            if (
+                DEPLOYMENT_MODE == 'cloud'
+                and await settings_store.clear_stale_org_level_llm_key_if_managed()
+            ):
+                _logger.info(
+                    'managed_llm_key_refresh:cleared_stale_org_level_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                    },
+                )
+                # Clearing the stale org-level shadow is the heal; we still need
+                # the returned LLM to carry a valid managed key on *this* request.
+                # Prefer a freshly rotated key, but if rotation yields none
+                # (MISSING_MEMBER / already-current / LiteLLM transient) fall back
+                # to re-resolving the effective key off the now-healed DB. Without
+                # this re-resolve we'd drop through to the mismatch bail below and
+                # return the original stale llm — healing the DB but not the
+                # in-flight request, so the 401 would persist until the next load.
+                rotation = await settings_store.rotate_managed_llm_key()
+                healed_key: str | None = (
+                    rotation.new_key
+                    if rotation.status == ManagedLlmKeyStatus.ROTATED
+                    and rotation.new_key
+                    else await settings_store.get_current_managed_llm_key()
+                )
+                if healed_key:
+                    _logger.info(
+                        'managed_llm_key_refresh:healed_after_clear',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                            'rotation_status': getattr(rotation, 'status', None),
+                            'openhands_type': getattr(rotation, 'openhands_type', None),
+                        },
+                    )
+                    self.user_context.invalidate_user_info_cache()
+                    return llm.model_copy(update={'api_key': SecretStr(healed_key)})
+                _logger.warning(
+                    'managed_llm_key_refresh:cleared_without_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'rotation_status': getattr(rotation, 'status', None),
+                    },
+                )
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(
@@ -1491,14 +1569,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 return llm
             if managed_key != key:
                 _logger.debug(
-                    'managed_llm_key_refresh:skip_key_mismatch',
+                    'managed_llm_key_refresh:use_current_member_key',
                     extra={
                         'user_id': user.id,
                         'org_id': str(org_id),
                         'model': llm.model,
                     },
                 )
-                return llm
+                key = managed_key
+                llm = llm.model_copy(update={'api_key': SecretStr(key)})
+                self.user_context.invalidate_user_info_cache()
 
             key_belongs_to_user = await LiteLlmManager.verify_existing_key(
                 key,
@@ -1524,7 +1604,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'managed_llm_key_refresh:stale_key_detected',
                 extra={'user_id': user.id, 'org_id': str(org_id), 'model': llm.model},
             )
-            rotation = await settings_store.rotate_managed_llm_key()
+            # Pass the stale key so overlapping refreshes are idempotent: if a
+            # concurrent start already rotated it, reuse that fresh key instead
+            # of rotating again and orphaning the sandbox's key (enterprise#439).
+            rotation = await settings_store.rotate_managed_llm_key(only_if_current=key)
             if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
                 _logger.info(
                     'managed_llm_key_refresh:rotated',
@@ -1979,6 +2062,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None = None,
         selected_branch: str | None = None,
         plugins: list[PluginSpec] | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
@@ -2011,6 +2095,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             selected_repository: Optional repository name
             selected_branch: Optional selected branch name
             plugins: Optional list of plugins to load
+            client_tools: Optional client-defined tools to register with the runtime.
             api_secrets: Optional secrets passed directly via the API.
                 These are merged with existing secrets (from database
                 and git providers), with API-provided secrets taking
@@ -2066,6 +2151,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'user_id': user.id,
                         'conversation_id': str(conversation_id),
                     },
+                )
+            if client_tools:
+                raise ValueError(
+                    'client_tools are not supported for ACP agent launches'
                 )
             acp_request = await self._build_acp_start_conversation_request(
                 user=user,
@@ -2165,26 +2254,38 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             tools = get_planning_tools(plan_path=plan_path)
         else:
             register_builtins_agents(enable_browser=True)
+            # Sub-agents are on when the saved tools include the task tool set,
+            # as the SDK's retired ``enable_sub_agents`` property decided.
+            enable_sub_agents = user.agent_settings.tools is not None and selects_tool(
+                user.agent_settings.tools, SUB_AGENT_TOOL_NAME
+            )
             tools = get_default_tools(
                 enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
+                enable_sub_agents=enable_sub_agents,
             )
-            if user.agent_settings.enable_sub_agents:
+            if enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
+        # When enterprise persistent memory is enabled, stamp load_memory=True
+        # so the SDK's LocalConversation reads MEMORY.md from disk at session
+        # start. The memory file itself is written to the sandbox by
+        # maybe_inject_memory_context() in run_setup_scripts.
+        agent_context_kwargs: dict[str, Any] = {
+            'system_message_suffix': effective_suffix,
+            'secrets': secrets,
+            'registered_marketplaces': _to_sdk_marketplace_registrations(
+                registered_marketplaces
+            ),
+        }
+        if getattr(user, 'enable_memory_context', False):
+            agent_context_kwargs['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
                 'tools': tools,
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(
-                    system_message_suffix=effective_suffix,
-                    secrets=secrets,
-                    registered_marketplaces=_to_sdk_marketplace_registrations(
-                        registered_marketplaces
-                    ),
-                ),
+                'agent_context': AgentContext(**agent_context_kwargs),
             }
         )
         agent = configured_agent_settings.create_agent()
@@ -2309,6 +2410,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 observability_tags, request_observability_tags
             )
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
+        if client_tools:
+            create_kwargs['client_tools'] = client_tools
         title_llm_profile = _resolve_title_llm_profile(user)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
@@ -2503,14 +2606,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Isolate the CLI data dir onto the durable /workspace tree so the SDK
         # self-resumes the provider session (session/load from base_state.json)
         # across pause/resume — matching the regular-agent lifecycle (#1274).
-        # Strip llm.api_key/base_url to prevent proxy settings from leaking
-        # into the subprocess env (ACP CLIs handle their own LLM calls).
-        settings_update: dict[str, Any] = {
-            'acp_isolate_data_dir': True,
-            'llm': acp_settings.llm.model_copy(
-                update={'api_key': None, 'base_url': None}
-            ),
-        }
+        # ACP settings carry no LLM: ACP CLIs handle their own LLM calls.
+        settings_update: dict[str, Any] = {'acp_isolate_data_dir': True}
         # Forward the resolved profile's / user's custom MCP servers to the ACP
         # subprocess (#15044 §7). Only custom servers — the system OpenHands MCP
         # server (Tavily proxy) is runtime-internal and unreachable by an external
@@ -2732,6 +2829,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             f'Successfully updated agent-server conversation {conversation_id} title to "{new_title}"'
         )
 
+    async def _resolve_git_provider(self, repository: str) -> ProviderType | None:
+        """Return the provider of a repository that was started without one.
+
+        The clone already resolves the provider from the user's tokens, but the
+        start request may not carry it (e.g. API clients). Best effort: returns
+        None when the provider cannot be found in time, so the start never fails.
+        """
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            repo = await asyncio.wait_for(
+                provider_handler.verify_repo_provider(repository, is_optional=True),
+                timeout=_GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS,
+            )
+            return repo.git_provider
+        except Exception:
+            _logger.warning(
+                f'Could not resolve the git provider of {repository}', exc_info=True
+            )
+            return None
+
     def _validate_repository_update(
         self,
         request: AppConversationUpdateRequest,
@@ -2750,10 +2867,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if 'selected_repository' in request.model_fields_set:
             repo = request.selected_repository
             if repo is not None:
-                # Validate repository format (owner/repo)
-                if '/' not in repo or repo.count('/') != 1:
+                # Validate repository format: owner/repo, or more segments for
+                # Azure DevOps (org/project/repo) and GitLab subgroups.
+                segments = repo.split('/')
+                if len(segments) < 2 or not all(segments):
                     raise ValueError(
-                        f"Invalid repository format: '{repo}'. Expected 'owner/repo'."
+                        f"Invalid repository format: '{repo}'. Expected 'owner/repo' "
+                        "or more path segments (e.g. 'org/project/repo')."
                     )
 
                 # Sanitize: check for dangerous characters
@@ -2818,8 +2938,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # This uses Pydantic's model_fields_set to detect which fields were set,
         # allowing us to distinguish between "not provided" and "explicitly set to None"
         for field_name in request.model_fields_set:
+            if field_name == 'tags':
+                continue
             value = getattr(request, field_name)
             setattr(info, field_name, value)
+
+        # Tags are applied as a merge patch: a None value deletes the key and keys
+        # not mentioned in the request are left untouched.
+        if request.tags is not None:
+            merged_tags = dict(info.tags)
+            for key, tag_value in request.tags.items():
+                if tag_value is None:
+                    merged_tags.pop(key, None)
+                else:
+                    merged_tags[key] = tag_value
+            info.tags = merged_tags
 
         info = await self.app_conversation_info_service.save_app_conversation_info(info)
         conversations = await self._build_app_conversations([info])
@@ -3102,6 +3235,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def export_conversation(self, conversation_id: UUID) -> bytes:
         """Download a conversation trajectory as a zip file.
 
+        The whole zip is buffered in memory before it is returned, so this is
+        only suitable for small conversations. Large exports should go through
+        ``open_conversation_export``, which streams the zip instead.
+
         Args:
             conversation_id: The UUID of the conversation to download.
 
@@ -3142,8 +3279,12 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
         ),
     )
     export_max_events: int = Field(
-        default=10000,
-        description='The maximum number of events allowed in a conversation export',
+        default=0,
+        ge=0,
+        description=(
+            'The maximum number of events allowed in a conversation export '
+            '(0 disables the limit)'
+        ),
     )
     export_lock_ttl_seconds: int = Field(
         default=3600,

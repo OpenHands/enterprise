@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SettingsNavigation } from "#/components/features/settings/settings-navigation";
 import OptionService from "#/api/option-service/option-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { SAAS_NAV_ITEMS, SettingsNavItem } from "#/constants/settings-nav";
 import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
@@ -87,7 +88,7 @@ describe("SettingsNavigation", () => {
   });
 
   describe("settings brand header", () => {
-    it("should show Account label and Back to App link to canvas", async () => {
+    it("should show Account label and Back to App link to canvas on the selected org", async () => {
       renderSettingsNavigation();
 
       await screen.findByTestId("settings-navbar");
@@ -96,10 +97,95 @@ describe("SettingsNavigation", () => {
       expect(backLinks.length).toBeGreaterThan(0);
       expect(backLinks[0]).toHaveAttribute(
         "href",
-        `${window.location.origin}/canvas`,
+        `${window.location.origin}/canvas?org=org-1`,
       );
       expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
       expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+    });
+
+    it("should link Back to App to plain canvas while no org is selected", async () => {
+      // Arrange
+      useSelectedOrganizationStore.setState({ organizationId: null });
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(screen.getAllByTestId("settings-back-to-app")[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
+    });
+
+    it("should show the instance logo and company name in place of the mark and Account", async () => {
+      // Arrange
+      const savedLogo = "data:image/jpeg;base64,c2F2ZWQ=";
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+        company_name: "Acme",
+        logo: savedLogo,
+      });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      const logos = await screen.findAllByTestId("instance-logo-mark");
+      expect(logos[0]).toHaveAttribute("src", savedLogo);
+      expect(
+        screen.queryByTestId("openhands-brand-mark"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("Acme");
+    });
+
+    it("should keep the OpenHands mark and Account when no logo or company name is saved", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      const getInstanceSettings = vi
+        .spyOn(superAdminService, "getInstanceSettings")
+        .mockResolvedValue({ company_name: null, logo: null });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      await waitFor(() => expect(getInstanceSettings).toHaveBeenCalled());
+      expect(
+        (await screen.findAllByTestId("openhands-brand-mark")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("ORG$ACCOUNT");
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should not request the instance logo when the Super Admin feature is off", async () => {
+      // Arrange
+      const getInstanceSettings = vi.spyOn(
+        superAdminService,
+        "getInstanceSettings",
+      );
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(getInstanceSettings).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -139,9 +225,9 @@ describe("SettingsNavigation", () => {
       expect(
         (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
       ).toBeGreaterThan(0);
-      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        screen.getAllByText("SETTINGS$NAV_API_KEYS").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render empty nav when given an empty items list", async () => {

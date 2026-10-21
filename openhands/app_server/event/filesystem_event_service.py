@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 
 from fastapi import Request
 
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
 from openhands.app_server.event.event_service_base import (
     INDEX_FILENAME,
@@ -31,8 +32,7 @@ class FilesystemEventService(EventServiceBase):
     def _load_event(self, path: Path) -> Event | None:
         try:
             content = path.read_text()
-            content = Event.model_validate_json(content)  # type: ignore[assignment]
-            return content  # type: ignore[return-value]
+            return parse_event_json(content)
         except Exception:
             if path.exists():
                 _logger.exception('Error reading event', stack_info=True)
@@ -97,7 +97,10 @@ class FilesystemEventService(EventServiceBase):
             return  # already stale/absent
         stale_path = self._index_stale_path(conversation_path)
         # os.replace overwrites the target if it exists and is atomic on POSIX.
-        os.replace(index_path, stale_path)
+        try:
+            os.replace(index_path, stale_path)
+        except FileNotFoundError:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class FilesystemEventServiceInjector(EventServiceInjector):

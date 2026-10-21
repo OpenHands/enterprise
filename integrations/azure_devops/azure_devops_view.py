@@ -40,6 +40,9 @@ from openhands.sdk import TextContent
 
 OH_LABEL, INLINE_OH_LABEL = get_oh_labels(HOST)
 OPENHANDS_COMMENT_MARKER = '<!-- openhands-azure-devops-resolver -->'
+# Azure strips HTML comments from work item comments but keeps attributes, so
+# work item replies also carry an empty element with this attribute.
+OPENHANDS_WORK_ITEM_MARKER = 'data-openhands-azure-devops-resolver'
 
 
 def mark_openhands_comment(comment: str) -> str:
@@ -48,8 +51,14 @@ def mark_openhands_comment(comment: str) -> str:
     return f'{OPENHANDS_COMMENT_MARKER}\n{comment}'
 
 
+def mark_openhands_work_item_comment(comment: str) -> str:
+    if OPENHANDS_WORK_ITEM_MARKER in comment:
+        return comment
+    return f'<span {OPENHANDS_WORK_ITEM_MARKER}="1"></span>{comment}'
+
+
 def _is_openhands_comment(comment: str) -> bool:
-    return OPENHANDS_COMMENT_MARKER in comment
+    return OPENHANDS_COMMENT_MARKER in comment or OPENHANDS_WORK_ITEM_MARKER in comment
 
 
 def _strip_ref_prefix(ref_name: str | None) -> str | None:
@@ -128,6 +137,14 @@ def _select_project_repo(
     return None
 
 
+def _azure_service(keycloak_user_id: str, org: str) -> SaaSAzureDevOpsService:
+    # The lazy proxy is typed as the base; the enterprise impl adds the methods.
+    return cast(
+        SaaSAzureDevOpsService,
+        AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id, base_domain=org),
+    )
+
+
 def _actor_username(actor: dict[str, Any]) -> str:
     return (
         actor.get('displayName')
@@ -139,6 +156,11 @@ def _actor_username(actor: dict[str, Any]) -> str:
 
 def actor_email(actor: dict[str, Any]) -> str:
     unique_name = str(actor.get('uniqueName') or '').strip()
+    # Work item service hooks send "Display Name <uniqueName>". The display
+    # name is free text, so only the trailing <...> part is the account.
+    account = re.search(r'<([^<>\s]+@[^<>\s]+)>$', unique_name)
+    if account:
+        return account.group(1)
     if '@' in unique_name:
         return unique_name
     display_name = str(actor.get('displayName') or '').strip()
@@ -168,10 +190,14 @@ class AzureDevOpsItem(ResolverViewInterface):
         # Only PR comments carry a branch; overridden there.
         return None
 
-    async def _load_resolver_context(self) -> None:
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
+    def azure_service(self) -> SaaSAzureDevOpsService:
+        """Service bound to the event's organization, not the configured default."""
+        return _azure_service(
+            self.user_info.keycloak_user_id, self.full_repo_name.split('/', 1)[0]
         )
+
+    async def _load_resolver_context(self) -> None:
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_issue_or_pr_comments(
             self.full_repo_name,
             self.issue_number,
@@ -276,9 +302,7 @@ class AzureDevOpsPRComment(AzureDevOpsItem):
     async def _load_resolver_context(self) -> None:
         # Call PR-specific methods directly so a brand-new PR with no prior
         # comments (empty list) never falls back to unrelated work-item discussion.
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
-        )
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_pr_comments(
             self.full_repo_name,
             self.issue_number,
@@ -319,9 +343,7 @@ class AzureDevOpsWorkItemComment(AzureDevOpsItem):
 
     async def _load_resolver_context(self) -> None:
         # Load work-item context directly; never probe PRs (a PR can share the id).
-        azure_service = AzureDevOpsServiceImpl(
-            external_auth_id=self.user_info.keycloak_user_id
-        )
+        azure_service = self.azure_service()
         self.previous_comments = await azure_service.get_work_item_comments(
             self.full_repo_name,
             self.issue_number,
@@ -472,10 +494,7 @@ class AzureDevOpsFactory:
 
             # Work items aren't tied to a repo; resolve a real one for the project
             # instead of fabricating a project-named repo that may not exist.
-            azure_service = cast(
-                SaaSAzureDevOpsService,
-                AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id),
-            )
+            azure_service = _azure_service(keycloak_user_id, org)
             repos = await azure_service.get_project_repositories(project_name)
             repo = _select_project_repo(repos, project_name)
             if repo is None:

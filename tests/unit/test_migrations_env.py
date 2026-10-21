@@ -1,9 +1,9 @@
-"""``migrations/env.py`` opens its engine on a UTC session like the app does.
+"""``migrations/env.py`` opens its engines on a UTC session like the app does.
 
 Data migrations and ``server_default=now()`` columns otherwise evaluate in the
 server's default zone. ``env.py`` runs alembic's context at import, so it is
-loaded here with a minimal offline stand-in for ``alembic.context``; the engine
-it builds then connects to this test's database for real.
+loaded here with a minimal offline stand-in for ``alembic.context``; the engines
+``migration_engine`` builds then connect to this test's database for real.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class _OfflineAlembicContext:
 
     def __init__(self):
         self.config = SimpleNamespace(
-            config_file_name=None, get_main_option=lambda _name: None
+            config_file_name=None, attributes={}, get_main_option=lambda _name: None
         )
 
     def is_offline_mode(self) -> bool:
@@ -67,6 +67,9 @@ class _FakeConnector:
             **kwargs,
         )
 
+    def close(self) -> None:
+        pass
+
 
 @pytest.fixture
 def berlin_database(
@@ -83,8 +86,7 @@ def berlin_database(
 
 @pytest.fixture
 def load_env(monkeypatch):
-    """Import ``env.py`` under the given environment; dispose its engine after."""
-    modules = []
+    """Import ``env.py`` under the given environment."""
 
     def _load(**env: str):
         for key in list(os.environ):
@@ -101,12 +103,9 @@ def load_env(monkeypatch):
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        modules.append(module)
         return module
 
-    yield _load
-    for module in modules:
-        module.engine.dispose()
+    return _load
 
 
 def _url_env(database: postgres_testdb.TestDatabase, **extra: str) -> dict[str, str]:
@@ -129,9 +128,10 @@ def _show_timezone(engine) -> str:
 def test_pg8000_engine_session_is_utc(berlin_database, load_env):
     env = load_env(**_url_env(berlin_database, DB_DRIVER='pg8000'))
 
-    assert env.engine.url.drivername == 'postgresql+pg8000'
-    assert _show_timezone(env.engine) == 'UTC'
-    assert _show_timezone(env.engine) == 'UTC'
+    with env.migration_engine() as engine:
+        assert engine.url.drivername == 'postgresql+pg8000'
+        assert _show_timezone(engine) == 'UTC'
+        assert _show_timezone(engine) == 'UTC'
 
 
 def test_pg8000_engine_keeps_ssl_mode(berlin_database, load_env):
@@ -139,7 +139,7 @@ def test_pg8000_engine_keeps_ssl_mode(berlin_database, load_env):
         **_url_env(berlin_database, DB_DRIVER='pg8000', DB_SSL_MODE='disable')
     )
 
-    with env.engine.connect() as conn:
+    with env.migration_engine() as engine, engine.connect() as conn:
         assert conn.execute(text('SHOW TimeZone')).scalar_one() == 'UTC'
         ssl_in_use = conn.execute(
             text('SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()')
@@ -150,9 +150,10 @@ def test_pg8000_engine_keeps_ssl_mode(berlin_database, load_env):
 def test_psycopg2_engine_session_is_utc(berlin_database, load_env):
     env = load_env(**_url_env(berlin_database, DB_DRIVER=''))
 
-    assert env.engine.url.drivername == 'postgresql'
-    assert _show_timezone(env.engine) == 'UTC'
-    assert _show_timezone(env.engine) == 'UTC'
+    with env.migration_engine() as engine:
+        assert engine.url.drivername == 'postgresql'
+        assert _show_timezone(engine) == 'UTC'
+        assert _show_timezone(engine) == 'UTC'
 
 
 def test_cloud_sql_engine_session_is_utc(berlin_database, load_env, monkeypatch):
@@ -168,7 +169,8 @@ def test_cloud_sql_engine_session_is_utc(berlin_database, load_env, monkeypatch)
     _FakeConnector.calls = []
     monkeypatch.setattr(env, 'Connector', lambda: _FakeConnector(server))
 
-    assert _show_timezone(env.engine) == 'UTC'
+    with env.migration_engine() as engine:
+        assert _show_timezone(engine) == 'UTC'
     assert _FakeConnector.calls == [
         {
             'user': server.user,

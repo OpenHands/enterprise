@@ -5,11 +5,13 @@ without time zone`` (migration 003) while ``StoredConversationMetadata`` binds
 timezone-aware UTC values. PostgreSQL converts an aware value to the *session*
 time zone before dropping the offset, and every reader assumes the stored
 wall-clock is UTC. On a server whose default ``timezone`` is not UTC each write
-therefore landed ahead of real time by the zone's offset (enterprise#23).
+was therefore shifted by the zone's offset (enterprise#23): ahead of real time
+east of UTC, so new conversations showed negative "ago" times, and behind it
+west of UTC, so they looked hours old as soon as they started.
 
 These tests run the injector's real engines, the real drivers and
-``SQLAppConversationInfoService`` against a database whose default time zone is
-Europe/Berlin. The Cloud SQL connector itself is not available here; its two
+``SQLAppConversationInfoService`` against databases whose default time zone is
+not UTC. The Cloud SQL connector itself is not available here; its two
 creator paths run with a stand-in that opens plain driver connections and
 forwards keyword arguments the way the connector's driver helpers do.
 """
@@ -54,18 +56,36 @@ STORED_TEXT_SQL = text(
 )
 
 
+def _set_default_timezone(
+    postgres_server: postgres_testdb.PostgresServer,
+    database: postgres_testdb.TestDatabase,
+    zone: str,
+) -> postgres_testdb.TestDatabase:
+    """Give ``database`` a non-UTC default, as a server GUC would."""
+    postgres_testdb._run_admin_sql(
+        postgres_server,
+        f'ALTER DATABASE {postgres_testdb._quote(database.name)} '
+        f"SET timezone = '{zone}'",
+    )
+    return database
+
+
 @pytest.fixture
 def berlin_database(
     test_database: postgres_testdb.TestDatabase,
     postgres_server: postgres_testdb.PostgresServer,
 ) -> postgres_testdb.TestDatabase:
-    """This test's database with a non-UTC default, as a server GUC would give."""
-    postgres_testdb._run_admin_sql(
-        postgres_server,
-        f'ALTER DATABASE {postgres_testdb._quote(test_database.name)} '
-        "SET timezone = 'Europe/Berlin'",
-    )
-    return test_database
+    return _set_default_timezone(postgres_server, test_database, 'Europe/Berlin')
+
+
+@pytest.fixture(params=['Europe/Berlin', 'America/Chicago'])
+def non_utc_database(
+    request,
+    test_database: postgres_testdb.TestDatabase,
+    postgres_server: postgres_testdb.PostgresServer,
+) -> postgres_testdb.TestDatabase:
+    """A zone on each side of UTC, so the skew would have either sign."""
+    return _set_default_timezone(postgres_server, test_database, request.param)
 
 
 @pytest.fixture
@@ -193,15 +213,15 @@ def _show_timezone_sync(engine) -> str:
 
 @pytest.mark.parametrize('at', [WINTER, SUMMER], ids=['winter', 'summer'])
 async def test_service_round_trip_on_non_utc_database(
-    berlin_database, make_injector, at
+    non_utc_database, make_injector, at
 ):
     """A conversation saved on one engine reads back unchanged on a fresh one."""
     conversation_id = uuid4()
-    writer = make_injector(berlin_database)
+    writer = make_injector(non_utc_database)
     await _save(writer, _info(conversation_id, at))
     await writer.close()
 
-    reader = make_injector(berlin_database)
+    reader = make_injector(non_utc_database)
     info = await _load(reader, conversation_id)
 
     assert info.created_at == at

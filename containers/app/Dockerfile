@@ -7,7 +7,24 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
-FROM node:25.9-trixie-slim AS frontend-builder
+# Global so the `FROM` below can use it: `COPY --from` does not expand variables.
+ARG AGENT_CANVAS_SOURCE=none
+
+# Optional source for the Agent Canvas build below, selected by the
+# AGENT_CANVAS_SOURCE build arg (`none` by default). With `git`, BuildKit
+# fetches AGENT_CANVAS_REF (a tag or branch) itself and caches the layer on the
+# resolved commit rather than on the ref's name. A branch such as `main` is
+# therefore rebuilt exactly when it moves, which `git clone` inside a RUN would
+# not do: that layer is reused for as long as the build args stay the same.
+FROM scratch AS agent-canvas-source-none
+FROM scratch AS agent-canvas-source-git
+ARG AGENT_CANVAS_REPO=https://github.com/OpenHands/OpenHands.git
+ARG AGENT_CANVAS_REF=main
+ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
+
+FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
+
+FROM node:26.10.0-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -15,9 +32,45 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend ./
+
+# Agent Canvas (OpenHands/OpenHands) is NOT built here by default: building it
+# clones a second repository over the network (scripts/build-agent-canvas.sh),
+# which cloud doesn't need (it serves /canvas from a separate service behind
+# an ingress rule) and which would add a network dependency to every image
+# build otherwise. Opt in with `--build-arg AGENT_CANVAS=1` to bake /canvas
+# into this image, served by the app.py/saas_server.py static mount at /canvas
+# once frontend/build/canvas exists. docker-compose.yml does not: it runs the
+# released agent-canvas image as its own service behind the proxy.
+ARG AGENT_CANVAS=
+# `none` (default): scripts/build-agent-canvas.sh clones its own pinned ref.
+# `git`: build the source fetched by the agent-canvas-source-git stage above.
+ARG AGENT_CANVAS_SOURCE
+COPY --from=agent-canvas-source / /agent-canvas-source
+# Same-origin URL (scheme + host + port) the browser will use to reach this
+# app, e.g. http://localhost:3100. Passed through to
+# scripts/build-agent-canvas.sh as AGENT_CANVAS_LOCK_TO_CLOUD, which bakes it
+# into the Canvas bundle as VITE_LOCK_TO_CLOUD -- this is what lets Canvas
+# skip its own onboarding and authenticate via this app's existing session
+# cookie (POST /api/authenticate) instead of prompting to connect to
+# OpenHands Cloud. Must match exactly what the compose stack's APP_PORT
+# publishes, or cookie auth won't engage.
+ARG AGENT_CANVAS_LOCK_TO_CLOUD=
+# Fail-soft, same as the `build-agent-canvas` Makefile target: Canvas is
+# scaffolding over a still-working OSS frontend, so a failed clone/build
+# (e.g. no network) must not fail the whole image build.
+RUN if [ -n "$AGENT_CANVAS" ]; then \
+        (apt-get update -y \
+            && apt-get install -y --no-install-recommends git ca-certificates \
+            && rm -rf /var/lib/apt/lists/* \
+            && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" \
+                AGENT_CANVAS_SOURCE_DIR="$([ "$AGENT_CANVAS_SOURCE" = none ] || echo /agent-canvas-source)" \
+                npm run build:agent-canvas) \
+        || echo "Agent Canvas build failed; continuing without /canvas."; \
+    fi
+
 RUN npm run build
 
-FROM python:3.13.7-slim-trixie AS base
+FROM python:3.13.13-slim-trixie AS base
 FROM base AS backend-builder
 
 WORKDIR /app
@@ -65,20 +118,45 @@ ENV INIT_GIT_IN_EMPTY_WORKSPACE=1
 RUN mkdir -p $FILE_STORE_PATH
 RUN mkdir -p $WORKSPACE_BASE
 
-# System packages, Node.js v20+ and npm (which includes npx), and security
-# updates for packages with available fixes.
-RUN apt-get update -y \
+# System packages, Node.js (includes npm/npx), and security updates for all
+# packages with available fixes. Applying an unfiltered `apt-get upgrade` (rather
+# than a curated list) ensures Debian security advisories are picked up without
+# the list going stale each time a new CVE lands -- notably the full perl stack
+# pulled in transitively by `git`, plus libpcre2, libc, gzip, libssh2 and the
+# CPython runtime libraries.
+# CI reuses this layer from the registry build cache, so a Debian security update
+# published after the layer was cached (e.g. openssl/libpcre2 3.5.7-1~deb13u3)
+# is not picked up. BuildKit keys an ADD of a URL on the downloaded content, so
+# this layer is rebuilt (and `apt-get upgrade` re-run) whenever Debian publishes
+# a security update.
+ADD http://deb.debian.org/debian-security/dists/trixie-security/InRelease /tmp/trixie-security-InRelease
+RUN rm -f /tmp/trixie-security-InRelease \
+    && apt-get update -y \
     && apt-get install -y curl git ssh sudo jq gettext \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_26.x | bash - \
     && apt-get install -y nodejs \
     && apt-get upgrade -y \
-        libc-bin \
-        libc6 \
-        libgnutls30 \
-        libsqlite3-0 \
-        perl-base \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# npm bundles its own undici and brace-expansion and no npm release (including
+# 12.2.0) ships fixed versions yet, so swap them in place. Both are drop-in
+# patch/minor releases with unchanged dependencies. Fixes CVE-2026-19534,
+# CVE-2026-85024 (undici) and CVE-2026-102276, CVE-2026-102277, CVE-2026-102278
+# (brace-expansion). Drop this once the installed npm bundles fixed versions.
+ARG NPM_UNDICI_VERSION=6.28.1
+ARG NPM_BRACE_EXPANSION_VERSION=5.0.12
+RUN set -eux; \
+    npm_modules="$(npm root -g)/npm/node_modules"; \
+    packs="$(mktemp -d)"; \
+    for spec in "undici@${NPM_UNDICI_VERSION}" "brace-expansion@${NPM_BRACE_EXPANSION_VERSION}"; do \
+        name="${spec%@*}"; \
+        tarball="$(npm pack --silent --pack-destination "$packs" "$spec")"; \
+        rm -rf "${npm_modules:?}/${name}"; \
+        mkdir "${npm_modules}/${name}"; \
+        tar -xzf "${packs}/${tarball}" -C "${npm_modules}/${name}" --strip-components=1; \
+    done; \
+    rm -rf "$packs" /root/.npm
 
 # Default is 1000, but OSX is often 501
 RUN sed -i 's/^UID_MIN.*/UID_MIN 499/' /etc/login.defs
@@ -100,11 +178,12 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 COPY --chown=openhands:openhands --chmod=770 --from=backend-builder ${VIRTUAL_ENV} ${VIRTUAL_ENV}
 
-# Pin the system pip to a known-good version (reproducible builds) and fix
-# CVE-2025-8869.
-ARG PIP_VERSION=26.0.1
+# Remove the system pip. Nothing in the image uses it (the app runs from the uv
+# managed /app/.venv), and the latest pip (26.2.1) still vendors msgpack, setuptools and
+# urllib3 versions that Trivy flags (msgpack 1.1.2, setuptools 70.3.0,
+# urllib3 2.7.0 in pip/_vendor/vendor.txt), so upgrading it does not help.
 USER root
-RUN /usr/local/bin/python3 -m pip install --no-cache-dir "pip==${PIP_VERSION}" --break-system-packages
+RUN /usr/local/bin/python3 -m pip uninstall -y pip --break-system-packages
 USER openhands
 
 COPY --chown=openhands:openhands --chmod=770 ./skills ./skills

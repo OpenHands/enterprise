@@ -28,8 +28,9 @@ from openhands.app_server.settings.llm_profiles import (
 )
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
+    agent_llm,
 )
-from openhands.app_server.utils.llm import MASKED_API_KEY, is_openhands_model
+from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import (
@@ -38,10 +39,12 @@ from openhands.sdk.profiles import (
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from server.constants import LITE_LLM_API_URL
+from server import constants
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from server.routes.org_models import OrgNotFoundError
 from server.routes.org_provider_connections import _load_connections
 from server.verified_models.default_profile import (
+    DEFAULT_LLM_PROFILE_NAME,
     get_openhands_default_model_name,
     materialize_default_llm_profile,
 )
@@ -53,6 +56,7 @@ from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 from storage.saas_settings_store import managed_llm_key_config_from_model
 
 from ..auth.authorization import Permission, require_permission
@@ -186,8 +190,17 @@ def _load_profiles(org: Org) -> LLMProfiles:
     """Load LLMProfiles from org row, defaulting to empty if not set."""
     if org.llm_profiles is None:
         return LLMProfiles()
+    data = dict(org.llm_profiles)
+    raw_profiles = data.get('profiles')
+    if isinstance(raw_profiles, dict):
+        data['profiles'] = {
+            name: canonicalize_bundled_proxy_llm(prof)
+            if isinstance(prof, dict)
+            else prof
+            for name, prof in raw_profiles.items()
+        }
     try:
-        return LLMProfiles.model_validate(org.llm_profiles)
+        return LLMProfiles.model_validate(data)
     except ValidationError as exc:
         # Schema drift / partially-invalid stored profiles: degrade to empty
         # rather than 500-ing. Other exceptions (DB decrypt failures, etc.)
@@ -306,13 +319,38 @@ async def save_profile(
             # Snapshot current org LLM settings. Route through the persisted
             # loader so legacy/canonical ``agent_kind`` discriminator values
             # ('llm' vs 'openhands') both validate.
-            llm = _load_persisted_agent_settings(org.agent_settings).llm
+            org_llm = agent_llm(_load_persisted_agent_settings(org.agent_settings))
+            if org_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='ACP agents have no LLM settings to save as a profile',
+                )
+            llm = org_llm
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
+        if getattr(llm, 'provider_connection_id', None):
+            # A linked profile reads its credentials from the connection at
+            # activation/load time. Never keep an inline key or base_url
+            # underneath the link: a stale key would resurface silently on
+            # unlink and misreport ``api_key_set`` (mirrors the SDK
+            # ``LLMProfileStore.save``).
+            llm = llm.model_copy(update={'api_key': None, 'base_url': None})
+        if (
+            name == DEFAULT_LLM_PROFILE_NAME
+            and constants.uses_bundled_litellm_proxy()
+            and llm.model.startswith('openhands/')
+            and not llm.base_url
+            and not getattr(llm, 'provider_connection_id', None)
+        ):
+            # An explicit save is a concrete choice, even when Canvas omits the URL.
+            llm = llm.model_copy(update={'base_url': constants.LITE_LLM_API_URL})
         include_secrets = request.include_secrets and (
-            managed_llm_key_config_from_model(llm.model, llm.base_url) is None
+            managed_llm_key_config_from_model(
+                llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+            )
+            is None
         )
         try:
             profiles.save(name, llm, include_secrets=include_secrets)
@@ -391,11 +429,12 @@ async def activate_profile(
         _org,
         profiles,
     ):
-        materialize_default_llm_profile(
-            profiles, await get_openhands_default_model_name(session)
+        resolved = materialize_default_llm_profile(
+            profiles.model_copy(deep=True),
+            await get_openhands_default_model_name(session),
         )
 
-        llm = profiles.get(name)
+        llm = resolved.get(name)
         if llm is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -404,12 +443,13 @@ async def activate_profile(
         # Resolve a linked provider connection into concrete credentials before
         # the key is masked/snapshotted below. No-op for unlinked profiles.
         llm = _resolve_provider_connection(_org, llm)
+        if name not in profiles.profiles:
+            # Persist the logical Default, not the deployment route resolved above.
+            profiles.profiles[name] = LLM(model='openhands/default')
         profiles.active = name
 
         # Same session as the org write so both side-effects commit atomically.
-        # Cast ``user_id`` explicitly: Postgres' UUID type tolerates string
-        # coercion, but SQLAlchemy's generic Uuid binding (used under SQLite
-        # in tests) doesn't.
+        # Cast ``user_id``: the column is a real uuid, so bind a UUID.
         member_result = await session.execute(
             select(OrgMember).filter(
                 OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)
@@ -431,26 +471,46 @@ async def activate_profile(
         # profile's key only takes effect if written there.
         llm_dump = llm.model_dump(mode='json', context={'expose_secrets': True})
         profile_api_key = llm_dump.get('api_key')
+        # A profile linked to a provider connection is BYOK by construction
+        # (``_resolve_provider_connection`` above applied the connection's
+        # user-owned key), so the classifier returns None for it. Passing the
+        # id through keeps this consistent with ``SaasSettingsStore.store()``,
+        # which re-classifies on every later save (#559).
+        provider_connection_id = llm_dump.get('provider_connection_id')
         if profile_api_key and profile_api_key != MASKED_API_KEY:
             llm_dump['api_key'] = MASKED_API_KEY
-            # Classify managed vs. BYOR exactly as SaasSettingsStore.store() so
-            # billing attribution stays correct.
-            base_url = llm_dump.get('base_url')
-            normalized_base_url = base_url.rstrip('/') if base_url else None
-            normalized_managed_base_url = LITE_LLM_API_URL.rstrip('/')
+            # Reuse the canonical managed-key detector (same as store()) so a
+            # managed model carrying an all-hands.dev proxy URL isn't
+            # misclassified as BYOR.
             uses_managed_llm_key = (
-                normalized_base_url == normalized_managed_base_url
-                or (
-                    normalized_base_url is None
-                    and is_openhands_model(llm_dump.get('model'))
+                managed_llm_key_config_from_model(
+                    llm_dump.get('model'),
+                    llm_dump.get('base_url'),
+                    provider_connection_id,
                 )
+                is not None
             )
             member.llm_api_key = profile_api_key
             member.has_custom_llm_api_key = not uses_managed_llm_key
         else:
-            # No per-profile key: fall back to the org/managed default rather
-            # than leaving a stale custom key from a previous activation in play.
+            # Keyless (typically managed) profile: flip the custom-key flag
+            # off. If the member previously held a BYOR key it still sits in
+            # the shared _llm_api_key slot, so force-rotate a managed key in
+            # place rather than letting the reuse fast-path hand the stale
+            # key back (#421).
+            had_custom_key = member.has_custom_llm_api_key
             member.has_custom_llm_api_key = False
+            if (
+                managed_llm_key_config_from_model(
+                    llm_dump.get('model'),
+                    llm_dump.get('base_url'),
+                    provider_connection_id,
+                )
+                is not None
+            ):
+                await OrgStore._ensure_managed_llm_key_for_user(
+                    session, _org, str(user_id), force=had_custom_key, llm=llm
+                )
 
         member_diff = dict(member.agent_settings_diff or {})
         member_diff['llm'] = llm_dump

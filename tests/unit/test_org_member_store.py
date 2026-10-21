@@ -882,6 +882,75 @@ async def test_get_org_members_count_with_email_filter(async_session_maker):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'email_filter,expected',
+    [
+        ('%', set()),
+        ('_', {'bob_smith@example.com'}),
+        ('\\', {'dave\\ops@example.com'}),
+        ('%_\\', set()),
+        ('alice', {'alice@example.com'}),
+        ('ALICE', {'alice@example.com'}),
+    ],
+)
+async def test_member_email_filter_treats_metacharacters_literally(
+    async_session_maker, email_filter, expected
+):
+    """The members search box feeds the same term to the count and listing queries.
+
+    Both must treat ILIKE metacharacters as literal text, or a term like '%' widens
+    the filter to the whole org instead of narrowing it — and if only one of them
+    escapes, the page shows an empty table beside a non-zero total.
+    """
+    emails = [
+        'alice@example.com',
+        'bob_smith@example.com',
+        'dave\\ops@example.com',
+    ]
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        session.add(org)
+        await session.flush()
+
+        role = Role(name='admin', rank=1)
+        session.add(role)
+        await session.flush()
+
+        users = [
+            User(id=uuid.uuid4(), current_org_id=org.id, email=email)
+            for email in emails
+        ]
+        session.add_all(users)
+        await session.flush()
+
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    llm_api_key=f'test-key-{i}',
+                    status='active',
+                )
+                for i, user in enumerate(users)
+            ]
+        )
+        await session.commit()
+        org_id = org.id
+
+    with patch('storage.org_member_store.a_session_maker', async_session_maker):
+        count = await OrgMemberStore.get_org_members_count(
+            org_id=org_id, email_filter=email_filter
+        )
+        members, _ = await OrgMemberStore.get_org_members_paginated(
+            org_id=org_id, email_filter=email_filter
+        )
+
+    assert {member.user.email for member in members} == expected
+    assert count == len(expected)
+
+
+@pytest.mark.asyncio
 async def test_get_org_members_paginated_with_email_filter(async_session_maker):
     """Test get_org_members_paginated filters by email correctly."""
     # Arrange
@@ -1111,6 +1180,65 @@ async def test_update_all_members_settings_async_with_non_encrypted_fields(
             == 'https://new-url.com'
         )
         assert updated_member.agent_settings_diff['max_iterations'] == 50
+
+
+@pytest.mark.asyncio
+async def test_update_all_members_settings_async_folds_retired_tool_switches(
+    async_session_maker,
+):
+    """
+    GIVEN: A member whose row a save under SDK 1.56 wrote (schema 9)
+    WHEN: An older client's org-defaults save sends the retired sub-agents switch
+    THEN: Members get it as the task tool set in ``tools``, not as the switch
+    """
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES
+    from server.routes.org_models import OrgMemberSettingsUpdate
+
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        session.add(org)
+        await session.flush()
+
+        role = Role(name='member', rank=2)
+        session.add(role)
+        await session.flush()
+
+        user = User(id=uuid.uuid4(), current_org_id=org.id, email='user@example.com')
+        session.add(user)
+        await session.flush()
+
+        session.add(
+            OrgMember(
+                org_id=org.id,
+                user_id=user.id,
+                role_id=role.id,
+                llm_api_key='test-key',
+                agent_settings_diff={'schema_version': 9, 'agent_kind': 'openhands'},
+                status='active',
+            )
+        )
+        await session.commit()
+        org_id = org.id
+
+    async with async_session_maker() as session:
+        await OrgMemberStore.update_all_members_settings_async(
+            session,
+            org_id,
+            OrgMemberSettingsUpdate(agent_settings_diff={'enable_sub_agents': True}),
+        )
+        await session.commit()
+
+    async with async_session_maker() as session:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(OrgMember).filter(OrgMember.org_id == org_id)
+        )
+        diff = result.scalars().first().agent_settings_diff
+
+    assert not set(RETIRED_TOOL_SWITCHES) & set(diff)
+    assert SUB_AGENT_TOOL_NAME in [tool['name'] for tool in diff['tools']]
 
 
 @pytest.mark.asyncio

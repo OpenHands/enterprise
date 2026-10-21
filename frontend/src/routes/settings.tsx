@@ -17,6 +17,7 @@ import { SAAS_NAV_ITEMS, OSS_NAV_ITEMS } from "#/constants/settings-nav";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import { getSettingsQueryFn } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+import { getIsSuperAdminWithIntegratedIdp } from "#/utils/org/permission-guard";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
@@ -46,6 +47,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/verification",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/your-budget",
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
@@ -161,6 +163,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
+    pathname === "/settings/your-budget" ||
     isAdminOnlyPath
   ) {
     const user = await getActiveOrganizationUser();
@@ -226,10 +229,18 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
 
     if (pathname === "/settings/org-members") {
       const role = user?.role ?? "member";
+      // Instance-level super admins keep access here even with the Personal
+      // Workspace selected -- it becomes the instance-wide "All Users" view
+      // rather than this org's member list (see ManageOrganizationMembers).
+      // Only applies when `enable_integrated_idp` is on, since that's the
+      // only thing the bypass unlocks; otherwise this is the plain
+      // permission check from before super admins got any special access.
+      const isSuperAdmin = await getIsSuperAdminWithIntegratedIdp();
       if (
-        !user ||
-        !rolePermissions[role].includes("invite_user_to_organization") ||
-        isPersonalOrg
+        !isSuperAdmin &&
+        (!user ||
+          !rolePermissions[role].includes("invite_user_to_organization") ||
+          isPersonalOrg)
       ) {
         return replace("/settings");
       }
@@ -238,6 +249,13 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     if (isAdminOnlyPath) {
       const role = user?.role ?? "member";
       if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
+        return replace("/settings");
+      }
+    }
+
+    // Open to every role; personal workspaces have no budgets.
+    if (pathname === "/settings/your-budget") {
+      if (!user || !isTeamOrg) {
         return replace("/settings");
       }
     }

@@ -2076,7 +2076,7 @@ specHints = "State shape is `BudgetCycle`, `LiteLlmFinancialSnapshot` and `Budge
 cardRead = false
 connectionsRead = false
 spec = "quint-specs/org-budgets.qnt"
-version = 6
+version = 9
 observationsConfirmed = true
 propertiesConfirmed = true
 confirmedObservations = [
@@ -2291,26 +2291,27 @@ observations = ["invalid_reset_day_crashed_cycle_math"]
 properties = ["cycle_advances_by_one_reset_period"]
 
 [components.org-budgets.fingerprints]
-spec = "fnv1a64:c49e78ac73b285e4"
+spec = "fnv1a64:ded7b39753fd068d"
 oracle = "fnv1a64:30e61b8270b960cf"
+coverage = "fnv1a64:71c9a6cff2d05a0d"
 
 [components.org-budgets.fingerprints.code]
-"server/services/org_budget_service.py" = "fnv1a64:52dc5a15ab2dc3b6"
-"server/services/org_member_financial_service.py" = "fnv1a64:3a6b1a3eea528e91"
+"server/services/org_budget_service.py" = "fnv1a64:ce4ee27cf11d5b1a"
+"server/services/org_member_financial_service.py" = "fnv1a64:a0b84ebe370068e4"
 "storage/org_budget_settings.py" = "fnv1a64:ad5dc94fd0ecc548"
-"storage/org_budget_store.py" = "fnv1a64:4680defcbc59da9a"
+"storage/org_budget_store.py" = "fnv1a64:f3072971c7a364b4"
 "storage/org_budget_threshold.py" = "fnv1a64:291a828f6ea4d809"
 "storage/org_user_budget_override.py" = "fnv1a64:16aa0573f5a0df6f"
 
 [components.org-budgets.fingerprints.instrumented]
 "pytest.ini" = "fnv1a64:4e363577fe0a8ed7"
 "quint-specs/oracle-client/python/quint_oracle/__init__.py" = "fnv1a64:37eb261d53b1e295"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/__init__.cpython-313.pyc" = "fnv1a64:0a60368a2f8c524d"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/_itf.cpython-313.pyc" = "fnv1a64:2f40ff4ab2b50163"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/_registry.cpython-313.pyc" = "fnv1a64:96faeb7724d1cb25"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/_transport.cpython-313.pyc" = "fnv1a64:63f07a7208a9a6d4"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/itf.cpython-313.pyc" = "fnv1a64:7527c5c2c059bef5"
-"quint-specs/oracle-client/python/quint_oracle/__pycache__/pytest_plugin.cpython-313-pytest-9.0.3.pyc" = "fnv1a64:e885e28d9cebd2d3"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/__init__.cpython-313.pyc" = "fnv1a64:5c9b32f2ea447987"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_itf.cpython-313.pyc" = "fnv1a64:42cf46395bf4d849"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_registry.cpython-313.pyc" = "fnv1a64:7b9b1c75ddd7b453"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_transport.cpython-313.pyc" = "fnv1a64:af2a0c654782ad12"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/itf.cpython-313.pyc" = "fnv1a64:17008b450984c443"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/pytest_plugin.cpython-313-pytest-9.0.3.pyc" = "fnv1a64:d8379795d0abf681"
 "quint-specs/oracle-client/python/quint_oracle/_itf.py" = "fnv1a64:3fa2261dee2ce08f"
 "quint-specs/oracle-client/python/quint_oracle/_registry.py" = "fnv1a64:b9c2f7171b169e54"
 "quint-specs/oracle-client/python/quint_oracle/_transport.py" = "fnv1a64:d33de5e8fb672629"

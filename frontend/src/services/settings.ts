@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   git_user_name: "openhands",
   git_user_email: "openhands@all-hands.dev",
   git_full_clone: false,
+  enable_memory_context: false,
   v1_enabled: true,
   sandbox_grouping_strategy: "NO_GROUPING",
   default_sandbox_spec_id: null,
@@ -53,7 +54,6 @@ export const DEFAULT_SETTINGS: Settings = {
       critic_enabled: false,
       enable_iterative_refinement: false,
     },
-    enable_sub_agents: false,
     mcp_config: {
       sse_servers: [],
       stdio_servers: [],

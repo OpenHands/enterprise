@@ -1,5 +1,9 @@
 import os
 import re
+from typing import Any
+from urllib.parse import urlparse
+
+from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
 
@@ -30,6 +34,12 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
 # the Stripe billing flow but still want to expose the managed LLM key.
 # Accepts both 'true' and '1' (older Helm charts default to '1').
 ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
+
+# NOTE: the integrated IDP (email+password login without Keycloak,
+# ``server.routes.idp``) is no longer gated by an env var read here.
+# Migration 179 seeds its ``oauth_providers`` row from ``ENABLE_INTEGRATED_IDP``
+# once, at migration time; availability is whether that row exists
+# (``server.routes.idp.is_idp_available``), not a live env var read.
 
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.
@@ -108,6 +118,13 @@ LITE_LLM_API_URL = os.environ.get(
 )
 LITE_LLM_TEAM_ID = os.environ.get('LITE_LLM_TEAM_ID', None)
 LITE_LLM_API_KEY = os.environ.get('LITE_LLM_API_KEY', None)
+
+# Deployment-wide LiteLLM gateway switch; default true keeps existing installs unchanged.
+ENABLE_LEGACY_LITELLM = os.environ.get('ENABLE_LEGACY_LITELLM', 'true').lower() in (
+    'true',
+    '1',
+)
+
 # Timeout in seconds for BYOR key verification requests to LiteLLM
 BYOR_KEY_VERIFICATION_TIMEOUT = 5.0
 SUBSCRIPTION_PRICE_DATA = {
@@ -188,25 +205,98 @@ def get_default_litellm_model():
 
 
 def should_use_direct_llm_defaults() -> bool:
-    """Whether defaults should point directly at an OpenAI-compatible endpoint."""
-    return (
-        OPENHANDS_LLM_PROVIDER_ROUTE == 'direct'
-        and bool(OPENHANDS_DEFAULT_LLM_MODEL)
-        and bool(OPENHANDS_DEFAULT_LLM_BASE_URL)
+    """Whether defaults should point directly at the provider, bypassing any gateway."""
+    return OPENHANDS_LLM_PROVIDER_ROUTE == 'direct' and bool(
+        OPENHANDS_DEFAULT_LLM_MODEL
     )
+
+
+_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
+_OPENHANDS_PREFIX = 'openhands/'
+
+
+def to_openhands_model(model: str) -> str:
+    """Translate a proxy route to the public ``openhands/`` model name.
+
+    ``litellm_proxy/<name>`` becomes ``openhands/<name>``; an
+    ``openhands/``-prefixed model is kept and a bare name is prefixed.
+    """
+    if model.startswith(_LITELLM_PROXY_PREFIX):
+        return _OPENHANDS_PREFIX + model[len(_LITELLM_PROXY_PREFIX) :]
+    if model.startswith(_OPENHANDS_PREFIX):
+        return model
+    return _OPENHANDS_PREFIX + model
+
+
+def uses_bundled_litellm_proxy() -> bool:
+    """Whether managed models are served by a self-hosted bundled LiteLLM proxy.
+
+    The model picker then lists the proxy's routes as ``openhands/<route>``,
+    so managed defaults must use that name while keeping the proxy base_url.
+    The OpenHands SaaS proxy keeps the SDK's canonicalization instead.
+    """
+    return (
+        ENABLE_LEGACY_LITELLM
+        and DEPLOYMENT_MODE == 'self_hosted'
+        and not should_use_direct_llm_defaults()
+        and bool(LITE_LLM_API_URL)
+        and not is_openhands_proxy_base_url(LITE_LLM_API_URL)
+    )
+
+
+def is_bundled_proxy_base_url(base_url: object) -> bool:
+    """Whether ``base_url`` points at the self-hosted bundled LiteLLM proxy."""
+    return (
+        isinstance(base_url, str)
+        and base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
+        and uses_bundled_litellm_proxy()
+    )
+
+
+def is_in_cluster_url(url: str) -> bool:
+    host = urlparse(url).hostname or ''
+    return '.' not in host or host.endswith(('.svc', '.cluster.local'))
+
+
+def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
+    """Represent a stored bundled-proxy LLM as ``openhands/<route>``.
+
+    Only ``litellm_proxy/`` models whose base_url is the bundled proxy are
+    renamed; the base_url is kept so requests still reach that proxy.
+    """
+    model = payload.get('model')
+    if (
+        isinstance(model, str)
+        and model.startswith(_LITELLM_PROXY_PREFIX)
+        and is_bundled_proxy_base_url(payload.get('base_url'))
+    ):
+        return {**payload, 'model': to_openhands_model(model)}
+    return payload
 
 
 def get_default_llm_model() -> str:
     """Return the deployment default LLM model."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
+    if not ENABLE_LEGACY_LITELLM:
+        from openhands.sdk.settings import default_agent_settings
+
+        # No gateway and no install default: the user brings their own key.
+        return default_agent_settings().llm.model
+    if uses_bundled_litellm_proxy():
+        return to_openhands_model(get_default_litellm_model())
     return get_default_litellm_model()
 
 
-def get_default_llm_base_url() -> str:
-    """Return the deployment default LLM base URL."""
-    if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_BASE_URL:
+def get_default_llm_base_url() -> str | None:
+    """Return the deployment default LLM base URL.
+
+    ``None`` lets the SDK use the model provider's own endpoint.
+    """
+    if should_use_direct_llm_defaults():
         return OPENHANDS_DEFAULT_LLM_BASE_URL
+    if not ENABLE_LEGACY_LITELLM:
+        return None
     return LITE_LLM_API_URL
 
 

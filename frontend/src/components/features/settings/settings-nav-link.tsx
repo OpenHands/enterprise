@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
 import { Tooltip } from "@heroui/react";
 import { cn } from "#/utils/utils";
+import { isCrossAppPath } from "#/utils/cross-app-redirect";
 import { I18nKey } from "#/i18n/declaration";
 import { SettingsNavItem } from "#/constants/settings-nav";
 import {
@@ -49,6 +50,25 @@ export function SettingsNavLink({
           <span className={sidebarNavLabelClassName()}>{label}</span>
         </div>
       </Tooltip>
+    );
+  }
+
+  // Another app serves these paths, so the browser has to load the document;
+  // a router navigation would stay inside this app.
+  if (isCrossAppPath(to)) {
+    return (
+      <a
+        href={to}
+        onClick={onClick}
+        data-testid={`sidebar-settings-${to}`}
+        className={cn(
+          sidebarNavRowClassName(),
+          SIDEBAR_ROW_INTERACTIVE_CLASS.idle,
+        )}
+      >
+        <span className={SIDEBAR_ICON_SLOT_CLASS}>{icon}</span>
+        <span className={sidebarNavLabelClassName()}>{label}</span>
+      </a>
     );
   }
 

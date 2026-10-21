@@ -31,6 +31,10 @@ export function SecretListItemSkeleton() {
 interface SecretListItemProps {
   title: string;
   description?: string;
+  /** When false, the edit and delete action buttons are hidden. The
+   * parent component derives this from the secret's scope and the
+   * current user's permissions. */
+  canEdit?: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }
@@ -38,6 +42,7 @@ interface SecretListItemProps {
 export function SecretListItem({
   title,
   description,
+  canEdit = true,
   onEdit,
   onDelete,
 }: SecretListItemProps) {
@@ -65,24 +70,28 @@ export function SecretListItem({
 
       <td className={settingsListTableCellClassName}>
         <div className="flex items-center justify-end gap-0.5">
-          <button
-            data-testid="edit-secret-button"
-            type="button"
-            onClick={onEdit}
-            aria-label={`Edit ${title}`}
-            className={settingsListIconActionButtonClassName}
-          >
-            <EditIcon width={16} height={16} />
-          </button>
-          <button
-            data-testid="delete-secret-button"
-            type="button"
-            onClick={onDelete}
-            aria-label={`Delete ${title}`}
-            className={settingsListIconActionButtonClassName}
-          >
-            <DeleteIcon width={16} height={16} />
-          </button>
+          {canEdit && (
+            <>
+              <button
+                data-testid="edit-secret-button"
+                type="button"
+                onClick={onEdit}
+                aria-label={`Edit ${title}`}
+                className={settingsListIconActionButtonClassName}
+              >
+                <EditIcon width={16} height={16} />
+              </button>
+              <button
+                data-testid="delete-secret-button"
+                type="button"
+                onClick={onDelete}
+                aria-label={`Delete ${title}`}
+                className={settingsListIconActionButtonClassName}
+              >
+                <DeleteIcon width={16} height={16} />
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>

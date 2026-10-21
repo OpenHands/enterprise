@@ -53,6 +53,10 @@ from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.routes.org_models import OrgNotFoundError
+from server.verified_models.default_profile import (
+    get_openhands_default_model_name,
+    materialize_default_llm_profile,
+)
 from storage.agent_profile_resolution import (
     OrgLLMProfileLoader,
     load_agent_profiles,
@@ -450,7 +454,11 @@ async def materialize_agent_profile(
         )
 
     mcp_config = member_mcp_config(member) if member is not None else {}
-    llm_store = OrgLLMProfileLoader(load_llm_profiles(org))
+    async with a_session_maker() as session:
+        model_name = await get_openhands_default_model_name(session)
+    llm_store = OrgLLMProfileLoader(
+        materialize_default_llm_profile(load_llm_profiles(org), model_name)
+    )
 
     try:
         return resolve_agent_profile_dry_run(

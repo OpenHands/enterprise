@@ -11,6 +11,7 @@ import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Request,
@@ -19,7 +20,7 @@ from fastapi import (
 )
 from fastapi.security import APIKeyHeader
 from jwt import InvalidTokenError
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands import tools  # type: ignore[attr-defined]
 from openhands.agent_server.models import ConversationInfo, Success
@@ -45,6 +46,7 @@ from openhands.app_server.config import (
 )
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
+from openhands.app_server.event.event_parsing import parse_event_payload
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_result_models import (
@@ -77,9 +79,11 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
+from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthStateResponse
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
+from storage.mcp_config import serialize_mcp_config
 
 router = APIRouter(prefix='/webhooks', tags=['Webhooks'])
 event_service_dependency = depends_event_service(scope='function')
@@ -395,6 +399,10 @@ async def on_conversation_update(
         conversation_id=str(conversation_info.id),
         sandbox_id=sandbox_record.id,
     )
+    # Conversations created directly on the agent-server (SDK, API clients)
+    # carry no trigger; treat them as API-driven, like the V0 bearer default.
+    if trigger is None:
+        trigger = ConversationTrigger.REMOTE_API_KEY
 
     # Stamp client source tag from trigger so both the agent-server telemetry
     # and the enterprise analytics attribute the conversation consistently.
@@ -527,21 +535,26 @@ async def _sync_live_conversation_stats(
 @router.post('/events/{conversation_id}')
 async def on_event(
     background_tasks: BackgroundTasks,
-    events: list[Event],
     conversation_id: UUID,
+    events: list[Any] = Body(...),
     app_conversation_info: AppConversationInfo = Depends(valid_conversation),
     app_conversation_info_service: AppConversationInfoService = app_conversation_info_service_dependency,
     event_service: EventService = event_service_dependency,
 ) -> Success:
     """Webhook callback for when event stream events occur."""
+    parsed_events = [parse_event_payload(event) for event in events]
+
     try:
         # Save events...
         await asyncio.gather(
-            *[event_service.save_event(conversation_id, event) for event in events]
+            *[
+                event_service.save_event(conversation_id, event)
+                for event in parsed_events
+            ]
         )
 
         # Process stats events for V1 conversations
-        for event in events:
+        for event in parsed_events:
             if isinstance(event, ConversationStateUpdateEvent) and event.key == 'stats':
                 await app_conversation_info_service.process_stats_event(
                     event, conversation_id
@@ -555,7 +568,7 @@ async def on_event(
         # conversation-info webhook (which only fires on start/pause/interrupt/
         # delete, never mid-run). ``active_model`` is only set on success.
         switched_model: str | None = None
-        for event in events:
+        for event in parsed_events:
             if (
                 isinstance(event, ObservationEvent)
                 and isinstance(event.observation, SwitchLLMObservation)
@@ -573,7 +586,7 @@ async def on_event(
         # Analytics: conversation terminal state detection
         # Also persist execution status to database for dashboard queries
         run_ended = False
-        for event in events:
+        for event in parsed_events:
             if not isinstance(event, ConversationStateUpdateEvent):
                 continue
             if event.key != 'execution_status':
@@ -588,7 +601,10 @@ async def on_event(
                     run_ended = True
                 if exec_status.is_terminal():
                     await _track_conversation_terminal(
-                        conversation_id, app_conversation_info, events, exec_status
+                        conversation_id,
+                        app_conversation_info,
+                        parsed_events,
+                        exec_status,
                     )
             except Exception:
                 _logger.exception(
@@ -609,7 +625,7 @@ async def on_event(
             _run_callbacks_in_bg_and_close,
             conversation_id,
             app_conversation_info.created_by_user_id,
-            events,
+            parsed_events,
         )
 
     except Exception:
@@ -652,6 +668,67 @@ async def get_secret(
         return Response(content=secret_value, media_type='text/plain')
     except InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+
+class MCPOAuthStateUpdate(BaseModel):
+    """OAuth state a sandbox refreshed for one of its owner's MCP servers."""
+
+    server_url: str = Field(..., min_length=1)
+    oauth_state: MCPOAuthStateResponse
+
+
+@router.post('/mcp-oauth-state')
+async def on_mcp_oauth_state_update(
+    update: MCPOAuthStateUpdate,
+    sandbox_record: SandboxRecord = Depends(valid_sandbox),
+) -> Success:
+    """Persist MCP OAuth tokens refreshed inside a sandbox.
+
+    Hosted conversations get the owner's ``mcp_config`` inline, so a token
+    FastMCP refreshes there would otherwise be lost with the sandbox and the
+    next conversation would start from the previous refresh token, which
+    providers that rotate refresh tokens have already revoked. The agent
+    server posts the refreshed state here (``MCPSettingsOAuthTokenStore``);
+    it replaces ``auth.state`` on the owner's ``oauth2`` server with the same
+    URL. Settings resolve like the other webhook lookups, through the owner's
+    current organization.
+    """
+    settings_store = await shared.SettingsStoreImpl.get_instance(
+        sandbox_record.created_by_user_id
+    )
+    settings = await settings_store.load()
+    if settings is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail='No settings for the sandbox owner'
+        )
+    server_url = update.server_url.rstrip('/')
+    mcp_config = settings.agent_settings.mcp_config
+    matches = [
+        name
+        for name, server in mcp_config.items()
+        if server.url is not None
+        and server.url.rstrip('/') == server_url
+        and isinstance(server.auth, MCPOAuthAuthCredential)
+    ]
+    if not matches:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail='No OAuth MCP server matches server_url',
+        )
+    # A full map without ``null`` entries replaces the stored catalog wholesale
+    # (``Settings.update``), so every server is resent with only the matching
+    # ones' ``auth.state`` swapped for the refreshed state.
+    serialized = serialize_mcp_config(mcp_config) or {}
+    state = update.oauth_state.model_dump(mode='json', exclude_none=True)
+    for name in matches:
+        serialized[name]['auth']['state'] = state
+    settings.update({'agent_settings_diff': {'mcp_config': serialized}})
+    await settings_store.store(settings)
+    _logger.info(
+        'mcp_oauth:state_written_back',
+        extra={'sandbox_id': sandbox_record.id, 'servers': matches},
+    )
+    return Success()
 
 
 async def _run_callbacks_in_bg_and_close(

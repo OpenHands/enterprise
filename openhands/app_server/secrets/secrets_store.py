@@ -23,6 +23,19 @@ class SecretsStore(ABC):
     async def load(self) -> Secrets | None:
         """Load secrets."""
 
+    async def load_personal(self) -> Secrets | None:
+        """Load only the secrets the caller owns and may overwrite.
+
+        Write-path endpoints (create/update/delete custom secret, store/unset
+        provider tokens) read this instead of ``load()`` so they never
+        round-trip shared/foreign secrets back into ``store()`` — which would
+        duplicate them as personal rows owned by the current user.
+
+        Implementations without a shared-secret concept (e.g. FileSecretsStore)
+        inherit this default, which is equivalent to ``load()``.
+        """
+        return await self.load()
+
     @abstractmethod
     async def store(self, secrets: Secrets) -> None:
         """Store secrets."""

@@ -15,6 +15,7 @@ from google.cloud.storage.bucket import Bucket
 from google.cloud.storage.client import Client
 
 from openhands.app_server.config import get_app_conversation_info_service
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
 from openhands.app_server.event.event_service_base import (
     INDEX_FILENAME,
@@ -51,8 +52,7 @@ class GoogleCloudEventService(EventServiceBase):
         try:
             with blob.open('r') as f:
                 json_data = f.read()
-            event = Event.model_validate_json(json_data)
-            return event
+            return parse_event_json(json_data)
         except NotFound:
             return None
         except Exception:
@@ -116,7 +116,10 @@ class GoogleCloudEventService(EventServiceBase):
         index_blob = self.bucket.blob(str(index_path))
         # rename is copy+delete under the hood; a concurrent reader may briefly
         # see both files, but the reader rule prefers index.json when present.
-        self.bucket.rename_blob(index_blob, str(stale_path))
+        try:
+            self.bucket.rename_blob(index_blob, str(stale_path))
+        except NotFound:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):

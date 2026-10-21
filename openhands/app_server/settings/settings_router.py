@@ -179,7 +179,12 @@ async def _maybe_rotate_stale_managed_key(
     if not isinstance(settings_store, SaasSettingsStore):
         return llm
 
-    if managed_llm_key_config_from_model(llm.model, llm.base_url) is None:
+    if (
+        managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
+        is None
+    ):
         return llm
 
     raw_key = (
@@ -202,7 +207,11 @@ async def _maybe_rotate_stale_managed_key(
         return llm
 
     try:
-        rotation = await settings_store.rotate_managed_llm_key()
+        # Pass the observed stale key so overlapping refreshes are idempotent:
+        # if a concurrent start/write already rotated it, reuse that fresh key
+        # instead of rotating again and orphaning a sandbox's key
+        # (enterprise#439).
+        rotation = await settings_store.rotate_managed_llm_key(only_if_current=raw_key)
     except Exception:
         logger.warning(
             'settings:managed_key_rotate_failed',
@@ -275,7 +284,6 @@ async def load_settings(
                 if provider_token.token or provider_token.user_id:
                     provider_tokens_set[provider_type] = provider_token.host
 
-        llm = settings.agent_settings.llm
         settings_with_token_data = GETSettingsModel(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
@@ -286,19 +294,25 @@ async def load_settings(
             provider_tokens_set=provider_tokens_set,
         )
 
-        resp_llm = settings_with_token_data.agent_settings.llm
-        normalized_base = (llm.base_url or '').rstrip('/')
-        normalized_proxy = LITE_LLM_API_URL.rstrip('/')
+        # ACP settings have no ``llm``: the ACP agent makes its own model calls.
+        resp_settings = settings_with_token_data.agent_settings
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings) and isinstance(
+            resp_settings, OpenHandsAgentSettings
+        ):
+            llm = settings.agent_settings.llm
+            resp_llm = resp_settings.llm
+            normalized_base = (llm.base_url or '').rstrip('/')
+            normalized_proxy = LITE_LLM_API_URL.rstrip('/')
 
-        # If the base url matches the default for the provider, we don't send it
-        # So that the frontend can display basic mode.
-        if is_openhands_model(llm.model):
-            if normalized_base == normalized_proxy:
+            # If the base url matches the default for the provider, we don't send it
+            # So that the frontend can display basic mode.
+            if is_openhands_model(llm.model):
+                if normalized_base == normalized_proxy:
+                    resp_llm.base_url = None
+            elif llm.model and llm.base_url == get_provider_api_base(llm.model):
                 resp_llm.base_url = None
-        elif llm.model and llm.base_url == get_provider_api_base(llm.model):
-            resp_llm.base_url = None
 
-        resp_llm.api_key = None
+            resp_llm.api_key = None
         settings_with_token_data.search_api_key = None
         settings_with_token_data.sandbox_api_key = None
 
@@ -400,10 +414,11 @@ async def store_settings(
                 )
 
         _post_merge_llm_fixups(settings)
-        rotated = await _maybe_rotate_stale_managed_key(
-            settings.agent_settings.llm, settings_store, user_id
-        )
-        object.__setattr__(settings.agent_settings, 'llm', rotated)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm, settings_store, user_id
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
 
         if existing_settings:
@@ -694,8 +709,13 @@ async def save_profile(
             if llm.api_key is None and existing is not None:
                 if existing.api_key is not None:
                     llm = llm.model_copy(update={'api_key': existing.api_key})
-        else:
+        elif isinstance(settings.agent_settings, OpenHandsAgentSettings):
             llm = settings.agent_settings.llm
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='ACP agents have no LLM settings to save as a profile',
+            )
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted active-settings key.
@@ -777,17 +797,18 @@ async def activate_profile(
             ) from exc
 
         _post_merge_llm_fixups(settings)
-        rotated = await _maybe_rotate_stale_managed_key(
-            settings.agent_settings.llm, settings_store, user_id
-        )
-        object.__setattr__(settings.agent_settings, 'llm', rotated)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm, settings_store, user_id
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
         await settings_store.store(settings)
 
     return ActivateProfileResponse(
         name=name,
         message=f"Switched to profile '{name}'",
-        model=settings.agent_settings.llm.model,
+        model=settings.llm_profiles.require(name).model,
     )
 
 

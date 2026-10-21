@@ -6,6 +6,12 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
+import {
+  findMockAdminUser,
+  onMockAdminMembershipAdded,
+  registerMockAdminOrg,
+} from "./super-admin-handlers";
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -47,7 +53,22 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   llm_base_url: "https://api.openai.com",
   agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
   status: "active",
+  permissions: [
+    "create_organization",
+    "manage_super_admins",
+    "provision_user",
+    "delete_organization",
+  ],
 };
+
+const currentUserMembership = (
+  orgId: string,
+  role: OrganizationUserRole,
+): OrganizationMember => ({
+  ...MOCK_ME,
+  org_id: orgId,
+  role,
+});
 
 export const createMockOrganization = (
   id: string,
@@ -120,12 +141,10 @@ export const createMockOrganization = (
 });
 
 // Named mock organizations for test convenience
-export const MOCK_PERSONAL_ORG = createMockOrganization(
-  "1",
-  "Personal Workspace",
-  100,
-  true,
-);
+export const MOCK_PERSONAL_ORG = {
+  ...createMockOrganization("1", "Personal Workspace", 100, true),
+  contact_name: "openhands",
+};
 export const MOCK_TEAM_ORG_ACME = createMockOrganization(
   "2",
   "Acme Corp",
@@ -137,12 +156,18 @@ export const MOCK_TEAM_ORG_ALLHANDS = createMockOrganization(
   "All Hands AI",
   750,
 );
+/** Team org the current mock Super Admin does not belong to. */
+export const MOCK_TEAM_ORG_NORTHWIND = {
+  ...createMockOrganization("5", "Northwind Labs", 200),
+  contact_email: "it@northwind.example",
+};
 
 export const INITIAL_MOCK_ORGS: Organization[] = [
   MOCK_PERSONAL_ORG,
   MOCK_TEAM_ORG_ACME,
   MOCK_TEAM_ORG_BETA,
   MOCK_TEAM_ORG_ALLHANDS,
+  MOCK_TEAM_ORG_NORTHWIND,
 ];
 
 const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -286,6 +311,20 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
       status: "invited",
     },
   ],
+  "5": [
+    {
+      org_id: "5",
+      user_id: "11",
+      email: "it@northwind.example",
+      role: "owner",
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
+      status: "active",
+    },
+  ],
 };
 
 export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -293,9 +332,77 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
   "2": INITIAL_MOCK_MEMBERS["2"].map((member) => ({ ...member })),
   "3": INITIAL_MOCK_MEMBERS["3"].map((member) => ({ ...member })),
   "4": INITIAL_MOCK_MEMBERS["4"].map((member) => ({ ...member })),
+  "5": INITIAL_MOCK_MEMBERS["5"].map((member) => ({ ...member })),
+};
+
+onMockAdminMembershipAdded(({ userId, orgId, role }) => {
+  if (userId !== MOCK_ME.user_id) {
+    return;
+  }
+  const members = ORGS_AND_MEMBERS[orgId] ?? [];
+  if (members.some((member) => member.user_id === userId)) {
+    return;
+  }
+  const nextRole: OrganizationUserRole =
+    role === "owner" || role === "admin" ? role : "member";
+  ORGS_AND_MEMBERS[orgId] = [
+    ...members,
+    currentUserMembership(orgId, nextRole),
+  ];
+});
+
+// pydantic's EmailStr needs a dot in the domain, so "admin@localhost" is rejected.
+const MOCK_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The mock user's roles in the seeded orgs, which predate tracked memberships.
+const SEEDED_MOCK_USER_ROLES: Record<string, OrganizationUserRole> = {
+  "1": "owner", // Personal Workspace
+  "2": "owner", // Acme Corp
+  "3": "member", // Beta LLC
+  "4": "admin", // All Hands AI
+};
+
+/** The mock user's membership in an org, or null when they do not belong to it. */
+const findMockUserMembership = (orgId: string): OrganizationMember | null => {
+  const membership = ORGS_AND_MEMBERS[orgId]?.find(
+    (member) => member.user_id === MOCK_ME.user_id,
+  );
+  if (membership) {
+    return membership;
+  }
+  const seededRole = SEEDED_MOCK_USER_ROLES[orgId];
+  return seededRole ? currentUserMembership(orgId, seededRole) : null;
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
+const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
+let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
+let freshSaOrgsApplied = false;
+
+/** First-install Super Admin walkthrough with a single team org.
+ * Keeps a personal workspace so /me and org selection still work.
+ */
+export function applyFreshSaOrgSeed() {
+  orgs.clear();
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    delete ORGS_AND_MEMBERS[orgId];
+  });
+  mockGitClaimsByOrgId.clear();
+  orgs.set(MOCK_PERSONAL_ORG.id, { ...MOCK_PERSONAL_ORG });
+  orgs.set(MOCK_TEAM_ORG_ACME.id, { ...MOCK_TEAM_ORG_ACME });
+  ORGS_AND_MEMBERS[MOCK_PERSONAL_ORG.id] = [
+    currentUserMembership(MOCK_PERSONAL_ORG.id, "owner"),
+  ];
+  ORGS_AND_MEMBERS[MOCK_TEAM_ORG_ACME.id] = [
+    currentUserMembership(MOCK_TEAM_ORG_ACME.id, "owner"),
+  ];
+  mockCurrentOrgId = MOCK_TEAM_ORG_ACME.id;
+  freshSaOrgsApplied = true;
+}
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaOrgSeed();
+}
 
 type MockOrgLlmProfile = {
   name: string;
@@ -351,6 +458,13 @@ export const resetOrgMockData = () => {
     orgs.set(org.id, { ...org });
   });
   orgProfilesByOrgId.clear();
+  mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    if (!(orgId in INITIAL_MOCK_MEMBERS)) {
+      delete ORGS_AND_MEMBERS[orgId];
+    }
+  });
+  freshSaOrgsApplied = false;
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -362,6 +476,21 @@ export const resetOrgsAndMembersMockData = () => {
     }));
   });
 };
+
+function ensureFreshSaOrgs(request: Request) {
+  if (
+    requestWantsFreshSa(request) ||
+    import.meta.env.VITE_MOCK_FRESH_SA === "true"
+  ) {
+    if (!freshSaOrgsApplied) {
+      applyFreshSaOrgSeed();
+    }
+  } else if (freshSaOrgsApplied) {
+    resetOrgMockData();
+    resetOrgsAndMembersMockData();
+    freshSaOrgsApplied = false;
+  }
+}
 
 export const ORG_HANDLERS = [
   http.get("/api/v1/users/git-organizations", () =>
@@ -452,37 +581,27 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations/:orgId/me", ({ params }) => {
     const orgId = params.orgId?.toString();
-    if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+    if (!orgId || !orgs.has(orgId)) {
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
     }
 
-    let role: OrganizationUserRole = "member";
-    switch (orgId) {
-      case "1": // Personal Workspace
-        role = "owner";
-        break;
-      case "2": // Acme Corp
-        role = "owner";
-        break;
-      case "3": // Beta LLC
-        role = "member";
-        break;
-      case "4": // All Hands AI
-        role = "admin";
-        break;
-      default:
-        role = "member";
+    // Like the server, a Super Admin who is not a member gets a 404.
+    const membership = findMockUserMembership(orgId);
+    if (!membership) {
+      return HttpResponse.json(
+        { detail: `Organization with id "${orgId}" not found` },
+        { status: 404 },
+      );
     }
-
-    const me: OrganizationMember = {
+    return HttpResponse.json({
       ...MOCK_ME,
+      ...membership,
       org_id: orgId,
-      role,
-    };
-    return HttpResponse.json(me);
+      permissions: MOCK_ME.permissions,
+    });
   }),
 
   http.get("/api/organizations/:orgId/members", ({ params, request }) => {
@@ -523,12 +642,22 @@ export const ORG_HANDLERS = [
   }),
 
   http.get("/api/organizations/:orgId/members/count", ({ params, request }) => {
+    ensureFreshSaOrgs(request);
     const orgId = params.orgId?.toString();
     if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+      // Fresh install / unknown org: no teammates yet
+      if (requestWantsFreshSa(request)) {
+        return HttpResponse.json(0);
+      }
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
+    }
+
+    // Fresh Super Admin walkthrough: act as the only member.
+    if (requestWantsFreshSa(request)) {
+      return HttpResponse.json(1);
     }
 
     // Parse query parameters
@@ -547,17 +676,95 @@ export const ORG_HANDLERS = [
     return HttpResponse.json(members.length);
   }),
 
-  http.get("/api/organizations", () => {
-    const organizations = Array.from(orgs.values());
-    // Prefer a team org so admin settings (budgets, usage, org defaults) are
-    // visible in SaaS mock mode. Personal Workspace (id "1") hides those pages.
-    const teamOrg =
-      organizations.find((org) => !org.is_personal) ?? organizations[0];
-    const currentOrgId = teamOrg?.id ?? null;
+  http.get("/api/organizations", ({ request }) => {
+    ensureFreshSaOrgs(request);
+    // Like the server, only organizations the mock user belongs to.
+    const organizations = Array.from(orgs.values()).filter(
+      (org) => findMockUserMembership(org.id) !== null,
+    );
     return HttpResponse.json({
       items: organizations,
-      current_org_id: currentOrgId,
+      current_org_id: mockCurrentOrgId || null,
     });
+  }),
+
+  http.post("/api/organizations", async ({ request }) => {
+    const body = (await request.json()) as {
+      name?: string;
+      contact_name?: string;
+      contact_email?: string;
+      owner_user_id?: string | null;
+    };
+    const name = body.name?.trim();
+    // OrgCreate: contact_name is required but may be empty; EmailStr strips.
+    const contactName = body.contact_name;
+    const contactEmail = body.contact_email?.trim();
+
+    if (
+      !name ||
+      name.length > 255 ||
+      typeof contactName !== "string" ||
+      !contactEmail ||
+      !MOCK_EMAIL_PATTERN.test(contactEmail)
+    ) {
+      return HttpResponse.json(
+        {
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body"],
+              msg: "Invalid organization",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+
+    const owner = body.owner_user_id
+      ? findMockAdminUser(body.owner_user_id)
+      : undefined;
+    if (body.owner_user_id && !owner) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+
+    // Exact match, like OrgStore.get_org_by_name.
+    const nameTaken = Array.from(orgs.values()).some(
+      (org) => org.name === name,
+    );
+    if (nameTaken) {
+      return HttpResponse.json(
+        { detail: `Organization with name "${name}" already exists` },
+        { status: 409 },
+      );
+    }
+
+    const orgId = String(Date.now());
+    const org: Organization = {
+      ...createMockOrganization(orgId, name, 0),
+      contact_name: contactName,
+      contact_email: contactEmail,
+    };
+    orgs.set(orgId, org);
+    // Like the real API, only owner_user_id becomes a member (the owner), and
+    // creating an org does not switch into it.
+    ORGS_AND_MEMBERS[orgId] = owner
+      ? [
+          {
+            ...currentUserMembership(orgId, "owner"),
+            user_id: owner.user_id,
+            email: owner.email,
+          },
+        ]
+      : [];
+    registerMockAdminOrg({
+      id: orgId,
+      name,
+      contact_email: contactEmail,
+      contact_name: contactName,
+      owner_user_id: owner?.user_id,
+    });
+    return HttpResponse.json(org, { status: 201 });
   }),
 
   http.patch("/api/organizations/:orgId", async ({ request, params }) => {
@@ -608,6 +815,116 @@ export const ORG_HANDLERS = [
     );
   }),
 
+  http.get("/api/organizations/:orgId/budgets/me", ({ params, request }) => {
+    const orgId = params.orgId?.toString();
+    if (!orgId || !orgs.has(orgId)) {
+      return HttpResponse.json(
+        { error: "Organization not found" },
+        { status: 404 },
+      );
+    }
+
+    if (new URL(request.url).searchParams.get("include_spend") === "false") {
+      return HttpResponse.json({ enabled: true });
+    }
+
+    const now = new Date();
+    return HttpResponse.json({
+      enabled: true,
+      monthly_limit: 500,
+      is_disabled: false,
+      is_override: true,
+      limit_updated_at: "2026-08-15T00:00:00Z",
+      current_spend: 347.82,
+      cycle_start_at: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      ).toISOString(),
+      cycle_end_at: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+      ).toISOString(),
+      spend_status: "live",
+      spend_observed_at: now.toISOString(),
+      org_monthly_limit: 1000,
+      org_current_spend: 912.4,
+    });
+  }),
+
+  http.get(
+    "/api/organizations/:orgId/conversations/my-usage",
+    ({ params, request }) => {
+      const orgId = params.orgId?.toString();
+      if (!orgId || !orgs.has(orgId)) {
+        return HttpResponse.json(
+          { error: "Organization not found" },
+          { status: 404 },
+        );
+      }
+
+      const dayMs = 86_400_000;
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const timeWindow = new URL(request.url).searchParams.get("time_window");
+      let days = 30;
+      if (timeWindow === "7d") {
+        days = 7;
+      } else if (timeWindow === "ytd") {
+        const startOfYear = Date.UTC(today.getUTCFullYear(), 0, 1);
+        days = Math.round((today.getTime() - startOfYear) / dayMs) + 1;
+      }
+
+      const modelCosts: [string, number][] = [
+        ["claude-sonnet-4-5", 142.5],
+        ["claude-opus-4", 89.2],
+        ["gpt-5", 62.3],
+        ["gpt-5-mini", 35.4],
+        ["gemini-2.5-pro", 18.42],
+      ];
+      const totalSpend = modelCosts.reduce((sum, [, cost]) => sum + cost, 0);
+
+      // Spread the total over the window so the daily series and the model
+      // breakdown reconcile, as they do on the real endpoint.
+      const weekPattern = [18.5, 32.2, 45.8, 22.4, 38.9, 15.3, 12.6];
+      const weights = Array.from(
+        { length: days },
+        (_, index) => weekPattern[index % weekPattern.length],
+      );
+      const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+      const dailySpend = weights.map((weight, index) => ({
+        date: new Date(today.getTime() - (days - 1 - index) * dayMs)
+          .toISOString()
+          .slice(0, 10),
+        cost: (weight / weightTotal) * totalSpend,
+      }));
+
+      return HttpResponse.json({
+        total_spend: totalSpend,
+        previous_period_spend: totalSpend / 0.88,
+        daily_spend: dailySpend,
+        model_usage: modelCosts.map(([modelName, totalCost]) => ({
+          model_name: modelName,
+          conversation_count: 1,
+          total_tokens: 0,
+          total_cost: totalCost,
+        })),
+        recent_usage: [
+          ["Refactoring auth module", 2, 2.34],
+          ["Fixing pagination bug", 18, 4.82],
+          ["Review PR #847 authentication", 45, 1.92],
+          ["Implementing user dashboard", 60, 8.45],
+          ["API docs update", 120, 1.23],
+          ["Review PR #846 database schema", 180, 2.67],
+        ].map(([title, minutesAgo, cost], index) => ({
+          conversation_id: `mock-recent-usage-${index}`,
+          title,
+          updated_at: new Date(
+            Date.now() - Number(minutesAgo) * 60_000,
+          ).toISOString(),
+          accumulated_cost: cost,
+        })),
+      });
+    },
+  ),
+
   http.get("/api/organizations/:orgId/budgets", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !orgs.has(orgId)) {
@@ -625,6 +942,9 @@ export const ORG_HANDLERS = [
       litellm_last_sync_error: null,
       reconciliation_state: "healthy",
       reconciliation_error: null,
+      email_alerts_available: true,
+      slack_integration_configured: true,
+      slack_workspace_connected: true,
       desired_team_max_budget: 1000,
       applied_team_max_budget: 1000,
       budget_policy_matches: true,
@@ -815,7 +1135,19 @@ export const ORG_HANDLERS = [
 
     if (orgId) {
       const org = orgs.get(orgId);
-      if (org) return HttpResponse.json(org);
+      if (org) {
+        if (!findMockUserMembership(orgId)) {
+          return HttpResponse.json(
+            {
+              detail:
+                "User must be a member of the organization to switch to it",
+            },
+            { status: 403 },
+          );
+        }
+        mockCurrentOrgId = orgId;
+        return HttpResponse.json(org);
+      }
     }
 
     return HttpResponse.json(
@@ -1201,6 +1533,9 @@ export const ORG_HANDLERS = [
       enabled: true,
       monthly_limit: 1000,
       reset_day: 1,
+      email_alerts_available: true,
+      slack_integration_configured: true,
+      slack_workspace_connected: true,
       slack_channel: "budget-alerts",
       slack_team_id: "T123",
       default_user_monthly_limit: 250,
@@ -1448,5 +1783,11 @@ export const ORG_HANDLERS = [
       }
       return new HttpResponse(null, { status: 204 });
     },
+  ),
+
+  // Provider connections — default to an empty list so org-defaults LLM
+  // settings tests can render the connection manager without extra setup.
+  http.get("/api/organizations/:orgId/provider-connections", () =>
+    HttpResponse.json({ connections: [] }),
   ),
 ];

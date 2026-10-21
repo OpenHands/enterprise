@@ -29,11 +29,17 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.http_session import httpx_verify_option
-from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_models
+from openhands.app_server.utils.llm import (
+    VERIFIED_PROVIDERS,
+    ModelsResponse,
+    get_supported_llm_models,
+)
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     get_default_litellm_model,
+    get_default_llm_model,
+    to_openhands_model,
 )
 
 _logger = logging.getLogger(__name__)
@@ -43,8 +49,6 @@ MODEL_INFO_TIMEOUT = 5.0
 # How long (seconds) a successful discovery result is reused before refetching.
 CACHE_TTL_SECONDS = 60.0
 
-# The proxy-transport prefix used by LITELLM_DEFAULT_MODEL.
-_LITELLM_PROXY_PREFIX = 'litellm_proxy/'
 # The public/stored prefix used by the app. The SDK translates
 # ``openhands/`` -> ``litellm_proxy/`` at the transport boundary.
 _OPENHANDS_PREFIX = 'openhands/'
@@ -57,12 +61,7 @@ def _derive_default_model() -> str:
     the app stores and displays models as ``openhands/<name>``. An already-
     ``openhands/``-prefixed default is kept as-is; a bare name is prefixed.
     """
-    default = get_default_litellm_model()
-    if default.startswith(_LITELLM_PROXY_PREFIX):
-        return _OPENHANDS_PREFIX + default[len(_LITELLM_PROXY_PREFIX) :]
-    if default.startswith(_OPENHANDS_PREFIX):
-        return default
-    return _OPENHANDS_PREFIX + default
+    return to_openhands_model(get_default_litellm_model())
 
 
 class LiteLLMProxyModelService(DefaultLLMModelService):
@@ -215,14 +214,46 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         # is not. Require the openhands/ prefix so a catalogue model whose bare
         # name collides with a proxy one (openai/gpt-5 vs proxy gpt-5) isn't
         # falsely verified.
-        return model_name.startswith(_OPENHANDS_PREFIX) and name in set(
-            models_response.verified_models
+        if model_name.startswith(_OPENHANDS_PREFIX):
+            return name in set(models_response.verified_models)
+        # Without a managed proxy the catalogue's providers are the verified
+        # ones, so their SDK-verified models are too.
+        provider = model_name.split('/', 1)[0]
+        return (
+            provider in models_response.verified_providers
+            and super()._is_model_verified(model_name, name, models_response)
         )
+
+    async def _litellm_enabled(self) -> bool:
+        """Whether this deployment may contact the LiteLLM gateway.
+
+        Lazy import to avoid a hard dependency on the enterprise ``storage``
+        package from this module's import path.
+        """
+        try:
+            from storage.lite_llm_manager import is_litellm_enabled
+        except ImportError:
+            return True
+        return await is_litellm_enabled()
 
     async def _get_models_response(
         self,
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
+        if not await self._litellm_enabled():
+            # LiteLLM disabled deployment-wide: the OpenHands/managed models
+            # (served through the bundled proxy) are hidden entirely rather
+            # than fetched -- only direct provider configurations (BYOK) are
+            # offered, with the SDK's verified providers marked verified. Never
+            # touches the network.
+            direct_only = self._build_response([]).model_copy(
+                update={
+                    'default_model': get_default_llm_model(),
+                    'verified_providers': VERIFIED_PROVIDERS,
+                }
+            )
+            return await self._union_with_catalogue(direct_only)
+
         cls = LiteLLMProxyModelService
         response = cls._shared_response
         if (

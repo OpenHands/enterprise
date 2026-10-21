@@ -1,9 +1,10 @@
-import { within, screen, render } from "@testing-library/react";
+import { within, screen, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
@@ -12,10 +13,16 @@ vi.mock("react-router", () => ({
 }));
 
 const renderInviteOrganizationMemberModal = (config?: {
-  onClose: () => void;
+  onClose?: () => void;
+  organizations?: { id: string; name: string }[];
+  defaultOrgId?: string;
 }) =>
   render(
-    <InviteOrganizationMemberModal onClose={config?.onClose || vi.fn()} />,
+    <InviteOrganizationMemberModal
+      onClose={config?.onClose || vi.fn()}
+      organizations={config?.organizations}
+      defaultOrgId={config?.defaultOrgId}
+    />,
     {
       wrapper: ({ children }) => (
         <QueryClientProvider client={new QueryClient()}>
@@ -82,6 +89,24 @@ describe("InviteOrganizationMemberModal", () => {
     });
 
     expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("should tell the setup guide when the invitation succeeds", async () => {
+    const steps: string[] = [];
+    const onStep = (event: Event) =>
+      steps.push((event as CustomEvent<{ id: string }>).detail.id);
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+    renderInviteOrganizationMemberModal();
+    const modal = screen.getByTestId("invite-modal");
+
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "someone@acme.org ",
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    await waitFor(() => expect(steps).toEqual(["invite-users"]));
+    window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
   });
 
   it("should invite with the admin role when selected in the role dropdown", async () => {
@@ -283,6 +308,66 @@ describe("InviteOrganizationMemberModal", () => {
       orgId: "1",
       emails: ["someone@acme.org"],
       role: "member",
+    });
+  });
+
+  it("should invite into the organization picked in the dashboard instead of the selected one", async () => {
+    // Arrange
+    const inviteMembersSpy = vi.spyOn(organizationService, "inviteMembers");
+    renderInviteOrganizationMemberModal({
+      organizations: [
+        { id: "2", name: "Acme Corp" },
+        { id: "3", name: "Beta LLC" },
+      ],
+      defaultOrgId: "2",
+    });
+    const modal = screen.getByTestId("invite-modal");
+
+    // Act
+    const orgDropdown = within(modal).getByTestId("invite-org-dropdown");
+    await userEvent.click(within(orgDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Beta LLC" }),
+    );
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "someone@beta.llc ",
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembersSpy).toHaveBeenCalledExactlyOnceWith({
+      orgId: "3",
+      emails: ["someone@beta.llc"],
+      role: "member",
+    });
+  });
+
+  it("should let the dashboard invite an owner", async () => {
+    // Arrange
+    const inviteMembersSpy = vi.spyOn(organizationService, "inviteMembers");
+    renderInviteOrganizationMemberModal({
+      organizations: [{ id: "2", name: "Acme Corp" }],
+    });
+    const modal = screen.getByTestId("invite-modal");
+
+    // Act
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "owner@acme.org ",
+    );
+    const roleDropdown = within(modal).getByTestId("invite-role-dropdown");
+    await userEvent.click(within(roleDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "ORG$ROLE_OWNER" }),
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembersSpy).toHaveBeenCalledExactlyOnceWith({
+      orgId: "2",
+      emails: ["owner@acme.org"],
+      role: "owner",
     });
   });
 });

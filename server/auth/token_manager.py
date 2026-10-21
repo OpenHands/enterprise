@@ -272,7 +272,8 @@ class TokenManager:
             refresh_expires_in = int(
                 data.get('refresh_token_expires_in', data.get('refresh_expires_in', 0))
             )
-            access_token_expires_at = (
+            # Broker responses may contain the original, already-aged expires_in.
+            access_token_expires_at = int(data.get('accessTokenExpiration', 0)) or (
                 0 if expires_in == 0 else current_time + expires_in
             )
             refresh_token_expires_at = (
@@ -975,7 +976,18 @@ class TokenManager:
 
     async def get_user_info_from_user_id(self, user_id: str) -> dict | None:
         keycloak_admin = get_keycloak_admin(self.external)
-        user = await keycloak_admin.a_get_user(user_id)
+        try:
+            user = await keycloak_admin.a_get_user(user_id)
+        except KeycloakError as exc:
+            # User not found in Keycloak (e.g. dev IDP users whose id is a
+            # uuid5 hash, not a Keycloak sub) or Keycloak is unreachable.
+            # The caller (LiteLlmManager.create_entries) already handles
+            # ``None`` by falling back to ``{}``.
+            logger.warning(
+                'token_manager:get_user_info:keycloak_error',
+                extra={'user_id': user_id, 'error': str(exc)},
+            )
+            return None
         if not user:
             logger.error(f'User with ID {user_id} not found.')
             return None
@@ -990,26 +1002,6 @@ class TokenManager:
             return None
         github_id = github_ids[0]
         return github_id
-
-    async def enable_keycloak_user(
-        self, user_id: str, email: str | None = None
-    ) -> None:
-        """Enable a Keycloak account while preserving its user attributes."""
-        keycloak_admin = get_keycloak_admin(self.external)
-        user = await keycloak_admin.a_get_user(user_id)
-        if user is None:
-            logger.warning('Keycloak user not found while enabling: %s', user_id)
-            return
-        await keycloak_admin.a_update_user(
-            user_id=user_id,
-            payload={
-                'enabled': True,
-                'username': user.get('username', ''),
-                'email': user.get('email', ''),
-                'emailVerified': user.get('emailVerified', False),
-            },
-        )
-        logger.info('Enabled Keycloak account for user_id: %s', user_id)
 
     async def disable_keycloak_user(
         self, user_id: str, email: str | None = None

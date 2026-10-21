@@ -7,7 +7,6 @@ from types import MappingProxyType
 from typing import cast
 from urllib.parse import quote
 
-import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -23,6 +22,7 @@ from openhands.app_server.integrations.bitbucket.bitbucket_service import (
     BitBucketServiceImpl,
 )
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
+    BitbucketDCService,
     BitbucketDCServiceImpl,
 )
 from openhands.app_server.integrations.forgejo.forgejo_service import ForgejoServiceImpl
@@ -31,7 +31,7 @@ from openhands.app_server.integrations.gitlab.constants import GITLAB_HOST
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
-    Branch,
+    BranchSearchPage,
     GitService,
     InstallationsService,
     PaginatedBranchesResponse,
@@ -39,11 +39,9 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
     Repository,
     SuggestedTask,
-    TokenResponse,
     User,
 )
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 
@@ -92,7 +90,7 @@ class CustomSecret(BaseModel):
             return secret_value
         elif isinstance(secret_value, dict):
             secret = secret_value.get('secret', '')
-            description = secret_value.get('description', '')
+            description = secret_value.get('description') or ''
             return cls(secret=SecretStr(secret), description=description)
 
         else:
@@ -119,8 +117,6 @@ class ProviderHandler:
         external_auth_id: str | None = None,
         external_auth_token: SecretStr | None = None,
         external_token_manager: bool = False,
-        session_api_key: str | None = None,
-        sid: str | None = None,
     ):
         if not isinstance(provider_tokens, MappingProxyType):
             raise TypeError(
@@ -139,13 +135,7 @@ class ProviderHandler:
         self.external_auth_id = external_auth_id
         self.external_auth_token = external_auth_token
         self.external_token_manager = external_token_manager
-        self.session_api_key = session_api_key
-        self.sid = sid
         self._provider_tokens = provider_tokens
-        WEB_HOST = os.getenv('WEB_HOST', '').strip()
-        self.REFRESH_TOKEN_URL = (
-            f'https://{WEB_HOST}/api/refresh-tokens' if WEB_HOST else None
-        )
 
     @property
     def provider_tokens(self) -> PROVIDER_TOKEN_TYPE:
@@ -191,38 +181,6 @@ class ProviderHandler:
                 raise exc
 
         raise AuthenticationError('Need valid provider token')
-
-    async def _get_latest_provider_token(
-        self, provider: ProviderType
-    ) -> SecretStr | None:
-        """Get latest token from service"""
-        if not self.REFRESH_TOKEN_URL:
-            logger.warning('Refresh token URL not set')
-            return None
-        try:
-            async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
-                headers = (
-                    {'X-Session-API-Key': self.session_api_key}
-                    if self.session_api_key
-                    else {}
-                )
-                resp = await client.get(
-                    self.REFRESH_TOKEN_URL,
-                    headers=headers,
-                    params={'provider': provider.value, 'sid': self.sid},
-                )
-
-            resp.raise_for_status()
-            data = TokenResponse.model_validate_json(resp.text)
-            return SecretStr(data.token)
-
-        except Exception:
-            logger.exception(
-                f'Failed to fetch latest token for provider {provider}',
-                stack_info=True,
-            )
-
-        return None
 
     async def get_github_installations(self) -> list[str]:
         service = cast(InstallationsService, self.get_service(ProviderType.GITHUB))
@@ -339,26 +297,29 @@ class ProviderHandler:
         repository: str,
         query: str,
         per_page: int = 30,
-    ) -> list[Branch]:
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search for branches within a repository using the appropriate provider service."""
         if selected_provider:
             service = self.get_service(selected_provider)
             try:
-                return await service.search_branches(repository, query, per_page)
+                return await service.search_branches(
+                    repository, query, per_page, page_id
+                )
             except Exception as e:
                 logger.warning(
                     f'Error searching branches from selected provider {selected_provider}: {e}'
                 )
-                return []
+                return BranchSearchPage(branches=[])
 
         # If provider not specified, determine provider by verifying repository access
         try:
             repo_details = await self.verify_repo_provider(repository)
             service = self.get_service(repo_details.git_provider)
-            return await service.search_branches(repository, query, per_page)
+            return await service.search_branches(repository, query, per_page, page_id)
         except Exception as e:
             logger.warning(f'Error searching branches for {repository}: {e}')
-            return []
+            return BranchSearchPage(branches=[])
 
     async def search_repositories(
         self,
@@ -607,22 +568,17 @@ class ProviderHandler:
                         # Access token format: use x-token-auth
                         remote_url = f'{protocol}://x-token-auth:{quote(token_value, safe="")}@{domain}/{repo_name}.git'
                 elif provider == ProviderType.BITBUCKET_DATA_CENTER:
-                    # DC uses HTTP Basic auth — token must be in username:token format
                     project, repo_slug = (
                         repo_name.split('/', 1)
                         if '/' in repo_name
                         else (repo_name, repo_name)
                     )
                     scm_path = f'scm/{project.lower()}/{repo_slug}.git'
+                    service = cast(BitbucketDCService, self.get_service(provider))
+                    dc_user, dc_pass = await service.get_git_credentials()
                     # Percent-encode each credential part so special characters
                     # (e.g. @, #, /) don't break the URL.
-                    if ':' in token_value:
-                        dc_user, dc_pass = token_value.split(':', 1)
-                        url_creds = (
-                            f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
-                        )
-                    else:
-                        url_creds = f'x-token-auth:{quote(token_value, safe="")}'
+                    url_creds = f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
                     remote_url = f'{protocol}://{url_creds}@{domain}/{scm_path}'
                 elif provider == ProviderType.AZURE_DEVOPS:
                     # Entra OAuth tokens work with Azure Repos through a Bearer

@@ -172,6 +172,24 @@ def test_override_and_disabled_member_desired_caps():
     assert entry['blocking'] is False
 
 
+def test_preflight_desired_member_cap_is_clamped_like_the_sync():
+    # The preflight mirrors the sync's cap formula read-only; if it keeps the
+    # unclamped one, the post-upgrade gate reports cap_drift as BLOCKING against
+    # the very caps the sync just wrote, and the upgrade fails in strict mode.
+    user_id = str(uuid4())
+    settings = _settings(user_cycle_start_spend={user_id: 8.0})
+    overrides = [
+        OrgUserBudgetOverride(user_id=user_id, monthly_limit=-100.0, is_disabled=False)
+    ]
+    snapshot = _snapshot(members={user_id: (8.0, 8.0, False)})
+
+    entry = _evaluate(settings, {user_id}, snapshot, overrides=overrides)
+
+    assert entry['desired']['members'] == {user_id: 8.0}
+    assert entry['cap_drift'] == []
+    assert entry['blocking'] is False
+
+
 def test_membership_findings_and_raw_caps_are_recorded():
     in_both = str(uuid4())
     only_in_org = str(uuid4())

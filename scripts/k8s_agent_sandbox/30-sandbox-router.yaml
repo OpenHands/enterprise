@@ -1,0 +1,67 @@
+# agent-sandbox's router, in path mode: /sandbox-router/<namespace>/<sandbox>/<port>/...
+# goes to <sandbox>.<namespace>.svc.cluster.local:<port>/... . A browser cannot
+# set the router's X-Sandbox-* headers on a WebSocket, so the app hands out
+# these paths instead (AGENT_SANDBOX_ROUTER_URL). The template's network policy
+# admits pods labeled app=sandbox-router in this namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-router
+  namespace: agent-sandbox-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-router
+  namespace: agent-sandbox-system
+  labels:
+    app: sandbox-router
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sandbox-router
+  template:
+    metadata:
+      labels:
+        app: sandbox-router
+    spec:
+      serviceAccountName: sandbox-router
+      automountServiceAccountToken: false
+      containers:
+        - name: sandbox-router
+          image: registry.k8s.io/agent-sandbox/sandbox-router-go:v1.0.3
+          args:
+            - --http-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:9090
+            # Must match the path in AGENT_SANDBOX_ROUTER_URL and in the
+            # template's OH_VSCODE_BASE_PATH.
+            - --path-routing-prefix=/sandbox-router
+            # DNS routing through each sandbox's Service. The pod cache would
+            # need cluster-wide read on pods.
+            - --cache-enabled=false
+          ports:
+            - name: proxy
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-router
+  namespace: agent-sandbox-system
+spec:
+  selector:
+    app: sandbox-router
+  ports:
+    - name: proxy
+      port: 8080
+      targetPort: 8080

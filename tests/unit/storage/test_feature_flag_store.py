@@ -1,4 +1,4 @@
-"""Unit tests for FeatureFlagStore using SQLite in-memory database."""
+"""Unit tests for FeatureFlagStore."""
 
 from unittest.mock import patch
 

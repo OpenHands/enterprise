@@ -1,11 +1,13 @@
 """Unit tests for the LiteLLM-proxy-backed model discovery service."""
 
+import importlib
 import logging
 
 import httpx
 import pytest
 
 from openhands.app_server.utils.llm import ModelsResponse
+from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 from server.verified_models import litellm_proxy_model_router as router_module
 from server.verified_models.litellm_proxy_model_router import (
     LiteLLMProxyModelService,
@@ -513,6 +515,94 @@ class TestByokUnion:
             'gemini/gemini-2.0-flash',
         ]
         assert response.verified_models == []
+
+
+def _lite_llm_manager():
+    # sys.modules, not the package attribute: other tests re-import this module.
+    return importlib.import_module('storage.lite_llm_manager')
+
+
+@pytest.fixture
+def litellm_off(monkeypatch):
+    monkeypatch.setattr(_lite_llm_manager(), 'ENABLE_LEGACY_LITELLM', False)
+
+
+class TestLiteLLMDisabled:
+    async def test_never_contacts_proxy(self, monkeypatch, litellm_off):
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models == []
+        assert response.verified_models == []
+
+    async def test_byok_on_serves_only_catalogue(self, monkeypatch, litellm_off):
+        byok_on(monkeypatch)
+        calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert calls == []
+        assert response.models
+        assert not any(m.startswith('openhands/') for m in response.models)
+
+    async def test_warm_cache_is_not_served(self, monkeypatch):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+        warm = await LiteLLMProxyModelService()._get_models_response()
+        assert warm.models
+
+        monkeypatch.setattr(_lite_llm_manager(), 'ENABLE_LEGACY_LITELLM', False)
+        response = await LiteLLMProxyModelService()._get_models_response()
+
+        assert response.models == []
+
+    async def test_search_llm_models_has_no_managed_models(
+        self, monkeypatch, litellm_off
+    ):
+        install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
+
+        page = await LiteLLMProxyModelService().search_llm_models(limit=100)
+
+        assert page.items == []
+
+    async def test_byok_on_marks_sdk_verified_providers_verified(
+        self, monkeypatch, litellm_off
+    ):
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={'models': [*STUB_CATALOGUE.models, 'cohere/command-r']}
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_providers(limit=100)
+
+        assert [(p.name, p.verified) for p in page.items] == [
+            ('anthropic', True),
+            ('gemini', True),
+            ('openai', True),
+            ('cohere', False),
+        ]
+
+    async def test_byok_on_marks_sdk_verified_models_verified(
+        self, monkeypatch, litellm_off
+    ):
+        sdk_verified = VERIFIED_MODELS['anthropic'][0]
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={
+                'models': [
+                    f'anthropic/{sdk_verified}',
+                    'anthropic/not-a-verified-model',
+                ]
+            }
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_llm_models(limit=100)
+
+        assert [(m.name, m.verified) for m in page.items] == [
+            (sdk_verified, True),
+            ('not-a-verified-model', False),
+        ]
 
 
 class TestInjector:

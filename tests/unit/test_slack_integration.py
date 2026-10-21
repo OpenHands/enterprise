@@ -1276,3 +1276,81 @@ class TestHandleSlackError:
             # Verify message is not empty
             assert message
             assert isinstance(message, str)
+
+
+class TestSlackStatusEndpoint:
+    """Test the /status endpoint the settings page reads the Slack link from."""
+
+    @pytest.fixture(autouse=True)
+    def use_test_database(self, async_session_maker):
+        """Point the endpoint at this test's database."""
+        with patch(
+            'server.routes.integration.slack.a_session_maker', async_session_maker
+        ):
+            yield
+
+    @pytest.fixture
+    def link_slack_account(self, async_session_maker):
+        """Factory that stores a Slack link for an OpenHands user."""
+
+        async def _link(keycloak_user_id: str, slack_user_id: str) -> None:
+            async with async_session_maker() as session:
+                session.add(
+                    SlackUser(
+                        keycloak_user_id=keycloak_user_id,
+                        slack_user_id=slack_user_id,
+                        slack_display_name='Test User',
+                    )
+                )
+                await session.commit()
+
+        return _link
+
+    @pytest.mark.asyncio
+    async def test_status_is_connected_when_user_has_linked_slack(
+        self, link_slack_account
+    ):
+        """Test that a user who completed the install flow is connected."""
+        from server.routes.integration.slack import get_slack_status
+
+        # Arrange
+        await link_slack_account('user-1', 'U1')
+
+        # Act
+        response = await get_slack_status(user_id='user-1')
+
+        # Assert
+        assert response.connected is True
+
+    @pytest.mark.asyncio
+    async def test_status_is_not_connected_when_only_another_user_linked_slack(
+        self, link_slack_account
+    ):
+        """Test that another user's link is not reported as the caller's."""
+        from server.routes.integration.slack import get_slack_status
+
+        # Arrange
+        await link_slack_account('user-2', 'U2')
+
+        # Act
+        response = await get_slack_status(user_id='user-1')
+
+        # Assert
+        assert response.connected is False
+
+    @pytest.mark.asyncio
+    async def test_status_is_connected_when_user_linked_several_workspaces(
+        self, link_slack_account
+    ):
+        """Test that linking from more than one Slack workspace still reports connected."""
+        from server.routes.integration.slack import get_slack_status
+
+        # Arrange
+        await link_slack_account('user-1', 'U1')
+        await link_slack_account('user-1', 'U2')
+
+        # Act
+        response = await get_slack_status(user_id='user-1')
+
+        # Assert
+        assert response.connected is True

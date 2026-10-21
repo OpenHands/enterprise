@@ -30,6 +30,34 @@ from storage.api_key_store import ApiKeyValidationResult
 from storage.user_authorization import UserAuthorizationType
 
 
+@pytest.fixture(autouse=True)
+def _org_usable_for_product():
+    """No-op the org lifecycle gate run by ``get_effective_org_id``.
+
+    The gate itself needs the database and is covered by
+    ``tests/unit/server/auth/test_saas_user_auth_effective_org.py``.
+    """
+    with patch(
+        'server.auth.org_access.assert_org_usable_for_product',
+        AsyncMock(return_value=None),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _user_not_disabled():
+    """Report every user as enabled to the check run by ``get_instance``.
+
+    The lookup itself needs the database and is covered by
+    ``tests/unit/test_user_store.py``.
+    """
+    with patch(
+        'storage.user_store.UserStore.is_user_disabled',
+        AsyncMock(return_value=False),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_request():
     request = MagicMock(spec=Request)
@@ -701,6 +729,60 @@ async def test_get_instance_no_auth(mock_request):
 
 
 @pytest.mark.asyncio
+async def test_get_instance_rejects_a_disabled_user(mock_request):
+    """A disabled user's API key or session no longer authenticates."""
+    # Arrange
+    mock_auth = MagicMock()
+    mock_auth.user_id = 'disabled_user_id'
+
+    with (
+        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', True),
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=True),
+        ) as is_user_disabled,
+    ):
+        # Act / Assert
+        with pytest.raises(AuthError, match='disabled'):
+            await SaasUserAuth.get_instance(mock_request)
+
+    is_user_disabled.assert_awaited_once_with('disabled_user_id')
+
+
+@pytest.mark.asyncio
+async def test_get_instance_skips_the_disabled_check_while_super_admin_is_off(
+    mock_request,
+):
+    """Only the Super Admin directory disables users, so with it off no
+    request pays for the lookup."""
+    # Arrange
+    mock_auth = MagicMock()
+    mock_auth.user_id = 'user_id'
+
+    with (
+        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', False),
+        patch(
+            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
+            return_value=mock_auth,
+        ),
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=True),
+        ) as is_user_disabled,
+    ):
+        # Act
+        instance = await SaasUserAuth.get_instance(mock_request)
+
+    # Assert
+    assert instance is mock_auth
+    is_user_disabled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_saas_user_auth_from_bearer_success():
     """A valid API key authenticates with no Keycloak round-trip.
 
@@ -746,53 +828,6 @@ async def test_saas_user_auth_from_bearer_success():
         # Decoupled from Keycloak: no offline-session load, no refresh.
         mock_token_manager.load_offline_token.assert_not_called()
         mock_token_manager.refresh.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_rejects_disabled_user():
-    """A valid API key cannot authenticate a locally disabled user."""
-    user_id = str(uuid.uuid4())
-    request = MagicMock()
-    request.headers = {'Authorization': 'Bearer disabled_key'}
-    validation = ApiKeyValidationResult(
-        user_id=user_id, org_id=uuid.uuid4(), key_id=7, key_name='key'
-    )
-    disabled_user = MagicMock(is_disabled=True)
-
-    with (
-        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
-        patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
-            AsyncMock(return_value=disabled_user),
-        ),
-    ):
-        store = MagicMock()
-        store.validate_api_key = AsyncMock(return_value=validation)
-        store_cls.get_instance.return_value = store
-        assert await saas_user_auth_from_bearer(request) is None
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_rejects_deleted_user():
-    """A valid API key whose user has been deleted must not authenticate."""
-    user_id = str(uuid.uuid4())
-    request = MagicMock()
-    request.headers = {'Authorization': 'Bearer deleted_key'}
-    validation = ApiKeyValidationResult(
-        user_id=user_id, org_id=uuid.uuid4(), key_id=8, key_name='key'
-    )
-
-    with (
-        patch('server.auth.saas_user_auth.ApiKeyStore') as store_cls,
-        patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
-            AsyncMock(return_value=None),
-        ),
-    ):
-        store = MagicMock()
-        store.validate_api_key = AsyncMock(return_value=validation)
-        store_cls.get_instance.return_value = store
-        assert await saas_user_auth_from_bearer(request) is None
 
 
 @pytest.mark.asyncio
@@ -1243,55 +1278,6 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
         mock_api_key_store.validate_api_key.assert_called_once_with(
             'invalid_cookie_key'
         )
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_rejects_disabled_user(mock_config):
-    user_id = str(uuid.uuid4())
-    access_payload = {
-        'sub': user_id,
-        'exp': int(time.time()) + 3600,
-        'email': 'user@example.com',
-        'email_verified': True,
-    }
-    access_token = jwt.encode(access_payload, 'access_secret', algorithm='HS256')
-    signed_token = jwt.encode(
-        {'access_token': access_token, 'refresh_token': 'test_refresh_token'},
-        'test_secret',
-        algorithm='HS256',
-    )
-
-    with patch(
-        'server.auth.saas_user_auth.UserStore.get_user_by_id',
-        AsyncMock(return_value=MagicMock(is_disabled=True)),
-    ):
-        with pytest.raises(AuthError, match='user account is disabled'):
-            await saas_user_auth_from_signed_token(signed_token)
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_rejects_deleted_user(mock_config):
-    """A signed token whose user has been deleted must not authenticate."""
-    user_id = str(uuid.uuid4())
-    access_payload = {
-        'sub': user_id,
-        'exp': int(time.time()) + 3600,
-        'email': 'user@example.com',
-        'email_verified': True,
-    }
-    access_token = jwt.encode(access_payload, 'access_secret', algorithm='HS256')
-    signed_token = jwt.encode(
-        {'access_token': access_token, 'refresh_token': 'test_refresh_token'},
-        'test_secret',
-        algorithm='HS256',
-    )
-
-    with patch(
-        'server.auth.saas_user_auth.UserStore.get_user_by_id',
-        AsyncMock(return_value=None),
-    ):
-        with pytest.raises(AuthError, match='user account not found'):
-            await saas_user_auth_from_signed_token(signed_token)
 
 
 @pytest.mark.asyncio

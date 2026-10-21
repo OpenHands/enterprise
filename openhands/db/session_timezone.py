@@ -1,4 +1,4 @@
-"""Pin PostgreSQL sessions to UTC, shared by app and migration database setup.
+"""Pin PostgreSQL sessions to UTC, shared by app, worker and migration setup.
 
 Several tables keep ``timestamp without time zone`` columns that the models bind
 with timezone-aware UTC values. PostgreSQL converts such a value to the session
@@ -21,5 +21,5 @@ def build_pg8000_timezone_args() -> dict[str, dict[str, str]]:
 
 
 def build_libpq_timezone_args() -> dict[str, str]:
-    """For psycopg2, which takes libpq ``options`` instead of a parameter map."""
+    """For psycopg and psycopg2, which take libpq ``options`` instead of a map."""
     return {'options': f'-c timezone={DB_SESSION_TIMEZONE}'}

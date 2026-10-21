@@ -28,6 +28,7 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import { GitSettingInputsSkeleton } from "#/components/features/settings/git-settings/github-settings-inputs-skeleton";
 import { useAddGitProviders } from "#/hooks/mutation/use-add-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
+import { useSlackStatus } from "#/hooks/query/use-slack-status";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
 import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
@@ -259,6 +260,12 @@ function GitSettingsScreen() {
   const shouldRenderAzureDevOpsSection =
     isSaas && Boolean(config?.providers_configured?.includes("azure_devops"));
   const shouldRenderSlackSection = isSaas && Boolean(config?.slack_enabled);
+  const { data: slackStatus } = useSlackStatus(shouldRenderSlackSection);
+  // A server without the status route answers with the app's HTML page.
+  const isSlackConnected =
+    typeof slackStatus?.connected === "boolean"
+      ? slackStatus.connected
+      : undefined;
   const shouldRenderProjectManagementIntegrations =
     config?.feature_flags?.enable_jira ||
     config?.feature_flags?.enable_jira_dc ||
@@ -409,6 +416,16 @@ function GitSettingsScreen() {
                   <IntegrationProviderCard
                     provider="slack"
                     title={t(I18nKey.SETTINGS$SLACK)}
+                    isConnected={isSlackConnected}
+                    statusTestId="slack-status-text"
+                    statusLabel={
+                      isSlackConnected !== undefined
+                        ? connectedStatusLabel(
+                            isSlackConnected,
+                            I18nKey.STATUS$NOT_CONNECTED,
+                          )
+                        : undefined
+                    }
                     action={<InstallSlackAppAnchor />}
                   />
                 )}

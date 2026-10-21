@@ -12,6 +12,30 @@ import {
   formControlSettingsFieldClassName,
 } from "#/utils/form-control-classes";
 import { ToggleSwitch } from "#/ui/toggle-switch";
+import { MarketplaceCheckResponse } from "#/api/skills-service";
+import { useCheckMarketplace } from "#/hooks/mutation/use-check-marketplace";
+
+// The save step previews the marketplace and refuses sources the server
+// cannot fetch, so only a check that could not run falls through to it.
+const checkAllowsSave = (result: MarketplaceCheckResponse) =>
+  result.status === "ok" || result.reason === "failed";
+
+// Conversations load only the skills of a plugin without a marketplace file,
+// so it is saved on a second click, after the user has seen why.
+const isPluginWithoutMarketplace = (result?: MarketplaceCheckResponse) =>
+  result?.status === "ok" && result.layout === "plugin";
+
+const HOST_WITHOUT_SCHEME =
+  /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?\/[^/]/i;
+
+/**
+ * A host followed by a path (e.g. "github.com/owner/repo") is a repository
+ * address without its scheme; it is saved as https, as the backend does.
+ */
+export function normalizeMarketplaceSource(source: string): string {
+  const trimmed = source.trim();
+  return HOST_WITHOUT_SCHEME.test(trimmed) ? `https://${trimmed}` : trimmed;
+}
 
 /**
  * Best-effort marketplace name from a repository source, mirroring the backend
@@ -75,6 +99,17 @@ export function MarketplaceModal({
   const [nameError, setNameError] = React.useState<string | null>(null);
   const [sourceError, setSourceError] = React.useState<string | null>(null);
   const [repoPathError, setRepoPathError] = React.useState<string | null>(null);
+  const {
+    mutate: checkMarketplace,
+    data: checkResult,
+    isPending: isChecking,
+    // Also drops an in-flight check, so its callbacks never run.
+    reset: resetCheck,
+  } = useCheckMarketplace();
+  // Why the last check did not pass, shown until the inputs change.
+  const failedCheck =
+    checkResult && !checkAllowsSave(checkResult) ? checkResult : null;
+  const pluginWithoutMarketplace = isPluginWithoutMarketplace(checkResult);
 
   // Reset form when modal opens/closes or marketplace changes
   React.useEffect(() => {
@@ -92,7 +127,8 @@ export function MarketplaceModal({
       setSourceError(null);
       setRepoPathError(null);
     }
-  }, [isOpen, marketplace]);
+    resetCheck();
+  }, [isOpen, marketplace, resetCheck]);
 
   // Scope selection only applies when adding and the caller allows it.
   const showScopeSelector = mode === "add" && allowScopeSelection;
@@ -129,15 +165,82 @@ export function MarketplaceModal({
     setNameError(null);
     setRepoPathError(null);
 
-    onSave({
+    const data = {
       name: name.trim(),
-      source: source.trim(),
+      source: normalizeMarketplaceSource(source),
       ref: ref.trim() || undefined,
       repo_path: trimmedRepoPath || undefined,
       auto_load: autoLoad,
       scope: showScopeSelector ? scope : undefined,
-    });
+    };
+    if (pluginWithoutMarketplace) {
+      onSave(data);
+      return;
+    }
+    // Check that the marketplace will load in conversations before saving.
+    checkMarketplace(
+      {
+        name: data.name,
+        source: data.source,
+        ref: data.ref,
+        repo_path: data.repo_path,
+        auto_load: data.auto_load,
+      },
+      {
+        onSuccess: (result) => {
+          if (checkAllowsSave(result) && !isPluginWithoutMarketplace(result)) {
+            onSave(data);
+          }
+        },
+        onError: () => onSave(data),
+      },
+    );
   };
+
+  const checkMessage = (result: MarketplaceCheckResponse) => {
+    switch (result.reason) {
+      case "not_found":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_NOT_FOUND);
+      case "ref_not_found":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_REF_NOT_FOUND, {
+          ref: ref.trim(),
+        });
+      case "path_not_found":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_PATH_NOT_FOUND, {
+          path: repoPath.trim(),
+        });
+      case "empty":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_EMPTY);
+      case "unsupported":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNSUPPORTED);
+      case "sandbox_folder":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER);
+      case "unknown_host":
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST);
+      default:
+        return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_FAILED);
+    }
+  };
+
+  // What the last check found, shown until the inputs change.
+  let checkNote: string | null = null;
+  let checkNoteClassName = "text-tertiary-alt";
+  if (failedCheck) {
+    checkNote = checkMessage(failedCheck);
+    if (failedCheck.status === "error") checkNoteClassName = "text-red-400";
+  } else if (pluginWithoutMarketplace) {
+    checkNote = t(I18nKey.SETTINGS$MARKETPLACE_CHECK_PLUGIN_SKILLS_ONLY);
+    checkNoteClassName = "text-yellow-400";
+  } else if (checkResult?.status === "ok" && checkResult.layout === "skills") {
+    checkNote = t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SKILLS_ONLY);
+  }
+
+  let saveLabel: React.ReactNode = t(I18nKey.BUTTON$SAVE);
+  if (isChecking) saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_CHECKING);
+  else if (isSaving) saveLabel = <span>...</span>;
+  else if (pluginWithoutMarketplace) {
+    saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_SAVE_ANYWAY);
+  }
 
   if (!isOpen) return null;
 
@@ -158,9 +261,9 @@ export function MarketplaceModal({
         type="button"
         variant="primary"
         onClick={handleSave}
-        isDisabled={isSaving}
+        isDisabled={isSaving || isChecking}
       >
-        {isSaving ? <span>...</span> : t(I18nKey.BUTTON$SAVE)}
+        {saveLabel}
       </BrandButton>
     </div>
   );
@@ -189,6 +292,7 @@ export function MarketplaceModal({
             onChange={(e) => {
               const nextSource = e.target.value;
               setSource(nextSource);
+              resetCheck();
               setSourceError(null);
               // Pre-fill Name from the repository until the user edits Name.
               if (!isEdit && !nameEdited) {
@@ -210,6 +314,15 @@ export function MarketplaceModal({
               {sourceError}
             </Typography.Paragraph>
           )}
+          {!sourceError &&
+            !isEdit &&
+            normalizeMarketplaceSource(source) !== source.trim() && (
+              <Typography.Paragraph className="text-xs text-tertiary-alt">
+                {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_SAVED_AS, {
+                  url: normalizeMarketplaceSource(source),
+                })}
+              </Typography.Paragraph>
+            )}
           {!sourceError && isEdit && (
             <Typography.Paragraph className="text-xs text-tertiary-alt">
               {t(I18nKey.SETTINGS$MARKETPLACE_SOURCE_READONLY)}
@@ -276,7 +389,10 @@ export function MarketplaceModal({
           <input
             type="text"
             value={ref}
-            onChange={(e) => setRef(e.target.value)}
+            onChange={(e) => {
+              setRef(e.target.value);
+              resetCheck();
+            }}
             placeholder="e.g., main, develop, v1.0.0"
             className={formControlSettingsFieldClassName}
           />
@@ -296,6 +412,7 @@ export function MarketplaceModal({
             onChange={(e) => {
               setRepoPath(e.target.value);
               setRepoPathError(null);
+              resetCheck();
             }}
             placeholder="e.g., marketplaces/internal"
             className={cn(
@@ -324,6 +441,15 @@ export function MarketplaceModal({
             onToggle={() => setAutoLoad(!autoLoad)}
           />
         </div>
+
+        {checkNote && (
+          <Typography.Paragraph
+            testId="marketplace-check-message"
+            className={cn("text-xs", checkNoteClassName)}
+          >
+            {checkNote}
+          </Typography.Paragraph>
+        )}
 
         {footer}
       </div>

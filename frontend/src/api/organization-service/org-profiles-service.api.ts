@@ -5,6 +5,8 @@ export interface OrgLlmProfileSummary {
   model: string | null;
   base_url: string | null;
   api_key_set: boolean;
+  /** Shared provider connection id this profile is linked to, if any. */
+  provider_connection_id?: string | null;
 }
 
 interface OrgLlmProfileListResponse {

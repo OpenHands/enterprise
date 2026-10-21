@@ -3,6 +3,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from server.services.smtp_email_service import (
     DEFAULT_WEB_HOST,
     SMTPEmailService,
@@ -218,3 +220,14 @@ class TestSMTPEmailServiceHelpers:
         url = SMTPEmailService.build_invitation_url('inv-token123')
 
         assert url.startswith('https://app.example.com/api/')
+
+
+@pytest.mark.parametrize('delivered', [True, False])
+def test_budget_alert_reports_smtp_delivery_result(delivered):
+    with patch.object(SMTPEmailService, '_send_smtp_email', return_value=delivered):
+        assert (
+            SMTPEmailService.send_budget_alert_email(
+                ['admin@example.invalid'], 'Budget alert test', 85, 85, 100, 80
+            )
+            is delivered
+        )

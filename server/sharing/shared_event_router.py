@@ -1,7 +1,9 @@
 """Shared Event router for OpenHands Server.
 
-All endpoints in this router are unauthenticated — shared conversations are
-public.  To avoid returning internal system state that the viewer does not
+Authentication is optional on all endpoints in this router: anonymous callers
+can read public conversations, and authenticated org members can also read the
+automation-triggered conversations of their orgs.  To avoid returning internal
+system state that the viewer does not
 need, ``ConversationStateUpdateEvent`` instances are filtered out before the
 response is sent.  The shared-conversation frontend only renders messages,
 actions, observations, errors, and hook-execution events; state snapshots

@@ -1,7 +1,7 @@
 """Implementation of SharedEventService.
 
 This implementation provides read-only access to events from shared conversations:
-- Validates that the conversation is shared before returning events
+- Validates that the conversation is shared with the viewer before returning events
 - Uses existing EventService for actual event retrieval
 - Uses SharedConversationInfoService for shared conversation validation
 """
@@ -38,6 +38,7 @@ from server.sharing.shared_event_service import (
 )
 from server.sharing.sql_shared_conversation_info_service import (
     SQLSharedConversationInfoService,
+    resolve_viewer_user_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,11 @@ class GoogleCloudSharedEventServiceInjector(SharedEventServiceInjector):
         async with get_db_session(state, request) as db_session:
             shared_conversation_info_service = SQLSharedConversationInfoService(
                 db_session=db_session
+            )
+            # Anonymous viewers only see public conversations; org members also
+            # see their org's automation conversations.
+            shared_conversation_info_service.viewer_user_id = (
+                await resolve_viewer_user_id(state, request)
             )
 
             bucket_name = self.bucket_name
