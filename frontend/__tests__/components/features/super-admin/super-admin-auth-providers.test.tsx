@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18n from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
-import { createRoutesStub } from "react-router";
+import { createRoutesStub, useParams } from "react-router";
 import {
   afterEach,
   beforeAll,
@@ -27,6 +27,7 @@ const GITHUB_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "github",
@@ -51,6 +52,7 @@ const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "OAuthProviderDetails",
     provider_type: "enterprise_sso",
@@ -75,6 +77,7 @@ const PASSWORD_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: { kind: "PasswordProviderDetails" },
   created_at: "2024-01-02T00:00:00Z",
   updated_at: "2024-01-02T00:00:00Z",
@@ -88,6 +91,7 @@ const SAML_PROVIDER: AuthProvider = {
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allow_registration: true,
+  allow_match_by_email: true,
   details: {
     kind: "SamlProviderDetails",
     metadata_url: "https://idp.example.com/metadata",
@@ -356,6 +360,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
         details: { kind: "PasswordProviderDetails" },
       }),
     );
@@ -422,6 +427,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
       }),
     );
   });
@@ -455,8 +461,40 @@ describe("Super Admin Auth Providers page", () => {
           details: expect.objectContaining({
             kind: "OAuthProviderDetails",
             client_id: "github-client-id-2",
-            client_secret: null,
           }),
+        }),
+      ),
+    );
+    const { details } = updateAuthProvider.mock.calls[0][0];
+    expect(details).not.toHaveProperty("client_secret");
+  });
+
+  it("sends the new client secret when one is typed while editing", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    renderAuthProvidersPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(screen.getByTestId("super-admin-auth-provider-edit-1"));
+
+    const dialog = screen.getByTestId("super-admin-auth-provider-form");
+    await user.type(
+      within(dialog).getByTestId("super-admin-auth-provider-client-secret"),
+      "new-secret",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({ client_secret: "new-secret" }),
         }),
       ),
     );
@@ -664,6 +702,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
         details: {
           kind: "SamlProviderDetails",
           metadata_url: null,
@@ -987,6 +1026,7 @@ describe("Super Admin Auth Providers page", () => {
         icon: null,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
+        allow_match_by_email: true,
       }),
     );
   });
@@ -1177,5 +1217,41 @@ describe("Super Admin Auth Providers page", () => {
     ).not.toBeInTheDocument();
     expect(deleteAuthProvider).not.toHaveBeenCalled();
     expect(screen.getByText("GitHub")).toBeInTheDocument();
+  });
+
+  it("navigates to the provider's User Links page from the row menu", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const RouterStub = createRoutesStub([
+      {
+        path: "/super-admin/auth-providers",
+        Component: SuperAdminAuthProviders,
+      },
+      {
+        path: "/super-admin/auth-providers/:providerId/users",
+        Component: () => {
+          const { providerId } = useParams<{ providerId: string }>();
+          return <p data-testid="location">{providerId}</p>;
+        },
+      },
+    ]);
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <RouterStub initialEntries={["/super-admin/auth-providers"]} />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(
+      screen.getByTestId("super-admin-auth-provider-user-links-1"),
+    );
+
+    expect(await screen.findByTestId("location")).toHaveTextContent("1");
   });
 });

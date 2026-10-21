@@ -303,6 +303,41 @@ async def test_has_contribute_access_fails_closed_on_error():
 
 
 @pytest.mark.asyncio
+async def test_get_service_hook_permissions_evaluates_org_view_and_edit():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'evaluations': [{'value': True}, {'value': False}]}, {})
+    )
+
+    assert await service.get_service_hook_permissions() == (True, False)
+    kwargs = service._make_request.await_args.kwargs
+    assert kwargs['url'] == (
+        'https://dev.azure.com/alonaking/_apis/security/permissionevaluationbatch'
+        '?api-version=7.1-preview.1'
+    )
+    assert kwargs['method'] == RequestMethod.POST
+    assert kwargs['params']['alwaysAllowAdministrators'] is True
+    assert [
+        (e['securityNamespaceId'], e['token'], e['permissions'])
+        for e in kwargs['params']['evaluations']
+    ] == [
+        ('cb594ebe-87dd-4fc9-ac2c-6a10a4c92046', 'PublisherSecurity', 1),
+        ('cb594ebe-87dd-4fc9-ac2c-6a10a4c92046', 'PublisherSecurity', 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_service_hook_permissions_raises_on_incomplete_response():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'evaluations': [{'value': True}]}, {})
+    )
+
+    with pytest.raises(ValueError):
+        await service.get_service_hook_permissions()
+
+
+@pytest.mark.asyncio
 async def test_get_project_repositories_returns_value_list():
     service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
     service._make_request = AsyncMock(  # type: ignore[method-assign]

@@ -21,6 +21,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import { useUpdateSetupState } from "#/hooks/mutation/use-super-admin-mutations";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { ORG_QUERY_PARAM } from "#/utils/org/org-url-param";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
 import { cn } from "#/utils/utils";
 import {
@@ -62,9 +63,32 @@ function tourStopsFor(stepId: SuperAdminSetupStepId) {
   );
 }
 
+/**
+ * The page a setup step opens, optionally naming the tour to start there.
+ * Agent Canvas keeps its own org choice, so a step in Canvas (one with no tour
+ * stop here) names the guide's organization, as Canvas's guide does on its
+ * links into this app.
+ */
+function setupStepUrl(
+  step: SuperAdminSetupStep,
+  guideOrgId: string | null,
+  withTour = false,
+): string {
+  const params = new URLSearchParams();
+  if (withTour) {
+    params.set(SETUP_TOUR_PARAM, step.id);
+  }
+  if (guideOrgId && tourStopsFor(step.id).length === 0) {
+    params.set(ORG_QUERY_PARAM, guideOrgId);
+  }
+  const search = params.toString();
+  return search ? `${step.to}?${search}` : step.to;
+}
+
 async function runSuperAdminSetupTour(
   navigate: NavigateFunction,
   stepId: SuperAdminSetupStepId,
+  guideOrgId: string | null,
 ): Promise<void> {
   const stops = tourStopsFor(stepId);
   if (stops.length === 0) {
@@ -74,10 +98,7 @@ async function runSuperAdminSetupTour(
     if (step) {
       // /canvas/... steps need a page load: the in-app /canvas route shows an
       // error when the same URL is opened twice in a session.
-      navigateOrHardRedirect(
-        navigate,
-        `${step.to}?${SETUP_TOUR_PARAM}=${step.id}`,
-      );
+      navigateOrHardRedirect(navigate, setupStepUrl(step, guideOrgId, true));
     }
     return;
   }
@@ -268,8 +289,15 @@ export function SuperAdminSetupFloatingWidget() {
   const { pathname } = useLocation();
   const { data: me } = useMe();
   const { data: config } = useConfig();
-  const { visible, nextStep, progress, completedCount, totalCount, refetch } =
-    useSuperAdminSetup();
+  const {
+    visible,
+    nextStep,
+    progress,
+    completedCount,
+    totalCount,
+    guideOrgId,
+    refetch,
+  } = useSuperAdminSetup();
   const { mutate: updateSetupState } = useUpdateSetupState();
   const [confirmDismiss, setConfirmDismiss] = useState(false);
   const isSetupGuidePage = pathname === SUPER_ADMIN_PATHS.setup;
@@ -337,13 +365,13 @@ export function SuperAdminSetupFloatingWidget() {
       }
       const after = getNextSuperAdminSetupStep(guideSteps);
       if (after && after.id !== completedId) {
-        await runSuperAdminSetupTour(navigate, after.id);
+        await runSuperAdminSetupTour(navigate, after.id, guideOrgId);
       }
     };
     window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
     return () =>
       window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
-  }, [visible, refetch, nextStepId, navigate]);
+  }, [visible, refetch, nextStepId, navigate, guideOrgId]);
 
   // A page opened from Agent Canvas's guide names the step whose tour to
   // start. Canvas steps have no tour here, so only enterprise steps start.
@@ -365,9 +393,9 @@ export function SuperAdminSetupFloatingWidget() {
     );
     const step = SUPER_ADMIN_SETUP_STEPS.find(({ id }) => id === tourParam);
     if (step && tourStopsFor(step.id).length > 0) {
-      runSuperAdminSetupTour(navigate, step.id);
+      runSuperAdminSetupTour(navigate, step.id, guideOrgId);
     }
-  }, [visible, tourParam, setSearchParams, navigate]);
+  }, [visible, tourParam, setSearchParams, navigate, guideOrgId]);
 
   const setWidgetOpen = (next: boolean) => {
     userClosedRef.current = !next;
@@ -381,6 +409,7 @@ export function SuperAdminSetupFloatingWidget() {
       await runSuperAdminSetupTour(
         navigate,
         fromStepId ?? nextStep?.id ?? SUPER_ADMIN_SETUP_STEPS[0]?.id,
+        guideOrgId,
       );
     } finally {
       setTourStarting(false);
@@ -481,7 +510,10 @@ export function SuperAdminSetupFloatingWidget() {
               tourStarting={tourStarting}
               onOpenStep={(step) => {
                 stopGuidedTour();
-                navigateOrHardRedirect(navigate, step.to);
+                navigateOrHardRedirect(
+                  navigate,
+                  setupStepUrl(step, guideOrgId),
+                );
               }}
               onStartTour={async (stepId) => {
                 await startTour(stepId);
@@ -545,11 +577,13 @@ export function SuperAdminSetupFloatingWidget() {
 function SetupStepRow({
   step,
   complete,
+  guideOrgId,
   tourStarting,
   onStartTour,
 }: {
   step: SuperAdminSetupStep;
   complete: boolean;
+  guideOrgId: string | null;
   tourStarting: boolean;
   onStartTour: (stepId: SuperAdminSetupStepId) => void | Promise<void>;
 }) {
@@ -576,7 +610,9 @@ function SetupStepRow({
       <button
         type="button"
         className="min-w-0 flex-1 space-y-1 rounded-md text-left hover:opacity-90"
-        onClick={() => navigateOrHardRedirect(navigate, step.to)}
+        onClick={() =>
+          navigateOrHardRedirect(navigate, setupStepUrl(step, guideOrgId))
+        }
       >
         <p
           className={cn(
@@ -624,6 +660,7 @@ export function SuperAdminSetupGuide() {
     totalCount,
     progress,
     active,
+    guideOrgId,
     isLoaded,
   } = useSuperAdminSetup();
   const { mutate: updateSetupState } = useUpdateSetupState();
@@ -668,6 +705,7 @@ export function SuperAdminSetupGuide() {
               await runSuperAdminSetupTour(
                 navigate,
                 nextStep?.id ?? SUPER_ADMIN_SETUP_STEPS[0]?.id,
+                guideOrgId,
               );
             } finally {
               setTourStarting(false);
@@ -704,11 +742,12 @@ export function SuperAdminSetupGuide() {
             key={step.id}
             step={step}
             complete={completed.has(step.id)}
+            guideOrgId={guideOrgId}
             tourStarting={tourStarting}
             onStartTour={async (stepId) => {
               setTourStarting(true);
               try {
-                await runSuperAdminSetupTour(navigate, stepId);
+                await runSuperAdminSetupTour(navigate, stepId, guideOrgId);
               } finally {
                 setTourStarting(false);
               }
