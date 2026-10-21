@@ -1059,3 +1059,57 @@ async def test_status_still_returns_when_the_record_store_fails(monkeypatch):
 
     assert status.webhook_installed is True
     assert status.install_recorded is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'remaining',
+    [
+        # Both hooks still exist but Azure paused deliveries.
+        {
+            'old-pr': _hook(
+                'old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'onProbation'
+            ),
+            'old-wi': _hook(
+                'old-wi',
+                azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT,
+                'onProbation',
+            ),
+        },
+        {
+            'old-pr': _hook(
+                'old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'disabledBySystem'
+            ),
+            'old-wi': _hook(
+                'old-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT
+            ),
+        },
+        # Only one of the two hooks is left.
+        {'old-pr': _hook('old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT)},
+    ],
+)
+async def test_hooks_that_still_exist_keep_the_install_record(
+    monkeypatch, webhook_store, remaining
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.hooks = remaining
+    _use_service(monkeypatch, service)
+    installed = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    record = await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+    record.installed_at = record.last_verified_at = installed
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is False
+    assert status.install_recorded is True
+    assert status.installed_at == installed
+    # Not reconfirmed while the hooks aren't delivering.
+    assert status.last_verified_at == installed
+    assert webhook_store.rows['alonaking'].installed_by_user_id == 'owner-id'

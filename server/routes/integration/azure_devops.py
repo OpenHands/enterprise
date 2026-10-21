@@ -361,11 +361,14 @@ async def get_azure_devops_resources(
             _subscription_id(work_item_subscription) if work_item_subscription else None
         )
 
-        # An empty listing only proves "not installed" when Azure confirmed the
-        # user can view the hooks; otherwise it may just be hiding them.
+        # Only clear the record when Azure confirmed the user can view the hooks
+        # and none exist; disabled or probation hooks may recover, and an
+        # unconfirmed empty listing may just be hiding them.
         observed: bool | None = None
-        if can_view and (webhook_installed or confirmed):
-            observed = webhook_installed
+        if can_view and webhook_installed:
+            observed = True
+        elif can_view and confirmed and not (pr_subscription or work_item_subscription):
+            observed = False
         record = await _sync_install_record(
             service.organization,
             installed=observed,
