@@ -26,6 +26,7 @@ from openhands.app_server.integrations.provider import ProviderHandler, Provider
 from openhands.app_server.integrations.service_types import ProviderType
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
+from storage.auth_token_store import AuthTokenStore
 from storage.oauth_token_store import OAuthTokenStore
 
 pytestmark = pytest.mark.usefixtures('oauth_v2_login_on')
@@ -308,6 +309,65 @@ async def test_background_provider_tokens_include_an_oauth_v2_git_token(
 
     assert tokens is not None
     assert tokens[ProviderType.GITLAB].token == SecretStr('glpat-linked')
+
+
+async def _store_auth_tokens(user_id: str) -> None:
+    store = await AuthTokenStore.get_instance(
+        keycloak_user_id=user_id, idp=ProviderType.GITLAB
+    )
+    in_an_hour = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+    await store.store_tokens(
+        access_token='stored',
+        refresh_token='refresh',
+        access_token_expires_at=in_an_hour,
+        refresh_token_expires_at=0,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('has_auth_tokens', [True, False])
+async def test_a_failed_oauth_v2_read_leaves_provider_tokens_to_auth_tokens(
+    no_keycloak, create_git_provider, store_oauth_token, create_user, has_auth_tokens
+):
+    """A failed oauth_tokens read must not fail the whole request through the
+    Keycloak offline session; auth_tokens answers for that provider instead."""
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(
+        user.id,
+        gitlab,
+        'glpat-revoked',
+        access_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    if has_auth_tokens:
+        await _store_auth_tokens(str(user.id))
+    auth = await get_user_auth_from_keycloak_id(str(user.id))
+
+    with (
+        patch(
+            'server.auth.oauth_v2_refresh.httpx.AsyncClient',
+            return_value=_token_endpoint(status_code=400),
+        ),
+        patch.object(auth, 'get_secrets', AsyncMock(return_value=None)),
+        # An offline session exists, so a Keycloak fallback would be attempted;
+        # no_keycloak makes that exchange fail.
+        patch.object(
+            TokenManager, 'load_offline_token', AsyncMock(return_value='offline')
+        ),
+        # The auth_tokens loop's own reader; it needs no Keycloak.
+        patch.object(
+            TokenManager,
+            'get_idp_token_by_user_id',
+            AsyncMock(return_value='glpat-from-auth-tokens'),
+        ),
+    ):
+        tokens = await auth.get_provider_tokens()
+
+    assert tokens is not None
+    if has_auth_tokens:
+        assert tokens[ProviderType.GITLAB].token == SecretStr('glpat-from-auth-tokens')
+    else:
+        assert ProviderType.GITLAB not in tokens
 
 
 @pytest.mark.asyncio

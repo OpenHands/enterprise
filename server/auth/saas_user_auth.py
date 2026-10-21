@@ -887,8 +887,9 @@ class SaasUserAuth(UserAuth):
     async def _oauth_v2_git_tokens(
         self, user_secrets: Secrets | None
     ) -> dict[ProviderType, ProviderToken]:
-        """Git tokens the user linked through OAuth v2, read the way background
-        jobs read them: ``oauth_tokens`` first, then the Keycloak offline session.
+        """Git tokens the user linked through OAuth v2, read from ``oauth_tokens``
+        only. A provider whose read fails is left to the ``auth_tokens`` loop, so
+        this path never needs the Keycloak offline session.
         """
         from storage.auth_provider_details import OAuthProviderDetails
         from storage.auth_provider_store import AuthProviderStore
@@ -908,7 +909,9 @@ class SaasUserAuth(UserAuth):
             store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
             if await store.get_raw() is None:
                 continue
-            token = await token_manager.get_idp_token_for_user(self.user_id, idp_type)
+            token = await token_manager._get_oauth_v2_git_token(
+                self.user_id, idp_type, None
+            )
             if not token:
                 continue
             host = None
