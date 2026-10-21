@@ -70,6 +70,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
     SQLAppConversationInfoService,
 )
 from openhands.app_server.config import (
+    AppServerConfig,
     get_event_callback_service,
     resolve_provider_llm_base_url,
 )
@@ -3319,6 +3320,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         return b''.join(chunks)
 
 
+def get_sandbox_web_url(
+    config: AppServerConfig, sandbox_service: SandboxService
+) -> str | None:
+    """Return the URL the sandbox uses to reach OpenHands."""
+    web_url = config.sandbox_web_url or config.web_url
+    # If no web url has been set and we are using docker, we can use host.docker.internal
+    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
+        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    return web_url
+
+
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     sandbox_startup_timeout: int = Field(
         default=120, description='The max timeout time for sandbox startup'
@@ -3404,11 +3416,8 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 )
             config = get_global_config()
 
-            # If no web url has been set and we are using docker, we can use host.docker.internal
-            web_url = config.web_url
-            if web_url is None:
-                if isinstance(sandbox_service, DockerSandboxService):
-                    web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+            # Every use of web_url in this service is a URL the sandbox calls.
+            web_url = get_sandbox_web_url(config, sandbox_service)
 
             # Get app_mode for SaaS mode
             app_mode = None

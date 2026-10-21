@@ -45,6 +45,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     _exception_detail,
     _resolve_title_llm_profile,
     effective_disabled_skills,
+    get_sandbox_web_url,
 )
 from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event_callback.memory_change_callback_processor import (
@@ -55,6 +56,7 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
+from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -287,6 +289,30 @@ def test_title_profile_resolution_omits_unseedable_profiles():
     user.llm_profiles = profiles
 
     assert _resolve_title_llm_profile(user) is None
+
+
+@pytest.mark.parametrize(
+    'sandbox_web_url,web_url,docker,expected',
+    [
+        (
+            'http://host.docker.internal:3100',
+            'http://localhost:3100',
+            True,
+            'http://host.docker.internal:3100',
+        ),
+        (None, 'https://openhands.example.com', True, 'https://openhands.example.com'),
+        (None, None, True, 'http://host.docker.internal:3000'),
+        (None, None, False, None),
+    ],
+)
+def test_get_sandbox_web_url(sandbox_web_url, web_url, docker, expected):
+    config = SimpleNamespace(sandbox_web_url=sandbox_web_url, web_url=web_url)
+    if docker:
+        sandbox_service = Mock(spec=DockerSandboxService, host_port=3000)
+    else:
+        sandbox_service = Mock()
+
+    assert get_sandbox_web_url(config, sandbox_service) == expected
 
 
 class TestLiveStatusAppConversationService:

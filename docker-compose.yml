@@ -10,10 +10,17 @@
 #
 # Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
 # the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
-# goes to the automation service, `/canvas*` to Agent Canvas, and everything
-# else to the app. Agent Canvas calls same-origin `/api/automation/v1/...`, so
-# no extra port or CORS setup is needed. `/api/service/*` is deliberately not
-# reachable through the proxy (see the `caddyfile` config at the bottom).
+# goes to the automation service, `/canvas*` to Agent Canvas,
+# `/runtime/<sandbox>/<port>/*` to that port of the sandbox container, and
+# everything else to the app. Agent
+# Canvas calls same-origin `/api/automation/v1/...`, so no extra port or CORS
+# setup is needed. `/api/service/*` is deliberately not reachable through the
+# proxy (see the `caddyfile` config at the bottom).
+#
+# Sandbox containers join this stack's network, so they reach the other
+# services by service name (`app`, `proxy`, `automation-server`). Because they
+# are not managed by Compose, `docker compose down` cannot remove the network
+# while sandboxes are still attached to it.
 #
 # First run: the app pulls the agent server image before it starts serving, so
 # http://localhost:3100 is not reachable until that pull finishes (the app logs
@@ -103,8 +110,9 @@ services:
       # every `docker compose up --build` instead of surviving it via a
       # Docker named volume.
       # - app-filestore:/.openhands
-    # Sandboxes publish their ports on the Docker host, and the app and
-    # `worker` reach them through host.docker.internal.
+    # The app and `worker` reach a sandbox at its URL. With the default
+    # WEB_URL, they rewrite `localhost` in it to host.docker.internal, which
+    # reaches the proxy's published port.
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
     # `worker` shares this environment, so both build the same sandbox
@@ -159,6 +167,12 @@ services:
       #   docker compose up --build
       WEB_HOST: ${WEB_HOST:-localhost}
       OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
+
+      # Sandboxes reach the app through this URL instead of OH_WEB_URL. The
+      # agent uses it to call the automation API and the default MCP server,
+      # and `localhost` inside a sandbox is the sandbox itself. It points at
+      # the proxy, because only the proxy routes /api/automation.
+      OH_SANDBOX_WEB_URL: http://proxy
 
       # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
       # defaults to 'true'. With it on, storage/lite_llm_manager.py's
@@ -223,11 +237,25 @@ services:
       # be able to reach the app.
       SANDBOX_HOST_PORT: ${APP_PORT:-3100}
 
+      # Compose's default network for this project. Sandboxes join it so they
+      # can resolve the service names, and publish no ports on the host.
+      SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
+
+      # Sandbox URLs go through the proxy, which sends
+      # /runtime/<sandbox>/<port> to that port of the sandbox container over
+      # this network. The browser reaches every sandbox on the same origin as
+      # the app, so this follows WEB_URL.
+      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{sandbox_id}/{port}
+
+      # Automation runs connect to the agent server in their sandbox on this
+      # port. The SDK otherwise uses the remote runtime's port, 60000.
+      OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
+
       # Automation service wiring. AUTOMATIONS_SERVICE_KEY lets the
       # automation service mint per-user API keys through /api/service/*, and
       # must match AUTOMATION_SERVICE_KEY on the `automation-server` service. The
-      # default is only acceptable because the proxy does not expose
-      # /api/service/*; set a real value if you publish `app` some other way.
+      # proxy does not expose /api/service/*, but sandboxes are on this
+      # network and can call http://app:3000 directly, so set a real value.
       # AUTOMATION_SERVICE_URL includes the /api/automation base path (the
       # app appends /v1 to it).
       AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
@@ -273,12 +301,13 @@ services:
       - /data:uid=42420,gid=42420
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-      # The app reports each sandbox's URL as http://localhost:<published
-      # port> (the browser needs that), and the automation service uses it
-      # as-is to reach the sandbox, unlike the app, which rewrites localhost
-      # to host.docker.internal. Resolving localhost to the Docker host as
-      # well makes the connection fall through from this container's own
-      # loopback (nothing listens there) to the sandbox's published port.
+      # With the default WEB_URL, the app reports each sandbox's URL as
+      # http://localhost:<APP_PORT>/runtime/<sandbox>/<port> (the browser
+      # needs that), and the automation service uses it as-is to reach the
+      # sandbox, unlike the app, which rewrites localhost to
+      # host.docker.internal. Resolving localhost to the Docker host as well
+      # makes the connection fall through from this container's own loopback
+      # (nothing listens there) to the proxy's published port.
       - 'localhost:host-gateway'
     environment:
       # The automation service needs its own database: it and the app both run
@@ -298,17 +327,17 @@ services:
       LOCAL_STORAGE_PATH: /data
 
       # Cloud mode (AUTOMATION_AGENT_SERVER_URL unset): every run gets its own
-      # Docker sandbox, created through the app. Server-to-server calls use
-      # the internal service name.
+      # Docker sandbox, created through the app. The service and the run's
+      # sandbox, which is on this network too, both use the service name.
       AUTOMATION_OPENHANDS_API_BASE_URL: http://app:3000
       AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
 
       # Callback URL handed to sandbox containers, so it must be reachable
-      # from them (not from the browser): the proxy's published port on the
-      # Docker host, like SANDBOX_HOST_PORT on the app.
-      AUTOMATION_BASE_URL: http://host.docker.internal:${APP_PORT:-3100}
+      # from them (not from the browser): the proxy, like OH_SANDBOX_WEB_URL
+      # on the app.
+      AUTOMATION_BASE_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
@@ -415,6 +444,15 @@ configs:
         @internal path /api/service /api/service/*
         handle @internal {
           respond 404
+        }
+
+        # Sandboxes: /runtime/<sandbox>/<port>/... goes to that port of the
+        # sandbox container, without the prefix. Only sandbox container names
+        # match, so this route cannot reach the other services.
+        @runtime path_regexp runtime ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/(\d+)(/.*)?$$
+        handle @runtime {
+          uri strip_prefix /runtime/{re.runtime.1}/{re.runtime.2}
+          reverse_proxy {re.runtime.1}:{re.runtime.2}
         }
 
         # The automation service already serves under /api/automation, so the
