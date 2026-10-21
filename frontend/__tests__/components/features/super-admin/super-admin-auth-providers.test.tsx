@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18n from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
-import { createRoutesStub } from "react-router";
+import { createRoutesStub, useParams } from "react-router";
 import {
   afterEach,
   beforeAll,
@@ -1209,5 +1209,41 @@ describe("Super Admin Auth Providers page", () => {
     ).not.toBeInTheDocument();
     expect(deleteAuthProvider).not.toHaveBeenCalled();
     expect(screen.getByText("GitHub")).toBeInTheDocument();
+  });
+
+  it("navigates to the provider's User Links page from the row menu", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const RouterStub = createRoutesStub([
+      {
+        path: "/super-admin/auth-providers",
+        Component: SuperAdminAuthProviders,
+      },
+      {
+        path: "/super-admin/auth-providers/:providerId/users",
+        Component: () => {
+          const { providerId } = useParams<{ providerId: string }>();
+          return <p data-testid="location">{providerId}</p>;
+        },
+      },
+    ]);
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <RouterStub initialEntries={["/super-admin/auth-providers"]} />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-actions-1"),
+    );
+    await user.click(
+      screen.getByTestId("super-admin-auth-provider-user-links-1"),
+    );
+
+    expect(await screen.findByTestId("location")).toHaveTextContent("1");
   });
 });

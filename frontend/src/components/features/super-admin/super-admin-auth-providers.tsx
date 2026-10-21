@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { Toggle } from "#/components/shared/toggle/toggle";
@@ -966,6 +967,7 @@ function buildUpdatePayload(
 
 export function SuperAdminAuthProviders() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const copy = navCopy(SUPER_ADMIN_PATHS.authProviders);
   const { data, isLoading, isError } = useAuthProviders();
   const createProvider = useCreateAuthProvider();
@@ -1124,6 +1126,14 @@ export function SuperAdminAuthProviders() {
                     label: t(I18nKey.BUTTON$EDIT),
                     testId: `super-admin-auth-provider-edit-${row.id}`,
                     onSelect: () => openEdit(row),
+                  },
+                  {
+                    label: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS),
+                    testId: `super-admin-auth-provider-user-links-${row.id}`,
+                    onSelect: () =>
+                      navigate(
+                        `${SUPER_ADMIN_PATHS.authProviders}/${row.id}/users`,
+                      ),
                   },
                   {
                     label: t(I18nKey.BUTTON$DELETE),

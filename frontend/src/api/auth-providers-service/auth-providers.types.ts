@@ -150,3 +150,24 @@ export interface PublicIdpProvider {
   color: string;
   provider_type: OAuthProviderBrand | null;
 }
+
+/** A single ``auth_provider_users`` row for one provider, joined with the
+ * linked ``User.email`` -- mirrors
+ * ``server.routes.oauth_providers_admin.AuthProviderUserResponse``. Backs
+ * the admin "User Links" table
+ * (``/super-admin/auth-providers/{provider_id}/users``). */
+export interface AuthProviderUserLink {
+  id: number;
+  user_id: string;
+  email: string | null;
+  external_subject_id: string;
+  external_email: string | null;
+}
+
+/** Paginated response for ``GET /{provider_id}/users``. */
+export interface AuthProviderUserLinkPage {
+  items: AuthProviderUserLink[];
+  total: number;
+  current_page: number;
+  per_page: number;
+}
