@@ -303,6 +303,16 @@ def store_oauth_token(oauth_v2_stores) -> Callable[..., Awaitable[None]]:
     return _store
 
 
+@pytest.fixture
+def oauth_v2_login_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('ENABLE_OAUTH_V2_LOGIN', '1')
+
+
+@pytest.fixture
+def oauth_v2_login_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('ENABLE_OAUTH_V2_LOGIN', raising=False)
+
+
 def _fail_keycloak(*args, **kwargs):
     raise AssertionError('Keycloak must not be used')
 
