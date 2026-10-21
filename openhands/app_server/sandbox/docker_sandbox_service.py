@@ -12,7 +12,7 @@ import base62
 import docker
 from docker.errors import APIError, NotFound
 from fastapi import Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
@@ -197,6 +197,9 @@ class DockerSandboxService(ManagedSandboxService):
                 return port
         raise SandboxError('Could not find a free host port')
 
+    def _sandbox_url(self, sandbox_id: str, port: int) -> str:
+        return self.container_url_pattern.format(port=port, sandbox_id=sandbox_id)
+
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
         status_mapping = {
@@ -255,61 +258,39 @@ class DockerSandboxService(ManagedSandboxService):
             env = self._get_container_env_vars(container)
             session_api_key = env.get(SESSION_API_KEY_VARIABLE)
 
-            # Get the exposed port mappings
-            exposed_urls = []
-
-            # Check if container is using host network mode
+            # Host networking and a user-defined network reach the container
+            # ports directly. The default bridge reaches them through the ports
+            # published on the host.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
-            is_host_network = network_mode == 'host'
-
-            if is_host_network:
-                # Host network mode: container ports are directly accessible on host
-                for exposed_port in self.exposed_ports:
-                    host_port = exposed_port.container_port
-                    url = self.container_url_pattern.format(port=host_port)
-
-                    # VSCode URLs require the api_key and working dir
-                    if exposed_port.name == VSCODE:
-                        url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
-
-                    exposed_urls.append(
-                        ExposedUrl(
-                            name=exposed_port.name,
-                            url=url,
-                            port=exposed_port.container_port,
-                        )
-                    )
+            public_ports: list[tuple[ExposedPort, int]] = []
+            if network_mode == 'host' or (
+                self.network and network_mode == self.network
+            ):
+                public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                # Bridge network mode: use port bindings
-                port_bindings = container.attrs.get('NetworkSettings', {}).get(
-                    'Ports', {}
+                port_bindings = (
+                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
                 )
-                if port_bindings:
-                    for container_port, host_bindings in port_bindings.items():
-                        if host_bindings:
-                            host_port = int(host_bindings[0]['HostPort'])
-                            matching_port = next(
-                                (
-                                    ep
-                                    for ep in self.exposed_ports
-                                    if container_port == f'{ep.container_port}/tcp'
-                                ),
-                                None,
-                            )
-                            if matching_port:
-                                url = self.container_url_pattern.format(port=host_port)
+                for ep in self.exposed_ports:
+                    host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
+                    if host_bindings:
+                        public_ports.append((ep, int(host_bindings[0]['HostPort'])))
 
-                                # VSCode URLs require the api_key and working dir
-                                if matching_port.name == VSCODE:
-                                    url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
+            exposed_urls = []
+            for exposed_port, public_port in public_ports:
+                url = self._sandbox_url(container.name, public_port)
 
-                                exposed_urls.append(
-                                    ExposedUrl(
-                                        name=matching_port.name,
-                                        url=url,
-                                        port=matching_port.container_port,
-                                    )
-                                )
+                # VSCode URLs require the api_key and working dir
+                if exposed_port.name == VSCODE:
+                    url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
+
+                exposed_urls.append(
+                    ExposedUrl(
+                        name=exposed_port.name,
+                        url=url,
+                        port=exposed_port.container_port,
+                    )
+                )
 
         return SandboxInfo(
             id=stored_sandbox.id,
@@ -519,11 +500,10 @@ class DockerSandboxService(ManagedSandboxService):
                 env_vars[f'OH_ALLOW_CORS_ORIGINS_{idx}'] = origin
 
         # Prepare port mappings and add port environment variables
-        # When using host network, container ports are directly accessible on the host
-        # so we use the container ports directly instead of mapping to random host ports
+        # Host networking and a user-defined network reach the container ports
+        # directly, so nothing is published on the host
         port_mappings: dict[int, int] | None = None
-        if self.use_host_network:
-            # Host network mode: container ports are directly accessible
+        if self.use_host_network or self.network:
             for exposed_port in self.exposed_ports:
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
         else:
@@ -536,7 +516,8 @@ class DockerSandboxService(ManagedSandboxService):
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
 
         # When the URL pattern routes by path (a reverse proxy at
-        # /runtime/{port}), VS Code must know its path to build asset URLs.
+        # /runtime/{sandbox_id}/{port}), VS Code must know its path to build
+        # asset URLs.
         vscode_port = next((p for p in self.exposed_ports if p.name == VSCODE), None)
         if vscode_port is not None:
             public_port = (
@@ -545,7 +526,7 @@ class DockerSandboxService(ManagedSandboxService):
                 else vscode_port.container_port
             )
             base_path = urlparse(
-                self.container_url_pattern.format(port=public_port)
+                self._sandbox_url(container_name, public_port)
             ).path.rstrip('/')
             if base_path:
                 env_vars[VSCODE_BASE_PATH_VARIABLE] = base_path
@@ -716,6 +697,8 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
         description=(
             'URL pattern for exposed sandbox ports. Use {port} as placeholder. '
             'For remote access, set to your server IP (e.g., http://192.168.1.100:{port}). '
+            '{sandbox_id} is the container name, for a proxy that routes to '
+            'sandboxes on a Docker network. '
             'Configure via OH_SANDBOX_CONTAINER_URL_PATTERN environment variable.'
         ),
     )
@@ -805,8 +788,11 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'Docker network to attach agent-server containers to instead of the '
             'default bridge. Containers on a user-defined network resolve each '
             'other by name, so sandboxes can reach Docker Compose services by '
-            'their service names. Ports are still published. Ignored with host '
-            'networking. Configure via SANDBOX_DOCKER_NETWORK environment variable.'
+            'their service names. No ports are published: {port} in '
+            'container_url_pattern is the container port, and the pattern must '
+            'include {sandbox_id} for a proxy on the network to route by. Ignored '
+            'with host networking. Configure via SANDBOX_DOCKER_NETWORK '
+            'environment variable.'
         ),
     )
     kvm_enabled: bool = Field(
@@ -819,6 +805,21 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'Configure via SANDBOX_KVM_ENABLED environment variable.'
         ),
     )
+
+    @model_validator(mode='after')
+    def _network_urls_name_the_sandbox(self) -> 'DockerSandboxServiceInjector':
+        # On a network every sandbox uses the same container ports, so only
+        # {sandbox_id} tells their URLs apart.
+        if (
+            self.network
+            and not self.use_host_network
+            and '{sandbox_id}' not in self.container_url_pattern
+        ):
+            raise ValueError(
+                'SANDBOX_DOCKER_NETWORK needs a container_url_pattern that '
+                'includes {sandbox_id}'
+            )
+        return self
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
