@@ -3,6 +3,7 @@ git providers' token endpoints and, where a test says so, Keycloak are faked.
 ``test_background_git_tokens_flag_off.py`` covers the flag being off."""
 
 from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +22,9 @@ from integrations.bitbucket_data_center.bitbucket_dc_service import (
 from integrations.github.github_service import SaaSGitHubService
 from integrations.gitlab.gitlab_service import SaaSGitLabService
 from integrations.types import UserData
+from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
+from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.oauth_token_store import OAuthTokenStore
 
@@ -250,6 +253,61 @@ async def test_a_failed_refresh_falls_back_to_keycloak_and_keeps_the_token(
         await OAuthTokenStore(user_id=user.id, oauth_provider_id=gitlab.id).get_raw()
         is not None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('service_cls', 'provider_type'),
+    [
+        (SaaSGitLabService, ProviderType.GITLAB),
+        (SaaSGitHubService, ProviderType.GITHUB),
+        (SaaSBitBucketService, ProviderType.BITBUCKET),
+    ],
+)
+async def test_a_held_token_is_not_treated_as_rejected_without_a_401(
+    no_keycloak,
+    create_git_provider,
+    store_oauth_token,
+    create_user,
+    service_cls,
+    provider_type,
+):
+    """ProviderHandler.get_service passes the token in, and callers then ask
+    for the latest token without any request having failed."""
+    provider = await create_git_provider(provider_type)
+    user = create_user()
+    await store_oauth_token(user.id, provider, 'linked-token')
+    handler = ProviderHandler(
+        MappingProxyType(
+            {provider_type: ProviderToken(token=SecretStr('linked-token'))}
+        ),
+        external_auth_id=str(user.id),
+    )
+    handler.service_class_map[provider_type] = service_cls
+    service = handler.get_service(provider_type)
+
+    token = await service.get_latest_token()
+
+    assert token is not None
+    assert token.get_secret_value() == 'linked-token'
+
+
+@pytest.mark.asyncio
+async def test_background_provider_tokens_include_an_oauth_v2_git_token(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    """A background job's user auth (no Keycloak auth_tokens row) still gets
+    the git token the user linked through OAuth v2."""
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-linked')
+    auth = await get_user_auth_from_keycloak_id(str(user.id))
+
+    with patch.object(auth, 'get_secrets', AsyncMock(return_value=None)):
+        tokens = await auth.get_provider_tokens()
+
+    assert tokens is not None
+    assert tokens[ProviderType.GITLAB].token == SecretStr('glpat-linked')
 
 
 @pytest.mark.asyncio
