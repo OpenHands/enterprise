@@ -58,7 +58,7 @@ jobs:
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
         # [tool.coverage.run] in pyproject.toml.
-        run: uv run pytest -n auto -s ./tests/unit --cov --cov-branch --cov-fail-under=72
+        run: uv run pytest -n logical -s ./tests/unit --cov --cov-branch --cov-fail-under=72
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}"
       - name: Store coverage file
