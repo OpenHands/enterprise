@@ -1231,6 +1231,29 @@ async def test_update_auth_provider_user_deletes_old_users_token(
 
 
 @pytest.mark.asyncio
+async def test_update_auth_provider_user_invalidates_webhook_user_cache(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    # Redis is not available in unit tests; the cache delete itself is covered
+    # in test_automation_event_service.py.
+    provider = await make_provider('gitlab')
+    link = await make_link(provider.id, create_user().id, '42')
+
+    with patch(
+        'server.routes.oauth_providers_admin.invalidate_user_id_cache',
+        new=AsyncMock(),
+    ) as invalidate_cache:
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+                json={'user_id': str(create_user().id)},
+            )
+
+    assert resp.status_code == 200
+    invalidate_cache.assert_awaited_once_with(ProviderType.GITLAB, '42')
+
+
+@pytest.mark.asyncio
 async def test_update_auth_provider_user_404_provider_not_found(
     mock_app, grant_manage_oauth_providers, db, create_user
 ):
