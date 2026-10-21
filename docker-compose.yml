@@ -20,15 +20,10 @@
 # stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
 # existing session cookie instead of prompting to connect to OpenHands Cloud.
 #
-# Data is ephemeral by default: no data directory is bind-mounted, so the stack makes no
-# assumptions about the host filesystem (friendly to cloud/CI environments).
-# Set OH_PERSISTENCE_DIR (shell or `.env`) to an absolute host directory to keep the
-# database, the app file store and the automation files across
-# `docker compose down`/`up`:
-#   OH_PERSISTENCE_DIR=/var/lib/openhands docker compose up -d
-# They are stored in the `db`, `app` and `automation` subdirectories. To reset,
-# `docker compose down` and delete that directory. With OH_PERSISTENCE_DIR unset,
-# `docker compose down -v` removes the (anonymous) volumes instead.
+# Data persists across `docker compose down` and `up` in named volumes
+# (`db-data`, `app-filestore`, `automation-data`). `docker compose down -v`
+# removes them and resets everything. The database keeps the credentials it was
+# first created with, so changing DB_USER/DB_PASS later requires a reset.
 #
 # By default this stack runs RELEASED images (pinned below) and builds nothing.
 # To use other versions, set these (shell or `.env`):
@@ -75,10 +70,8 @@ services:
     configs:
       - source: automation-db-init
         target: /docker-entrypoint-initdb.d/10-automation-db.sql
-    # With OH_PERSISTENCE_DIR unset this is only the target path, i.e. an anonymous
-    # volume; with it set, `${OH_PERSISTENCE_DIR}/db` is bind-mounted there.
     volumes:
-      - ${OH_PERSISTENCE_DIR:+${OH_PERSISTENCE_DIR}/db:}/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
       interval: 5s
@@ -108,8 +101,7 @@ services:
     # root (via `user: '0:0'`, above) and root can always reach the socket.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # See the `db` volume above for how OH_PERSISTENCE_DIR affects this mount.
-      - ${OH_PERSISTENCE_DIR:+${OH_PERSISTENCE_DIR}/app:}/.openhands
+      - app-filestore:/.openhands
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     environment:
@@ -255,8 +247,8 @@ services:
     platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
     # here. The service only auto-migrates SQLite, so migrate Postgres first.
-    # It starts as root only so it can hand a freshly created /data volume or
-    # bind mount (root-owned) to the service user, then drops to that user.
+    # It starts as root only so it can hand the (root-owned, since the image has
+    # no /data) volume to the service user, then drops to that user.
     user: '0:0'
     command:
       - sh
@@ -270,10 +262,9 @@ services:
     expose:
       - '8000'
     # The image runs as uid 42420 with no home directory, so tarball storage
-    # needs an explicitly writable path. See the `db` volume above for how
-    # OH_PERSISTENCE_DIR affects this mount.
+    # needs an explicitly writable path.
     volumes:
-      - ${OH_PERSISTENCE_DIR:+${OH_PERSISTENCE_DIR}/automation:}/data
+      - automation-data:/data
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       # The app reports each sandbox's URL as http://localhost:<published
@@ -390,6 +381,11 @@ services:
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
     restart: unless-stopped
+
+volumes:
+  db-data:
+  app-filestore:
+  automation-data:
 
 configs:
   automation-db-init:
