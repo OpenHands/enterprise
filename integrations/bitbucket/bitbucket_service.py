@@ -5,6 +5,7 @@ from openhands.app_server.integrations.bitbucket.bitbucket_service import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.token_manager import TokenManager
 
 
@@ -34,7 +35,13 @@ class SaaSBitBucketService(BitBucketService):
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
         # On a 401 the base class calls get_latest_token() again and retries.
-        self.refresh = True
+        # Only the external_auth_id branch swaps in a new token for the retry,
+        # and only an oauth_tokens token needs one.
+        self.refresh = (
+            not external_auth_token
+            and bool(external_auth_id)
+            and is_oauth_v2_login_enabled()
+        )
 
     async def get_latest_token(self) -> SecretStr | None:
         bitbucket_token = None
@@ -58,7 +65,7 @@ class SaaSBitBucketService(BitBucketService):
             bitbucket_token = (
                 SecretStr(bitbucket_token_str) if bitbucket_token_str else None
             )
-            if bitbucket_token:
+            if bitbucket_token and self.refresh:
                 self.token = bitbucket_token  # the retry reads self.token
             logger.info(
                 f'Got BitBucket token {bitbucket_token} from external auth user ID: {self.external_auth_id}'

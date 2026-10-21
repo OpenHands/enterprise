@@ -1,10 +1,12 @@
-"""Runs against the test database. Only the git providers' token endpoints
-and, where a test says so, Keycloak are faked."""
+"""Runs against the test database with ``ENABLE_OAUTH_V2_LOGIN`` on. Only the
+git providers' token endpoints and, where a test says so, Keycloak are faked.
+``test_background_git_tokens_flag_off.py`` covers the flag being off."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from integrations.azure_devops.azure_devops_manager import AzureDevOpsManager
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
@@ -22,6 +24,8 @@ from integrations.types import UserData
 from openhands.app_server.integrations.service_types import ProviderType
 from server.auth.token_manager import TokenManager
 from storage.oauth_token_store import OAuthTokenStore
+
+pytestmark = pytest.mark.usefixtures('oauth_v2_login_on')
 
 
 def _token_endpoint(status_code: int = 200, body: dict | None = None) -> AsyncMock:
@@ -328,6 +332,21 @@ async def test_a_401_retries_once_with_the_keycloak_token(
     assert len(sent) == 2
     assert sent[0] != sent[1]
     assert service.token.get_secret_value() == 'from-keycloak'
+
+
+@pytest.mark.parametrize(
+    'service_cls', [SaaSGitLabService, SaaSGitHubService, SaaSBitBucketService]
+)
+def test_only_services_acting_for_a_user_retry_a_401(service_cls):
+    # A signed-in request's token comes from its Keycloak session; a retry
+    # could only resend the same token.
+    signed_in = service_cls(
+        external_auth_token=SecretStr('keycloak-access'), external_auth_id='user'
+    )
+
+    assert service_cls(external_auth_id='user').refresh is True
+    assert signed_in.refresh is False
+    assert service_cls(user_id='git-user').refresh is False
 
 
 @pytest.mark.asyncio
