@@ -207,6 +207,88 @@ async def test_a_failed_refresh_falls_back_to_keycloak_and_keeps_the_token(
 
 
 @pytest.mark.asyncio
+async def test_a_token_the_provider_rejected_falls_back_to_keycloak(
+    create_git_provider, store_oauth_token, create_user
+):
+    """A copy of a Keycloak grant dies when the Keycloak side refreshes, though
+    its stored expiry is still ahead."""
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-revoked')
+    token_manager = TokenManager()
+
+    with (
+        patch.object(
+            token_manager, 'load_offline_token', AsyncMock(return_value='offline')
+        ),
+        patch.object(
+            token_manager,
+            'get_idp_token_from_offline_token',
+            AsyncMock(return_value='glpat-from-keycloak'),
+        ),
+    ):
+        token = await token_manager.get_idp_token_for_user(
+            str(user.id), ProviderType.GITLAB, rejected='glpat-revoked'
+        )
+
+    assert token == 'glpat-from-keycloak'
+    assert (
+        await OAuthTokenStore(user_id=user.id, oauth_provider_id=gitlab.id).get_raw()
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('service_cls', 'provider_type'),
+    [
+        (SaaSGitLabService, ProviderType.GITLAB),
+        (SaaSGitHubService, ProviderType.GITHUB),
+        (SaaSBitBucketService, ProviderType.BITBUCKET),
+    ],
+)
+async def test_a_401_retries_once_with_the_keycloak_token(
+    create_git_provider,
+    store_oauth_token,
+    create_user,
+    service_cls,
+    provider_type,
+):
+    provider = await create_git_provider(provider_type)
+    user = create_user()
+    await store_oauth_token(user.id, provider, 'revoked')
+    service = service_cls(external_auth_id=str(user.id))
+    ok = MagicMock(status_code=200, headers={'Content-Type': 'application/json'})
+    ok.json.return_value = {'ok': True}
+    responses = [MagicMock(status_code=401, headers={}), ok]
+    sent: list[dict] = []
+
+    async def execute_request(client, url, headers, params, method):
+        sent.append(dict(headers))
+        return responses[len(sent) - 1]
+
+    with (
+        patch.object(service, 'execute_request', side_effect=execute_request),
+        patch.object(
+            service.token_manager,
+            'load_offline_token',
+            AsyncMock(return_value='offline'),
+        ),
+        patch.object(
+            service.token_manager,
+            'get_idp_token_from_offline_token',
+            AsyncMock(return_value='from-keycloak'),
+        ),
+    ):
+        body, _ = await service._make_request('https://git.example.com/api/user')
+
+    assert body == {'ok': True}
+    assert len(sent) == 2
+    assert sent[0] != sent[1]
+    assert service.token.get_secret_value() == 'from-keycloak'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('service_cls', 'provider_type'),
     [

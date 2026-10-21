@@ -629,13 +629,17 @@ class TokenManager:
             raise
 
     async def get_idp_token_for_user(
-        self, user_id: str, idp: ProviderType
+        self, user_id: str, idp: ProviderType, rejected: str | None = None
     ) -> str | None:
         """Git token for background work done without the user's session.
 
         ``oauth_tokens`` wins over the Keycloak offline session. Installs
         without Keycloak store no offline tokens, so the fallback returns
         ``None`` without a Keycloak call.
+
+        ``rejected`` is a token the provider just refused. An ``oauth_tokens``
+        token equal to it is skipped: a copy of a Keycloak grant is revoked when
+        the Keycloak side refreshes, while its stored expiry is still ahead.
         """
         try:
             token = await get_oauth_v2_git_token(user_id, idp)
@@ -646,6 +650,12 @@ class TokenManager:
                 'oauth_v2_git_token_unavailable',
                 extra={'user_id': user_id, 'provider': idp.value},
                 exc_info=True,
+            )
+            token = None
+        if token and token == rejected:
+            logger.warning(
+                'oauth_v2_git_token_rejected',
+                extra={'user_id': user_id, 'provider': idp.value},
             )
             token = None
         if token:
