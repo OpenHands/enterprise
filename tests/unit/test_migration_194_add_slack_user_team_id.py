@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 193 (``team_id`` on ``slack_users``).
+"""Real-DB tests for migration 194 (``team_id`` on ``slack_users``).
 
 The backfill is only safe when one workspace is installed, so assert that it
 fills existing links in that case and leaves them NULL otherwise.
@@ -13,8 +13,8 @@ from sqlalchemy.engine import Engine
 from tests import postgres_testdb
 
 
-def _link_slack_user_pre_193(engine: Engine, team_ids: list[str]) -> int:
-    """Install the given workspaces and link one Slack user before 193."""
+def _link_slack_user_pre_194(engine: Engine, team_ids: list[str]) -> int:
+    """Install the given workspaces and link one Slack user before 194."""
     with engine.begin() as conn:
         for team_id in team_ids:
             conn.execute(
@@ -47,12 +47,12 @@ def test_upgrade_backfills_team_id_only_for_a_single_workspace(
     expected_team_id: str | None,
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '192'
+        test_database.server, test_database.name, 'downgrade', '193'
     )
-    slack_user_id = _link_slack_user_pre_193(engine, installed_team_ids)
+    slack_user_id = _link_slack_user_pre_194(engine, installed_team_ids)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '193'
+        test_database.server, test_database.name, 'upgrade', '194'
     )
 
     with engine.connect() as conn:
