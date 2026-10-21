@@ -171,32 +171,6 @@ export function ModelSelector({
   const showSelectedFreeModelBadge =
     isSelectedModelFree &&
     (modelInputValue === null || modelInputValue === selectedModel);
-  const selectedModelMeasureRef = React.useRef<HTMLSpanElement>(null);
-  const [selectedModelTextWidth, setSelectedModelTextWidth] = React.useState(0);
-
-  React.useLayoutEffect(() => {
-    if (!isSelectedModelFree || !selectedModelMeasureRef.current) {
-      setSelectedModelTextWidth(0);
-      return undefined;
-    }
-
-    const measureSelectedModel = () => {
-      setSelectedModelTextWidth(
-        Math.ceil(
-          selectedModelMeasureRef.current?.getBoundingClientRect().width ?? 0,
-        ),
-      );
-    };
-    measureSelectedModel();
-
-    if (typeof ResizeObserver === "undefined") {
-      return undefined;
-    }
-
-    const observer = new ResizeObserver(measureSelectedModel);
-    observer.observe(selectedModelMeasureRef.current);
-    return () => observer.disconnect();
-  }, [isSelectedModelFree, selectedModel]);
 
   const { t } = useTranslation();
 
@@ -313,6 +287,11 @@ export function ModelSelector({
             inputProps={{
               classNames: {
                 inputWrapper: formControlSettingsFieldClassName,
+                // Make the input inherit the app font so the free-badge's
+                // invisible text copy (rendered in the app font) has the same
+                // metrics — otherwise the input falls back to the browser's
+                // form-control font and the copy mis-measures it.
+                input: "[font-family:inherit]",
               },
             }}
           >
@@ -357,27 +336,25 @@ export function ModelSelector({
             ) : null}
           </Autocomplete>
           {showSelectedFreeModelBadge && selectedModel ? (
-            <>
-              <span
-                ref={selectedModelMeasureRef}
-                className="pointer-events-none absolute left-3 top-1/2 whitespace-pre text-sm opacity-0"
-                aria-hidden
-              >
+            // Flow layout (invisible text copy + badge) instead of pixel
+            // measurement: the copy is laid out at the exact width of the
+            // input text (the input is forced to inherit the app font, so
+            // both render identically), placing the badge right after the
+            // name in any browser/font.
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 left-3 z-10 flex items-center gap-2"
+            >
+              <span className="invisible whitespace-pre text-sm">
                 {selectedModel}
               </span>
               <span
                 data-testid="selected-free-model-badge"
-                className={cn(
-                  freeModelBadgeClassName,
-                  "pointer-events-none absolute top-1/2 z-10 -translate-y-1/2",
-                )}
-                style={{
-                  left: `calc(0.75rem + ${selectedModelTextWidth}px + 0.5rem)`,
-                }}
+                className={freeModelBadgeClassName}
               >
                 {t(I18nKey.SETTINGS$FREE_MODEL_BADGE)}
               </span>
-            </>
+            </span>
           ) : null}
         </div>
         {modelsError && (
