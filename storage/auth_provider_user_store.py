@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.auth_provider import AuthProvider
 from storage.auth_provider_user import AuthProviderUser
 from storage.database import a_session_maker
 
@@ -32,6 +33,26 @@ class AuthProviderUserStore:
                 )
             )
             return result.scalars().one_or_none()
+
+    async def get_git_user_ids(
+        self, provider_type: str, external_subject_id: str
+    ) -> set[UUID]:
+        """Users who linked ``external_subject_id`` on any git provider of
+        ``provider_type``. Two providers of one type (e.g. two GitLab hosts) can
+        reuse an id, so the caller decides what more than one user means."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProviderUser.user_id)
+                .join(
+                    AuthProvider, AuthProvider.id == AuthProviderUser.oauth_provider_id
+                )
+                .where(
+                    AuthProviderUser.external_subject_id == external_subject_id,
+                    AuthProvider.is_idp.is_(False),
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+            )
+            return set(result.scalars().all())
 
     async def get_by_user(
         self, user_id: UUID, oauth_provider_id: int
