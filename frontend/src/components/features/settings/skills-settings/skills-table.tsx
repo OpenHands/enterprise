@@ -159,7 +159,7 @@ export function SkillsTable({
                   </td>
                   <td className={cn(CELL_CLASS, "text-tertiary-alt")}>
                     <span className="block truncate" title={skill.repository}>
-                      {skill.repository}
+                      {skill.marketplaceName ?? skill.repository}
                     </span>
                   </td>
                   <td className={CELL_CLASS}>

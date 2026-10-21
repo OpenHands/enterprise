@@ -89,3 +89,34 @@ export const useDeleteAuthProvider = () => {
     },
   });
 };
+
+/** Re-points a "User Link" (``auth_provider_users`` row) to a different,
+ * already-existing user -- see
+ * ``server.routes.oauth_providers_admin.update_auth_provider_user``. */
+export const useUpdateAuthProviderUserLink = (providerId: number) => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: ({ linkId, userId }: { linkId: number; userId: string }) =>
+      authProvidersService.updateAuthProviderUser({
+        providerId,
+        linkId,
+        userId,
+      }),
+    onSuccess: () => {
+      displaySuccessToast(
+        t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_UPDATE_SUCCESS),
+      );
+      queryClient.invalidateQueries({
+        queryKey: [...AUTH_PROVIDERS_QUERY_KEY, providerId, "users"],
+      });
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_UPDATE_ERROR),
+      );
+    },
+  });
+};

@@ -199,6 +199,7 @@ class AuthProviderStore:
                     'icon',
                     'color',
                     'allow_registration',
+                    'allow_match_by_email',
                     'details',
                 ):
                     setattr(existing, col, getattr(provider, col))

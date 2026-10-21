@@ -191,6 +191,7 @@ export function InviteOrganizationMemberModal({
         {t(I18nKey.ORG$INVITE_ROLE_LABEL)}
         <Dropdown
           testId="invite-role-dropdown"
+          searchable={false}
           options={roleOptions}
           defaultValue={roleOptions[0]}
           onChange={(option) =>

@@ -1,6 +1,5 @@
-"""With ``ENABLE_OAUTH_V2_LOGIN`` off, background git-token reads and the GitLab
-repo sync take the Keycloak path exactly as before, even when an
-``oauth_tokens`` row exists.
+"""With ``ENABLE_OAUTH_V2_LOGIN`` off, background git-token reads take the
+Keycloak path exactly as before, even when an ``oauth_tokens`` row exists.
 Runs against the test database. Keycloak is faked: tests have no Keycloak
 server."""
 
@@ -28,10 +27,8 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
 )
 from server.auth.constants import is_oauth_v2_login_enabled
-from server.auth.gitlab_sync import (
-    _user_has_gitlab_provider,
-    schedule_gitlab_repo_sync,
-)
+from server.auth.gitlab_sync import _user_has_gitlab_provider, schedule_gitlab_repo_sync
+from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.auth_tokens import AuthTokens
 
@@ -232,6 +229,21 @@ async def test_managers_start_jobs_with_the_keycloak_token(
 
     provider_tokens = view.create_new_conversation.await_args.args[1]
     assert provider_tokens[provider_type].token.get_secret_value() == 'from-keycloak'
+
+
+@pytest.mark.asyncio
+async def test_background_provider_tokens_ignore_oauth_tokens(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-linked')
+    auth = await get_user_auth_from_keycloak_id(str(user.id))
+
+    with patch.object(auth, 'get_secrets', AsyncMock(return_value=None)):
+        tokens = await auth.get_provider_tokens()
+
+    assert tokens == {}
 
 
 @pytest.mark.asyncio
