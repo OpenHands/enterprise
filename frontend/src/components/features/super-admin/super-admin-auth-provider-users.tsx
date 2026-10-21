@@ -11,7 +11,6 @@ import {
 } from "#/hooks/query/use-auth-providers";
 import { useUpdateAuthProviderUserLink } from "#/hooks/mutation/use-auth-provider-mutations";
 import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
-import { useMe } from "#/hooks/query/use-me";
 import { useDebounce } from "#/hooks/use-debounce";
 import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
@@ -55,27 +54,33 @@ export function SuperAdminAuthProviderUsers() {
 
   const updateLink = useUpdateAuthProviderUserLink(id);
 
-  const { data: directoryUsers } = useSuperAdminUsers();
-  const { data: me } = useMe();
-
   const [editingLink, setEditingLink] = useState<AuthProviderUserLink | null>(
     null,
   );
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
-  // Pending invitations (``user_id === null``) have no account to point
-  // at yet, and nobody may re-point a link onto their own account.
+  // Only fetch the instance's full user directory once the "re-point to"
+  // dropdown actually needs it, rather than on every page load.
+  const { data: directoryUsers } = useSuperAdminUsers(editingLink !== null);
+
+  // Pending invitations (``user_id === null``) have no account to point at
+  // yet. Re-pointing onto your *own* account is allowed -- the same person
+  // commonly ends up with more than one ``User`` row (e.g. one created with
+  // a password, another auto-created the first time they signed in through
+  // this provider because the two emails didn't match), and merging the
+  // identity onto whichever row they're currently signed in as is exactly
+  // the drift this page exists to fix.
   const userOptions = useMemo(
     () =>
       (directoryUsers ?? [])
-        .filter((user) => user.user_id && user.user_id !== me?.user_id)
+        .filter((user) => user.user_id)
         .map((user) => ({
           value: user.user_id as string,
           label: user.email
             ? `${user.email} (${user.user_id})`
             : (user.user_id as string),
         })),
-    [directoryUsers, me?.user_id],
+    [directoryUsers],
   );
 
   const items = data?.items ?? [];

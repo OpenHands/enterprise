@@ -104,18 +104,6 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
   },
 ];
 
-// The signed-in Super Admin, excluded from the "re-point to" dropdown.
-const { currentUserId } = vi.hoisted(() => ({
-  currentUserId: { value: "self-id" as string | undefined },
-}));
-
-vi.mock("#/hooks/query/use-me", () => ({
-  useMe: () => ({
-    isLoading: false,
-    data: currentUserId.value ? { user_id: currentUserId.value } : undefined,
-  }),
-}));
-
 function renderPage(providerId = "1") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -167,7 +155,6 @@ describe("Super Admin Auth Provider User Links page", () => {
   });
 
   afterEach(() => {
-    currentUserId.value = "self-id";
     vi.restoreAllMocks();
   });
 
@@ -206,8 +193,8 @@ describe("Super Admin Auth Provider User Links page", () => {
       "super-admin-auth-provider-user-edit-modal",
     );
 
-    // The signed-in Super Admin and the pending invitation are not
-    // selectable targets.
+    // The pending invitation has no account yet, so it's not a selectable
+    // target.
     await user.click(within(dialog).getByTestId("dropdown-trigger"));
     expect(
       screen.queryByRole("option", { name: "pending@example.com" }),
@@ -231,25 +218,68 @@ describe("Super Admin Auth Provider User Links page", () => {
     );
   });
 
-  it("excludes the signed-in Super Admin from the re-point dropdown", async () => {
-    currentUserId.value = "user-2";
+  it("allows re-pointing a link onto the signed-in admin's own account", async () => {
+    // The same person can end up with more than one `User` row -- e.g. one
+    // created with a password, another auto-created the first time they
+    // signed in through this provider because the emails didn't match.
+    // Nothing should stop them from re-pointing the link onto whichever
+    // account they're currently signed in as, so the dropdown must not
+    // exclude any directory user.
+    const updateAuthProviderUser = vi
+      .spyOn(authProvidersService, "updateAuthProviderUser")
+      .mockResolvedValue({
+        id: 11,
+        user_id: "user-1",
+        email: "alice@example.com",
+        external_subject_id: "gh-bob",
+        external_email: null,
+      });
     const user = userEvent.setup();
     renderPage();
 
     await user.click(
-      await screen.findByTestId("super-admin-auth-provider-user-edit-10"),
+      await screen.findByTestId("super-admin-auth-provider-user-edit-11"),
     );
     const dialog = screen.getByTestId(
       "super-admin-auth-provider-user-edit-modal",
     );
     await user.click(within(dialog).getByTestId("dropdown-trigger"));
 
+    const aliceOption = await screen.findByRole("option", {
+      name: "alice@example.com (user-1)",
+    });
+    expect(aliceOption).toBeInTheDocument();
     expect(
-      screen.queryByRole("option", { name: "bob@example.com (user-2)" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: "alice@example.com (user-1)" }),
+      screen.getByRole("option", { name: "bob@example.com (user-2)" }),
     ).toBeInTheDocument();
+
+    await user.click(aliceOption);
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-user-edit-confirm"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProviderUser).toHaveBeenCalledWith({
+        providerId: 1,
+        linkId: 11,
+        userId: "user-1",
+      }),
+    );
+  });
+
+  it("only fetches the user directory once the re-point dialog is opened", async () => {
+    const listUsers = vi.spyOn(superAdminService, "listUsers");
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText("Identity links to accounts for GitHub.");
+    expect(listUsers).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByTestId("super-admin-auth-provider-user-edit-10"),
+    );
+
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -260,10 +290,6 @@ describe("Super Admin Auth Provider User Links page", () => {
 // tests above can't catch a missing handler for a new endpoint; this is
 // what actually exercises that path end to end.
 describe("Super Admin Auth Provider User Links page (network-level MSW handlers)", () => {
-  afterEach(() => {
-    currentUserId.value = "self-id";
-  });
-
   it("loads the user-links table and the re-point dropdown's options over the network", async () => {
     const user = userEvent.setup();
     renderPage();
