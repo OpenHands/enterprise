@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { Toggle } from "#/components/shared/toggle/toggle";
@@ -203,6 +204,10 @@ interface AuthProviderFormState {
    * authenticates through this provider, or only an already-linked account
    * may sign in through it. */
   allowRegistration: boolean;
+  /** Initial value of a new user's ``User.allow_match_by_email`` flag when
+   * they are first created by a login through this provider -- see
+   * ``server.auth.provider_identity.resolve_or_create_user``. */
+  allowMatchByEmail: boolean;
   providerType: OAuthProviderBrand;
   clientId: string;
   clientSecret: string;
@@ -241,6 +246,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   icon: "",
   color: DEFAULT_AUTH_PROVIDER_COLOR,
   allowRegistration: true,
+  allowMatchByEmail: true,
   providerType: "enterprise_sso",
   clientId: "",
   clientSecret: "",
@@ -272,6 +278,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       icon: provider.icon ?? "",
       color: provider.color,
       allowRegistration: provider.allow_registration,
+      allowMatchByEmail: provider.allow_match_by_email,
       providerType: details.provider_type,
       clientId: details.client_id,
       authorizationUrl: details.authorization_url ?? "",
@@ -292,6 +299,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
       icon: provider.icon ?? "",
       color: provider.color,
       allowRegistration: provider.allow_registration,
+      allowMatchByEmail: provider.allow_match_by_email,
       metadataUrl: details.metadata_url ?? "",
       idpEntityId: details.idp_entity_id ?? "",
       ssoUrl: details.sso_url ?? "",
@@ -311,6 +319,7 @@ function toFormState(provider: AuthProvider): AuthProviderFormState {
     icon: provider.icon ?? "",
     color: provider.color,
     allowRegistration: provider.allow_registration,
+    allowMatchByEmail: provider.allow_match_by_email,
   };
 }
 
@@ -382,7 +391,10 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
     kind: KIND_OAUTH,
     provider_type: form.providerType,
     client_id: form.clientId.trim(),
-    client_secret: form.clientSecret ? form.clientSecret : null,
+    // Omitted (not ``null``) when blank: the server treats an explicit
+    // ``null`` as "unset the secret" but keeps the existing one for an
+    // omitted field (``_carry_forward_unset_oauth_fields``).
+    ...(form.clientSecret && { client_secret: form.clientSecret }),
     authorization_url: form.authorizationUrl.trim() || null,
     token_url: form.tokenUrl.trim() || null,
     userinfo_url: form.userinfoUrl.trim() || null,
@@ -603,6 +615,15 @@ function AuthProviderFormModal({
           }
         >
           {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
+        </SettingsSwitch>
+        <SettingsSwitch
+          testId="super-admin-auth-provider-allow-match-by-email"
+          isToggled={form.allowMatchByEmail}
+          onToggle={(value) =>
+            setForm((prev) => ({ ...prev, allowMatchByEmail: value }))
+          }
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL)}
         </SettingsSwitch>
         {form.kind === KIND_OAUTH ? (
           <>
@@ -957,12 +978,14 @@ function buildUpdatePayload(
     icon: form.icon.trim() || null,
     color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
     allow_registration: form.allowRegistration,
+    allow_match_by_email: form.allowMatchByEmail,
     ...(detailsChanged && { details: buildDetails(form) }),
   };
 }
 
 export function SuperAdminAuthProviders() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const copy = navCopy(SUPER_ADMIN_PATHS.authProviders);
   const { data, isLoading, isError } = useAuthProviders();
   const createProvider = useCreateAuthProvider();
@@ -1010,6 +1033,7 @@ export function SuperAdminAuthProviders() {
         icon: form.icon.trim() || null,
         color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: form.allowRegistration,
+        allow_match_by_email: form.allowMatchByEmail,
         details: buildDetails(form),
       };
       createProvider.mutate(payload, { onSuccess: closeForm });
@@ -1121,6 +1145,14 @@ export function SuperAdminAuthProviders() {
                     label: t(I18nKey.BUTTON$EDIT),
                     testId: `super-admin-auth-provider-edit-${row.id}`,
                     onSelect: () => openEdit(row),
+                  },
+                  {
+                    label: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS),
+                    testId: `super-admin-auth-provider-user-links-${row.id}`,
+                    onSelect: () =>
+                      navigate(
+                        `${SUPER_ADMIN_PATHS.authProviders}/${row.id}/users`,
+                      ),
                   },
                   {
                     label: t(I18nKey.BUTTON$DELETE),

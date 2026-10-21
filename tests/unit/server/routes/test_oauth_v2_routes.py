@@ -18,8 +18,11 @@ run without a database or live OAuth provider.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
 import pytest
@@ -334,6 +337,56 @@ def test_list_providers(client, jwt_svc):
     assert body['providers'][0]['kind'] == OAuthProviderDetails.__name__
     assert body['providers'][0]['title'] == 'Github'
     assert body['providers'][0]['is_idp'] is False
+
+
+def test_list_git_providers_requires_auth(client, app):
+    _override_user_context(app, None)
+    response = client.get('/oauth/git-providers')
+    assert response.status_code == 401
+
+
+def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt_svc):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    github = _fake_provider(provider_id=1, category='github')
+    gitlab = _fake_provider(provider_id=2, category='gitlab')
+    for provider in (github, gitlab):
+        provider.icon = None
+        provider.color = '#000000'
+
+    async def fake_get_raw(store):
+        return object() if store.oauth_provider_id == 1 else None
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_git_providers',
+            new=AsyncMock(return_value=[github, gitlab]),
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'get_raw', new=fake_get_raw),
+    ):
+        response = client.get('/oauth/git-providers')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [(p['id'], p['provider_type'], p['connected']) for p in body] == [
+        (1, 'github', True),
+        (2, 'gitlab', False),
+    ]
+    assert 'client_id' not in body[0]
+
+
+def test_list_git_providers_empty_when_none_defined(client, app, jwt_svc):
+    _override_user_context(app, uuid4())
+    with patch.object(
+        oauth_v2.AuthProviderStore,
+        'get_git_providers',
+        new=AsyncMock(return_value=[]),
+    ):
+        response = client.get('/oauth/git-providers')
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 # ── callback login flow ──────────────────���──────────────────────────────
@@ -836,7 +889,23 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
     store_tokens.assert_not_awaited()
 
 
-def test_callback_link_flow_no_cookie(client, jwt_svc):
+def _link_state(user_id, *, nonce: str = 'nonce-1', issued_at: float | None = None):
+    return oauth_v2._encrypt_state(
+        {
+            'redirect_url': '/settings',
+            'mode': 'link',
+            'user_id': str(user_id),
+            'nonce': nonce,
+            'issued_at': time.time() if issued_at is None else issued_at,
+        }
+    )
+
+
+def _nonce_cookie(nonce: str = 'nonce-1') -> dict[str, str]:
+    return {'Cookie': f'{oauth_v2.LINK_NONCE_COOKIE}={nonce}'}
+
+
+def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
     provider = _fake_provider()
     user_id = uuid4()
     token_response = {'access_token': 'at', 'refresh_token': 'rt'}
@@ -859,26 +928,79 @@ def test_callback_link_flow_no_cookie(client, jwt_svc):
             oauth_v2.OAuthTokenStore,
             'store_tokens',
             new=AsyncMock(),
-        ),
+        ) as store_tokens,
     ):
-        state = oauth_v2._encrypt_state(
-            {
-                'redirect_url': '/settings',
-                'mode': 'link',
-                'user_id': str(user_id),
-                'nonce': 'n',
-            }
-        )
         response = client.get(
             '/oauth/1/callback',
-            params={'code': 'c', 'state': state},
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
             follow_redirects=False,
         )
 
     assert response.status_code == 302
-    # No auth cookie on link flow.
+    # No auth cookie on link flow, and the one-shot nonce cookie is cleared.
     assert 'openhands_auth' not in response.cookies
-    link.assert_awaited_once()
+    cleared = SimpleCookie(response.headers['set-cookie'])[oauth_v2.LINK_NONCE_COOKIE]
+    assert cleared.value == ''
+    assert cleared['max-age'] == '0'
+    assert cleared['path'] == '/oauth'
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id, user_id=user_id, external_subject_id='ext-2'
+    )
+    store_tokens.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ('headers', 'issued_at', 'detail'),
+    [
+        pytest.param(
+            {}, None, 'Link flow was not started by this browser', id='no-nonce-cookie'
+        ),
+        pytest.param(
+            _nonce_cookie('someone-else'),
+            None,
+            'Link flow was not started by this browser',
+            id='mismatched-nonce',
+        ),
+        pytest.param(
+            _nonce_cookie(),
+            time.time() - oauth_v2.LINK_STATE_TTL_SECONDS - 1,
+            'Link flow expired; start it again',
+            id='expired-state',
+        ),
+    ],
+)
+def test_callback_link_rejects_state_not_bound_to_this_browser(
+    client, jwt_svc, headers, issued_at, detail
+):
+    """A link ``start_url`` sent to another browser must not link that
+    browser's provider identity to the user named in the state."""
+    provider = _fake_provider()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(oauth_v2, '_exchange_code', new=AsyncMock()) as exchange,
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(
+            oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()
+        ) as store_tokens,
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(uuid4(), issued_at=issued_at)},
+            headers=headers,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == detail
+    exchange.assert_not_awaited()
+    link.assert_not_awaited()
+    store_tokens.assert_not_awaited()
 
 
 def test_callback_missing_code_400(client, jwt_svc):
@@ -928,14 +1050,21 @@ def test_callback_link_missing_user_id_in_state_400(client, jwt_svc):
         patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
     ):
         state = oauth_v2._encrypt_state(
-            {'redirect_url': '/s', 'mode': 'link', 'nonce': 'n'}
+            {
+                'redirect_url': '/s',
+                'mode': 'link',
+                'nonce': 'nonce-1',
+                'issued_at': time.time(),
+            }
         )
         response = client.get(
             '/oauth/1/callback',
             params={'code': 'c', 'state': state},
+            headers=_nonce_cookie(),
             follow_redirects=False,
         )
     assert response.status_code == 400
+    assert response.json()['detail'] == 'Link flow missing user_id in state'
 
 
 # ── link (authenticated) ────────────────────────────────────────────────
@@ -964,6 +1093,22 @@ def test_link_idp_provider_400(app, client, jwt_svc):
     assert response.status_code == 400
 
 
+def test_link_unknown_provider_kind_404(app, client, jwt_svc):
+    provider = _fake_unknown_kind_provider()
+    provider.is_idp = False
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        _override_user_context(app, uuid4())
+        response = client.post('/oauth/6/link')
+    assert response.status_code == 404
+
+
 def test_link_returns_start_url(app, client, jwt_svc):
     provider = _fake_provider()
     user_id = uuid4()
@@ -977,10 +1122,64 @@ def test_link_returns_start_url(app, client, jwt_svc):
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
-    assert response.status_code == 200
-    body = response.json()
-    assert 'start_url' in body
-    assert 'mode=link' in body['start_url']
+        assert response.status_code == 200
+        start_url = urlsplit(response.json()['start_url'])
+        query = parse_qs(start_url.query)
+        state = oauth_v2._decrypt_state(query['state'][0])
+
+    # The browser goes straight to the provider with a state the callback
+    # accepts in link mode: it must carry the signed-in user's id.
+    assert f'{start_url.scheme}://{start_url.netloc}{start_url.path}' == (
+        'https://example.com/auth'
+    )
+    assert query['redirect_uri'] == ['https://testserver/oauth/1/callback']
+    assert state['mode'] == 'link'
+    assert state['user_id'] == str(user_id)
+    assert state['redirect_url'] == 'https://testserver/settings/integrations'
+    assert time.time() - state['issued_at'] < 60
+
+    # The state is bound to this browser by a nonce cookie the provider's
+    # cross-site redirect back to the callback still carries.
+    cookie = SimpleCookie(response.headers['set-cookie'])[oauth_v2.LINK_NONCE_COOKIE]
+    assert cookie.value == state['nonce']
+    assert len(state['nonce']) >= 32
+    assert cookie['httponly'] is True
+    assert cookie['secure'] is True
+    assert cookie['samesite'].lower() == 'lax'
+    assert cookie['path'] == '/oauth'
+    assert cookie['max-age'] == str(oauth_v2.LINK_NONCE_COOKIE_MAX_AGE)
+    assert oauth_v2.LINK_NONCE_COOKIE_MAX_AGE > oauth_v2.LINK_STATE_TTL_SECONDS
+
+
+def test_link_start_url_completes_in_the_browser_that_started_it(app, jwt_svc):
+    # https, so the jar sends the Secure nonce cookie back; it applies Path too.
+    client = TestClient(app, base_url='https://testserver')
+    provider = _fake_provider()
+    user_id = uuid4()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, {'id': 42}),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+    ):
+        _override_user_context(app, user_id)
+        start = client.post('/oauth/1/link')
+        state = parse_qs(urlsplit(start.json()['start_url']).query)['state'][0]
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id, user_id=user_id, external_subject_id='42'
+    )
 
 
 # ── unlink ───────────────────────────────────────────────────────────────

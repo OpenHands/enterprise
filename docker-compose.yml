@@ -53,7 +53,7 @@
 #     Kubernetes-style scheduling here.
 
 # enterprise-server tag must match the release this file ships with.
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.73.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.74.0} # x-release-please-version
 
 services:
   db:
@@ -332,7 +332,7 @@ services:
   # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
   # Telemetry is disabled at runtime: the released bundle has a PostHog key.
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.28.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.29.0}
     init: true
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
     # The static server only accepts `--flag value`, not `--flag=value`.
