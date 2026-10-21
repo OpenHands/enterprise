@@ -137,7 +137,7 @@ def test_get_conversation_settings_schema_endpoint(test_client):
     schema = response.json()
     assert schema['model_name'] == 'ConversationSettings'
     section_keys = [s['key'] for s in schema['sections']]
-    assert section_keys == ['general', 'verification']
+    assert section_keys == ['general', 'verification', 'runtime']
     verification_section = next(
         s for s in schema['sections'] if s['key'] == 'verification'
     )
