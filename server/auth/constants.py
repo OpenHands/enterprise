@@ -130,3 +130,12 @@ SUSPICIOUS_LABELS = {
     'SUSPICIOUS_ACCOUNT_CREATION',
     'RELATED_ACCOUNTS_NUMBER_HIGH',
 }
+
+
+def is_oauth_v2_login_enabled() -> bool:
+    """``ENABLE_OAUTH_V2_LOGIN``, parsed as the web client parses it.
+
+    Read on each call, not at import, so the server and its tests see the
+    current value.
+    """
+    return os.getenv('ENABLE_OAUTH_V2_LOGIN', 'false').lower() in ('true', '1')
