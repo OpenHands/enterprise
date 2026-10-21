@@ -241,6 +241,18 @@ export const extractRepositoryInfo = (
 };
 
 /**
+ * Percent-encode one URL path segment. Names that arrive already encoded
+ * (`Web%20Apps`) are decoded first so they are not encoded twice.
+ */
+const encodePathSegment = (segment: string): string => {
+  try {
+    return encodeURIComponent(decodeURIComponent(segment));
+  } catch {
+    return encodeURIComponent(segment);
+  }
+};
+
+/**
  * Construct the repository URL for different providers
  * @param provider The git provider
  * @param repositoryName The repository name in format "owner/repo"
@@ -250,6 +262,7 @@ export const extractRepositoryInfo = (
  * constructRepositoryUrl("github", "owner/repo") // "https://github.com/owner/repo"
  * constructRepositoryUrl("gitlab", "owner/repo") // "https://gitlab.com/owner/repo"
  * constructRepositoryUrl("bitbucket", "owner/repo") // "https://bitbucket.org/owner/repo"
+ * constructRepositoryUrl("azure_devops", "org/Web Apps/repo", "dev.azure.com") // "https://dev.azure.com/org/Web%20Apps/_git/repo"
  */
 export const constructRepositoryUrl = (
   provider: Provider,
@@ -260,6 +273,14 @@ export const constructRepositoryUrl = (
   if (provider === "bitbucket_data_center") {
     const [project, repo] = repositoryName.split("/");
     return `${baseUrl}/projects/${project}/repos/${repo}`;
+  }
+  if (provider === "azure_devops") {
+    // Azure DevOps format: org/project/repo
+    const parts = repositoryName.split("/");
+    if (parts.length === 3) {
+      const [org, project, repo] = parts.map(encodePathSegment);
+      return `${baseUrl}/${org}/${project}/_git/${repo}`;
+    }
   }
   return `${baseUrl}/${repositoryName}`;
 };

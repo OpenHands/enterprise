@@ -103,6 +103,8 @@ export interface AzureDevOpsWebhookStatus {
   work_item_subscription_id: string | null;
   webhook_url: string;
   webhook_secret_set: boolean;
+  can_view_webhooks: boolean;
+  can_manage_webhooks: boolean;
 }
 
 export interface AzureDevOpsWebhookInstallationResult {

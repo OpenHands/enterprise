@@ -275,6 +275,35 @@ describe("Super Admin Organizations page", () => {
     expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
   });
 
+  it("lists only team organizations when the instance hides personal workspaces", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      ACME,
+      SAM_PERSONAL_WORKSPACE,
+    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          hide_personal_workspaces: true,
+        },
+      }),
+    );
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByText("ORG$PERSONAL_WORKSPACE"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("sam@beta.llc")).not.toBeInTheDocument();
+  });
+
   it("does not offer to open or act on another user's personal workspace", async () => {
     // Arrange
     vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([

@@ -291,8 +291,26 @@ describe("SuperAdminSetupFloatingWidget", () => {
     );
 
     // Assert
-    expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+    expect(replace).toHaveBeenCalledWith("/canvas/mcp?org=guide-org");
     vi.unstubAllGlobals();
+  });
+
+  it("opens a step in this app without an organization in the URL", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(
+      within(
+        screen.getByTestId("super-admin-setup-floating-step-invite-users"),
+      ).getByRole("button", { name: /SUPER_ADMIN\$SETUP_STEP_INVITE/ }),
+    );
+
+    // Assert
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      /^\/settings\/org-members$/,
+    );
   });
 
   it("starts only the next step's tour from Start", async () => {
@@ -308,7 +326,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
   });
 
   describe("when the guide's next step is done", () => {
-    it("opens the next step in Agent Canvas and asks Canvas for its tour", async () => {
+    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
       // Arrange
       renderWidget(SUPER_ADMIN_PATHS.organizations);
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
@@ -321,7 +339,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
       // Assert
       await waitFor(() =>
         expect(screen.getByTestId("location")).toHaveTextContent(
-          "/automations/templates?setup_tour=first-automation",
+          "/automations/templates?setup_tour=first-automation&org=guide-org",
         ),
       );
       expect(startGuidedTour).not.toHaveBeenCalled();

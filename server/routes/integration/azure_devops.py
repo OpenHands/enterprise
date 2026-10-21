@@ -28,6 +28,7 @@ from openhands.app_server.integrations.azure_devops.service.webhooks import (
     AZURE_DEVOPS_PR_COMMENT_EVENT,
     AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT,
 )
+from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AZURE_DEVOPS_WEBHOOK_SECRET
@@ -51,6 +52,10 @@ class AzureDevOpsWebhookStatus(BaseModel):
     work_item_subscription_id: str | None
     webhook_url: str
     webhook_secret_set: bool
+    # False when the user's Azure DevOps permissions hide the org's Service
+    # Hooks, so the installed flags above can't be trusted.
+    can_view_webhooks: bool = True
+    can_manage_webhooks: bool = True
 
 
 class AzureDevOpsWebhookInstallationResult(BaseModel):
@@ -226,6 +231,27 @@ async def _service_for_organization(
     return service
 
 
+async def _service_hook_permissions(
+    service: SaaSAzureDevOpsService,
+) -> tuple[bool, bool]:
+    """Return (can_view, can_manage) for the org's Service Hooks."""
+    try:
+        can_view, can_edit = await service.get_service_hook_permissions()
+    except Exception as e:
+        # Unknown permissions keep the listing-based status and actions.
+        logger.warning(f'Could not evaluate Azure DevOps Service Hook permissions: {e}')
+        return True, True
+    # Install and uninstall list the hooks first, so managing needs both.
+    return can_view, can_view and can_edit
+
+
+def _is_access_denied(error: Exception) -> bool:
+    # Azure answers 401 or 403 when the user can't read the org's Service Hooks.
+    return isinstance(error, AuthenticationError) or (
+        isinstance(error, AzureDevOpsApiError) and error.status_code == 403
+    )
+
+
 @azure_devops_integration_router.get('/azure-devops/organizations')
 async def get_azure_devops_organizations(
     user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
@@ -263,7 +289,16 @@ async def get_azure_devops_resources(
         service = await _service_for_organization(user_id, organization)
         webhook_url = azure_devops_webhook_url()
 
-        subscriptions = await service.list_service_hook_subscriptions()
+        can_view, can_manage = await _service_hook_permissions(service)
+        subscriptions: list[dict[str, Any]] = []
+        if can_view:
+            try:
+                subscriptions = await service.list_service_hook_subscriptions()
+            except (AuthenticationError, AzureDevOpsApiError) as e:
+                if not _is_access_denied(e):
+                    raise
+                logger.info(f'Azure DevOps Service Hooks not readable by user: {e}')
+                can_view = can_manage = False
         pr_subscription = _find_subscription(
             subscriptions,
             lambda subscription: _matches_pr_comment_subscription(
@@ -295,6 +330,8 @@ async def get_azure_devops_resources(
             else None,
             webhook_url=webhook_url,
             webhook_secret_set=bool(IS_LOCAL_DEPLOYMENT or AZURE_DEVOPS_WEBHOOK_SECRET),
+            can_view_webhooks=can_view,
+            can_manage_webhooks=can_manage,
         )
 
     except HTTPException:

@@ -1,6 +1,8 @@
 import { openHands } from "../open-hands-axios";
 import type {
   AuthProvider,
+  AuthProviderUserLink,
+  AuthProviderUserLinkPage,
   CreateAuthProviderParams,
   PublicIdpProvider,
   SamlIdpMetadata,
@@ -60,6 +62,52 @@ export const authProvidersService = {
   listPublicIdpProviders: async () => {
     const { data } = await openHands.get<PublicIdpProvider[]>(
       "/oauth/idp-providers",
+    );
+    return data;
+  },
+
+  /** Paginated "User Links" (``auth_provider_users``) for one provider --
+   * backs ``/super-admin/auth-providers/{provider_id}/users``. ``page`` is
+   * 1-based; converted to the backend's offset ``page_id`` here, mirroring
+   * ``adminService.getAllUsers``. */
+  listAuthProviderUsers: async ({
+    providerId,
+    page = 1,
+    limit = 10,
+    q,
+  }: {
+    providerId: number;
+    page?: number;
+    limit?: number;
+    q?: string;
+  }) => {
+    const params = new URLSearchParams();
+    const offset = (page - 1) * limit;
+    params.set("page_id", String(offset));
+    params.set("limit", String(limit));
+    if (q) {
+      params.set("q", q);
+    }
+    const { data } = await openHands.get<AuthProviderUserLinkPage>(
+      `/api/admin/oauth-providers/${providerId}/users?${params.toString()}`,
+    );
+    return data;
+  },
+
+  /** Re-points a "User Link" to a different, already-existing user (see
+   * ``server.routes.oauth_providers_admin.update_auth_provider_user``). */
+  updateAuthProviderUser: async ({
+    providerId,
+    linkId,
+    userId,
+  }: {
+    providerId: number;
+    linkId: number;
+    userId: string;
+  }) => {
+    const { data } = await openHands.patch<AuthProviderUserLink>(
+      `/api/admin/oauth-providers/${providerId}/users/${linkId}`,
+      { user_id: userId },
     );
     return data;
   },

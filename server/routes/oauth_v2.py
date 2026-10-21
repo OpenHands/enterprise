@@ -30,6 +30,7 @@ step differs.
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -76,6 +77,13 @@ from storage.user_store import UserStore
 # HTTP timeout for external OAuth/token endpoint calls.
 OAUTH_HTTP_TIMEOUT = 15.0
 
+# Binds a link flow's state to the browser that started it.
+LINK_NONCE_COOKIE = 'openhands_oauth_link_nonce'
+LINK_STATE_TTL_SECONDS = 600
+# Outlives the state, so a late callback still carries the cookie and gets
+# "expired" instead of "not started by this browser".
+LINK_NONCE_COOKIE_MAX_AGE = LINK_STATE_TTL_SECONDS + 60
+
 oauth_v2_router = APIRouter(prefix='/oauth', tags=['OAuth v2'])
 
 
@@ -88,6 +96,7 @@ class OAuthState(BaseModel):
     # linking. Absent on login flows.
     user_id: str | None = None
     nonce: str = ''
+    issued_at: float = 0.0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -110,7 +119,7 @@ def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
     """Narrow ``provider.details`` to ``OAuthProviderDetails``.
 
     Every caller of this helper runs after ``oauth_v2_login`` /
-    ``oauth_v2_callback`` have excluded non-OAuth2 rows (see
+    ``oauth_v2_callback`` / ``oauth_v2_link`` have excluded non-OAuth2 rows (see
     ``_require_oauth_provider``), so this should never actually mismatch -- the
     assertion documents that invariant instead of silently reaching into the
     wrong subclass's fields.
@@ -395,36 +404,39 @@ async def oauth_v2_login(
         return RedirectResponse(target, status_code=302)
 
     _require_oauth_provider(provider)
-    details = _oauth_details(provider)
-    auth_url = details.authorization_url
-    if not auth_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Provider {provider_id} has no authorization_url',
-        )
-
     state = OAuthState(
         redirect_url=redirect_url,
         mode=mode,
         nonce=str(time.time()),
     )
-    encrypted_state = _encrypt_state(state.model_dump())
+    return RedirectResponse(_authorization_url(request, provider, state))
+
+
+def _authorization_url(
+    request: Request, provider: AuthProvider, state: OAuthState
+) -> str:
+    """The provider's authorization URL for ``state``, returning to our callback."""
+    details = _oauth_details(provider)
+    auth_url = details.authorization_url
+    if not auth_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no authorization_url',
+        )
 
     web_url = get_web_url(request)
-    callback_uri = f'{web_url}/oauth/{provider_id}/callback'
-
     params = {
         'client_id': details.client_id,
-        'redirect_uri': callback_uri,
+        'redirect_uri': f'{web_url}/oauth/{provider.id}/callback',
         'response_type': 'code',
-        'state': encrypted_state,
+        'state': _encrypt_state(state.model_dump()),
     }
     scopes = details.scopes or []
     if scopes:
         params['scope'] = ' '.join(scopes)
 
     separator = '&' if '?' in auth_url else '?'
-    return RedirectResponse(f'{auth_url}{separator}{urlencode(params)}')
+    return f'{auth_url}{separator}{urlencode(params)}'
 
 
 @oauth_v2_router.get('/{provider_id}/callback')
@@ -466,6 +478,9 @@ async def oauth_v2_callback(
             detail='Invalid or tampered OAuth state',
         ) from exc
 
+    if state_data.mode == 'link':
+        link_user_id = _verify_link_state(request, state_data)
+
     web_url = get_web_url(request)
     redirect_uri = f'{web_url}/oauth/{provider_id}/callback'
 
@@ -475,12 +490,7 @@ async def oauth_v2_callback(
     )
 
     if state_data.mode == 'link':
-        if not state_data.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Link flow missing user_id in state',
-            )
-        user_id = state_data.user_id
+        user_id = link_user_id
         # Best-effort userinfo for the external subject link.
         try:
             userinfo = await _fetch_userinfo(provider, access_token)
@@ -550,7 +560,45 @@ async def oauth_v2_callback(
         )
     else:
         response = RedirectResponse(redirect_url, status_code=302)
+        response.delete_cookie(
+            LINK_NONCE_COOKIE,
+            path='/oauth',
+            secure=web_url.startswith('https'),
+            httponly=True,
+            samesite='lax',
+        )
     return response
+
+
+def _verify_link_state(request: Request, state: OAuthState) -> str:
+    """Return the user to link, if this browser started the link flow.
+
+    The state alone names the user, so without this an attacker could send
+    their own ``start_url`` to a victim and capture the victim's provider
+    identity and tokens. The session cookie can't be checked instead: it is
+    ``SameSite=strict`` in production, so the provider's redirect lacks it.
+    """
+    if not state.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow missing user_id in state',
+        )
+    cookie_nonce = request.cookies.get(LINK_NONCE_COOKIE)
+    if not (
+        state.nonce
+        and cookie_nonce
+        and secrets.compare_digest(cookie_nonce, state.nonce)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow was not started by this browser',
+        )
+    if time.time() - state.issued_at > LINK_STATE_TTL_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow expired; start it again',
+        )
+    return state.user_id
 
 
 @oauth_v2_router.post('/{provider_id}/link')
@@ -561,9 +609,10 @@ async def oauth_v2_link(
 ):
     """Link a git provider to the signed-in user.
 
-    Returns a JSON body with a ``start_url`` to ``/oauth/{provider_id}/login``
-    in link mode, which the frontend navigates the browser to. The callback
-    completes the link.
+    Returns a JSON body with a ``start_url``: the provider's authorization
+    URL, carrying an encrypted link-mode state bound to ``user_id``. It also
+    sets a nonce cookie that the callback matches against the state. The
+    frontend navigates the browser to it; the callback completes the link.
     """
     if not user_id:
         raise HTTPException(
@@ -576,23 +625,31 @@ async def oauth_v2_link(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
         )
+    _require_oauth_provider(provider)
     web_url = get_web_url(request)
     link_state = OAuthState(
         redirect_url=f'{web_url}/settings/integrations',
         mode='link',
         user_id=user_id,
-        nonce=str(time.time()),
+        nonce=secrets.token_urlsafe(32),
+        issued_at=time.time(),
     )
-    encrypted = _encrypt_state(link_state.model_dump())
-    start_url = (
-        f'{web_url}/oauth/{provider_id}/login'
-        f'?mode=link&redirect_url={web_url}/settings/integrations'
-        f'&_state={encrypted}'
-    )
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={'start_url': start_url},
+        content={'start_url': _authorization_url(request, provider, link_state)},
     )
+    # ``lax``, unlike the session cookie, so the provider's top-level
+    # redirect back to the callback carries it.
+    response.set_cookie(
+        key=LINK_NONCE_COOKIE,
+        value=link_state.nonce,
+        max_age=LINK_NONCE_COOKIE_MAX_AGE,
+        path='/oauth',
+        secure=web_url.startswith('https'),
+        httponly=True,
+        samesite='lax',
+    )
+    return response
 
 
 @oauth_v2_router.delete('/{provider_id}', status_code=status.HTTP_204_NO_CONTENT)
@@ -643,6 +700,55 @@ async def oauth_v2_list_providers():
             for p in providers
         ]
     }
+
+
+class GitProviderStatus(BaseModel):
+    """A git provider defined in ``auth_providers``, with whether the signed-in
+    user has linked it (i.e. has an ``oauth_tokens`` row for it).
+    """
+
+    id: int
+    title: str
+    icon: str | None
+    color: str
+    provider_type: str
+    connected: bool
+
+
+@oauth_v2_router.get('/git-providers', response_model=list[GitProviderStatus])
+async def oauth_v2_list_git_providers(
+    user_id: str = Depends(get_user_id),
+) -> list[GitProviderStatus]:
+    """Git providers the signed-in user can connect, with link status.
+
+    Backs the Integrations settings page when ``ENABLE_OAUTH_V2_LOGIN`` is on:
+    the cards come from the ``auth_providers`` git rows and the connected state
+    from ``oauth_tokens``. No secrets or provider URLs are returned.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+        )
+    user_uuid = uuid.UUID(user_id)
+    result: list[GitProviderStatus] = []
+    for provider in await AuthProviderStore().get_git_providers():
+        if not isinstance(provider.details, OAuthProviderDetails):
+            continue
+        token = await OAuthTokenStore(
+            user_id=user_uuid, oauth_provider_id=provider.id
+        ).get_raw()
+        result.append(
+            GitProviderStatus(
+                id=provider.id,
+                title=provider.title,
+                icon=provider.icon,
+                color=provider.color,
+                provider_type=provider.details.provider_type.value,
+                connected=token is not None,
+            )
+        )
+    return result
 
 
 class PublicIdpProvider(BaseModel):

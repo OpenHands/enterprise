@@ -70,6 +70,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
     SQLAppConversationInfoService,
 )
 from openhands.app_server.config import (
+    AppServerConfig,
     get_event_callback_service,
     resolve_provider_llm_base_url,
 )
@@ -141,7 +142,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec
+from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec, Tool
 from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.tool.defaults import selects_tool
 from openhands.sdk.utils.redact import (
@@ -325,6 +326,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
+    enable_child_conversation_launcher: bool = False
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -462,6 +464,36 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='client_tools are not supported for ACP agent launches',
             )
+        if request.llm_profile:
+            if not isinstance(agent_settings, OpenHandsAgentSettings):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='llm_profile is not supported for ACP agent launches',
+                )
+            profile_llm = user.llm_profiles.get(request.llm_profile)
+            if profile_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Profile '{request.llm_profile}' not found",
+                )
+            # Imported lazily: settings_router transitively imports this service,
+            # so a module-level import would be circular.
+            from openhands.app_server.settings.settings_router import (
+                LITE_LLM_API_URL,
+            )
+
+            # Resolve the profile as switch_profile does, and copy rather than
+            # mutate: the user context may cache the resolved settings.
+            agent_settings = agent_settings.model_copy(
+                update={
+                    'llm': resolve_profile_llm(
+                        profile_llm,
+                        managed_proxy_url=LITE_LLM_API_URL,
+                        fallback_api_key=agent_settings.llm.api_key,
+                    )
+                }
+            )
+            user = user.model_copy(update={'agent_settings': agent_settings})
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -2265,6 +2297,38 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
+            if self.enable_child_conversation_launcher and self.web_url:
+                # Server-side child launches: the tool runs inside the sandbox
+                # and calls back into this app server, which provisions the
+                # child through the normal lifecycle (see
+                # child_conversation_router). Gated because every sandbox
+                # image must carry the tool before it is attached, and Agent
+                # Canvas must know how to treat server-launched children on
+                # Cloud. Imported here: the pinned openhands-sdk may predate
+                # the tool, in which case the launcher is skipped.
+                try:
+                    from openhands.tools.child_conversation import (
+                        StartChildConversationTool,
+                    )
+                except ImportError:
+                    _logger.warning(
+                        'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
+                        'openhands-sdk has no start_child_conversation tool; '
+                        'conversation %s starts without it',
+                        conversation_id,
+                    )
+                else:
+                    tools.append(
+                        Tool(
+                            name=StartChildConversationTool.name,
+                            params={
+                                'launch_url': (
+                                    f'{self.web_url}/api/v1/webhooks/'
+                                    f'conversations/{conversation_id}/children'
+                                )
+                            },
+                        )
+                    )
 
         # --- build AgentSettings and create agent ---------------------------
         # When enterprise persistent memory is enabled, stamp load_memory=True
@@ -3256,6 +3320,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         return b''.join(chunks)
 
 
+def get_sandbox_web_url(
+    config: AppServerConfig, sandbox_service: SandboxService
+) -> str | None:
+    """Return the URL the sandbox uses to reach OpenHands."""
+    web_url = config.sandbox_web_url or config.web_url
+    # If no web url has been set and we are using docker, we can use host.docker.internal
+    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
+        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    return web_url
+
+
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     sandbox_startup_timeout: int = Field(
         default=120, description='The max timeout time for sandbox startup'
@@ -3341,11 +3416,8 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 )
             config = get_global_config()
 
-            # If no web url has been set and we are using docker, we can use host.docker.internal
-            web_url = config.web_url
-            if web_url is None:
-                if isinstance(sandbox_service, DockerSandboxService):
-                    web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+            # Every use of web_url in this service is a URL the sandbox calls.
+            web_url = get_sandbox_web_url(config, sandbox_service)
 
             # Get app_mode for SaaS mode
             app_mode = None
@@ -3381,6 +3453,9 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
                 httpx_client=httpx_client,
                 web_url=web_url,
+                enable_child_conversation_launcher=(
+                    config.enable_child_conversation_launcher
+                ),
                 openhands_provider_base_url=config.openhands_provider_base_url,
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,

@@ -326,6 +326,9 @@ class AppConversationStartRequest(OpenHandsModel):
     )
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
+    # One-off launch override: run THIS conversation on a saved LLM profile (by
+    # name) without activating it, like the in-conversation switch_profile.
+    llm_profile: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent
     # Profile (by id) without changing the member's active pointer. When unset,
     # the member's active_agent_profile_id is used.

@@ -18,6 +18,7 @@ from server.auth.auth_error import (
 from server.auth.cookie_chunking import delete_chunked_cookie, read_chunked_cookie
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.saas_user_auth import SaasUserAuth, token_manager
+from server.constants import REQUIRE_VERIFIED_EMAILS
 from server.routes.auth import set_response_cookie
 from server.routes.oauth_v2 import _set_oauth_v2_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
@@ -88,7 +89,8 @@ class SetAuthCookieMiddleware:
                     schedule_gitlab_repo_sync(user_id)
 
             if (
-                self._should_attach(request)
+                REQUIRE_VERIFIED_EMAILS
+                and self._should_attach(request)
                 and not request.url.path.startswith('/api/email')
                 and request.url.path
                 not in ('/api/settings', '/api/logout', '/api/authenticate')

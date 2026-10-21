@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from openhands.app_server.integrations.azure_devops.service.base import (
     AzureDevOpsApiError,
 )
+from openhands.app_server.integrations.service_types import AuthenticationError
 from server.routes.integration import azure_devops
 
 
@@ -403,6 +404,9 @@ class _InMemoryAzureOrg:
     async def list_service_hook_subscriptions(self):
         return list(self.hooks.values())
 
+    async def get_service_hook_permissions(self):
+        return True, True
+
     async def delete_service_hook_subscription(self, subscription_id):
         self.calls.append(('delete', subscription_id))
         if subscription_id in self.fail_delete:
@@ -548,6 +552,7 @@ def organization_service(monkeypatch):
     service.organization = 'configured-org'
     service.get_accessible_organizations = AsyncMock(return_value=['Alpha', 'Beta'])
     service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    service.get_service_hook_permissions = AsyncMock(return_value=(True, True))
     service.delete_service_hook_subscription = AsyncMock()
     service.create_pr_comment_service_hook = AsyncMock(return_value={'id': 'pr'})
     service.create_work_item_comment_service_hook = AsyncMock(return_value={'id': 'wi'})
@@ -685,3 +690,141 @@ async def test_scoped_routes_require_an_organization(
 
     assert exc_info.value.status_code == 400
     organization_service.get_accessible_organizations.assert_not_awaited()
+
+
+def _with_permissions(service, *, view=True, edit=True):
+    service.get_service_hook_permissions = AsyncMock(return_value=(view, edit))
+    return service
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_installed_hooks_for_member_who_can_manage(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.pr_subscription_id == 'old-pr'
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_not_installed_when_visible_list_is_empty(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.hooks = {}
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is False
+    assert status.pr_webhook_installed is False
+    assert status.work_item_webhook_installed is False
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_does_not_trust_empty_list_without_view_permission(
+    monkeypatch,
+):
+    # Azure returns an empty list to members who can't view Service Hooks,
+    # even though the org-wide hooks are installed.
+    service = _with_permissions(_InMemoryAzureOrg(), view=False, edit=False)
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.can_view_webhooks is False
+    assert status.can_manage_webhooks is False
+    assert status.webhook_installed is False
+    assert status.pr_subscription_id is None
+    service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'error',
+    [
+        AuthenticationError('Invalid azure_devops token'),
+        AzureDevOpsApiError(403, 'Access denied.'),
+    ],
+)
+async def test_resources_reports_unverifiable_when_azure_denies_listing(
+    monkeypatch, error
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.list_service_hook_subscriptions = AsyncMock(side_effect=error)
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.can_view_webhooks is False
+    assert status.can_manage_webhooks is False
+    assert status.webhook_installed is False
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_status_but_no_actions_for_view_only_member(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg(), view=True, edit=False)
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is False
+
+
+@pytest.mark.asyncio
+async def test_resources_keeps_listing_status_when_permissions_are_unknown(
+    monkeypatch,
+):
+    service = _InMemoryAzureOrg()
+    service.get_service_hook_permissions = AsyncMock(
+        side_effect=AzureDevOpsApiError(400, 'Bad request.')
+    )
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_still_reports_other_azure_listing_errors(monkeypatch):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.list_service_hook_subscriptions = AsyncMock(
+        side_effect=AzureDevOpsApiError(500, 'Service unavailable.')
+    )
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.get_azure_devops_resources(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert 'Service unavailable.' in exc_info.value.detail

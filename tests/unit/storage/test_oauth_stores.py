@@ -422,6 +422,148 @@ class TestAuthProviderUserStore:
         assert row is not None
         assert row.external_subject_id == 'ext-1'
 
+    @pytest.mark.asyncio
+    async def test_get_by_id_found(self, patched_session, make_provider, create_user):
+        provider = await make_provider()
+        user_id = create_user().id
+        link = await AuthProviderUserStore().link(
+            provider.id, user_id, 'ext-1', 'a@b.com'
+        )
+        fetched = await AuthProviderUserStore().get_by_id(link.id)
+        assert fetched is not None
+        assert fetched.user_id == user_id
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_missing(self, patched_session):
+        assert await AuthProviderUserStore().get_by_id(99999) is None
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_scopes_to_provider(
+        self, patched_session, make_provider, create_user
+    ):
+        provider_a = await make_provider(category=ProviderType.GITHUB)
+        provider_b = await make_provider(category=ProviderType.GITLAB)
+        user = create_user(email='a@example.com')
+        await AuthProviderUserStore().link(provider_a.id, user.id, 'ext-a', 'a@b.com')
+        await AuthProviderUserStore().link(provider_b.id, user.id, 'ext-b', 'c@d.com')
+
+        rows = await AuthProviderUserStore().list_by_provider(provider_a.id)
+        assert [link.external_subject_id for link, _user in rows] == ['ext-a']
+        assert await AuthProviderUserStore().count_by_provider(provider_a.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_joins_user_email(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        user = create_user(email='owner@example.com')
+        await AuthProviderUserStore().link(
+            provider.id, user.id, 'ext-1', 'ext@example.com'
+        )
+
+        rows = await AuthProviderUserStore().list_by_provider(provider.id)
+        assert len(rows) == 1
+        link, joined_user = rows[0]
+        assert joined_user.email == 'owner@example.com'
+        assert link.external_email == 'ext@example.com'
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_pagination(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        for i in range(3):
+            await AuthProviderUserStore().link(
+                provider.id, create_user().id, f'ext-{i}', f'{i}@example.com'
+            )
+
+        page1 = await AuthProviderUserStore().list_by_provider(
+            provider.id, offset=0, limit=2
+        )
+        page2 = await AuthProviderUserStore().list_by_provider(
+            provider.id, offset=2, limit=2
+        )
+        assert len(page1) == 2
+        assert len(page2) == 1
+        assert await AuthProviderUserStore().count_by_provider(provider.id) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_filters_on_user_email(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        matching = create_user(email='findme@example.com')
+        create_user(email='other@example.com')
+        await AuthProviderUserStore().link(
+            provider.id, matching.id, 'ext-1', 'a@example.com'
+        )
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-2', 'b@example.com'
+        )
+
+        rows = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='findme'
+        )
+        assert len(rows) == 1
+        assert rows[0][1].email == 'findme@example.com'
+        assert (
+            await AuthProviderUserStore().count_by_provider(
+                provider.id, filter_text='findme'
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_filters_on_external_email_and_subject(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-subject-xyz', 'findme@git.example.com'
+        )
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-2', 'other@git.example.com'
+        )
+
+        by_email = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='findme'
+        )
+        assert [link.external_subject_id for link, _ in by_email] == ['ext-subject-xyz']
+
+        by_subject = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='subject-xyz'
+        )
+        assert [link.external_subject_id for link, _ in by_subject] == [
+            'ext-subject-xyz'
+        ]
+
+    @pytest.mark.asyncio
+    async def test_update_user_sets_only_user_id(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        old_user = create_user()
+        new_user = create_user()
+        link = await AuthProviderUserStore().link(
+            provider.id, old_user.id, 'ext-1', 'ext@example.com'
+        )
+
+        updated = await AuthProviderUserStore().update_user(link.id, new_user.id)
+        assert updated is not None
+        assert updated.user_id == new_user.id
+        # external_email must be preserved -- unlike link(), which would
+        # overwrite it with None when the argument is omitted.
+        assert updated.external_email == 'ext@example.com'
+        assert updated.external_subject_id == 'ext-1'
+
+    @pytest.mark.asyncio
+    async def test_update_user_missing_link_returns_none(
+        self, patched_session, create_user
+    ):
+        assert (
+            await AuthProviderUserStore().update_user(99999, create_user().id) is None
+        )
+
 
 # ── drift math ──────────────────────────────────────────────────────────
 
