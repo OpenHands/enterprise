@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
 
 export const AUTH_PROVIDERS_QUERY_KEY = ["super-admin", "auth-providers"];
@@ -7,6 +7,39 @@ export const useAuthProviders = () =>
   useQuery({
     queryKey: AUTH_PROVIDERS_QUERY_KEY,
     queryFn: () => authProvidersService.listAuthProviders(),
+  });
+
+export const authProviderUsersQueryKey = (
+  providerId: number,
+  page: number,
+  limit: number,
+  q: string | undefined,
+) => [...AUTH_PROVIDERS_QUERY_KEY, providerId, "users", page, limit, q];
+
+/** Paginated "User Links" for one provider -- backs
+ * ``/super-admin/auth-providers/{provider_id}/users``. */
+export const useAuthProviderUsers = ({
+  providerId,
+  page = 1,
+  limit = 10,
+  q,
+}: {
+  providerId: number;
+  page?: number;
+  limit?: number;
+  q?: string;
+}) =>
+  useQuery({
+    queryKey: authProviderUsersQueryKey(providerId, page, limit, q),
+    queryFn: () =>
+      authProvidersService.listAuthProviderUsers({
+        providerId,
+        page,
+        limit,
+        q,
+      }),
+    enabled: Number.isFinite(providerId),
+    placeholderData: keepPreviousData,
   });
 
 export const PUBLIC_IDP_PROVIDERS_QUERY_KEY = ["public", "idp-providers"];

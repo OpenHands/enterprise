@@ -339,6 +339,56 @@ def test_list_providers(client, jwt_svc):
     assert body['providers'][0]['is_idp'] is False
 
 
+def test_list_git_providers_requires_auth(client, app):
+    _override_user_context(app, None)
+    response = client.get('/oauth/git-providers')
+    assert response.status_code == 401
+
+
+def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt_svc):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    github = _fake_provider(provider_id=1, category='github')
+    gitlab = _fake_provider(provider_id=2, category='gitlab')
+    for provider in (github, gitlab):
+        provider.icon = None
+        provider.color = '#000000'
+
+    async def fake_get_raw(store):
+        return object() if store.oauth_provider_id == 1 else None
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_git_providers',
+            new=AsyncMock(return_value=[github, gitlab]),
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'get_raw', new=fake_get_raw),
+    ):
+        response = client.get('/oauth/git-providers')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [(p['id'], p['provider_type'], p['connected']) for p in body] == [
+        (1, 'github', True),
+        (2, 'gitlab', False),
+    ]
+    assert 'client_id' not in body[0]
+
+
+def test_list_git_providers_empty_when_none_defined(client, app, jwt_svc):
+    _override_user_context(app, uuid4())
+    with patch.object(
+        oauth_v2.AuthProviderStore,
+        'get_git_providers',
+        new=AsyncMock(return_value=[]),
+    ):
+        response = client.get('/oauth/git-providers')
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 # ── callback login flow ──────────────────���──────────────────────────────
 
 

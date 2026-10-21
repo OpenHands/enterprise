@@ -11,7 +11,11 @@ vi.mock("#/utils/custom-toast-handlers", () => ({
   displayErrorToast: vi.fn(),
 }));
 
-const status = (organization: string, installed = false) => ({
+const status = (
+  organization: string,
+  installed = false,
+  { canView = true, canManage = true } = {},
+) => ({
   organization,
   webhook_installed: installed,
   pr_webhook_installed: installed,
@@ -20,6 +24,8 @@ const status = (organization: string, installed = false) => ({
   work_item_subscription_id: installed ? `${organization}-wi` : null,
   webhook_url: "https://app.example.com/integration/azure-devops/events",
   webhook_secret_set: true,
+  can_view_webhooks: canView,
+  can_manage_webhooks: canManage,
 });
 
 function renderManager() {
@@ -67,6 +73,9 @@ describe("Azure DevOps organization management", () => {
         await row("Beta")
       ).findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("azure-devops-webhook-permission-note"),
+    ).not.toBeInTheDocument();
     expect(client.getQueryData(["azure-devops-resources", "Alpha"])).toEqual(
       status("Alpha", true),
     );
@@ -117,6 +126,64 @@ describe("Azure DevOps organization management", () => {
       ).findByRole("button", { name: I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL }),
     );
     expect(uninstall).toHaveBeenCalledExactlyOnceWith("Alpha");
+  });
+
+  it("explains and disables actions when the member can't check the webhooks", async () => {
+    const user = userEvent.setup();
+    const install = vi.spyOn(integrationService, "reinstallAzureDevOpsWebhook");
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, false, {
+          canView: org !== "Beta",
+          canManage: org !== "Beta",
+        }),
+    );
+    renderManager();
+    const beta = await row("Beta");
+    expect(
+      await beta.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED),
+    ).toBeInTheDocument();
+    expect(
+      beta.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
+    ).not.toBeInTheDocument();
+    expect(
+      beta.getByTestId("azure-devops-webhook-permission-note"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_VIEW);
+    const installButton = beta.getByRole("button", {
+      name: I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL,
+    });
+    expect(installButton).toBeDisabled();
+    await user.click(installButton);
+    expect(install).not.toHaveBeenCalled();
+    expect(
+      await (
+        await row("Alpha")
+      ).findByRole("button", { name: I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL }),
+    ).toBeEnabled();
+  });
+
+  it("shows the real status but disables changes for a view-only member", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) => status(org!, true, { canManage: false }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      alpha.getByTestId("azure-devops-webhook-permission-note"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_MANAGE);
+    expect(
+      alpha.getByRole("button", {
+        name: I18nKey.AZURE_DEVOPS$WEBHOOK_REINSTALL,
+      }),
+    ).toBeDisabled();
+    expect(
+      alpha.getByRole("button", {
+        name: I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL,
+      }),
+    ).toBeDisabled();
   });
 
   it("keeps another organization usable when one status request fails", async () => {

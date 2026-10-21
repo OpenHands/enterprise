@@ -332,7 +332,7 @@ services:
   # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
   # Telemetry is disabled at runtime: the released bundle has a PostHog key.
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.28.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.29.0}
     init: true
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
     # The static server only accepts `--flag value`, not `--flag=value`.
