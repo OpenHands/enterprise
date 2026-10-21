@@ -23,8 +23,11 @@ jobs:
     env:
       INSTALL_DOCKER: "0" # Set to '0' to skip Docker installation
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12"]
+        # TEMPORARY: measure CPU use with both worker counts. Revert before review.
+        workers: ["auto", "logical"]
     permissions:
       # For coverage comment and python-coverage-comment-action branch
       pull-requests: write
@@ -55,17 +58,38 @@ jobs:
         run: uv sync --locked --all-groups --python ${{ matrix.python-version }}
       - name: Build Environment
         run: make build
+      # TEMPORARY: CPU topology and CPU sampling during the test step. Revert before review.
+      - name: Show CPU topology
+        run: lscpu | grep -E '^(Model name|CPU\(s\)|Thread|Core|Socket)'
+      - name: Start CPU sampler
+        run: |
+          nohup vmstat -n -t 5 > vmstat.log 2>&1 &
+          nohup sh -c 'while true; do date -u +%T; top -b -n 1 -o %CPU | sed -n "7,14p"; sleep 60; done' > top.log 2>&1 &
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
         # [tool.coverage.run] in pyproject.toml.
-        run: uv run pytest -n logical -s ./tests/unit --cov --cov-branch --cov-fail-under=72
+        run: uv run pytest -n ${{ matrix.workers }} -s ./tests/unit --cov --cov-branch --cov-fail-under=72
         env:
-          COVERAGE_FILE: ".coverage.${{ matrix.python-version }}"
+          COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.workers }}"
+      - name: Summarize CPU use
+        if: always()
+        run: |
+          pkill vmstat || true
+          awk '$1 ~ /^[0-9]+$/ {n++; r+=$1; us+=$13; sy+=$14; id+=$15; wa+=$16; st+=$17}
+            END {printf "samples=%d run-queue=%.1f user=%.0f%% sys=%.0f%% idle=%.0f%% iowait=%.0f%% steal=%.0f%%\n", n, r/n, us/n, sy/n, id/n, wa/n, st/n}' vmstat.log
+      - name: Store CPU logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpu-${{ matrix.workers }}
+          path: |
+            vmstat.log
+            top.log
       - name: Store coverage file
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-python
-          path: ".coverage.${{ matrix.python-version }}"
+          name: coverage-python-${{ matrix.workers }}
+          path: ".coverage.${{ matrix.python-version }}.${{ matrix.workers }}"
           include-hidden-files: true
 
   coverage-comment:
