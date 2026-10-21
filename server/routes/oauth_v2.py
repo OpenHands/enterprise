@@ -702,6 +702,55 @@ async def oauth_v2_list_providers():
     }
 
 
+class GitProviderStatus(BaseModel):
+    """A git provider defined in ``auth_providers``, with whether the signed-in
+    user has linked it (i.e. has an ``oauth_tokens`` row for it).
+    """
+
+    id: int
+    title: str
+    icon: str | None
+    color: str
+    provider_type: str
+    connected: bool
+
+
+@oauth_v2_router.get('/git-providers', response_model=list[GitProviderStatus])
+async def oauth_v2_list_git_providers(
+    user_id: str = Depends(get_user_id),
+) -> list[GitProviderStatus]:
+    """Git providers the signed-in user can connect, with link status.
+
+    Backs the Integrations settings page when ``ENABLE_OAUTH_V2_LOGIN`` is on:
+    the cards come from the ``auth_providers`` git rows and the connected state
+    from ``oauth_tokens``. No secrets or provider URLs are returned.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+        )
+    user_uuid = uuid.UUID(user_id)
+    result: list[GitProviderStatus] = []
+    for provider in await AuthProviderStore().get_git_providers():
+        if not isinstance(provider.details, OAuthProviderDetails):
+            continue
+        token = await OAuthTokenStore(
+            user_id=user_uuid, oauth_provider_id=provider.id
+        ).get_raw()
+        result.append(
+            GitProviderStatus(
+                id=provider.id,
+                title=provider.title,
+                icon=provider.icon,
+                color=provider.color,
+                provider_type=provider.details.provider_type.value,
+                connected=token is not None,
+            )
+        )
+    return result
+
+
 class PublicIdpProvider(BaseModel):
     """A single login IDP, as shown on the unauthenticated "Let's Get
     Started" screen -- see ``oauth_v2_list_idp_providers``. Never carries
