@@ -105,6 +105,9 @@ export interface AzureDevOpsWebhookStatus {
   webhook_secret_set: boolean;
   can_view_webhooks: boolean;
   can_manage_webhooks: boolean;
+  install_recorded: boolean;
+  installed_at: string | null;
+  last_verified_at: string | null;
 }
 
 export interface AzureDevOpsWebhookInstallationResult {

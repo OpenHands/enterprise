@@ -31,19 +31,24 @@ function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
     );
   }
 
-  // Without view permission Azure hides the org's hooks, so the flags are unknown.
-  if (!status.can_view_webhooks) {
+  // Azure hides the hooks from members who can't view them, so they see
+  // OpenHands' own install record instead.
+  const installed = status.can_view_webhooks
+    ? status.webhook_installed
+    : status.install_recorded;
+
+  if (installed) {
     return (
-      <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED)}
+      <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)}
       </Typography.Text>
     );
   }
 
-  if (status.webhook_installed) {
+  if (!status.can_view_webhooks) {
     return (
-      <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)}
+      <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_SET_UP)}
       </Typography.Text>
     );
   }
@@ -59,6 +64,38 @@ function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
   return (
     <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
       {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED)}
+    </Typography.Text>
+  );
+}
+
+function InstallDetails({ status }: { status: AzureDevOpsWebhookStatus }) {
+  const { t, i18n } = useTranslation();
+  const formatDate = (value: string) =>
+    new Date(value).toLocaleDateString(i18n.language, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  const parts = [
+    status.installed_at &&
+      t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALLED_ON, {
+        date: formatDate(status.installed_at),
+      }),
+    status.last_verified_at &&
+      t(I18nKey.AZURE_DEVOPS$WEBHOOK_LAST_CONFIRMED, {
+        date: formatDate(status.last_verified_at),
+      }),
+  ].filter(Boolean);
+
+  if (!status.install_recorded || parts.length === 0) {
+    return null;
+  }
+  return (
+    <Typography.Text
+      className="block mt-2 text-xs text-gray-400"
+      testId="azure-devops-webhook-install-details"
+    >
+      {parts.join(" · ")}
     </Typography.Text>
   );
 }
@@ -98,8 +135,7 @@ function OrganizationRow({ organization }: { organization: string }) {
 
   const anyMutationPending = isInstalling || isUninstalling;
   const canManage = status.can_manage_webhooks;
-  const installDisabled =
-    anyMutationPending || !status.webhook_secret_set || !canManage;
+  const installDisabled = anyMutationPending || !status.webhook_secret_set;
   let installLabel = t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL);
   if (isInstalling) {
     installLabel = t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALLING);
@@ -116,46 +152,44 @@ function OrganizationRow({ organization }: { organization: string }) {
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={status} />
-        {!canManage && (
-          <Typography.Text
-            className="block mt-2 text-xs text-gray-400"
-            testId="azure-devops-webhook-permission-note"
-          >
-            {t(
-              status.can_view_webhooks
-                ? I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_MANAGE
-                : I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_VIEW,
-            )}
-          </Typography.Text>
-        )}
+        <InstallDetails status={status} />
       </td>
       <td className="px-4 py-3">
-        <div className="flex gap-2">
-          <BrandButton
-            type="button"
-            variant="primary"
-            onClick={() => reinstallMutation.mutate()}
-            isDisabled={installDisabled}
-            className="cursor-pointer"
-            testId="azure-devops-install-webhook"
-          >
-            {installLabel}
-          </BrandButton>
-          {status.webhook_installed && (
+        {canManage ? (
+          <div className="flex gap-2">
             <BrandButton
               type="button"
-              variant="secondary"
-              onClick={() => uninstallMutation.mutate()}
-              isDisabled={anyMutationPending || !canManage}
+              variant="primary"
+              onClick={() => reinstallMutation.mutate()}
+              isDisabled={installDisabled}
               className="cursor-pointer"
-              testId="azure-devops-uninstall-webhook"
+              testId="azure-devops-install-webhook"
             >
-              {isUninstalling
-                ? t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALLING)
-                : t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL)}
+              {installLabel}
             </BrandButton>
-          )}
-        </div>
+            {status.webhook_installed && (
+              <BrandButton
+                type="button"
+                variant="secondary"
+                onClick={() => uninstallMutation.mutate()}
+                isDisabled={anyMutationPending}
+                className="cursor-pointer"
+                testId="azure-devops-uninstall-webhook"
+              >
+                {isUninstalling
+                  ? t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALLING)
+                  : t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL)}
+              </BrandButton>
+            )}
+          </div>
+        ) : (
+          <Typography.Text
+            className="block text-xs text-gray-400 max-w-xs"
+            testId="azure-devops-webhook-permission-note"
+          >
+            {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGED_BY_ADMINS)}
+          </Typography.Text>
+        )}
       </td>
     </tr>
   );
