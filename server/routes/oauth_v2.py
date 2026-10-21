@@ -63,6 +63,7 @@ from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
 from server.auth.token_manager import TokenManager
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -503,6 +504,7 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             external_subject_id=subject,
         )
+        await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
@@ -688,6 +690,10 @@ async def oauth_v2_unlink(
     link = await link_store.get_by_user(user_uuid, provider.id)
     if link is not None:
         await link_store.unlink(provider.id, link.external_subject_id)
+        if isinstance(provider.details, OAuthProviderDetails):
+            await invalidate_user_id_cache(
+                provider.details.provider_type, link.external_subject_id
+            )
     token_store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
     await token_store.delete_tokens()
     return None

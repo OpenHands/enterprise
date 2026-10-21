@@ -1085,6 +1085,9 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
             'store_tokens',
             new=AsyncMock(),
         ) as store_tokens,
+        patch.object(
+            oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()
+        ) as invalidate_cache,
     ):
         response = client.get(
             '/oauth/1/callback',
@@ -1103,6 +1106,7 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
     link.assert_awaited_once_with(
         oauth_provider_id=provider.id, user_id=user_id, external_subject_id='ext-2'
     )
+    invalidate_cache.assert_awaited_once_with(ProviderType.GITHUB, 'ext-2')
     store_tokens.assert_awaited_once()
 
 
@@ -1391,9 +1395,13 @@ def test_unlink_git_provider(app, client, jwt_svc):
             'delete_tokens',
             new=AsyncMock(),
         ) as delete_tokens,
+        patch.object(
+            oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()
+        ) as invalidate_cache,
     ):
         _override_user_context(app, user_id)
         response = client.delete('/oauth/1')
     assert response.status_code == 204
     unlink.assert_awaited_once()
+    invalidate_cache.assert_awaited_once_with(ProviderType.GITHUB, 'ext-1')
     delete_tokens.assert_awaited_once()
