@@ -33,6 +33,8 @@ class SaaSBitBucketService(BitBucketService):
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
+        # On a 401 the base class calls get_latest_token() again and retries.
+        self.refresh = True
 
     async def get_latest_token(self) -> SecretStr | None:
         bitbucket_token = None
@@ -47,12 +49,17 @@ class SaaSBitBucketService(BitBucketService):
                 f'Got BitBucket token {bitbucket_token} from access token: {self.external_auth_token}'
             )
         elif self.external_auth_id:
+            # A token already in hand means the provider just refused it.
             bitbucket_token_str = await self.token_manager.get_idp_token_for_user(
-                self.external_auth_id, ProviderType.BITBUCKET
+                self.external_auth_id,
+                ProviderType.BITBUCKET,
+                rejected=self.token.get_secret_value() or None,
             )
             bitbucket_token = (
                 SecretStr(bitbucket_token_str) if bitbucket_token_str else None
             )
+            if bitbucket_token:
+                self.token = bitbucket_token  # the retry reads self.token
             logger.info(
                 f'Got BitBucket token {bitbucket_token} from external auth user ID: {self.external_auth_id}'
             )
