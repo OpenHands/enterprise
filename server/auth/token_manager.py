@@ -44,6 +44,7 @@ from server.auth.constants import (
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL,
     KEYCLOAK_SERVER_URL_EXT,
+    is_oauth_v2_login_enabled,
 )
 from server.auth.email_validation import (
     extract_base_email,
@@ -633,14 +634,31 @@ class TokenManager:
     ) -> str | None:
         """Git token for background work done without the user's session.
 
-        ``oauth_tokens`` wins over the Keycloak offline session. Installs
-        without Keycloak store no offline tokens, so the fallback returns
-        ``None`` without a Keycloak call.
+        With ``ENABLE_OAUTH_V2_LOGIN`` on, ``oauth_tokens`` wins over the
+        Keycloak offline session. With it off, only the Keycloak offline
+        session is read. Installs without Keycloak store no offline tokens, so
+        the fallback returns ``None`` without a Keycloak call.
 
         ``rejected`` is a token the provider just refused. An ``oauth_tokens``
         token equal to it is skipped: a copy of a Keycloak grant is revoked when
         the Keycloak side refreshes, while its stored expiry is still ahead.
         """
+        if is_oauth_v2_login_enabled():
+            token = await self._get_oauth_v2_git_token(user_id, idp, rejected)
+            if token:
+                return token
+
+        offline_token = await self.load_offline_token(user_id=user_id)
+        if not offline_token:
+            logger.warning(f'No offline token found for user_id: {user_id}')
+            return None
+        return await self.get_idp_token_from_offline_token(
+            offline_token=offline_token, idp=idp
+        )
+
+    async def _get_oauth_v2_git_token(
+        self, user_id: str, idp: ProviderType, rejected: str | None
+    ) -> str | None:
         try:
             token = await get_oauth_v2_git_token(user_id, idp)
         except Exception:
@@ -651,23 +669,14 @@ class TokenManager:
                 extra={'user_id': user_id, 'provider': idp.value},
                 exc_info=True,
             )
-            token = None
+            return None
         if token and token == rejected:
             logger.warning(
                 'oauth_v2_git_token_rejected',
                 extra={'user_id': user_id, 'provider': idp.value},
             )
-            token = None
-        if token:
-            return token
-
-        offline_token = await self.load_offline_token(user_id=user_id)
-        if not offline_token:
-            logger.warning(f'No offline token found for user_id: {user_id}')
             return None
-        return await self.get_idp_token_from_offline_token(
-            offline_token=offline_token, idp=idp
-        )
+        return token
 
     async def get_user_id_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType

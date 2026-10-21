@@ -8,6 +8,7 @@ from openhands.app_server.integrations.github.github_service import GitHubServic
 from openhands.app_server.integrations.service_types import ProviderType, Repository
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.token_manager import TokenManager
 
 # Module-level set to keep background tasks alive until completion.
@@ -50,7 +51,13 @@ class SaaSGitHubService(GitHubService):
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
         # On a 401 the base class calls get_latest_token() again and retries.
-        self.refresh = True
+        # Only the external_auth_id branch swaps in a new token for the retry,
+        # and only an oauth_tokens token needs one.
+        self.refresh = (
+            not external_auth_token
+            and bool(external_auth_id)
+            and is_oauth_v2_login_enabled()
+        )
 
     async def get_latest_token(self) -> SecretStr | None:
         github_token = None
@@ -71,7 +78,7 @@ class SaaSGitHubService(GitHubService):
                 rejected=self.token.get_secret_value() or None,
             )
             github_token = SecretStr(github_token_str) if github_token_str else None
-            if github_token:
+            if github_token and self.refresh:
                 self.token = github_token  # the retry reads self.token
             logger.debug(
                 f'Got GitHub token {github_token} from external auth user ID: {self.external_auth_id}'
