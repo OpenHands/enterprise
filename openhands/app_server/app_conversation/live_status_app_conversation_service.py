@@ -66,6 +66,9 @@ from openhands.app_server.app_conversation.conversation_secret_enricher import (
 from openhands.app_server.app_conversation.hook_loader import (
     load_hooks_from_agent_server,
 )
+from openhands.app_server.app_conversation.skill_loader import (
+    get_azure_devops_bearer_token,
+)
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
 )
@@ -97,7 +100,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_service import SandboxService
+from openhands.app_server.sandbox.sandbox_service import (
+    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    SandboxService,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
@@ -1047,7 +1053,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
 
                 sandbox = await self.sandbox_service.start_sandbox(
-                    sandbox_id=sandbox_id_str
+                    sandbox_id=sandbox_id_str,
+                    extra_env=await self._azure_devops_sandbox_env(),
                 )
             task.sandbox_id = sandbox.id
         else:
@@ -1097,6 +1104,35 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             poll_interval=self.sandbox_startup_poll_frequency,
             httpx_client=self.httpx_client,
         )
+
+    async def _azure_devops_sandbox_env(self) -> dict[str, str]:
+        """Environment carrying the per-provider Azure DevOps access-token JWT.
+
+        The Azure DevOps git credential helper reads this JWT and exchanges it at
+        ``/api/v1/webhooks/secrets`` for the user's Azure DevOps token, so plain
+        git works without the sandbox session key (which the terminal sanitizer
+        strips). Only set when the user has an Entra (JWT) Azure DevOps token and a
+        ``web_url`` exists (the secrets endpoint lives under it). This is the same
+        JWT enterprise already mints for the ``AZURE_DEVOPS_TOKEN`` lookup secret
+        and only re-fetches the token the agent already holds, so it is not a new
+        exposure. Returns an empty dict (no variable) for every other user.
+        """
+        if not self.web_url:
+            return {}
+        token = await get_azure_devops_bearer_token(self.user_context)
+        if not token:
+            return {}
+        user_id = await self.user_context.get_user_id()
+        if not user_id:
+            return {}
+        access_token = self.jwt_service.create_jws_token(
+            payload={
+                'user_id': user_id,
+                'provider_type': ProviderType.AZURE_DEVOPS.value,
+            },
+            expires_in=self.access_token_hard_timeout,
+        )
+        return {AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE: access_token}
 
     async def _seed_sandbox_profiles(
         self, agent_server_url: str, session_api_key: str | None

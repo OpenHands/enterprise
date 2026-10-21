@@ -6668,3 +6668,72 @@ class TestACPProviderAllowlistAtServiceStart:
         assert exc_info.value.status_code == 400
         assert acp_server in exc_info.value.detail
         service._wait_for_sandbox_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: the per-provider Azure DevOps access-token JWT injected into the
+# sandbox so the git credential helper works without the session key.
+# ---------------------------------------------------------------------------
+
+
+def _azure_devops_env_service(
+    *, web_url, latest_token, user_id='user-1', minted='signed.jwt.token'
+):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.access_token_hard_timeout = None
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(return_value=minted)
+    service.user_context = Mock()
+    service.user_context.get_latest_token = AsyncMock(return_value=latest_token)
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._azure_devops_sandbox_env = MethodType(
+        LiveStatusAppConversationService._azure_devops_sandbox_env, service
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_sandbox_env_mints_scoped_jwt_for_entra_user():
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _azure_devops_env_service(
+        web_url='https://app.example.com', latest_token='header.payload.signature'
+    )
+
+    env = await service._azure_devops_sandbox_env()
+
+    assert env == {'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN': 'signed.jwt.token'}
+    payload = service.jwt_service.create_jws_token.call_args.kwargs['payload']
+    assert payload == {
+        'user_id': 'user-1',
+        'provider_type': ProviderType.AZURE_DEVOPS.value,
+    }
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_sandbox_env_empty_for_pat_user():
+    # A PAT is not a JWT, so no helper JWT is injected (PATs ride in the URL).
+    service = _azure_devops_env_service(
+        web_url='https://app.example.com', latest_token='plain-pat-token'
+    )
+
+    env = await service._azure_devops_sandbox_env()
+
+    assert env == {}
+    service.jwt_service.create_jws_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_sandbox_env_empty_without_web_url():
+    # The secrets endpoint lives under web_url; without it there is nothing to call.
+    service = _azure_devops_env_service(
+        web_url=None, latest_token='header.payload.signature'
+    )
+
+    env = await service._azure_devops_sandbox_env()
+
+    assert env == {}
+    service.user_context.get_latest_token.assert_not_called()

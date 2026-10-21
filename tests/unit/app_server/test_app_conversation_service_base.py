@@ -7,7 +7,7 @@ and the recent bug fixes for git checkout operations.
 import inspect
 import subprocess
 from pathlib import Path
-from types import MethodType
+from types import MappingProxyType, MethodType
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
@@ -17,11 +17,16 @@ from pydantic import SecretStr
 from openhands.app_server.app_conversation.app_conversation_models import AgentType
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
+    _azure_devops_credential_helper_script,
 )
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
-from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.integrations.service_types import (
+    ProviderType,
+    Repository,
+)
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.sdk.skills import Skill
 
@@ -907,6 +912,14 @@ async def test_clone_or_init_git_repo_quotes_selected_branch_before_checkout(
     )
 
 
+def _azure_devops_provider_handler(orgs: list[str]):
+    """A provider handler mock whose Azure DevOps installations are ``orgs``."""
+    handler = MagicMock()
+    handler.provider_tokens = {ProviderType.AZURE_DEVOPS: object()}
+    handler.get_azure_devops_organizations = AsyncMock(return_value=orgs)
+    return handler
+
+
 @pytest.mark.asyncio
 async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
     mock_workspace,
@@ -926,6 +939,10 @@ async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
     )
     mock_user_context.get_latest_token = AsyncMock(
         return_value='header.payload.signature'
+    )
+    # The user belongs to a second Azure DevOps org beyond the selected repo's.
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org', 'org2'])
     )
     task = Mock()
     task.request = Mock(
@@ -950,25 +967,21 @@ async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
         for command in commands
     )
     helper_command = next(
-        command
-        for command in commands
-        if 'openhands-azure-devops-credential-helper' in command
+        command for command in commands if 'azure-devops-credential-helper' in command
     )
-    assert (
-        '/api/v1/sandboxes/sandbox-123/settings/secrets/azure_devops_token'
-        in helper_command
-    )
-    assert (
-        'git config --local --unset-all http.https://dev.azure.com/org/.extraheader'
-        in helper_command
-    )
+    # The helper authenticates with the per-provider access-token JWT against the
+    # webhooks secrets endpoint, no longer the sandbox session key.
+    assert '/api/v1/webhooks/secrets' in helper_command
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in helper_command
+    assert 'X-Access-Token' in helper_command
+    assert 'OH_SESSION_API_KEYS_0' not in helper_command
+    assert 'SESSION_API_KEY' not in helper_command
+    assert '/api/v1/sandboxes/' not in helper_command
+    # The helper is installed globally for every org the user belongs to.
+    assert 'git config --global' in helper_command
     assert 'credential.https://dev.azure.com/org.helper' in helper_command
-    assert not any(
-        command.startswith(
-            'git config --local http.https://dev.azure.com/org/.extraheader'
-        )
-        for command in commands
-    )
+    assert 'credential.https://dev.azure.com/org2.helper' in helper_command
+    assert 'git config --local' not in helper_command
 
 
 @pytest.mark.asyncio
@@ -976,17 +989,13 @@ async def test_azure_devops_git_credential_helper_logs_without_web_url(
     mock_workspace,
 ):
     user_info = MockUserInfo()
-    service, _ = _create_service_with_mock_user_context(
+    service, mock_user_context = _create_service_with_mock_user_context(
         user_info,
         bind_methods=('_configure_azure_devops_git_credential_helper',),
     )
     service.web_url = None
-    sandbox = SandboxInfo(
-        id='sandbox-123',
-        created_by_user_id='user-123',
-        sandbox_spec_id='spec-123',
-        status=SandboxStatus.RUNNING,
-        session_api_key='session-key',
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org'])
     )
 
     with patch(
@@ -994,9 +1003,7 @@ async def test_azure_devops_git_credential_helper_logs_without_web_url(
     ) as mock_debug:
         await service._configure_azure_devops_git_credential_helper(
             mock_workspace,
-            Path(mock_workspace.working_dir),
             'org/project/repo',
-            sandbox,
         )
 
     mock_debug.assert_called_once_with(
@@ -1907,10 +1914,12 @@ class TestMarketplaceGitCredentials:
 
         command = workspace.execute_command.call_args.args[0]
         assert token not in command
-        assert (
-            '/api/v1/sandboxes/sandbox-123/settings/secrets/azure_devops_token'
-            in command
-        )
+        # The helper authenticates with the per-provider access-token JWT, not the
+        # sandbox session key.
+        assert '/api/v1/webhooks/secrets' in command
+        assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in command
+        assert 'OH_SESSION_API_KEYS_0' not in command
+        assert '/api/v1/sandboxes/' not in command
         assert (
             'git config --global credential.https://dev.azure.com/acme.username oauth2'
             in command
@@ -2039,3 +2048,107 @@ def test_warns_for_auto_load_marketplace_read_as_sandbox_path():
     assert [c.args[1:] for c in logger.warning.call_args_list] == [
         ('bare', 'owner/repo')
     ]
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: provider-correct clone URLs and a session-key-free credential
+# helper (Azure DevOps git parity for Microsoft Entra sign-in).
+# ---------------------------------------------------------------------------
+
+
+def _provider_resolution_service(user_context) -> MagicMock:
+    service = MagicMock()
+    service.user_context = user_context
+    service.init_git_in_empty_workspace = True
+    service._configure_azure_devops_git_credential_helper = AsyncMock()
+    for name in (
+        'clone_or_init_git_repo',
+        '_get_azure_devops_bearer_token_for_git',
+        '_configure_git_user_settings',
+        '_configure_gpg_signing',
+    ):
+        setattr(
+            service,
+            name,
+            MethodType(getattr(AppConversationServiceBase, name), service),
+        )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_clone_url_uses_the_requested_git_provider():
+    """A same-named repository on another provider must not win URL resolution."""
+    entra_token = 'header.payload.signature'
+    handler = ProviderHandler(
+        provider_tokens=MappingProxyType(
+            {
+                ProviderType.GITLAB: ProviderToken(
+                    token=SecretStr('glpat-token'), host='gitlab.example.com'
+                ),
+                ProviderType.AZURE_DEVOPS: ProviderToken(
+                    token=SecretStr(entra_token), host='dev.azure.com/contoso'
+                ),
+            }
+        )
+    )
+
+    def service_for(provider):
+        provider_service = Mock()
+        provider_service.get_repository_details_from_repo_name = AsyncMock(
+            return_value=Repository(
+                id='1',
+                full_name='contoso/web/app',
+                git_provider=provider,
+                is_public=False,
+            )
+        )
+        return provider_service
+
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=MockUserInfo(git_full_clone=False)
+    )
+    user_context.get_secrets = AsyncMock(return_value={})
+    user_context.get_provider_handler = AsyncMock(return_value=handler)
+    user_context.get_latest_token = AsyncMock(return_value=entra_token)
+    user_context.get_authenticated_git_url = MethodType(
+        AuthUserContext.get_authenticated_git_url, user_context
+    )
+
+    workspace = MockWorkspace(working_dir='/workspace/project')
+    task = Mock()
+    task.request = Mock(
+        selected_repository='contoso/web/app',
+        selected_branch='main',
+        git_provider=ProviderType.AZURE_DEVOPS,
+    )
+
+    with patch.object(ProviderHandler, 'get_service', side_effect=service_for):
+        service = _provider_resolution_service(user_context)
+        await service.clone_or_init_git_repo(task, workspace)
+
+    clone = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if ' clone ' in call.args[0]
+    )
+    assert 'https://dev.azure.com/contoso/web/_git/app' in clone
+    assert 'gitlab.example.com' not in clone
+
+
+def test_azure_devops_credential_helper_script_auth_source():
+    """The helper reads the access-token JWT, never the sandbox session key."""
+    script = _azure_devops_credential_helper_script('https://app.example.com')
+
+    # Authenticates with the per-provider access-token JWT at the webhooks
+    # secrets endpoint.
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in script
+    assert '/api/v1/webhooks/secrets' in script
+    assert 'X-Access-Token' in script
+
+    # No longer depends on the sandbox session key or the sandbox-settings path,
+    # so it keeps working once the terminal environment is sanitized.
+    assert 'OH_SESSION_API_KEYS_0' not in script
+    assert 'SESSION_API_KEY' not in script
+    assert 'X-Session-API-Key' not in script
+    assert '/api/v1/sandboxes/' not in script

@@ -31,6 +31,15 @@ REMOTE_SESSION_API_KEY_VARIABLE = 'SESSION_API_KEY'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
 
+# Carries the per-provider, time-limited access-token JWT that the Azure DevOps
+# git credential helper exchanges at /api/v1/webhooks/secrets for the user's
+# Azure DevOps token. Deliberately NOT a session-key name: the SDK terminal
+# sanitizer strips SESSION_API_KEY / OH_SECRET_KEY / OH_SESSION_API_KEYS_*, so
+# this variable survives into the sanitized terminal and plain git keeps working
+# without the sandbox session key. The JWT only re-fetches the same Azure DevOps
+# token the agent already holds as AZURE_DEVOPS_TOKEN, so it is not a new exposure.
+AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE = 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'
+
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
 # on a 401 (#5189). These names are the contract consumed by the agent-server's
 # register_managed_llm_key_refresh() (software-agent-sdk#5222): the OH_ prefix
@@ -240,13 +249,21 @@ class SandboxService(ABC):
 
     @abstractmethod
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
         Return the info on the new sandbox. If no spec is selected, use the default.
         If sandbox_id is provided, it will be used as the sandbox identifier instead
         of generating a random one.
+
+        ``extra_env`` adds caller-supplied environment variables to the sandbox on
+        top of the spec's ``initial_env``. It is for internal callers only (the
+        public start endpoint never passes it); values take precedence over the
+        spec's defaults for the same key.
         """
 
     @abstractmethod

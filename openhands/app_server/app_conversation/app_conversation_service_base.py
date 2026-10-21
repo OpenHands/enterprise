@@ -27,6 +27,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 from openhands.app_server.app_conversation.skill_loader import (
     authenticate_marketplace_sources,
     azure_devops_marketplace_orgs,
+    azure_devops_user_orgs,
     build_org_configs,
     build_sandbox_config,
     get_azure_devops_bearer_token,
@@ -35,6 +36,9 @@ from openhands.app_server.app_conversation.skill_loader import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
+from openhands.app_server.sandbox.sandbox_service import (
+    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+)
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.git import (
@@ -121,21 +125,24 @@ def get_project_dir(
     return working_dir
 
 
-def _azure_devops_credential_helper_script(sandbox_id: str, web_url: str | None) -> str:
-    """Git credential helper fetching the sandbox's Azure DevOps token on demand.
+def _azure_devops_credential_helper_script(web_url: str | None) -> str:
+    """Git credential helper fetching the user's Azure DevOps token on demand.
 
-    The token is never written to disk; only this script and its config are.
-    It needs the session key from the git process environment, so it only works
-    for git run with the agent-server's full (unsanitized) environment.
+    Authenticates with the per-provider, time-limited access-token JWT (scoped to
+    the user + Azure DevOps) against ``/api/v1/webhooks/secrets``. The JWT is read
+    from the sandbox environment variable set at sandbox creation, not the session
+    key, so the helper works for plain git even once the terminal environment is
+    sanitized (which strips the session key). The token itself is never written to
+    disk; only this script and its config are.
     """
     app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
-    secret_path = f'/api/v1/sandboxes/{sandbox_id}/settings/secrets/azure_devops_token'
+    access_token_var = AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE
     return f"""#!/bin/sh
 if [ "$1" != "get" ]; then
   exit 0
 fi
 
-session_api_key="${{OH_SESSION_API_KEYS_0:-${{SESSION_API_KEY:-}}}}"
+access_token="${{{access_token_var}:-}}"
 webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
 app_base_url={app_base_url}
 if [ -n "$webhook_url" ]; then
@@ -143,13 +150,13 @@ if [ -n "$webhook_url" ]; then
 else
   base_url="$app_base_url"
 fi
-if [ -z "$session_api_key" ] || [ -z "$base_url" ]; then
+if [ -z "$access_token" ] || [ -z "$base_url" ]; then
   exit 0
 fi
 
-secret_url="$base_url{secret_path}"
+secret_url="$base_url/api/v1/webhooks/secrets"
 token="$(curl -fsS \\
-  -H "X-Session-API-Key: $session_api_key" \\
+  -H "X-Access-Token: $access_token" \\
   "$secret_url" 2>/dev/null)" || exit 0
 if [ -z "$token" ]; then
   exit 0
@@ -678,7 +685,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         user_info = await self.user_context.get_user_info()
         remote_repo_url: str = await self.user_context.get_authenticated_git_url(
-            request.selected_repository
+            request.selected_repository,
+            specified_provider=request.git_provider,
         )
         if not remote_repo_url:
             raise ValueError('Missing either Git token or valid repository')
@@ -723,9 +731,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         elif azure_devops_bearer_token:
             await self._configure_azure_devops_git_credential_helper(
                 workspace,
-                git_dir,
                 request.selected_repository,
-                sandbox,
             )
 
         # Checkout the appropriate branch
@@ -759,43 +765,44 @@ class AppConversationServiceBase(AppConversationService, ABC):
     async def _configure_azure_devops_git_credential_helper(
         self,
         workspace: AsyncRemoteWorkspace,
-        git_dir: Path,
         selected_repository: str,
-        sandbox: SandboxInfo | None,
     ) -> None:
-        if sandbox is None:
-            _logger.warning(
-                'Skipping Azure DevOps git credential helper setup: missing sandbox'
-            )
+        """Install the Azure DevOps git credential helper globally, per org.
+
+        Mirrors ``_configure_marketplace_git_credentials``: the helper is
+        installed once under ``$HOME`` and wired for every Azure DevOps
+        organization the user can reach, so plain git works on any of the user's
+        Azure DevOps repos, not only the selected one. Entra tokens cannot ride
+        in the authenticated URL, so the helper supplies them instead.
+        """
+        orgs = await azure_devops_user_orgs(self.user_context, selected_repository)
+        if not orgs:
             return
 
-        org = selected_repository.split('/')[0]
-        helper_path = git_dir / '.git' / 'openhands-azure-devops-credential-helper'
         web_url = getattr(self, 'web_url', None)
         if web_url is None:
             _logger.debug(
                 'Azure DevOps git credential helper has no configured web_url; '
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
-        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
-        helper_path_quoted = shlex.quote(str(helper_path))
-        helper_value = shlex.quote(f'!{shlex.quote(str(helper_path))}')
-        extraheader_key = shlex.quote(f'http.https://dev.azure.com/{org}/.extraheader')
-        credential_username_key = shlex.quote(
-            f'credential.https://dev.azure.com/{org}.username'
+        helper_script = _azure_devops_credential_helper_script(web_url)
+        commands = [
+            'helper="$HOME/.openhands/azure-devops-credential-helper"',
+            'mkdir -p "$HOME/.openhands"',
+            f'printf %s {shlex.quote(helper_script)} > "$helper"',
+            'chmod 700 "$helper"',
+            'git config --global credential.https://dev.azure.com.useHttpPath true',
+        ]
+        for org in orgs:
+            prefix = f'credential.https://dev.azure.com/{org}'
+            commands += [
+                f'git config --global {shlex.quote(prefix + ".username")} oauth2',
+                'git config --global --replace-all '
+                f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\""',
+            ]
+        result = await workspace.execute_command(
+            ' && '.join(commands), workspace.working_dir
         )
-        credential_helper_key = shlex.quote(
-            f'credential.https://dev.azure.com/{org}.helper'
-        )
-        command = (
-            f'printf %s {shlex.quote(helper_script)} > {helper_path_quoted}'
-            f' && chmod 700 {helper_path_quoted}'
-            f' && (git config --local --unset-all {extraheader_key} || true)'
-            f' && git config --local {credential_username_key} oauth2'
-            f' && git config --local {credential_helper_key} {helper_value}'
-            ' && git config --local credential.useHttpPath true'
-        )
-        result = await workspace.execute_command(command, git_dir)
         if result.exit_code:
             _logger.warning(
                 f'Azure DevOps git credential helper setup failed: {result.stderr}'
@@ -822,7 +829,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             return
 
         web_url = getattr(self, 'web_url', None)
-        helper_script = _azure_devops_credential_helper_script(sandbox.id, web_url)
+        helper_script = _azure_devops_credential_helper_script(web_url)
         commands = [
             'helper="$HOME/.openhands/azure-devops-credential-helper"',
             'mkdir -p "$HOME/.openhands"',
