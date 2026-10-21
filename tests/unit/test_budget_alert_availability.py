@@ -286,27 +286,27 @@ async def test_save_accepts_slack_alert_with_multiple_installs(
         ],
     )
 
-    await alert_service._validate_alert_settings(settings, update, [])
+    team_id = await alert_service._validate_alert_settings(settings, update, [])
 
+    assert team_id == 'T_TARGET'
     availability = await alert_service._alert_availability(settings)
     assert availability['slack_workspace_connected']
 
 
 @pytest.mark.asyncio
-async def test_slack_alert_uses_stored_workspace_after_new_member_links(
-    alert_service, monkeypatch, create_org, link_slack
+async def test_slack_alert_uses_saved_workspace_after_new_member_links(
+    alert_http, alert_service, monkeypatch, link_slack
 ):
     enable_slack(monkeypatch)
-    org_id = create_org().id
+    http, org_id = alert_http
     install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
-    await link_slack(org_id, 'T_TARGET')
+    link = await link_slack(org_id, 'T_TARGET')
+    await alert_service.db_session.commit()
+    response = await save_slack_alert(http, org_id, [link], '#on-callstatus')
+    assert response.status_code == 200, response.text
+    # A member links another workspace after the admin saved.
     await link_slack(org_id, 'T_OTHER')
-    settings = OrgBudgetSettings(
-        org_id=org_id,
-        monthly_limit=100,
-        slack_channel='#on-callstatus',
-        slack_team_id='T_TARGET',
-    )
+    settings = await stored_settings(alert_service, org_id)
     client = AsyncMock()
     client.chat_postMessage.return_value = {'ok': True}
 
