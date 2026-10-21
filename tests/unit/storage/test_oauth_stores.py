@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
@@ -808,3 +809,31 @@ class TestOAuthTokenStoreLocking:
                 )
 
         refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_database_error_that_is_not_a_lock_timeout_propagates(
+        self, patched_session, make_provider, create_user
+    ):
+        from server.auth.auth_error import TokenRefreshError
+
+        provider = await make_provider()
+        user = create_user()
+        store = OAuthTokenStore(user_id=user.id, oauth_provider_id=provider.id)
+        await store.store_tokens(
+            access_token='old-at',
+            refresh_token='rt',
+            access_token_expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+            refresh_token_expires_at=None,
+        )
+
+        # An invalid lock_timeout makes the slow path's SET LOCAL fail with
+        # SQLSTATE 22023 instead of 55P03.
+        with (
+            patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 'not-a-number'),
+            pytest.raises(DBAPIError) as raised,
+        ):
+            await store.get_valid_access_token(
+                permitted_drift_seconds=60, refresh=AsyncMock()
+            )
+
+        assert not isinstance(raised.value, TokenRefreshError)

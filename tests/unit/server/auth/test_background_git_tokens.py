@@ -98,6 +98,21 @@ async def test_the_provider_the_user_linked_wins_over_another_of_the_same_type(
 
 
 @pytest.mark.asyncio
+async def test_another_users_link_to_a_newer_provider_does_not_hide_the_token(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    mine = await create_git_provider(ProviderType.GITLAB)
+    theirs = await create_git_provider(ProviderType.GITLAB)
+    me, someone_else = create_user(), create_user()
+    await store_oauth_token(me.id, mine, 'glpat-mine')
+    await store_oauth_token(someone_else.id, theirs, 'glpat-theirs')
+
+    token = await TokenManager().get_idp_token_for_user(str(me.id), ProviderType.GITLAB)
+
+    assert token == 'glpat-mine'
+
+
+@pytest.mark.asyncio
 async def test_without_a_token_or_keycloak_there_is_none(
     no_keycloak, create_git_provider, create_user
 ):
@@ -165,6 +180,33 @@ async def test_without_an_oauth_v2_token_keycloak_is_used(
     from_keycloak.assert_awaited_once_with(
         offline_token='offline', idp=ProviderType.GITLAB
     )
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_tokens_row_wins_over_a_keycloak_offline_token(
+    create_git_provider, store_oauth_token, create_user
+):
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-linked')
+    token_manager = TokenManager()
+
+    with (
+        patch.object(
+            token_manager, 'load_offline_token', AsyncMock(return_value='offline')
+        ),
+        patch.object(
+            token_manager,
+            'get_idp_token_from_offline_token',
+            AsyncMock(return_value='glpat-from-keycloak'),
+        ) as from_keycloak,
+    ):
+        token = await token_manager.get_idp_token_for_user(
+            str(user.id), ProviderType.GITLAB
+        )
+
+    assert token == 'glpat-linked'
+    from_keycloak.assert_not_awaited()
 
 
 @pytest.mark.asyncio
