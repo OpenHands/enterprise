@@ -185,15 +185,13 @@ services:
       # KEYCLOAK_* vars configured, the old Keycloak-coupled login path is
       # simply never exercised.
       ENABLE_INTEGRATED_IDP: 'true'
-      # OAuth v2 login: the server reads the bare form, the web client the
-      # structured one. The server needs it for background jobs, such as the
-      # GitLab webhook installer, to read git tokens linked through OAuth v2.
+      # The server and web client each read their own OAuth v2 flag. Without the
+      # server's, background jobs can't read git tokens linked through OAuth v2.
       ENABLE_OAUTH_V2_LOGIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
 
-      # Optional GitLab. With GITLAB_APP_CLIENT_ID set, the app serves the
-      # GitLab webhook routes and the worker installs GitLab webhooks.
-      # GITLAB_HOST defaults to gitlab.com.
+      # Setting GITLAB_APP_CLIENT_ID turns on the GitLab webhook routes and the
+      # worker's webhook installer. GITLAB_HOST defaults to gitlab.com.
       GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
       GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
       GITLAB_HOST: ${GITLAB_HOST:-}
