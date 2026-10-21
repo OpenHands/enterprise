@@ -293,17 +293,19 @@ async def test_save_accepts_slack_alert_with_multiple_installs(
 
 
 @pytest.mark.asyncio
-async def test_slack_alert_uses_org_workspace_with_multiple_installs(
+async def test_slack_alert_uses_stored_workspace_after_new_member_links(
     alert_service, monkeypatch, create_org, link_slack
 ):
     enable_slack(monkeypatch)
     org_id = create_org().id
     install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
     await link_slack(org_id, 'T_TARGET')
+    await link_slack(org_id, 'T_OTHER')
     settings = OrgBudgetSettings(
         org_id=org_id,
         monthly_limit=100,
         slack_channel='#on-callstatus',
+        slack_team_id='T_TARGET',
     )
     client = AsyncMock()
     client.chat_postMessage.return_value = {'ok': True}
@@ -325,6 +327,92 @@ async def test_slack_alert_uses_org_workspace_with_multiple_installs(
             'Current spend: *$85.00* (85.0% of $100.00)'
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_slack_alert_never_resolves_workspace_from_member_links(
+    alert_service, monkeypatch, create_org, link_slack
+):
+    enable_slack(monkeypatch)
+    org_id = create_org().id
+    install_slack_teams(alert_service, 'T_OTHER', 'T_MEMBER')
+    await link_slack(org_id, 'T_MEMBER')
+    settings = OrgBudgetSettings(
+        org_id=org_id, monthly_limit=100, slack_channel='#on-callstatus'
+    )
+
+    with patch('server.services.org_budget_service.AsyncWebClient') as client:
+        delivered = await alert_service._send_slack_alert('Test', settings, 80, 85, 85)
+
+    assert not delivered
+    client.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('already_enabled', [False, True])
+async def test_api_save_stores_resolved_slack_workspace(
+    alert_http, alert_service, monkeypatch, link_slack, already_enabled
+):
+    """Saving pins the workspace, also for orgs that enabled Slack before."""
+    from sqlalchemy import select
+
+    from storage.lite_llm_manager import LiteLlmManager
+    from storage.org_budget_threshold import OrgBudgetThreshold
+
+    enable_slack(monkeypatch)
+    client, org_id = alert_http
+    install_slack_teams(alert_service, 'T_OTHER', 'T_TARGET')
+    link = await link_slack(org_id, 'T_TARGET')
+    # The linked user is an org member, so LiteLLM must know them too.
+    financial_data = {
+        'team_spend': 0,
+        'team_max_budget': None,
+        'members': {
+            link.keycloak_user_id: {
+                'spend': 0.0,
+                'max_budget': None,
+                'uses_shared_budget': True,
+            }
+        },
+    }
+    if already_enabled:
+        session = alert_service.db_session
+        settings = (
+            await session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+        ).scalar_one()
+        threshold = (
+            await session.execute(
+                select(OrgBudgetThreshold).where(OrgBudgetThreshold.org_id == org_id)
+            )
+        ).scalar_one()
+        settings.slack_channel = '#alerts'
+        threshold.slack_enabled = True
+    await alert_service.db_session.commit()
+
+    with patch.object(
+        LiteLlmManager,
+        'get_team_members_financial_data',
+        AsyncMock(return_value=financial_data),
+    ):
+        response = await client.patch(
+            f'/api/organizations/{org_id}/budgets',
+            json={
+                'slack_channel': '#alerts',
+                'thresholds': [
+                    {'percentage': 80, 'email_enabled': False, 'slack_enabled': True}
+                ],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    settings = (
+        await alert_service.db_session.execute(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        )
+    ).scalar_one()
+    assert settings.slack_team_id == 'T_TARGET'
 
 
 @pytest.mark.asyncio

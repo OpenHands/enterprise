@@ -721,7 +721,9 @@ class OrgBudgetService:
         thresholds = await self._get_thresholds(org_id)
         overrides = await self._get_overrides(org_id)
 
-        await self._validate_alert_settings(settings, update_data, thresholds)
+        slack_team_id = await self._validate_alert_settings(
+            settings, update_data, thresholds
+        )
 
         fields_set = update_data.model_fields_set
         previous_enabled = settings.enabled
@@ -808,6 +810,8 @@ class OrgBudgetService:
             settings.slack_channel = update_data.slack_channel
         if 'slack_team_id' in fields_set:
             settings.slack_team_id = update_data.slack_team_id
+        if slack_team_id:
+            settings.slack_team_id = slack_team_id
 
         if not previous_enabled and settings.enabled:
             assert baseline_snapshot is not None
@@ -2021,10 +2025,9 @@ class OrgBudgetService:
     ) -> bool:
         if not settings.slack_channel:
             return False
-        team_id = await self._resolve_slack_team_id(
-            settings.slack_team_id, settings.org_id
-        )
-        token = await self._get_slack_bot_token(team_id) if team_id else None
+        # No org_id: members' Slack links must not pick where alerts go.
+        team_id = await self._resolve_slack_team_id(settings.slack_team_id)
+        token = await self._get_slack_bot_token(team_id)
         if not token:
             return False
 
@@ -2048,13 +2051,8 @@ class OrgBudgetService:
             )
             return False
 
-    async def _get_slack_bot_token(
-        self, team_id: str | None, org_id: UUID | None = None
-    ) -> str | None:
-        if not SLACK_AVAILABLE or not is_slack_configured():
-            return None
-        team_id = await self._resolve_slack_team_id(team_id, org_id)
-        if not team_id:
+    async def _get_slack_bot_token(self, team_id: str | None) -> str | None:
+        if not team_id or not SLACK_AVAILABLE or not is_slack_configured():
             return None
         result = await self.db_session.execute(
             select(SlackTeam.bot_access_token).where(SlackTeam.team_id == team_id)
@@ -2065,8 +2063,13 @@ class OrgBudgetService:
         return {
             'email_alerts_available': SMTPEmailService.is_configured(),
             'slack_integration_configured': SLACK_AVAILABLE and is_slack_configured(),
+            # Before the first save, show what a save would resolve.
             'slack_workspace_connected': bool(
-                await self._get_slack_bot_token(settings.slack_team_id, settings.org_id)
+                await self._get_slack_bot_token(
+                    await self._resolve_slack_team_id(
+                        settings.slack_team_id, settings.org_id
+                    )
+                )
             ),
         }
 
@@ -2075,10 +2078,16 @@ class OrgBudgetService:
         settings: OrgBudgetSettings,
         update_data: OrgBudgetSettingsUpdate,
         existing: list[OrgBudgetThreshold],
-    ) -> None:
+    ) -> str | None:
+        """Reject unavailable alert channels and resolve the Slack workspace.
+
+        Returns the workspace to store in ``slack_team_id``, or None to keep the
+        stored value. Only this admin save path stores it, so sending never
+        depends on members' current Slack links.
+        """
         thresholds = update_data.thresholds
         if thresholds is None:
-            return
+            return None
         previous = {threshold.percentage: threshold for threshold in existing}
 
         def activates(channel: str) -> bool:
@@ -2100,7 +2109,7 @@ class OrgBudgetService:
         if activates('email_enabled') and not SMTPEmailService.is_configured():
             reject('Email budget alerts require SMTP configuration.')
         if not any(threshold.slack_enabled for threshold in thresholds):
-            return
+            return None
         fields = update_data.model_fields_set
         team_id = (
             update_data.slack_team_id
@@ -2115,21 +2124,28 @@ class OrgBudgetService:
         destination_changed = (
             team_id != settings.slack_team_id or channel != settings.slack_channel
         )
-        if not activates('slack_enabled') and not destination_changed:
-            return
-        if not await self._get_slack_bot_token(team_id, settings.org_id):
-            reject('Slack budget alerts require a connected Slack integration.')
-        if not channel:
-            reject('Select a Slack channel for budget alerts.')
+        must_check = activates('slack_enabled') or destination_changed
+        if not must_check and team_id:
+            return None
+        team_id = await self._resolve_slack_team_id(team_id, settings.org_id)
+        connected = bool(await self._get_slack_bot_token(team_id))
+        if must_check:
+            if not connected:
+                reject('Slack budget alerts require a connected Slack integration.')
+            if not channel:
+                reject('Select a Slack channel for budget alerts.')
+        # Unchanged settings save as before, even when no workspace resolves.
+        return team_id if connected else None
 
     async def _resolve_slack_team_id(
         self, team_id: str | None, org_id: UUID | None = None
     ) -> str | None:
         """Pick the Slack workspace for an org's budget alerts.
 
-        An explicit ``slack_team_id`` wins. Otherwise use the one workspace that
-        the org's members linked through the Slack OAuth flow. If no member
-        linked one, fall back to the only installed workspace.
+        An explicit ``slack_team_id`` wins. With ``org_id``, use the one
+        workspace that the org's members linked through the Slack OAuth flow.
+        Otherwise, or if no member linked one, fall back to the only installed
+        workspace.
         """
         if team_id:
             return team_id
