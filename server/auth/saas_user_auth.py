@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -1282,31 +1283,52 @@ class SaasUserAuth(UserAuth):
         Do not use get_user_by_id here: it can provision a missing user. Legacy
         sandboxes with no trustworthy org binding must be recreated.
         """
-        if not sandbox.created_by_user_id or sandbox.credential_org_id is None:
-            raise HTTPException(
-                403, detail='Sandbox has no credential organization binding'
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
             )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
         try:
             user_id = UUID(sandbox.created_by_user_id)
-        except ValueError as exc:
-            raise HTTPException(403, detail='Sandbox credential access denied') from exc
+        except ValueError:
+            deny('invalid_owner')
         async with a_session_maker() as session:
             result = await session.execute(
                 select(User, OrgMember, Org)
-                .join(OrgMember, OrgMember.user_id == User.id)
-                .join(Org, Org.id == OrgMember.org_id)
-                .where(User.id == user_id, Org.id == sandbox.credential_org_id)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
             )
             row = result.one_or_none()
             if row is None:
-                raise HTTPException(403, detail='Sandbox credential access denied')
+                deny('unknown_owner')
             user, member, org = row
-            if (
-                user.is_disabled
-                or member.status == 'inactive'
-                or org.status == 'suspended'
-            ):
-                raise HTTPException(403, detail='Sandbox credential access denied')
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
         instance = cls(
             user_id=str(user_id),
             refresh_token=SecretStr(''),

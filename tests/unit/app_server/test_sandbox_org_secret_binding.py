@@ -110,13 +110,22 @@ async def test_owner_switch_does_not_retarget_sandbox_secrets(
 )
 @pytest.mark.parametrize('lookup', ['value', 'names'])
 async def test_lookup_requires_live_origin_membership(
-    org_lookup, session_maker, create_org, create_user, change, lookup
+    org_lookup,
+    session_maker,
+    create_org,
+    create_user,
+    change,
+    lookup,
+    caplog,
+    monkeypatch,
 ):
     from fastapi import HTTPException
 
     from openhands.app_server.sandbox.sandbox_router import list_secret_names
+    from server.auth.saas_user_auth import logger
     from storage.org import Org
 
+    monkeypatch.setattr(logger, 'propagate', True)
     sandbox, org_a, org_b, user = org_lookup
     assert (await get_secret_value('DB_SYNC_CANARY', sandbox)).body == b'fake-a'
     with session_maker() as session:
@@ -147,6 +156,23 @@ async def test_lookup_requires_live_origin_membership(
     assert exc.value.status_code == 403
     assert 'fake-a' not in str(exc.value.detail)
     assert 'fake-b' not in str(exc.value.detail)
+    reasons = {
+        'removed': 'not_a_member',
+        'inactive': 'inactive',
+        'disabled': 'disabled',
+        'suspended': 'suspended',
+        'different-owner': 'not_a_member',
+        'missing-owner': 'unknown_owner',
+        'unbound': 'unbound',
+        'nonmember-org': 'not_a_member',
+    }
+    records = [
+        r for r in caplog.records if r.message == 'sandbox_credential_access_denied'
+    ]
+    assert records[-1].reason == reasons[change]
+    assert records[-1].sandbox_id == sandbox.id
+    assert 'fake-a' not in caplog.text
+    assert 'fake-b' not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -215,3 +241,140 @@ async def test_launch_captures_effective_org_instead_of_current_org(
     else:
         context = ResolverUserContext(auth, resolver_org_id=org_a.id)
     assert await get_credential_org_id(context) == org_a.id
+
+
+def conversation_service(context, sandbox, strategy):
+    from types import SimpleNamespace
+
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (
+        LiveStatusAppConversationService,
+    )
+
+    service = LiveStatusAppConversationService.__new__(LiveStatusAppConversationService)
+    service.user_context = context
+    service.app_mode = 'saas'
+    service.max_num_conversations_per_sandbox = 20
+    service.sandbox_service = SimpleNamespace(
+        search_sandboxes=AsyncMock(
+            return_value=SimpleNamespace(items=[sandbox], next_page_id=None)
+        ),
+        get_sandbox=AsyncMock(return_value=sandbox),
+        resume_sandbox=AsyncMock(),
+    )
+    service._get_sandbox_grouping_strategy = AsyncMock(return_value=strategy)
+    service._get_conversation_counts_by_sandbox = AsyncMock(return_value={})
+    return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'strategy',
+    ['ADD_TO_ANY', 'GROUP_BY_NEWEST', 'LEAST_RECENTLY_USED', 'FEWEST_CONVERSATIONS'],
+)
+@pytest.mark.parametrize('binding', ['same-org', 'other-org', 'unbound'])
+async def test_grouping_reuses_only_caller_org(org_lookup, strategy, binding):
+    from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+    from openhands.app_server.user.auth_user_context import AuthUserContext
+
+    sandbox, org_a, org_b, user = org_lookup
+    auth = await SaasUserAuth.get_for_user(str(user.id))
+    auth.api_key_org_id = org_b.id
+    sandbox.credential_org_id = {
+        'same-org': org_b.id,
+        'other-org': org_a.id,
+        'unbound': None,
+    }[binding]
+    service = conversation_service(
+        AuthUserContext(user_auth=auth), sandbox, SandboxGroupingStrategy[strategy]
+    )
+    result = await service._find_running_sandbox_for_user()
+    assert result == (sandbox if binding == 'same-org' else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('binding', ['same-org', 'other-org', 'unbound'])
+@pytest.mark.parametrize('paused', [False, True])
+@pytest.mark.parametrize('inherited', [False, True])
+async def test_explicit_sandbox_requires_caller_org(
+    org_lookup, binding, paused, inherited
+):
+    from types import SimpleNamespace
+
+    from openhands.app_server.errors import SandboxError
+    from openhands.app_server.user.auth_user_context import AuthUserContext
+
+    sandbox, org_a, org_b, user = org_lookup
+    auth = await SaasUserAuth.get_for_user(str(user.id))
+    auth.api_key_org_id = org_b.id
+    sandbox.credential_org_id = {
+        'same-org': org_b.id,
+        'other-org': org_a.id,
+        'unbound': None,
+    }[binding]
+    if paused:
+        sandbox.status = SandboxStatus.PAUSED
+    service = conversation_service(AuthUserContext(user_auth=auth), sandbox, None)
+    from openhands.app_server.app_conversation.app_conversation_models import (
+        AppConversationStartRequest,
+    )
+
+    request = AppConversationStartRequest(sandbox_id=None if inherited else sandbox.id)
+    if inherited:
+        parent = SimpleNamespace(
+            sandbox_id=sandbox.id,
+            selected_repository=None,
+            selected_branch=None,
+            git_provider=None,
+            llm_model=None,
+        )
+        service._inherit_configuration_from_parent(request, parent)
+        assert request.sandbox_id == sandbox.id
+    task = SimpleNamespace(request=request, sandbox_id=None)
+    stream = service._wait_for_sandbox_start(task)
+    if binding == 'same-org':
+        assert await anext(stream) is task
+        assert task.sandbox_id == sandbox.id
+        await stream.aclose()
+    else:
+        with pytest.raises(SandboxError, match='requested organization'):
+            await anext(stream)
+        assert task.sandbox_id is None
+        service.sandbox_service.resume_sandbox.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('app_mode', ['saas', 'openhands'])
+async def test_unscoped_context_cannot_reuse_legacy_enterprise_sandbox(
+    org_lookup, app_mode
+):
+    from types import SimpleNamespace
+
+    from openhands.app_server.errors import SandboxError
+    from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+
+    sandbox, _, _, user = org_lookup
+    sandbox.credential_org_id = None
+    if app_mode == 'openhands':
+        from openhands.app_server.user.auth_user_context import AuthUserContext
+        from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
+
+        context = AuthUserContext(user_auth=DefaultUserAuth())
+        sandbox.created_by_user_id = await context.get_user_id()
+    else:
+        context = SimpleNamespace(get_user_id=AsyncMock(return_value=str(user.id)))
+    service = conversation_service(context, sandbox, SandboxGroupingStrategy.ADD_TO_ANY)
+    service.app_mode = app_mode
+    result = await service._find_running_sandbox_for_user()
+    assert result == (sandbox if app_mode == 'openhands' else None)
+    task = SimpleNamespace(
+        request=SimpleNamespace(sandbox_id=sandbox.id, conversation_id=None),
+        sandbox_id=None,
+    )
+    stream = service._wait_for_sandbox_start(task)
+    if app_mode == 'saas':
+        with pytest.raises(SandboxError, match='requested organization'):
+            await anext(stream)
+        assert task.sandbox_id is None
+    else:
+        assert await anext(stream) is task
+        await stream.aclose()

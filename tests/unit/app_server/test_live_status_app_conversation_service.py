@@ -3480,6 +3480,7 @@ class TestLiveStatusAppConversationService:
 
         # Create mock sandboxes
         running_sandbox = Mock(spec=SandboxInfo)
+        running_sandbox.credential_org_id = None
         running_sandbox.id = 'sandbox_1'
         running_sandbox.status = SandboxStatus.RUNNING
         running_sandbox.created_by_user_id = user_id
