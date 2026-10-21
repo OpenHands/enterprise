@@ -1360,13 +1360,17 @@ class TestSlackKeycloakCallback:
     """Test the OAuth callback that links a Slack user to an OpenHands user."""
 
     @pytest.mark.asyncio
-    async def test_link_records_the_slack_workspace(self, async_session_maker):
+    async def test_link_records_the_slack_workspace(
+        self, async_session_maker, create_user
+    ):
         """Test that the stored link keeps the workspace the user linked from."""
         from sqlalchemy import select
 
         from server.routes.integration import slack as slack_routes
+        from storage.slack_team import SlackTeam
 
         # Arrange
+        user = create_user()
         jwt_service = MagicMock()
         jwt_service.verify_jws_token.return_value = {
             'slack_user_id': 'U1',
@@ -1378,7 +1382,7 @@ class TestSlackKeycloakCallback:
             return_value=('test-access', 'test-refresh')
         )
         token_manager.get_user_info = AsyncMock(
-            return_value=MagicMock(sub='user-1', identity_provider='github')
+            return_value=MagicMock(sub=str(user.id), identity_provider='github')
         )
         token_manager.store_offline_token = AsyncMock()
         token_manager.store_idp_tokens = AsyncMock()
@@ -1394,13 +1398,9 @@ class TestSlackKeycloakCallback:
         # Act
         with (
             patch.object(slack_routes, 'a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.slack_team_store.a_session_maker', async_session_maker),
             patch.object(slack_routes, 'token_manager', token_manager),
-            patch.object(
-                slack_routes.UserStore,
-                'get_user_by_id',
-                AsyncMock(return_value=MagicMock(current_org_id=None)),
-            ),
-            patch.object(slack_routes.slack_team_store, 'create_team', AsyncMock()),
             patch.object(slack_routes, 'AsyncWebClient', return_value=slack_client),
             patch.object(slack_routes, 'get_analytics_service', return_value=None),
         ):
@@ -1415,4 +1415,7 @@ class TestSlackKeycloakCallback:
         # Assert
         async with async_session_maker() as session:
             link = (await session.execute(select(SlackUser))).scalar_one()
+            team = (await session.execute(select(SlackTeam))).scalar_one()
         assert link.team_id == 'T1'
+        assert link.org_id == user.current_org_id
+        assert team.team_id == 'T1'
