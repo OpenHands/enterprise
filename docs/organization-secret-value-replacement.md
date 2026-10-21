@@ -81,7 +81,7 @@ or erasure of already delivered credentials. New loads of the store receive the
 new value after commit. Choose a separate operational policy for restarting or
 revoking existing consumers.
 
-Migration 194 adds a random revision and the latest operation's two UUID markers
+Migration 193 adds a random revision and the latest operation's two UUID markers
 to the existing secret table; ciphertext is unchanged. Personal rows receive an
 unused revision because they share that table. The database default also covers
 inserts that omit the new fields. The migration takes table locks and backfills
@@ -97,7 +97,7 @@ are not redesigned here; ambiguous names fail closed in the replacement API.
 Implementation sources: [value routes](../server/routes/org_secret_values.py),
 [organization store](../storage/org_secrets_store.py),
 [stored row](../storage/stored_custom_secrets.py), and
-[migration](../migrations/versions/194_add_org_secret_value_versions.py).
+[migration](../migrations/versions/193_add_org_secret_value_versions.py).
 
 For rollback, first stop using replacement and deploy the previous application
 everywhere; only then downgrade the schema. New application code cannot read the

@@ -282,7 +282,7 @@ def test_migration_backfills_revisions_without_changing_ciphertext(
     from alembic.operations import Operations
 
     migration = importlib.import_module(
-        'migrations.versions.194_add_org_secret_value_versions'
+        'migrations.versions.193_add_org_secret_value_versions'
     )
     org = create_org()
     with engine.begin() as connection:

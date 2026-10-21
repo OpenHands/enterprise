@@ -1,6 +1,6 @@
 """Add opaque revisions and latest-replacement receipts to custom secrets.
 
-Revision ID: 194
+Revision ID: 193
 Revises: 192
 
 Existing values and ciphertext are unchanged. No value hashes or history are
@@ -12,7 +12,7 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '194'
+revision: str = '193'
 down_revision: str | None = '192'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

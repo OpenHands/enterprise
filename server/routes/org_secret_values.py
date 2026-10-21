@@ -4,48 +4,18 @@ The existing metadata PUT remains metadata-only. Version tokens are random UUIDs
 not hashes of secret values. No endpoint here returns a secret value.
 """
 
-from collections.abc import Callable, Coroutine
-from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.exceptions import RequestValidationError
-from fastapi.routing import APIRoute
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 
 from server.auth.authorization import Permission, require_permission
+from server.routes.org_secret_validation import OrgSecretValidationRoute
 from storage.org_secrets_store import (
     OrgSecretConflictError,
     OrgSecretNotFoundError,
     OrgSecretsStore,
 )
-
-
-class SecretValueRoute(APIRoute):
-    """Avoid reflecting raw credential inputs or error contexts in HTTP 422s."""
-
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
-
-        async def handle(request: Request) -> Response:
-            try:
-                return await handler(request)
-            except RequestValidationError as exc:
-                raise HTTPException(
-                    422,
-                    detail=[
-                        {
-                            'type': error['type'],
-                            'loc': ['body']
-                            if error['type'] == 'extra_forbidden'
-                            else error['loc'],
-                            'msg': error['msg'],
-                        }
-                        for error in exc.errors()
-                    ],
-                ) from None
-
-        return handle
 
 
 class OrgSecretValueReplacement(BaseModel):
@@ -70,7 +40,7 @@ class OrgSecretValueVersion(BaseModel):
     version: UUID
 
 
-org_secret_values_router = APIRouter(route_class=SecretValueRoute)
+org_secret_values_router = APIRouter(route_class=OrgSecretValidationRoute)
 
 
 @org_secret_values_router.get(
