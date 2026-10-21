@@ -4,7 +4,7 @@
 # automation service migrate their own databases on startup
 # (RUN_MIGRATIONS_ON_STARTUP, AUTOMATION_RUN_MIGRATIONS_ON_STARTUP), the app
 # uses the built-in password-based admin login instead of Keycloak
-# (ENABLE_INTEGRATED_IDP + OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN),
+# (ENABLE_INTEGRATED_IDP + ENABLE_OAUTH_V2_LOGIN),
 # and lets each user configure their own LLM in Settings instead of requiring
 # a LiteLLM proxy (OH_LLM_MODEL_KIND). See OHE-3376.
 #
@@ -185,7 +185,20 @@ services:
       # KEYCLOAK_* vars configured, the old Keycloak-coupled login path is
       # simply never exercised.
       ENABLE_INTEGRATED_IDP: 'true'
+      # OAuth v2 login: the server reads the bare form, the web client the
+      # structured one. The server needs it for background jobs, such as the
+      # GitLab webhook installer, to read git tokens linked through OAuth v2.
+      ENABLE_OAUTH_V2_LOGIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
+
+      # Optional GitLab. With GITLAB_APP_CLIENT_ID set, the app serves the
+      # GitLab webhook routes and the worker installs GitLab webhooks.
+      # GITLAB_HOST defaults to gitlab.com.
+      GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
+      GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
+      GITLAB_HOST: ${GITLAB_HOST:-}
+      # The image defaults to the OSS GitLab service, which can't install webhooks.
+      OPENHANDS_GITLAB_SERVICE_CLS: integrations.gitlab.gitlab_service.SaaSGitLabService
 
       # Super-admin: the backend flag enables the /super-admin routes, and the
       # web-client flag shows the entry points in the UI.
@@ -420,11 +433,6 @@ services:
       <<: *app-environment
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
       OH_WORKER_SCHEDULED_JOBS_INSTALL_GITLAB_WEBHOOKS: ${GITLAB_APP_CLIENT_ID:+true}
-      # The image defaults to the OSS GitLab service, which can't install webhooks.
-      OPENHANDS_GITLAB_SERVICE_CLS: integrations.gitlab.gitlab_service.SaaSGitLabService
-      GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
-      GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
-      GITLAB_HOST: ${GITLAB_HOST:-}
     restart: unless-stopped
 
 volumes:
