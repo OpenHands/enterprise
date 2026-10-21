@@ -29,10 +29,16 @@ from openhands.app_server.integrations.azure_devops.service.webhooks import (
     AZURE_DEVOPS_PR_COMMENT_EVENT,
     AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT,
 )
-from openhands.app_server.integrations.service_types import AuthenticationError
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+)
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
-from server.auth.constants import AZURE_DEVOPS_WEBHOOK_SECRET
+from server.auth.constants import (
+    AUTOMATION_EVENT_FORWARDING_ENABLED,
+    AZURE_DEVOPS_WEBHOOK_SECRET,
+)
 from storage.azure_devops_webhook import AzureDevOpsWebhook
 from storage.azure_devops_webhook_store import AzureDevOpsWebhookStore
 from storage.redis import get_redis_client_async
@@ -40,6 +46,7 @@ from storage.redis import get_redis_client_async
 azure_devops_integration_router = APIRouter(prefix='/integration')
 
 _azure_devops_manager = None
+_automation_event_service = None
 azure_devops_webhook_store = AzureDevOpsWebhookStore()
 
 
@@ -88,6 +95,16 @@ def get_azure_devops_manager():
 
         _azure_devops_manager = AzureDevOpsManager(TokenManager())
     return _azure_devops_manager
+
+
+def get_automation_event_service():
+    global _automation_event_service
+    if _automation_event_service is None:
+        from server.auth.token_manager import TokenManager
+        from server.services.automation_event_service import AutomationEventService
+
+        _automation_event_service = AutomationEventService(TokenManager())
+    return _automation_event_service
 
 
 def _basic_auth_secret(authorization: str | None) -> str | None:
@@ -618,6 +635,15 @@ async def azure_devops_events(
             return JSONResponse(
                 status_code=200,
                 content={'message': 'Duplicate Azure DevOps event ignored.'},
+            )
+
+        if AUTOMATION_EVENT_FORWARDING_ENABLED:
+            background_tasks.add_task(
+                get_automation_event_service().forward_event,
+                provider=ProviderType.AZURE_DEVOPS,
+                payload=payload_data,
+                installation_id=str(payload_data.get('subscriptionId') or ''),
+                event_type=payload_data.get('eventType'),
             )
 
         message = Message(

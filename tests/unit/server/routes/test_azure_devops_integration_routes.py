@@ -8,7 +8,10 @@ from fastapi import HTTPException
 from openhands.app_server.integrations.azure_devops.service.base import (
     AzureDevOpsApiError,
 )
-from openhands.app_server.integrations.service_types import AuthenticationError
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+)
 from server.routes.integration import azure_devops
 from storage.azure_devops_webhook import AzureDevOpsWebhook
 
@@ -415,6 +418,115 @@ async def test_events_route_skips_duplicate_without_scheduling(monkeypatch):
     )
 
     assert response.status_code == 200
+    background_tasks.add_task.assert_not_called()
+
+
+_PR_CREATED_EVENT = {
+    'id': 'evt-2',
+    'subscriptionId': 'sub-1',
+    'eventType': 'git.pullrequest.created',
+    'resourceContainers': {'account': {'baseUrl': 'https://dev.azure.com/fabrikam/'}},
+}
+
+
+class _PayloadRequest:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+def _events_route_fakes(monkeypatch, *, forwarding_enabled, duplicate=False):
+    monkeypatch.setattr(azure_devops, 'IS_LOCAL_DEPLOYMENT', False)
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    monkeypatch.setattr(
+        azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', forwarding_enabled
+    )
+
+    fake_redis = MagicMock()
+    fake_redis.set = AsyncMock(return_value=not duplicate)
+    monkeypatch.setattr(azure_devops, 'get_redis_client_async', lambda: fake_redis)
+
+    fake_manager = MagicMock()
+    fake_manager.receive_message = AsyncMock()
+    monkeypatch.setattr(azure_devops, 'get_azure_devops_manager', lambda: fake_manager)
+
+    fake_forwarder = MagicMock()
+    fake_forwarder.forward_event = AsyncMock()
+    monkeypatch.setattr(
+        azure_devops, 'get_automation_event_service', lambda: fake_forwarder
+    )
+    return fake_manager, fake_forwarder
+
+
+@pytest.mark.asyncio
+async def test_events_route_forwards_to_automations_in_background(monkeypatch):
+    fake_manager, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=True
+    )
+    background_tasks = MagicMock()
+
+    response = await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_CREATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+    )
+
+    assert response.status_code == 200
+    background_tasks.add_task.assert_any_call(
+        fake_forwarder.forward_event,
+        provider=ProviderType.AZURE_DEVOPS,
+        payload=_PR_CREATED_EVENT,
+        installation_id='sub-1',
+        event_type='git.pullrequest.created',
+    )
+    # The resolver still gets the event.
+    background_tasks.add_task.assert_any_call(fake_manager.receive_message, ANY)
+    fake_forwarder.forward_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'forwarding_enabled,duplicate',
+    [(False, False), (True, True)],
+    ids=['forwarding-disabled', 'duplicate-delivery'],
+)
+async def test_events_route_does_not_forward_when_disabled_or_duplicate(
+    monkeypatch, forwarding_enabled, duplicate
+):
+    _, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=forwarding_enabled, duplicate=duplicate
+    )
+    background_tasks = MagicMock()
+
+    response = await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_CREATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+    )
+
+    assert response.status_code == 200
+    scheduled = [call.args[0] for call in background_tasks.add_task.call_args_list]
+    assert fake_forwarder.forward_event not in scheduled
+
+
+@pytest.mark.asyncio
+async def test_events_route_does_not_forward_unauthenticated_events(monkeypatch):
+    _events_route_fakes(monkeypatch, forwarding_enabled=True)
+    background_tasks = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.azure_devops_events(
+            request=_PayloadRequest(_PR_CREATED_EVENT),
+            background_tasks=background_tasks,
+            x_openhands_webhook_secret='wrong',
+            authorization=None,
+        )
+
+    assert exc_info.value.status_code == 403
     background_tasks.add_task.assert_not_called()
 
 
