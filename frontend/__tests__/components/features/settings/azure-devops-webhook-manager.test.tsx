@@ -11,7 +11,16 @@ vi.mock("#/utils/custom-toast-handlers", () => ({
   displayErrorToast: vi.fn(),
 }));
 
-const status = (organization: string, installed = false) => ({
+const status = (
+  organization: string,
+  installed = false,
+  {
+    canView = true,
+    canManage = true,
+    recorded = false,
+    installedAt = null as string | null,
+  } = {},
+) => ({
   organization,
   webhook_installed: installed,
   pr_webhook_installed: installed,
@@ -20,6 +29,11 @@ const status = (organization: string, installed = false) => ({
   work_item_subscription_id: installed ? `${organization}-wi` : null,
   webhook_url: "https://app.example.com/integration/azure-devops/events",
   webhook_secret_set: true,
+  can_view_webhooks: canView,
+  can_manage_webhooks: canManage,
+  install_recorded: recorded,
+  installed_at: installedAt,
+  last_verified_at: recorded ? "2026-10-21T09:00:00Z" : null,
 });
 
 function renderManager() {
@@ -67,6 +81,9 @@ describe("Azure DevOps organization management", () => {
         await row("Beta")
       ).findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("azure-devops-webhook-permission-note"),
+    ).not.toBeInTheDocument();
     expect(client.getQueryData(["azure-devops-resources", "Alpha"])).toEqual(
       status("Alpha", true),
     );
@@ -117,6 +134,93 @@ describe("Azure DevOps organization management", () => {
       ).findByRole("button", { name: I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL }),
     );
     expect(uninstall).toHaveBeenCalledExactlyOnceWith("Alpha");
+  });
+
+  it("shows a member who can't view the hooks the recorded install, without actions", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, false, {
+          canView: false,
+          canManage: false,
+          recorded: org === "Alpha",
+          installedAt: org === "Alpha" ? "2026-10-20T10:00:00Z" : null,
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      alpha.getByTestId("azure-devops-webhook-install-details"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALLED_ON);
+    expect(
+      alpha.getByTestId("azure-devops-webhook-permission-note"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGED_BY_ADMINS);
+    expect(alpha.queryByRole("button")).not.toBeInTheDocument();
+
+    const beta = await row("Beta");
+    expect(
+      await beta.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_SET_UP),
+    ).toBeInTheDocument();
+    expect(
+      beta.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
+    ).not.toBeInTheDocument();
+    expect(
+      beta.queryByTestId("azure-devops-webhook-install-details"),
+    ).not.toBeInTheDocument();
+    expect(beta.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows a view-only member the live status and install date, without actions", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, true, {
+          canManage: false,
+          recorded: true,
+          installedAt: "2026-10-20T10:00:00Z",
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      alpha.getByTestId("azure-devops-webhook-install-details"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_LAST_CONFIRMED);
+    expect(
+      alpha.getByTestId("azure-devops-webhook-permission-note"),
+    ).toBeInTheDocument();
+    expect(alpha.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows a manager the install date next to the usual actions", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, true, {
+          recorded: true,
+          installedAt: "2026-10-20T10:00:00Z",
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByTestId("azure-devops-webhook-install-details"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALLED_ON);
+    expect(
+      alpha.getByRole("button", {
+        name: I18nKey.AZURE_DEVOPS$WEBHOOK_REINSTALL,
+      }),
+    ).toBeEnabled();
+    expect(
+      alpha.getByRole("button", {
+        name: I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL,
+      }),
+    ).toBeEnabled();
+    expect(
+      alpha.queryByTestId("azure-devops-webhook-permission-note"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps another organization usable when one status request fails", async () => {

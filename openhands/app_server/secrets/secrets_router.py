@@ -5,6 +5,7 @@ This module provides the V1 API routes for secrets under /api/v1/secrets.
 
 import asyncio
 import logging
+import os
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
@@ -84,7 +85,9 @@ router = APIRouter(
 # Redis distributed lock so multiple worker processes serialize against
 # each other; if Redis is unreachable in SaaS we fail the request rather
 # than silently re-introduce the race. The Redis TTL guards against a
-# crashed worker leaving the lock held forever.
+# crashed worker leaving the lock held forever. SaaS deployments that don't
+# configure Redis (no REDIS_HOST, e.g. the Docker Compose stack) use the
+# asyncio.Lock instead.
 
 _SECRETS_WRITE_LOCK_KEY_PREFIX = 'app_secrets:write'
 # TTL acts as a safety net if a worker crashes mid-operation. The store
@@ -93,10 +96,10 @@ _SECRETS_WRITE_LOCK_TTL_SECONDS = 30
 # How long to wait for an in-flight peer to finish before giving up.
 _SECRETS_WRITE_LOCK_BLOCKING_TIMEOUT_SECONDS = 10
 
-# In-process locks, used in OSS mode. defaultdict is fine here: each lock
-# is bound to the event loop that first awaited it, and FastAPI typically
-# runs a single loop per process. See _reset_user_secrets_locks for test
-# cleanup.
+# In-process locks, used in OSS mode and in SaaS mode without REDIS_HOST.
+# defaultdict is fine here: each lock is bound to the event loop that first
+# awaited it, and FastAPI typically runs a single loop per process. See
+# _reset_user_secrets_locks for test cleanup.
 _user_secrets_write_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -132,13 +135,14 @@ async def _secrets_write_lock(
     """Serialize read-modify-write secret mutations for a single user.
 
     In SaaS mode this acquires a Redis distributed lock so multiple workers
-    can't drop each other's writes. In OSS mode it falls back to a single-
-    process asyncio.Lock, which is sufficient because there's only one
-    process. On SaaS, Redis being unavailable causes a 503 — failing the
-    request is safer than letting the race come back.
+    can't drop each other's writes. In OSS mode, or in SaaS mode without
+    REDIS_HOST, it falls back to a single-process asyncio.Lock, which is
+    sufficient because there's only one process. On SaaS, a configured Redis
+    being unavailable causes a 503 — failing the request is safer than
+    letting the race come back.
     """
     lock_key = _secrets_write_lock_key(user_id, secrets_store)
-    if _is_saas_mode():
+    if _is_saas_mode() and os.environ.get('REDIS_HOST'):
         redis = get_redis_client_async()
         redis_lock: RedisLock | None = None
         try:
@@ -179,7 +183,7 @@ async def _secrets_write_lock(
                 )
         return
 
-    # OSS / single-process path.
+    # OSS / single-process path (also SaaS without REDIS_HOST).
     async with _user_secrets_write_locks[lock_key]:
         yield
 

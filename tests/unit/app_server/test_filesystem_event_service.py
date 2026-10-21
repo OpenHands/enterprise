@@ -9,6 +9,7 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -525,6 +526,22 @@ class TestEventIndex:
             assert len(result.items) == 3
         finally:
             service._search_paths = original_search_paths  # type: ignore[assignment]
+
+    @pytest.mark.asyncio
+    async def test_invalidate_tolerates_a_concurrent_invalidation(
+        self, service: FilesystemEventService
+    ):
+        """Events saved together can all see index.json before one renames it."""
+        conversation_path = await service.get_conversation_path(uuid4())
+        conversation_path.mkdir(parents=True, exist_ok=True)
+        service._index_path(conversation_path).write_text('[]')
+
+        with patch.object(Path, 'exists', return_value=True):
+            service._invalidate_index(conversation_path)
+            service._invalidate_index(conversation_path)
+
+        assert not service._index_path(conversation_path).exists()
+        assert service._index_stale_path(conversation_path).exists()
 
     @pytest.mark.asyncio
     async def test_save_event_invalidates_index(self, service: FilesystemEventService):

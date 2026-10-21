@@ -272,7 +272,7 @@ describe("SuperAdminSetupGuide", () => {
       // Assert: Agent Canvas starts the step's tour.
       await waitFor(() =>
         expect(replace).toHaveBeenCalledWith(
-          "/canvas/mcp?setup_tour=add-integration",
+          "/canvas/mcp?setup_tour=add-integration&org=guide-org",
         ),
       );
     });
@@ -290,7 +290,7 @@ describe("SuperAdminSetupGuide", () => {
       );
 
       // Assert
-      expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+      expect(replace).toHaveBeenCalledWith("/canvas/mcp?org=guide-org");
     });
   });
 

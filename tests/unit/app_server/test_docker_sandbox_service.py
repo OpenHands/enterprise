@@ -576,6 +576,74 @@ class TestDockerSandboxService:
         assert call_args[1]['ports'] == {8000: 12345, 8001: 12346}
         assert call_args[1]['working_dir'] == '/workspace'
         assert call_args[1]['detach'] is True
+        assert call_args[1]['network'] is None
+        assert 'OH_VSCODE_BASE_PATH' not in call_args[1]['environment']
+
+    async def test_start_sandbox_sets_vscode_base_path_for_path_urls(self, service):
+        """A URL pattern with a path gives VS Code its own path as base path."""
+        service.container_url_pattern = 'http://localhost:3100/runtime/{port}'
+        service.docker_client.containers.run.return_value = MagicMock(
+            status='running',
+            attrs={'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}},
+        )
+
+        with (
+            patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox()
+
+        environment = service.docker_client.containers.run.call_args[1]['environment']
+        # VS Code is container port 8001, published as 12346.
+        assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/12346'
+
+    async def test_start_sandbox_attaches_to_network(self, service):
+        """On a network, the container joins it and publishes no ports."""
+        service.network = 'openhands_default'
+        service.container_url_pattern = (
+            'http://localhost:3100/runtime/{sandbox_id}/{port}'
+        )
+        service.docker_client.containers.run.return_value = MagicMock(
+            status='running',
+            attrs={'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}},
+        )
+
+        with (
+            patch.object(service, '_find_unused_port') as find_unused_port,
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox(sandbox_id='abc')
+
+        find_unused_port.assert_not_called()
+        call_args = service.docker_client.containers.run.call_args
+        assert call_args[1]['network'] == 'openhands_default'
+        assert call_args[1]['network_mode'] is None
+        assert call_args[1]['ports'] is None
+        environment = call_args[1]['environment']
+        assert environment[AGENT_SERVER] == '8000'
+        assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/oh-test-abc/8001'
+
+    async def test_to_sandbox_info_on_network(self, service, mock_running_container):
+        """On the network, URLs name the container and use its own ports."""
+        service.network = 'openhands_default'
+        service.container_url_pattern = (
+            'http://localhost:3100/runtime/{sandbox_id}/{port}'
+        )
+        mock_running_container.attrs['HostConfig'] = {
+            'NetworkMode': 'openhands_default'
+        }
+        mock_running_container.attrs['NetworkSettings'] = {'Ports': {}}
+
+        result = await service._to_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
+        )
+
+        urls = {url.name: url.url for url in result.exposed_urls}
+        assert urls[AGENT_SERVER] == 'http://localhost:3100/runtime/oh-test-abc123/8000'
+        assert urls[VSCODE] == (
+            'http://localhost:3100/runtime/oh-test-abc123/8001'
+            '/?tkn=session_key_123&folder=/workspace'
+        )
 
     async def test_start_sandbox_with_spec_id(self, service, mock_sandbox_spec_service):
         """Test starting sandbox with specific spec ID."""
@@ -2261,6 +2329,40 @@ class TestDockerSandboxServiceInjector:
             injector = DockerSandboxServiceInjector()
             assert injector.use_host_network is False
 
+    def test_network_from_env_var(self):
+        """SANDBOX_DOCKER_NETWORK sets the network; unset or empty means none."""
+        import os
+        from unittest.mock import patch
+
+        from openhands.app_server.sandbox.docker_sandbox_service import (
+            DockerSandboxServiceInjector,
+        )
+
+        pattern = 'http://localhost:3100/runtime/{sandbox_id}/{port}'
+        with patch.dict(
+            os.environ, {'SANDBOX_DOCKER_NETWORK': 'openhands_default'}, clear=True
+        ):
+            injector = DockerSandboxServiceInjector(container_url_pattern=pattern)
+            assert injector.network == 'openhands_default'
+
+        with patch.dict(os.environ, {'SANDBOX_DOCKER_NETWORK': ''}, clear=True):
+            assert DockerSandboxServiceInjector().network is None
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert DockerSandboxServiceInjector().network is None
+
+    def test_network_requires_sandbox_id_in_url_pattern(self):
+        """Without {sandbox_id}, every sandbox on the network gets the same URLs."""
+        from openhands.app_server.sandbox.docker_sandbox_service import (
+            DockerSandboxServiceInjector,
+        )
+
+        with pytest.raises(ValueError, match='sandbox_id'):
+            DockerSandboxServiceInjector(network='openhands_default')
+
+        # Host networking ignores the network, so the default pattern is fine.
+        DockerSandboxServiceInjector(network='openhands_default', use_host_network=True)
+
 
 class TestDockerSandboxServiceInjectorFromEnv:
     """Test cases for DockerSandboxServiceInjector environment variable configuration."""
@@ -2429,6 +2531,7 @@ class TestDockerSandboxServiceHostNetwork:
 
         call_args = service_with_host_network.docker_client.containers.run.call_args
         assert call_args[1]['network_mode'] == 'host'
+        assert call_args[1]['network'] is None
         assert call_args[1]['ports'] is None
         assert call_args[1]['extra_hosts'] is None
 

@@ -22,6 +22,7 @@ import {
 import type { LiteLlmStatus } from "./budgets-components";
 import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import { cn } from "#/utils/utils";
+import { sanitizeAmountInput } from "#/utils/sanitize-amount-input";
 import {
   formControlFieldClassName,
   formControlInlineInputClassName,
@@ -325,9 +326,12 @@ export function OrganizationBudgetTab({
             </span>
             <input
               id="org-monthly-limit"
-              type="number"
+              type="text"
+              inputMode="decimal"
               value={monthlyLimit}
-              onChange={(event) => onMonthlyLimitChange(event.target.value)}
+              onChange={(event) =>
+                onMonthlyLimitChange(sanitizeAmountInput(event.target.value))
+              }
               className={cn(formControlInlineInputClassName, "text-white")}
             />
           </div>
@@ -503,6 +507,8 @@ export function OrganizationBudgetTab({
               {slackConnected ? (
                 <p className="text-xs text-[var(--oh-muted)] mt-2">
                   Used by any threshold with &apos;Post to Slack&apos; enabled.
+                  Enter a channel name or a channel ID, and invite the OpenHands
+                  app to the channel.
                 </p>
               ) : (
                 <p className="text-xs text-muted mt-2">
@@ -582,9 +588,12 @@ export function DefaultBudgetsTab({
             </span>
             <input
               id="default-budget-amount"
-              type="number"
+              type="text"
+              inputMode="decimal"
               value={defaultAmount}
-              onChange={(event) => onDefaultAmountChange(event.target.value)}
+              onChange={(event) =>
+                onDefaultAmountChange(sanitizeAmountInput(event.target.value))
+              }
               className={cn(formControlInlineInputClassName, "text-white")}
             />
           </div>
@@ -817,12 +826,14 @@ export function UserOverridesTab({
                                 $
                               </span>
                               <input
-                                type="number"
-                                min="0"
-                                step="0.01"
+                                type="text"
+                                inputMode="decimal"
+                                aria-label={`Monthly budget for ${user.name}`}
                                 value={overrideAmount}
                                 onChange={(event) =>
-                                  onOverrideAmountChange(event.target.value)
+                                  onOverrideAmountChange(
+                                    sanitizeAmountInput(event.target.value),
+                                  )
                                 }
                                 disabled={overrideDisabled}
                                 className={cn(

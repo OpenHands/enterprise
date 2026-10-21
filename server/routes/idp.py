@@ -99,6 +99,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
@@ -956,7 +957,9 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
 
     try:
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
-        llm_api_key_secret = settings.agent_settings.llm.api_key
+        llm_api_key_secret = getattr(
+            agent_llm(settings.agent_settings), 'api_key', None
+        )
         llm_api_key = (
             llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
         )

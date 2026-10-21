@@ -1787,9 +1787,14 @@ class UserStore:
         Returns:
             A new UserSettings object populated from the entities
         """
+        from openhands.app_server.settings.settings_models import (
+            normalize_member_agent_settings_diff,
+        )
         from storage.org_store import OrgStore
 
-        member_agent_settings_diff = dict(org_member.agent_settings_diff)
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
         member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
