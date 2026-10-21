@@ -1,6 +1,9 @@
 # Sandbox credential organization binding rollout
 
-New sandboxes persist the effective organization at launch. New conversations
+New sandboxes persist the effective organization at launch. Resolver runs use
+the explicit claimed organization when present; unclaimed-repository and
+no-repository runs use their authenticated effective organization. Local
+authentication without an organization remains unscoped. New conversations
 may reuse a sandbox only in that organization, including grouping, explicit
 `sandbox_id` requests and inherited parent sandbox IDs. In Enterprise, an unbound
 legacy sandbox cannot be assigned to a new conversation.
@@ -41,3 +44,9 @@ such as `unbound`, `unknown_owner`, `invalid_owner`, `not_a_member`, `inactive`,
 Grouping skips incompatible sandboxes instead of reclaiming them. Plan capacity
 for new sandboxes after rollout; existing sandboxes still consume capacity and
 normal concurrent-sandbox limit handling still applies.
+
+Remote daily quota accounting uses the same resolved organization as the new
+sandbox binding. Resolver claim lookup currently returns no claim on lookup
+errors as well as for unclaimed repositories. Those runs retain existing routing
+to the authenticated default organization and now bind credentials there too.
+Changing claim-lookup errors to fail closed is separate resolver-routing work.

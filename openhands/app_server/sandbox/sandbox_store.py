@@ -249,4 +249,10 @@ async def get_credential_org_id(user_context: UserContext) -> UUID | None:
     if resolver_org_id is not None:
         return resolver_org_id
     get_org_id = getattr(user_context, 'get_effective_org_id', None)
+    if get_org_id is None:
+        # Unclaimed-repository and no-repository resolver runs have no explicit
+        # resolver org. Capture their authenticated default instead of creating
+        # a new unbound sandbox. Auth validation errors must propagate.
+        resolver_auth = getattr(user_context, 'saas_user_auth', None)
+        get_org_id = getattr(resolver_auth, 'get_effective_org_id', None)
     return await get_org_id() if get_org_id is not None else None

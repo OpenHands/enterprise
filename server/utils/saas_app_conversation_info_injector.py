@@ -104,6 +104,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         otherwise falls back to the user's persisted current_org_id.
         """
         user_auth = getattr(self.user_context, 'user_auth', None)
+        if user_auth is None:
+            # Resolver contexts wrap the same auth under a different attribute.
+            # Keep metadata in the org captured by the sandbox at creation.
+            user_auth = getattr(self.user_context, 'saas_user_auth', None)
         if user_auth is not None and hasattr(user_auth, 'get_effective_org_id'):
             return await user_auth.get_effective_org_id()
         user = await self._get_current_user()

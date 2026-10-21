@@ -378,3 +378,257 @@ async def test_unscoped_context_cannot_reuse_legacy_enterprise_sandbox(
     else:
         assert await anext(stream) is task
         await stream.aclose()
+
+
+@pytest.fixture
+async def resolver_sandbox_factory(async_session_maker, monkeypatch):
+    """Real sandbox creation/persistence; fake only the Docker provider."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+
+    async with async_session_maker() as session:
+
+        def build(context, backend='docker'):
+            monkeypatch.setattr(
+                context, 'get_default_sandbox_spec_id', AsyncMock(return_value=None)
+            )
+            spec = SimpleNamespace(
+                id='test-image', initial_env={}, working_dir='/workspace', command=None
+            )
+            specs = SimpleNamespace(
+                get_default_sandbox_spec=AsyncMock(return_value=spec)
+            )
+            if backend == 'remote':
+                from openhands.app_server.sandbox.remote_sandbox_service import (
+                    RemoteSandboxService,
+                )
+
+                client = AsyncMock()
+                response = MagicMock()
+                response.json.return_value = {
+                    'session_id': 'fallback',
+                    'status': 'running',
+                    'url': 'https://runtime.invalid',
+                    'session_api_key': 'fake-session',
+                    'runtime_id': 'fake-runtime',
+                }
+                client.request.return_value = response
+                service = RemoteSandboxService(
+                    sandbox_spec_service=specs,
+                    api_url='https://runtime.invalid',
+                    api_key='fake-api-key',
+                    web_url=None,
+                    resource_factor=1,
+                    runtime_class=None,
+                    start_sandbox_timeout=120,
+                    max_num_sandboxes=3,
+                    user_context=context,
+                    httpx_client=client,
+                    db_session=session,
+                )
+                monkeypatch.setattr(
+                    service,
+                    '_reserve_daily_sandbox_quota',
+                    AsyncMock(return_value=False),
+                )
+                monkeypatch.setattr(
+                    service, 'pause_old_sandboxes', AsyncMock(return_value=[])
+                )
+                return service
+            docker = MagicMock()
+            docker.containers.list.return_value = []
+
+            def run(**kwargs):
+                container = SimpleNamespace(
+                    name=kwargs['name'],
+                    status='running',
+                    attrs={
+                        'Config': {
+                            'Env': [
+                                f'{k}={v}' for k, v in kwargs['environment'].items()
+                            ]
+                        },
+                        'NetworkSettings': {'Ports': {}},
+                    },
+                )
+                docker.containers.get.return_value = container
+                return container
+
+            docker.containers.run.side_effect = run
+            service = DockerSandboxService(
+                user_context=context,
+                db_session=session,
+                httpx_client=AsyncMock(),
+                max_num_sandboxes=3,
+                sandbox_spec_service=specs,
+                container_name_prefix='resolver-',
+                host_port=3000,
+                container_url_pattern='http://localhost:{port}',
+                mounts=[],
+                exposed_ports=[],
+                health_check_path=None,
+                docker_client=docker,
+            )
+            monkeypatch.setattr(
+                service, 'pause_old_sandboxes', AsyncMock(return_value=[])
+            )
+            return service
+
+        yield build, session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'source',
+    ['no-repository', 'unclaimed-repository', 'claimed-member', 'claimed-nonmember'],
+)
+@pytest.mark.parametrize('auth_scope', ['current-org', 'api-key', 'header'])
+@pytest.mark.parametrize('backend', ['docker', 'remote'])
+async def test_resolver_creation_and_credential_lookup(
+    org_lookup,
+    resolver_sandbox_factory,
+    async_session_maker,
+    session_maker,
+    monkeypatch,
+    source,
+    auth_scope,
+    backend,
+    create_org,
+):
+    from fastapi import HTTPException
+
+    from integrations.resolver_context import ResolverUserContext
+    from integrations.resolver_org_router import resolve_org_for_repo
+    from openhands.app_server.sandbox.sandbox_store import StoredSandbox
+    from server.utils.saas_app_conversation_info_injector import (
+        SaasSQLAppConversationInfoService,
+    )
+
+    _, org_a, org_b, user = org_lookup
+    monkeypatch.setattr(
+        'storage.org_git_claim_store.a_session_maker', async_session_maker
+    )
+    resolved_org = None
+    if source in ('claimed-member', 'claimed-nonmember'):
+        from storage.org_git_claim_store import OrgGitClaimStore
+
+        claim_org = org_b if source == 'claimed-member' else create_org()
+        await OrgGitClaimStore.create_claim(
+            claim_org.id, 'azure_devops', 'acme', user.id
+        )
+    if source != 'no-repository':
+        resolved_org = await resolve_org_for_repo(
+            'azure_devops', 'acme/project/repo', str(user.id)
+        )
+        assert resolved_org == (org_b.id if source == 'claimed-member' else None)
+    auth = await SaasUserAuth.get_for_user(str(user.id))
+    target_org = (
+        org_a if auth_scope == 'current-org' and source != 'claimed-member' else org_b
+    )
+    if auth_scope == 'api-key':
+        auth.api_key_org_id = org_b.id
+    elif auth_scope == 'header':
+        auth._x_org_id_header = str(org_b.id)
+    context = ResolverUserContext(auth, resolver_org_id=resolved_org)
+    build, session = resolver_sandbox_factory
+    service = build(context, backend)
+    created = await service.start_sandbox(sandbox_id='fallback')
+    await session.commit()
+    stored = await session.get(StoredSandbox, created.id)
+    assert stored.credential_org_id == target_org.id
+    # Persist actual conversation metadata, not just the sandbox's identity.
+    from uuid import uuid4
+
+    from openhands.app_server.app_conversation.app_conversation_models import (
+        AppConversationInfo,
+    )
+    from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
+
+    metadata = SaasSQLAppConversationInfoService(
+        db_session=session, user_context=context
+    )
+    info = AppConversationInfo(
+        id=uuid4(),
+        created_by_user_id=str(user.id),
+        sandbox_id=created.id,
+        title='Resolver regression',
+    )
+    await metadata.save_app_conversation_info(info)
+    saved = await session.get(StoredConversationMetadataSaas, str(info.id))
+    assert saved.org_id == target_org.id
+    assert (await metadata.get_app_conversation_info(info.id)).id == info.id
+    reloaded = await service.get_sandbox(created.id)
+    assert reloaded.credential_org_id == target_org.id
+    expected = b'fake-a' if target_org.id == org_a.id else b'fake-b'
+    assert (await get_secret_value('DB_SYNC_CANARY', reloaded)).body == expected
+    with session_maker() as db:
+        db.get(User, user.id).current_org_id = (
+            org_b.id if target_org.id == org_a.id else org_a.id
+        )
+        db.commit()
+    assert (await get_secret_value('DB_SYNC_CANARY', reloaded)).body == expected
+    with session_maker() as db:
+        db.delete(db.get(OrgMember, (target_org.id, user.id)))
+        db.commit()
+    with pytest.raises(HTTPException) as exc:
+        await get_secret_value('DB_SYNC_CANARY', reloaded)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('backend', ['docker', 'remote'])
+@pytest.mark.parametrize(
+    'failure', ['conflicting-auth', 'suspended-org', 'inactive-membership']
+)
+async def test_unrouted_resolver_auth_error_prevents_creation(
+    org_lookup, resolver_sandbox_factory, session_maker, monkeypatch, backend, failure
+):
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from integrations.resolver_context import ResolverUserContext
+    from openhands.app_server.sandbox.sandbox_store import StoredSandbox
+
+    _, org_a, org_b, user = org_lookup
+    auth = await SaasUserAuth.get_for_user(str(user.id))
+    if failure == 'conflicting-auth':
+        auth.api_key_org_id = org_a.id
+        auth._x_org_id_header = str(org_b.id)
+    else:
+        from storage.org import Org
+
+        monkeypatch.setattr('server.auth.org_access.ENABLE_SUPER_ADMIN', True)
+        with session_maker() as db:
+            if failure == 'suspended-org':
+                db.get(Org, org_a.id).status = 'suspended'
+            else:
+                db.get(OrgMember, (org_a.id, user.id)).status = 'inactive'
+            db.commit()
+    build, session = resolver_sandbox_factory
+    service = build(ResolverUserContext(auth), backend)
+    with pytest.raises(HTTPException) as exc:
+        await service.start_sandbox(sandbox_id='unauthorized')
+    assert exc.value.status_code == 403
+    if backend == 'docker':
+        service.docker_client.containers.run.assert_not_called()
+    else:
+        service._reserve_daily_sandbox_quota.assert_not_called()
+        service.httpx_client.request.assert_not_called()
+    service.pause_old_sandboxes.assert_not_called()
+    assert (await session.scalars(select(StoredSandbox))).all() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('backend', ['docker', 'remote'])
+async def test_local_resolver_remains_unscoped(resolver_sandbox_factory, backend):
+    from integrations.resolver_context import ResolverUserContext
+    from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
+
+    build, session = resolver_sandbox_factory
+    service = build(ResolverUserContext(DefaultUserAuth()), backend)
+    created = await service.start_sandbox(sandbox_id='local')
+    await session.commit()
+    reloaded = await service.get_sandbox(created.id)
+    assert reloaded.credential_org_id is None
