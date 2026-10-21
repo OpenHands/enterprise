@@ -248,6 +248,7 @@ def oauth_v2_stores(async_session_maker: async_sessionmaker) -> Iterator[None]:
         patch('storage.oauth_token_store.a_session_maker', async_session_maker),
         patch('storage.offline_token_store.a_session_maker', async_session_maker),
         patch('server.auth.saas_user_auth.a_session_maker', async_session_maker),
+        patch('storage.auth_token_store.a_session_maker', async_session_maker),
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
     ):
         yield
