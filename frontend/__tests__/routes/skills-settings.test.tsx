@@ -228,3 +228,102 @@ describe("skill name conflict warning", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("skill source column", () => {
+  const LONG_SOURCE =
+    "https://example-org@dev.azure.com/example-org/Web%20Apps/_git/team-skills";
+
+  const sourceCell = async (skillName: string) => {
+    const row = (await screen.findByText(skillName)).closest("tr");
+    return within(row as HTMLElement).getAllByRole("cell")[1];
+  };
+
+  beforeEach(() => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      registered_marketplaces: [
+        { name: "team-skills", source: LONG_SOURCE, scope: "org" },
+      ],
+    });
+    vi.spyOn(SkillsService, "getSkills").mockResolvedValue([
+      { name: "github", type: "knowledge", source: "global" },
+      { name: "my-notes", type: "knowledge", source: "user" },
+    ]);
+    vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+      skills: [
+        {
+          name: "grill-me",
+          type: "knowledge",
+          source: "marketplace:team-skills",
+        },
+      ],
+      plugins: [
+        {
+          name: "review-kit",
+          source: LONG_SOURCE,
+          marketplace: "team-skills",
+        },
+      ],
+      marketplace_skills: { "team-skills": ["grill-me"] },
+      errors: [],
+      conflicts: [],
+    });
+  });
+
+  it("shows the marketplace name for its skills, with the address on hover", async () => {
+    renderSkillsSettings();
+
+    const cell = await sourceCell("grill-me");
+    const label = within(cell).getByText("team-skills");
+    expect(label).toHaveAttribute("title", LONG_SOURCE);
+    expect(within(cell).queryByText(LONG_SOURCE)).not.toBeInTheDocument();
+  });
+
+  it("shows the marketplace name for its plugins", async () => {
+    renderSkillsSettings();
+
+    const cell = await sourceCell("review-kit");
+    expect(within(cell).getByText("team-skills")).toHaveAttribute(
+      "title",
+      LONG_SOURCE,
+    );
+  });
+
+  it("keeps the existing source for built-in and user skills", async () => {
+    renderSkillsSettings();
+
+    const globalCell = await sourceCell("github");
+    expect(within(globalCell).getByText("global")).toHaveAttribute(
+      "title",
+      "global",
+    );
+    const userCell = await sourceCell("my-notes");
+    expect(within(userCell).getByText("user")).toHaveAttribute("title", "user");
+  });
+
+  it("filters by marketplace name", async () => {
+    const user = userEvent.setup();
+    renderSkillsSettings();
+    await screen.findByText("grill-me");
+
+    const input = screen.getByRole("combobox", { name: "repository-filter" });
+    await user.clear(input);
+    const options = (await screen.findAllByRole("option")).map(
+      (node) => node.textContent,
+    );
+    expect(options).toEqual(
+      expect.arrayContaining(["global", "user", "team-skills"]),
+    );
+    expect(options).not.toContain(LONG_SOURCE);
+
+    const option = (await screen.findAllByRole("option")).find(
+      (node) => node.textContent === "team-skills",
+    );
+    await user.click(option as HTMLElement);
+    await waitFor(() =>
+      expect(screen.queryByText("github")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("grill-me")).toBeInTheDocument();
+    expect(screen.getByText("review-kit")).toBeInTheDocument();
+  });
+});

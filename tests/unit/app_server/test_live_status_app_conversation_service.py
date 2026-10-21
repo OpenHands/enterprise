@@ -70,6 +70,7 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
 )
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
@@ -3733,6 +3734,76 @@ class TestLiveStatusAppConversationService:
             self.service._build_start_conversation_request_for_user.call_args.kwargs
         )
         assert kwargs['client_tools'] == client_tools
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_runs_on_requested_llm_profile(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A one-off llm_profile runs this conversation on that saved profile."""
+        profiles = LLMProfiles()
+        profiles.save(
+            'ops55', LLM(model='anthropic/claude-opus-5-5', api_key='sk-profile')
+        )
+        self.mock_user = UserInfo(
+            id='member-1',
+            agent_settings={'llm': {'model': 'openai/gpt-4o', 'api_key': 'sk-member'}},
+            llm_profiles=profiles,
+        )
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(llm_profile='ops55')
+
+        async for _ in self.service._start_app_conversation(request):
+            pass
+
+        launched_user = (
+            self.service._build_start_conversation_request_for_user.call_args.args[0]
+        )
+        assert launched_user.agent_settings.llm.model == 'anthropic/claude-opus-5-5'
+        assert launched_user.agent_settings.llm.api_key.get_secret_value() == (
+            'sk-profile'
+        )
+        assert self.mock_user.agent_settings.llm.model == 'openai/gpt-4o'
+
+    @pytest.mark.parametrize(
+        ('acp', 'llm_profile', 'detail'),
+        [
+            (False, 'gone', "Profile 'gone' not found"),
+            (True, 'ops55', 'llm_profile is not supported for ACP agent launches'),
+        ],
+        ids=['unknown-profile', 'acp-agent'],
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_unusable_llm_profile_before_sandbox(
+        self, acp, llm_profile, detail
+    ):
+        """An llm_profile the launch can't run fails fast, before any sandbox work."""
+        from openhands.sdk.settings import ACPAgentSettings
+
+        profiles = LLMProfiles()
+        profiles.save('ops55', LLM(model='anthropic/claude-opus-5-5'))
+        self.mock_user.llm_profiles = profiles
+        if acp:
+            self.mock_user.agent_settings = ACPAgentSettings(acp_server='claude-code')
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.service._wait_for_sandbox_start = Mock()
+        request = AppConversationStartRequest(llm_profile=llm_profile)
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in self.service._start_app_conversation(request):
+                pass
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == detail
+        self.service._wait_for_sandbox_start.assert_not_called()
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

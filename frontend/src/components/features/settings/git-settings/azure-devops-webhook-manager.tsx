@@ -31,6 +31,15 @@ function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
     );
   }
 
+  // Without view permission Azure hides the org's hooks, so the flags are unknown.
+  if (!status.can_view_webhooks) {
+    return (
+      <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED)}
+      </Typography.Text>
+    );
+  }
+
   if (status.webhook_installed) {
     return (
       <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
@@ -88,7 +97,9 @@ function OrganizationRow({ organization }: { organization: string }) {
   }
 
   const anyMutationPending = isInstalling || isUninstalling;
-  const installDisabled = anyMutationPending || !status.webhook_secret_set;
+  const canManage = status.can_manage_webhooks;
+  const installDisabled =
+    anyMutationPending || !status.webhook_secret_set || !canManage;
   let installLabel = t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL);
   if (isInstalling) {
     installLabel = t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALLING);
@@ -105,6 +116,18 @@ function OrganizationRow({ organization }: { organization: string }) {
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={status} />
+        {!canManage && (
+          <Typography.Text
+            className="block mt-2 text-xs text-gray-400"
+            testId="azure-devops-webhook-permission-note"
+          >
+            {t(
+              status.can_view_webhooks
+                ? I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_MANAGE
+                : I18nKey.AZURE_DEVOPS$WEBHOOK_CANNOT_VIEW,
+            )}
+          </Typography.Text>
+        )}
       </td>
       <td className="px-4 py-3">
         <div className="flex gap-2">
@@ -123,7 +146,7 @@ function OrganizationRow({ organization }: { organization: string }) {
               type="button"
               variant="secondary"
               onClick={() => uninstallMutation.mutate()}
-              isDisabled={anyMutationPending}
+              isDisabled={anyMutationPending || !canManage}
               className="cursor-pointer"
               testId="azure-devops-uninstall-webhook"
             >
