@@ -270,6 +270,8 @@ export function SuperAdminSetupFloatingWidget() {
   const { data: config } = useConfig();
   const { visible, nextStep, progress, completedCount, totalCount, refetch } =
     useSuperAdminSetup();
+  const { mutate: updateSetupState } = useUpdateSetupState();
+  const [confirmDismiss, setConfirmDismiss] = useState(false);
   const isSetupGuidePage = pathname === SUPER_ADMIN_PATHS.setup;
   // Closed on the setup guide itself, because that page already shows the
   // checklist. Elsewhere the panel starts open until the user dismisses it.
@@ -397,128 +399,146 @@ export function SuperAdminSetupFloatingWidget() {
   const progressPct = Math.round(Math.min(1, Math.max(0, progress)) * 100);
 
   return (
-    <div
-      className="fixed bottom-5 right-5 z-[65] flex flex-col items-end gap-2"
-      data-testid="super-admin-setup-floating"
-    >
-      {open && (
-        <div
-          data-testid="super-admin-setup-floating-panel"
-          className={cn(
-            "flex w-[320px] flex-col gap-3 rounded-xl border border-[var(--oh-border)]",
-            "bg-base-secondary p-4 shadow-lg",
-          )}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <p className="min-w-0 text-sm font-semibold leading-7 text-white">
-              {t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-            </p>
-            <div className="flex h-7 shrink-0 items-center gap-0.5">
-              <button
-                type="button"
-                data-testid="super-admin-setup-floating-page"
+    <>
+      <div
+        className="fixed bottom-5 right-5 z-[65] flex flex-col items-end gap-2"
+        data-testid="super-admin-setup-floating"
+      >
+        {open && (
+          <div
+            data-testid="super-admin-setup-floating-panel"
+            className={cn(
+              "flex w-[320px] flex-col gap-3 rounded-xl border border-[var(--oh-border)]",
+              "bg-base-secondary p-4 shadow-lg",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="min-w-0 text-sm font-semibold leading-7 text-white">
+                {t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
+              </p>
+              <div className="flex h-7 shrink-0 items-center gap-0.5">
+                <button
+                  type="button"
+                  data-testid="super-admin-setup-floating-page"
+                  aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
+                  title={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
+                  className={cn(
+                    "inline-flex h-7 w-7 shrink-0 items-center justify-center",
+                    "rounded-md border-0 bg-transparent p-0",
+                    "text-[var(--oh-muted)] hover:bg-base hover:text-white",
+                  )}
+                  onClick={() => {
+                    stopGuidedTour();
+                    navigate(SUPER_ADMIN_PATHS.setup);
+                  }}
+                >
+                  <ArrowUpRight
+                    className="size-4 shrink-0"
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t(I18nKey.BUTTON$CLOSE)}
+                  className={cn(
+                    "inline-flex h-7 w-7 shrink-0 items-center justify-center",
+                    "rounded-md border-0 bg-transparent p-0",
+                    "text-[var(--oh-muted)] hover:bg-base hover:text-white",
+                  )}
+                  // Closing asks whether to turn the guide off for good;
+                  // cancelling leaves it closed to the pill.
+                  onClick={() => {
+                    setWidgetOpen(false);
+                    setConfirmDismiss(true);
+                  }}
+                >
+                  <X className="size-4 shrink-0" strokeWidth={2} aria-hidden />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div
+                className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--oh-border)]"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progressPct}
                 aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-                title={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-                className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center",
-                  "rounded-md border-0 bg-transparent p-0",
-                  "text-[var(--oh-muted)] hover:bg-base hover:text-white",
-                )}
-                onClick={() => {
-                  stopGuidedTour();
-                  navigate(SUPER_ADMIN_PATHS.setup);
+              >
+                <div
+                  className="h-full rounded-full bg-foreground transition-[width] duration-300"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-xs tabular-nums text-[var(--oh-muted)]">
+                {completedCount}/{totalCount}
+              </span>
+            </div>
+
+            <FloatingSetupStepList
+              tourStarting={tourStarting}
+              onOpenStep={(step) => {
+                stopGuidedTour();
+                navigateOrHardRedirect(navigate, step.to);
+              }}
+              onStartTour={async (stepId) => {
+                await startTour(stepId);
+              }}
+            />
+
+            <div className="flex flex-col gap-2">
+              <p
+                className="text-xs leading-4 text-[var(--oh-muted)]"
+                data-testid="super-admin-setup-floating-next"
+              >
+                {nextLabel}
+              </p>
+              <BrandButton
+                type="button"
+                variant="primary"
+                className="w-full"
+                testId="super-admin-setup-floating-guide"
+                isDisabled={tourStarting}
+                onClick={async () => {
+                  await startTour();
                 }}
               >
-                <ArrowUpRight
-                  className="size-4 shrink-0"
-                  strokeWidth={2}
-                  aria-hidden
-                />
-              </button>
-              <button
-                type="button"
-                aria-label={t(I18nKey.BUTTON$CLOSE)}
-                className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center",
-                  "rounded-md border-0 bg-transparent p-0",
-                  "text-[var(--oh-muted)] hover:bg-base hover:text-white",
-                )}
-                onClick={() => setWidgetOpen(false)}
-              >
-                <X className="size-4 shrink-0" strokeWidth={2} aria-hidden />
-              </button>
+                {t(I18nKey.SUPER_ADMIN$SETUP_START_GUIDE)}
+              </BrandButton>
             </div>
           </div>
-
-          <div className="flex items-center gap-3">
-            <div
-              className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--oh-border)]"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={progressPct}
-              aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-            >
-              <div
-                className="h-full rounded-full bg-foreground transition-[width] duration-300"
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-            <span className="shrink-0 text-xs tabular-nums text-[var(--oh-muted)]">
-              {completedCount}/{totalCount}
-            </span>
-          </div>
-
-          <FloatingSetupStepList
-            tourStarting={tourStarting}
-            onOpenStep={(step) => {
-              stopGuidedTour();
-              navigateOrHardRedirect(navigate, step.to);
-            }}
-            onStartTour={async (stepId) => {
-              await startTour(stepId);
-            }}
-          />
-
-          <div className="flex flex-col gap-2">
-            <p
-              className="text-xs leading-4 text-[var(--oh-muted)]"
-              data-testid="super-admin-setup-floating-next"
-            >
-              {nextLabel}
-            </p>
-            <BrandButton
-              type="button"
-              variant="primary"
-              className="w-full"
-              testId="super-admin-setup-floating-guide"
-              isDisabled={tourStarting}
-              onClick={async () => {
-                await startTour();
-              }}
-            >
-              {t(I18nKey.SUPER_ADMIN$SETUP_START_GUIDE)}
-            </BrandButton>
-          </div>
-        </div>
-      )}
-
-      <button
-        type="button"
-        data-testid="super-admin-setup-floating-toggle"
-        aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-        aria-expanded={open}
-        onClick={() => setWidgetOpen(!open)}
-        className={cn(
-          "flex items-center gap-2 rounded-full border border-[var(--oh-border)]",
-          "bg-base-secondary px-3.5 py-2 text-sm font-medium text-white",
-          "hover:bg-surface-raised",
         )}
-      >
-        <ClipboardList className="size-4" strokeWidth={2} aria-hidden />
-        {t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
-      </button>
-    </div>
+
+        <button
+          type="button"
+          data-testid="super-admin-setup-floating-toggle"
+          aria-label={t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
+          aria-expanded={open}
+          onClick={() => setWidgetOpen(!open)}
+          className={cn(
+            "flex items-center gap-2 rounded-full border border-[var(--oh-border)]",
+            "bg-base-secondary px-3.5 py-2 text-sm font-medium text-white",
+            "hover:bg-surface-raised",
+          )}
+        >
+          <ClipboardList className="size-4" strokeWidth={2} aria-hidden />
+          {t(I18nKey.SUPER_ADMIN$SETUP_GUIDE)}
+        </button>
+      </div>
+      {/* Outside the fixed container, whose z-index would cap the modal's. */}
+      {confirmDismiss && (
+        <ConfirmationModal
+          text={t(I18nKey.SUPER_ADMIN$SETUP_DISMISS_CONFIRM)}
+          onConfirm={() => {
+            setConfirmDismiss(false);
+            updateSetupState({ guide_dismissed: true });
+          }}
+          onCancel={() => setConfirmDismiss(false)}
+        />
+      )}
+    </>
   );
 }
 
