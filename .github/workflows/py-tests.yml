@@ -63,7 +63,10 @@ jobs:
         # because DB-backed tests run noticeably slower than the rest of the
         # suite. `-s` is dropped so output stays captured per-test instead of
         # every worker writing straight through, uncaptured, under -n auto.
-        run: uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch --cov-fail-under=72
+        # --durations=50 is temporary, to find the actual slowest tests from
+        # a real CI run instead of guessing from file size; remove once that
+        # data's been collected.
+        run: uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch --cov-fail-under=72 --durations=50
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}"
       - name: Store coverage file
