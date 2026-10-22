@@ -49,6 +49,10 @@ function oauthDetails(
 const LOGIN_DEFAULTS = {
   is_idp: true,
   icon: null,
+  // Every preset seeds placeholder URLs or is otherwise not ready to serve
+  // logins, so rows are created switched off and the admin enables the one
+  // they have finished configuring.
+  enabled: false,
   allow_registration: true,
   allow_match_by_email: true,
 } as const;

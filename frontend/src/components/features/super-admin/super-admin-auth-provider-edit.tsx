@@ -277,6 +277,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           showOptionalTag
         />
         <SettingsSwitch
+          testId="super-admin-auth-provider-enabled"
+          isToggled={form.enabled}
+          onToggle={(value) => setForm((prev) => ({ ...prev, enabled: value }))}
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ENABLED)}
+        </SettingsSwitch>
+        <SettingsSwitch
           testId="super-admin-auth-provider-allow-registration"
           isToggled={form.allowRegistration}
           onToggle={(value) =>

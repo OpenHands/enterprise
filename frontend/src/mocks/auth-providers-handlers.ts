@@ -16,6 +16,7 @@ const MOCK_AUTH_PROVIDERS: AuthProvider[] = [
     is_idp: false,
     icon: null,
     color: DEFAULT_AUTH_PROVIDER_COLOR,
+    enabled: true,
     allow_registration: true,
     allow_match_by_email: true,
     details: {
@@ -40,6 +41,7 @@ const MOCK_AUTH_PROVIDERS: AuthProvider[] = [
     is_idp: true,
     icon: null,
     color: "#2563eb",
+    enabled: true,
     allow_registration: true,
     allow_match_by_email: true,
     details: {
@@ -133,6 +135,7 @@ export const AUTH_PROVIDERS_HANDLERS = [
       is_idp: body.is_idp ?? false,
       icon: body.icon ?? null,
       color: body.color ?? DEFAULT_AUTH_PROVIDER_COLOR,
+      enabled: body.enabled ?? false,
       allow_registration: body.allow_registration ?? true,
       allow_match_by_email: body.allow_match_by_email ?? true,
       details: body.details,
@@ -159,6 +162,7 @@ export const AUTH_PROVIDERS_HANDLERS = [
       ...(body.is_idp !== undefined && { is_idp: body.is_idp }),
       ...(body.icon !== undefined && { icon: body.icon }),
       ...(body.color !== undefined && { color: body.color }),
+      ...(body.enabled !== undefined && { enabled: body.enabled }),
       ...(body.allow_registration !== undefined && {
         allow_registration: body.allow_registration,
       }),

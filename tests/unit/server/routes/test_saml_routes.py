@@ -78,12 +78,14 @@ def _fake_saml_provider(
     sp_x509_cert: str | None = SP_CERT_PEM,
     attribute_mapping: dict | None = None,
     name_id_format: str | None = None,
+    enabled: bool = True,
 ):
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = SamlProviderDetails.__name__
     provider.title = 'Acme SSO'
     provider.is_idp = True
+    provider.enabled = enabled
     provider.details = SamlProviderDetails(
         idp_entity_id=idp_entity_id,
         sso_url=sso_url,
@@ -104,6 +106,7 @@ def _fake_oauth_provider(provider_id: int = 2):
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = OAuthProviderDetails.__name__
+    provider.enabled = True
     provider.details = OAuthProviderDetails(
         provider_type=ProviderType('github'), client_id='cid'
     )
@@ -188,6 +191,38 @@ def test_login_wrong_kind_404(client, jwt_svc):
         ),
     ):
         response = client.get('/saml/2/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_login_disabled_provider_404(client, jwt_svc):
+    """A disabled SAML provider must not start an SP-initiated login."""
+    provider = _fake_saml_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            provider_identity.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get('/saml/1/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_acs_disabled_provider_404(client, jwt_svc):
+    """Fails closed on the ACS too, before the assertion is even parsed."""
+    provider = _fake_saml_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            provider_identity.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.post(
+            '/saml/1/acs', data={'SAMLResponse': 'x', 'RelayState': 'y'}
+        )
     assert response.status_code == 404
 
 

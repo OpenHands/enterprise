@@ -223,6 +223,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "Log in with Google",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -264,6 +265,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "GitHub Enterprise",
         is_idp: false,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -465,6 +467,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "GitHub",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -688,10 +691,32 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "Okta SAML",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: false,
         allow_match_by_email: true,
       }),
+    );
+  });
+
+  it("sends the enabled flag when an admin switches the provider off", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, enabled: false });
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-enabled"),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, enabled: false }),
+      ),
     );
   });
 

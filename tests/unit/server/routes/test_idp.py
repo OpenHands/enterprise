@@ -65,6 +65,7 @@ def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
     provider.id = provider_id
     provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
+    provider.enabled = True
     provider.details = PasswordProviderDetails()
     provider.title = 'Password Login'
     return provider
@@ -314,6 +315,21 @@ class TestIsIdpAvailable:
 
             result = asyncio.run(is_idp_available())
         assert result is True
+
+    def test_disabled_when_row_is_disabled(self):
+        """An admin can switch the integrated IDP off; that must hide it from
+        the login screen and 404 its routes, exactly like a missing row."""
+        provider = _fake_integrated_idp_provider()
+        provider.enabled = False
+        with patch(
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
+            new_callable=AsyncMock,
+            return_value=provider,
+        ):
+            import asyncio
+
+            result = asyncio.run(is_idp_available())
+        assert result is False
 
     def test_queries_integrated_idp_category(self):
         """``is_idp_available`` looks up the row by

@@ -70,6 +70,13 @@ class AuthProvider(Base):
     color: Mapped[str] = mapped_column(
         String(32), nullable=False, default=DEFAULT_AUTH_PROVIDER_COLOR
     )
+    # Whether this row may be used to authenticate or link at all. A row is
+    # created disabled (see migration 195) so an admin can fill in a
+    # half-configured provider -- e.g. from a preset with placeholder URLs --
+    # without it going live on the login screen. Disabling a row only stops
+    # new flows: sessions and tokens already minted through it keep working,
+    # so an admin cannot lock everyone out by flipping this flag.
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Whether a brand-new user may be created the first time someone
     # authenticates through this row, or whether only an already-linked
     # account may sign in through it -- see

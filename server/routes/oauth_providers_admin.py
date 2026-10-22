@@ -77,6 +77,7 @@ class AuthProviderResponse(BaseModel):
     is_idp: bool
     icon: str | None
     color: str
+    enabled: bool
     allow_registration: bool
     allow_match_by_email: bool
     details: AuthProviderDetails
@@ -105,6 +106,15 @@ class CreateAuthProviderRequest(BaseModel):
     color: str = Field(
         default=DEFAULT_AUTH_PROVIDER_COLOR,
         description="CSS color string for this provider's login button.",
+    )
+    enabled: bool = Field(
+        default=False,
+        description=(
+            'Whether this provider may be used for a new login or link. New '
+            'rows start disabled so a half-configured provider (e.g. a preset '
+            'with placeholder URLs) never goes live before an admin finishes '
+            'it.'
+        ),
     )
     allow_registration: bool = Field(
         default=True,
@@ -167,6 +177,7 @@ class UpdateAuthProviderRequest(BaseModel):
     is_idp: bool | None = None
     icon: str | None = None
     color: str | None = None
+    enabled: bool | None = None
     allow_registration: bool | None = None
     allow_match_by_email: bool | None = None
     details: AuthProviderDetails | None = None
@@ -341,6 +352,7 @@ async def create_oauth_provider(
         is_idp=body.is_idp,
         icon=body.icon,
         color=body.color,
+        enabled=body.enabled,
         allow_registration=body.allow_registration,
         allow_match_by_email=body.allow_match_by_email,
         details=body.details,

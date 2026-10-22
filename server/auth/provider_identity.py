@@ -43,6 +43,21 @@ async def get_provider_or_404(provider_id: int) -> AuthProvider:
     return provider
 
 
+def require_enabled_provider(provider: AuthProvider) -> None:
+    """404 when an admin has switched ``provider`` off.
+
+    Called at the *start* of every login/link flow, never when resolving an
+    existing session: ``enabled`` gates new authentications, so flipping it
+    off cannot sign out users who are already logged in through this row (and
+    an admin who mis-clicks can flip it back without anyone noticing).
+    """
+    if not provider.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Provider {provider.id} is disabled',
+        )
+
+
 # ── encrypted state / relay state ───────────────────────────────────────────
 
 
@@ -238,6 +253,7 @@ def set_oauth_v2_cookie(
 
 __all__ = [
     'get_provider_or_404',
+    'require_enabled_provider',
     'encrypt_state',
     'decrypt_state',
     'resolve_or_create_user',
