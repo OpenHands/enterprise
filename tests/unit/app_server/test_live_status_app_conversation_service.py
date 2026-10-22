@@ -44,6 +44,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     LiveStatusAppConversationServiceInjector,
     _exception_detail,
     _resolve_title_llm_profile,
+    azure_devops_context,
     effective_disabled_skills,
     get_sandbox_web_url,
 )
@@ -194,6 +195,46 @@ class _TestUserInfo(SimpleNamespace):
 
     def to_agent_settings(self) -> OpenHandsAgentSettings:
         return self.agent_settings
+
+
+def _azure_devops_provider_handler(organizations: list[str]) -> SimpleNamespace:
+    """A provider handler whose Azure DevOps token reaches ``organizations``."""
+    return SimpleNamespace(
+        provider_tokens={ProviderType.AZURE_DEVOPS: 'provider-token-value'},
+        get_azure_devops_organizations=AsyncMock(return_value=organizations),
+    )
+
+
+class TestAzureDevOpsContext:
+    """azure_devops_context() describes the provider, host and organizations."""
+
+    def test_encodes_selected_repository_url(self):
+        block = azure_devops_context(
+            'contoso/My Project/My Repo', ['contoso'], git_credentials_configured=True
+        )
+
+        assert block.startswith('<AZURE_DEVOPS_CONTEXT>\n')
+        assert block.endswith('\n</AZURE_DEVOPS_CONTEXT>')
+        assert (
+            'organization `contoso`, project `My Project`, repository `My Repo` '
+            '(https://dev.azure.com/contoso/My%20Project/_git/My%20Repo)'
+        ) in block
+
+    def test_omits_repository_line_without_org_project_repo(self):
+        block = azure_devops_context(None, ['contoso'], git_credentials_configured=True)
+
+        assert 'Azure DevOps, hosted at dev.azure.com' in block
+        assert 'Selected repository' not in block
+        assert 'organizations: `contoso`' in block
+
+    def test_plain_git_line_requires_organizations(self):
+        block = azure_devops_context(
+            'contoso/web/app', [], git_credentials_configured=True
+        )
+
+        assert "The user's Azure DevOps organizations" not in block
+        assert 'Git credentials are configured' not in block
+        assert 'https://dev.azure.com/ORG/PROJECT/_git/REPO' in block
 
 
 class TestEffectiveDisabledSkills:
@@ -2675,6 +2716,115 @@ class TestLiveStatusAppConversationService:
         suffix = result.agent.agent_context.system_message_suffix
         assert 'Existing integration instructions.' in suffix
         assert '<GIT_WORKSPACE_CONTEXT>' not in suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_appends_azure_devops_context(self, _mock_tools):
+        """An Azure DevOps conversation tells the agent its provider, host and orgs."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso', 'fabrikam'])
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix='Existing integration instructions.',
+            git_provider=ProviderType.AZURE_DEVOPS,
+            working_dir='/test/dir',
+            selected_repository='contoso/web/app',
+            azure_devops_access_token='header.payload.signature',
+        )
+
+        suffix = result.agent.agent_context.system_message_suffix
+        assert 'Existing integration instructions.' in suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'Azure DevOps, hosted at dev.azure.com' in suffix
+        assert 'organization `contoso`, project `web`, repository `app`' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'organizations: `contoso`, `fabrikam`' in suffix
+        assert 'use plain `git clone`' in suffix
+        assert 'azure-devops skill' in suffix
+        assert 'header.payload.signature' not in suffix
+        assert 'provider-token-value' not in suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_azure_devops_context_without_git_credentials(
+        self, _mock_tools
+    ):
+        """Without a minted credential the agent is not told plain git works."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso'])
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=ProviderType.AZURE_DEVOPS,
+            working_dir='/test/dir',
+            selected_repository='contoso/web/app',
+        )
+
+        suffix = result.agent.agent_context.system_message_suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'Git credentials are configured' not in suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_omits_azure_devops_context_for_other_providers(
+        self, _mock_tools
+    ):
+        """GitHub and GitLab conversations get no Azure DevOps context."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso'])
+        )
+        self.mock_user_context.get_provider_handler = get_provider_handler
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        for git_provider in (ProviderType.GITHUB, ProviderType.GITLAB):
+            result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix='Existing integration instructions.',
+                git_provider=git_provider,
+                working_dir='/test/dir',
+                selected_repository='contoso/app',
+                azure_devops_access_token='header.payload.signature',
+            )
+
+            suffix = result.agent.agent_context.system_message_suffix
+            assert 'Existing integration instructions.' in suffix
+            assert '<AZURE_DEVOPS_CONTEXT>' not in suffix
+            assert 'dev.azure.com' not in suffix
+        get_provider_handler.assert_not_called()
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
@@ -6316,6 +6466,7 @@ class TestBuildAcpStartConversationRequestSecrets:
         request_observability_metadata=None,
         request_observability_tags=None,
         request_observability_span_name=None,
+        azure_devops_access_token=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
@@ -6338,7 +6489,32 @@ class TestBuildAcpStartConversationRequestSecrets:
             request_observability_metadata=request_observability_metadata,
             request_observability_tags=request_observability_tags,
             request_observability_span_name=request_observability_span_name,
+            azure_devops_access_token=azure_devops_access_token,
         )
+
+    @pytest.mark.asyncio
+    async def test_acp_request_appends_azure_devops_context(self, service, tmp_path):
+        """ACP agents get the same Azure DevOps context as the regular agent."""
+        service.user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso', 'fabrikam'])
+        )
+        user = self._make_acp_user()
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            git_provider=ProviderType.AZURE_DEVOPS,
+            selected_repository='contoso/web/app',
+            azure_devops_access_token='header.payload.signature',
+        )
+
+        suffix = request.agent.agent_context.system_message_suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'organizations: `contoso`, `fabrikam`' in suffix
+        assert 'use plain `git clone`' in suffix
+        assert 'header.payload.signature' not in suffix
 
     @pytest.mark.asyncio
     async def test_secrets_passed_via_request_secrets(self, service, tmp_path):
