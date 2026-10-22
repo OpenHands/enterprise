@@ -29,7 +29,7 @@ jobs:
       matrix:
         python-version: ["3.12"]
         # Keep this list equal to 1..--splits below.
-        group: [1, 2, 3, 4, 5, 6]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     permissions:
       # For coverage comment and python-coverage-comment-action branch
       pull-requests: write
@@ -65,7 +65,7 @@ jobs:
         # every worker writing straight through, uncaptured, under -n auto.
         run: >-
           uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
-          --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 8 --group ${{ matrix.group }} --splitting-algorithm least_duration
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
       - name: Store coverage file
