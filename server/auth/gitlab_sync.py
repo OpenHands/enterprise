@@ -14,10 +14,9 @@ async def _user_has_gitlab_provider(user_id: str) -> bool:
     """Whether the user has a GitLab token from Keycloak or, with
     ``ENABLE_OAUTH_V2_LOGIN`` on, an OAuth v2 link."""
     # Lazy import to avoid circular dependency issues at module load time
-    from storage.auth_provider import AuthProvider
+    from storage.auth_provider_store import AuthProviderStore
     from storage.auth_tokens import AuthTokens
     from storage.database import a_session_maker
-    from storage.oauth_token import OAuthToken
 
     async with a_session_maker() as session:
         result = await session.execute(
@@ -30,17 +29,11 @@ async def _user_has_gitlab_provider(user_id: str) -> bool:
             return True
         if not is_oauth_v2_login_enabled():
             return False
-        result = await session.execute(
-            select(OAuthToken.id)
-            .join(AuthProvider, AuthProvider.id == OAuthToken.oauth_provider_id)
-            .where(
-                OAuthToken.user_id == UUID(user_id),
-                AuthProvider.is_idp.is_(False),
-                AuthProvider.details['provider_type'].as_string()
-                == ProviderType.GITLAB.value,
-            )
-        )
-        return result.first() is not None
+
+    provider = await AuthProviderStore().get_linked_git_provider(
+        UUID(user_id), ProviderType.GITLAB.value
+    )
+    return provider is not None
 
 
 def schedule_gitlab_repo_sync(
