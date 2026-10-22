@@ -23,9 +23,11 @@ async function prepareApp() {
     // Some embedded browsers never complete the MSW service-worker handshake.
     // Don't block hydration forever — mocks still work once the worker activates.
     await Promise.race([
-      worker.start({
-        onUnhandledRequest: "bypass",
-      }),
+      worker
+        .start({
+          onUnhandledRequest: "bypass",
+        })
+        .catch(() => undefined),
       new Promise<void>((resolve) => {
         setTimeout(resolve, 3000);
       }),
