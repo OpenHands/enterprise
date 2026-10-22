@@ -66,7 +66,6 @@ jobs:
         run: >-
           uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
           --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration
-          --store-durations --durations-path .test_durations.${{ matrix.group }}
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
       - name: Store coverage file
@@ -74,13 +73,6 @@ jobs:
         with:
           name: coverage-python-${{ matrix.group }}
           path: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
-          include-hidden-files: true
-      # TEMPORARY: collect CI durations to bootstrap .test_durations.
-      - name: Store durations file
-        uses: actions/upload-artifact@v7
-        with:
-          name: durations-${{ matrix.group }}
-          path: ".test_durations.${{ matrix.group }}"
           include-hidden-files: true
 
   # Gate job: passes only when every shard passes and the combined coverage
