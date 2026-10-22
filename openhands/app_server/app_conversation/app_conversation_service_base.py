@@ -167,6 +167,27 @@ printf 'password=%s\\n' "$token"
 """
 
 
+def _skip_azure_devops_helper_install_without_token(install_command: str) -> str:
+    """Make the credential-helper install a no-op when the sandbox has no token.
+
+    A reused sandbox (``_find_running_sandbox_for_user``, an explicit
+    ``sandbox_id``, or one started before the user linked Entra or before this
+    deploy) never received ``OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN``. Installing
+    the token-based helper there would only clobber a working setup and then
+    exit 0 with no credentials, so skip quietly instead. Unlike GitHub/GitLab,
+    which embed the token in the clone URL, Azure DevOps is the only provider
+    with a runtime helper, so a loud per-git-call warning would be ADO-only
+    noise; a one-line note on stderr keeps it diagnosable.
+    """
+    var = AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE
+    guard = (
+        f'if [ -z "${{{var}:-}}" ]; then '
+        'echo "openhands: no Azure DevOps access token in this sandbox; '
+        'leaving the git credential helper unchanged" >&2; exit 0; fi'
+    )
+    return f'{guard}; {install_command}'
+
+
 @dataclass
 class AppConversationServiceBase(AppConversationService, ABC):
     """App Conversation service which adds git specific functionality.
@@ -801,7 +822,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\""',
             ]
         result = await workspace.execute_command(
-            ' && '.join(commands), workspace.working_dir
+            _skip_azure_devops_helper_install_without_token(' && '.join(commands)),
+            workspace.working_dir,
         )
         if result.exit_code:
             _logger.warning(
@@ -851,7 +873,12 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 working_dir=working_dir,
             )
             try:
-                result = await workspace.execute_command(' && '.join(commands), '/')
+                result = await workspace.execute_command(
+                    _skip_azure_devops_helper_install_without_token(
+                        ' && '.join(commands)
+                    ),
+                    '/',
+                )
             finally:
                 await workspace.reset_client()
             if result.exit_code:

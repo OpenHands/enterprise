@@ -6677,13 +6677,18 @@ class TestACPProviderAllowlistAtServiceStart:
 
 
 def _azure_devops_env_service(
-    *, web_url, latest_token, user_id='user-1', minted='signed.jwt.token'
+    *,
+    web_url,
+    latest_token,
+    user_id='user-1',
+    minted='signed.jwt.token',
+    hard_timeout=None,
 ):
     from types import MethodType
 
     service = Mock()
     service.web_url = web_url
-    service.access_token_hard_timeout = None
+    service.access_token_hard_timeout = hard_timeout
     service.jwt_service = Mock()
     service.jwt_service.create_jws_token = Mock(return_value=minted)
     service.user_context = Mock()
@@ -6695,22 +6700,59 @@ def _azure_devops_env_service(
     return service
 
 
+def _task_for_env():
+    return types.SimpleNamespace(_azure_devops_sandbox_token=None)
+
+
 @pytest.mark.asyncio
 async def test_azure_devops_sandbox_env_mints_scoped_jwt_for_entra_user():
+    from datetime import timedelta
+
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT,
+    )
     from openhands.app_server.integrations.service_types import ProviderType
 
     service = _azure_devops_env_service(
         web_url='https://app.example.com', latest_token='header.payload.signature'
     )
+    task = _task_for_env()
 
-    env = await service._azure_devops_sandbox_env()
+    env = await service._azure_devops_sandbox_env(task)
 
     assert env == {'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN': 'signed.jwt.token'}
-    payload = service.jwt_service.create_jws_token.call_args.kwargs['payload']
-    assert payload == {
+    # The exact minted string is stashed on the task so the request builder can
+    # register it as a masked secret (same iat/exp string, not a re-mint).
+    assert task._azure_devops_sandbox_token == 'signed.jwt.token'
+    kwargs = service.jwt_service.create_jws_token.call_args.kwargs
+    assert kwargs['payload'] == {
         'user_id': 'user-1',
         'provider_type': ProviderType.AZURE_DEVOPS.value,
     }
+    # Short-lived, well below the 14-day git-provider default.
+    assert kwargs['expires_in'] == _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
+    assert kwargs['expires_in'] <= timedelta(hours=24)
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_sandbox_env_caps_expiry_at_short_timeout():
+    from datetime import timedelta
+
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT,
+    )
+
+    # A 14-day hard timeout must be capped to the short sandbox timeout.
+    service = _azure_devops_env_service(
+        web_url='https://app.example.com',
+        latest_token='header.payload.signature',
+        hard_timeout=timedelta(days=14),
+    )
+    await service._azure_devops_sandbox_env(_task_for_env())
+    assert (
+        service.jwt_service.create_jws_token.call_args.kwargs['expires_in']
+        == _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
+    )
 
 
 @pytest.mark.asyncio
@@ -6719,10 +6761,12 @@ async def test_azure_devops_sandbox_env_empty_for_pat_user():
     service = _azure_devops_env_service(
         web_url='https://app.example.com', latest_token='plain-pat-token'
     )
+    task = _task_for_env()
 
-    env = await service._azure_devops_sandbox_env()
+    env = await service._azure_devops_sandbox_env(task)
 
     assert env == {}
+    assert task._azure_devops_sandbox_token is None
     service.jwt_service.create_jws_token.assert_not_called()
 
 
@@ -6732,8 +6776,35 @@ async def test_azure_devops_sandbox_env_empty_without_web_url():
     service = _azure_devops_env_service(
         web_url=None, latest_token='header.payload.signature'
     )
+    task = _task_for_env()
 
-    env = await service._azure_devops_sandbox_env()
+    env = await service._azure_devops_sandbox_env(task)
 
     assert env == {}
+    assert task._azure_devops_sandbox_token is None
     service.user_context.get_latest_token.assert_not_called()
+
+
+def test_register_azure_devops_sandbox_secret_masks_the_env_jwt():
+    # The env JWT must be registered as a conversation secret (same string) so
+    # SecretRegistry.mask_secrets_in_output hides it from events/terminal/LLM.
+    from pydantic import SecretStr
+
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_sandbox_secret(
+        secrets, 'signed.jwt.token'
+    )
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in secrets
+    source = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN']
+    value = source.value
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    assert value == 'signed.jwt.token'
+
+
+def test_register_azure_devops_sandbox_secret_noop_without_token():
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_sandbox_secret(
+        secrets, None
+    )
+    assert secrets == {}

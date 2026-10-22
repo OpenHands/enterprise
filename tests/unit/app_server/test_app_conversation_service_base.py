@@ -18,6 +18,7 @@ from openhands.app_server.app_conversation.app_conversation_models import AgentT
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
     _azure_devops_credential_helper_script,
+    _skip_azure_devops_helper_install_without_token,
 )
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import (
@@ -982,6 +983,9 @@ async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
     assert 'credential.https://dev.azure.com/org.helper' in helper_command
     assert 'credential.https://dev.azure.com/org2.helper' in helper_command
     assert 'git config --local' not in helper_command
+    # The install is guarded so a sandbox without the token is not clobbered.
+    assert 'if [ -z "${OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN:-}" ]' in helper_command
+    assert 'exit 0' in helper_command
 
 
 @pytest.mark.asyncio
@@ -2152,3 +2156,12 @@ def test_azure_devops_credential_helper_script_auth_source():
     assert 'SESSION_API_KEY' not in script
     assert 'X-Session-API-Key' not in script
     assert '/api/v1/sandboxes/' not in script
+
+
+def test_skip_azure_devops_helper_install_without_token_guards_the_install():
+    """A sandbox missing the token must skip the install, not clobber the helper."""
+    guarded = _skip_azure_devops_helper_install_without_token('do-install')
+    # Skips quietly (exit 0) when the token env var is absent; otherwise installs.
+    assert guarded.startswith('if [ -z "${OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN:-}" ]')
+    assert 'exit 0' in guarded
+    assert guarded.endswith('do-install')

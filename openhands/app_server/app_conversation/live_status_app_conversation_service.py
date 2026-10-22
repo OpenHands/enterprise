@@ -176,6 +176,14 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # provider, so a slow git provider cannot hold up the conversation start.
 _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
+# Lifetime of the Azure DevOps access-token JWT injected into a sandbox's
+# environment for the git credential helper. Kept well below the 14-day
+# git-provider default: this value reaches the agent's sandbox, so it is capped
+# to limit the window if it ever leaks (it is also masked in output). Long
+# enough for a normal agent session; the helper re-exchanges it each git op, so
+# a longer-lived sandbox simply re-authenticates.
+_AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT = timedelta(hours=8)
+
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
@@ -587,6 +595,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     plugins=request.plugins,
                     client_tools=request.client_tools,
                     api_secrets=request.secrets,
+                    azure_devops_sandbox_token=task._azure_devops_sandbox_token,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
                     request_observability_metadata=request.observability_metadata,
@@ -1054,7 +1063,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
                 sandbox = await self.sandbox_service.start_sandbox(
                     sandbox_id=sandbox_id_str,
-                    extra_env=await self._azure_devops_sandbox_env(),
+                    extra_env=await self._azure_devops_sandbox_env(task),
                 )
             task.sandbox_id = sandbox.id
         else:
@@ -1105,17 +1114,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             httpx_client=self.httpx_client,
         )
 
-    async def _azure_devops_sandbox_env(self) -> dict[str, str]:
+    async def _azure_devops_sandbox_env(
+        self, task: AppConversationStartTask
+    ) -> dict[str, str]:
         """Environment carrying the per-provider Azure DevOps access-token JWT.
 
         The Azure DevOps git credential helper reads this JWT and exchanges it at
         ``/api/v1/webhooks/secrets`` for the user's Azure DevOps token, so plain
         git works without the sandbox session key (which the terminal sanitizer
         strips). Only set when the user has an Entra (JWT) Azure DevOps token and a
-        ``web_url`` exists (the secrets endpoint lives under it). This is the same
-        JWT enterprise already mints for the ``AZURE_DEVOPS_TOKEN`` lookup secret
-        and only re-fetches the token the agent already holds, so it is not a new
-        exposure. Returns an empty dict (no variable) for every other user.
+        ``web_url`` exists (the secrets endpoint lives under it).
+
+        The minted JWT is also stashed on ``task`` so the request builder can
+        register it as a conversation secret: unlike ``AZURE_DEVOPS_TOKEN`` this
+        value lands in a plain env var the agent can read, so it must be masked in
+        output and kept short-lived. Returns an empty dict for every other user.
         """
         if not self.web_url:
             return {}
@@ -1125,14 +1138,43 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         user_id = await self.user_context.get_user_id()
         if not user_id:
             return {}
+        expires_in = (
+            _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
+            if self.access_token_hard_timeout is None
+            else min(
+                self.access_token_hard_timeout, _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
+            )
+        )
         access_token = self.jwt_service.create_jws_token(
             payload={
                 'user_id': user_id,
                 'provider_type': ProviderType.AZURE_DEVOPS.value,
             },
-            expires_in=self.access_token_hard_timeout,
+            expires_in=expires_in,
         )
+        # Mint once; the request builder registers this exact string as a masked
+        # conversation secret (minting twice would mask a different iat/exp token).
+        task._azure_devops_sandbox_token = access_token
         return {AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE: access_token}
+
+    @staticmethod
+    def _register_azure_devops_sandbox_secret(
+        secrets: dict, azure_devops_sandbox_token: str | None
+    ) -> None:
+        """Register the sandbox Azure DevOps JWT as a masked conversation secret.
+
+        The JWT reaches the sandbox as a plain env var the agent can read, so
+        without this it would appear unmasked if the agent printed its
+        environment. ``SecretRegistry.mask_secrets_in_output`` resolves and masks
+        every registered secret value. Must be the exact string minted for the
+        env var (see ``_azure_devops_sandbox_env``).
+        """
+        if not azure_devops_sandbox_token:
+            return
+        secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
+            value=SecretStr(azure_devops_sandbox_token),
+            description='Azure DevOps git credential-helper access token',
+        )
 
     async def _seed_sandbox_profiles(
         self, agent_server_url: str, session_api_key: str | None
@@ -2132,6 +2174,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_sandbox_token: str | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
@@ -2239,6 +2282,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 plugins=plugins,
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
+                azure_devops_sandbox_token=azure_devops_sandbox_token,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2284,6 +2328,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'API-provided secret %r overrides existing secret', name
                     )
                 secrets[name] = StaticSecret(value=value)
+
+        self._register_azure_devops_sandbox_secret(secrets, azure_devops_sandbox_token)
 
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
@@ -2596,6 +2642,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_sandbox_token: str | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -2694,6 +2741,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'API-provided secret %r overrides existing secret', name
                     )
                 secrets[name] = StaticSecret(value=value)
+
+        self._register_azure_devops_sandbox_secret(secrets, azure_devops_sandbox_token)
 
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
