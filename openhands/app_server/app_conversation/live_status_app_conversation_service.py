@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import httpx
@@ -67,6 +68,7 @@ from openhands.app_server.app_conversation.hook_loader import (
     load_hooks_from_agent_server,
 )
 from openhands.app_server.app_conversation.skill_loader import (
+    azure_devops_user_orgs,
     get_azure_devops_bearer_token,
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
@@ -89,7 +91,11 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE, ProviderType
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
@@ -273,6 +279,53 @@ def append_system_context(existing: str | None, block: str) -> str:
     return f'{existing.rstrip()}\n\n{block}'
 
 
+def azure_devops_context(
+    selected_repository: str | None,
+    organizations: Sequence[str],
+    git_credentials_configured: bool,
+) -> str:
+    """Describe an Azure DevOps conversation's provider, host and organizations.
+
+    Without it, an agent asked to clone ``org/project/repo`` assumes GitHub. Built
+    only from repository and organization names, never credentials. The plain-git
+    line mirrors the per-organization credential helper, which is installed only
+    when a credential was minted and ``organizations`` is non-empty.
+    """
+    host = ProviderHandler.PROVIDER_DOMAINS[ProviderType.AZURE_DEVOPS]
+    lines = [
+        f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
+    ]
+    parts = (selected_repository or '').split('/')
+    if len(parts) >= 3:
+        org, project, repo = parts[0], parts[1], parts[2]
+        url = (
+            f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
+            f'/_git/{quote(repo, safe="")}'
+        )
+        lines.append(
+            f'Selected repository: organization `{org}`, project `{project}`, '
+            f'repository `{repo}` ({url}).'
+        )
+    lines.append(
+        'An Azure DevOps repository written as ORG/PROJECT/REPO is cloned from '
+        f'https://{host}/ORG/PROJECT/_git/REPO.'
+    )
+    if organizations:
+        names = ', '.join(f'`{org}`' for org in organizations)
+        lines.append(f"The user's Azure DevOps organizations: {names}.")
+        if git_credentials_configured:
+            lines.append(
+                'Git credentials are configured for these organizations: use plain '
+                '`git clone`, `git fetch`, `git pull` and `git push`, and do not put '
+                'tokens in remote URLs or add authentication options.'
+            )
+    lines.append(
+        'For the Azure DevOps REST API and pull requests, use the azure-devops skill.'
+    )
+    body = '\n'.join(lines)
+    return f'<AZURE_DEVOPS_CONTEXT>\n{body}\n</AZURE_DEVOPS_CONTEXT>'
+
+
 def effective_disabled_skills(
     user: UserInfo, request_disabled_skills: Sequence[str] | None = None
 ) -> list[str]:
@@ -354,6 +407,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 system_message_suffix, GIT_SHALLOW_CLONE_CONTEXT
             )
         return system_message_suffix
+
+    async def _maybe_append_azure_devops_context(
+        self,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+    ) -> str | None:
+        if git_provider != ProviderType.AZURE_DEVOPS:
+            return system_message_suffix
+        # The same organizations the git credential helper is installed for.
+        organizations = await azure_devops_user_orgs(
+            self.user_context, selected_repository
+        )
+        return append_system_context(
+            system_message_suffix,
+            azure_devops_context(
+                selected_repository,
+                organizations,
+                git_credentials_configured=bool(azure_devops_access_token),
+            ),
+        )
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
         """Get the sandbox grouping strategy from user settings."""
@@ -2348,6 +2423,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
         )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
+        )
 
         # --- LLM + MCP -----------------------------------------------------
         llm, mcp_config = await self._configure_llm_and_mcp(
@@ -2762,6 +2843,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
         )
 
         # --- build the ACP agent ------------------------------------------
