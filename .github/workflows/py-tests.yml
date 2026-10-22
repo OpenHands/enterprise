@@ -16,32 +16,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Run python tests on Linux
-  test-on-linux:
-    name: Python Tests on Linux
+  # Run one shard of the python unit tests on Linux.
+  # pytest-split divides tests/unit into `splits` groups of similar duration,
+  # using the durations committed in .test_durations. Tests missing from that
+  # file get the average duration. To refresh the file, run:
+  #   uv run pytest -n auto tests/unit --store-durations --clean-durations
+  test-shard:
+    name: Python Tests on Linux (${{ matrix.python-version }}, shard ${{ matrix.group }})
     runs-on: ubuntu-24.04
-    env:
-      INSTALL_DOCKER: "0" # Set to '0' to skip Docker installation
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12"]
+        # Keep this list equal to 1..--splits below.
+        group: [1, 2, 3, 4]
     permissions:
       # For coverage comment and python-coverage-comment-action branch
       pull-requests: write
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
+      # The translation test runs a node script from frontend/scripts.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: "22.x"
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -53,25 +54,54 @@ jobs:
           enable-cache: true
       - name: Install Python dependencies
         run: uv sync --locked --all-groups --python ${{ matrix.python-version }}
-      - name: Build Environment
-        run: make build
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
-        # [tool.coverage.run] in pyproject.toml.
+        # [tool.coverage.run] in pyproject.toml. The coverage gate runs on the
+        # combined data in the test-on-linux job, not per shard.
         # --dist worksteal rebalances tests across workers as they finish,
         # rather than handing out fixed batches up front; this matters here
         # because DB-backed tests run noticeably slower than the rest of the
         # suite. `-s` is dropped so output stays captured per-test instead of
         # every worker writing straight through, uncaptured, under -n auto.
-        run: uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch --cov-fail-under=72
+        run: >-
+          uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
+          --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration
         env:
-          COVERAGE_FILE: ".coverage.${{ matrix.python-version }}"
+          COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
       - name: Store coverage file
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-python
-          path: ".coverage.${{ matrix.python-version }}"
+          name: coverage-python-${{ matrix.group }}
+          path: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
           include-hidden-files: true
+
+  # Gate job: passes only when every shard passes and the combined coverage
+  # meets the minimum. Keep this job name stable for required checks.
+  test-on-linux:
+    name: Python Tests on Linux
+    if: always()
+    needs: [test-shard]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check shard results
+        if: needs.test-shard.result != 'success'
+        run: |
+          echo "Test shards result: ${{ needs.test-shard.result }}"
+          exit 1
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-python-*
+          merge-multiple: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.32"
+      # Use the coverage version from uv.lock.
+      - name: Combine coverage and check the minimum
+        run: |
+          uvx --python 3.12 coverage==7.13.5 combine
+          uvx --python 3.12 coverage==7.13.5 report --fail-under=72
 
   coverage-comment:
     name: Coverage Comment
