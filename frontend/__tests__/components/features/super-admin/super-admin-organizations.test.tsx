@@ -96,7 +96,7 @@ async function chooseOrgAction(
   actionTestId: string,
 ) {
   await user.click(await screen.findByTestId("super-admin-org-actions-2"));
-  await user.click(screen.getByTestId(actionTestId));
+  await user.click(await screen.findByTestId(actionTestId));
 }
 
 describe("Super Admin Organizations page", () => {
@@ -202,6 +202,9 @@ describe("Super Admin Organizations page", () => {
   it("invites a person into the organization chosen from its row menu", async () => {
     // Arrange
     const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: true }),
+    );
     vi.spyOn(organizationService, "getPendingInvitations").mockResolvedValue({
       items: [],
       email_delivery_configured: true,
@@ -233,6 +236,26 @@ describe("Super Admin Organizations page", () => {
     });
   });
 
+  it("hides Invite by email when the instance cannot send email", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: false }),
+    );
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-org-actions-2"));
+
+    // Assert
+    expect(
+      await screen.findByTestId("super-admin-org-remove-2"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-invite-2"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows a personal workspace as Personal Workspace and keeps team names", async () => {
     // Arrange
     vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
@@ -250,6 +273,35 @@ describe("Super Admin Organizations page", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Acme Corp")).toBeInTheDocument();
     expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
+  });
+
+  it("lists only team organizations when the instance hides personal workspaces", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      ACME,
+      SAM_PERSONAL_WORKSPACE,
+    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          hide_personal_workspaces: true,
+        },
+      }),
+    );
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByText("ORG$PERSONAL_WORKSPACE"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("sam@beta.llc")).not.toBeInTheDocument();
   });
 
   it("does not offer to open or act on another user's personal workspace", async () => {

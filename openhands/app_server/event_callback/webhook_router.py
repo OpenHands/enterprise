@@ -399,6 +399,10 @@ async def on_conversation_update(
         conversation_id=str(conversation_info.id),
         sandbox_id=sandbox_record.id,
     )
+    # Conversations created directly on the agent-server (SDK, API clients)
+    # carry no trigger; treat them as API-driven, like the V0 bearer default.
+    if trigger is None:
+        trigger = ConversationTrigger.REMOTE_API_KEY
 
     # Stamp client source tag from trigger so both the agent-server telemetry
     # and the enterprise analytics attribute the conversation consistently.

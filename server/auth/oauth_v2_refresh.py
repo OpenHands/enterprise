@@ -14,23 +14,48 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from urllib.parse import parse_qs
+from uuid import UUID
 
 import httpx
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from storage.oauth_provider import OAuthProvider
-from storage.oauth_token_store import RefreshResult
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import (
+    DEFAULT_PERMITTED_DRIFT_SECONDS,
+    OAuthProviderDetails,
+)
+from storage.auth_provider_store import AuthProviderStore
+from storage.oauth_token_store import OAuthTokenStore, RefreshResult
 
 # HTTP timeout for external token-endpoint refresh calls.
 REFRESH_HTTP_TIMEOUT = 15.0
 
 
-def _secret_str(provider: OAuthProvider) -> str | None:
-    blob = provider.client_secret
-    if blob is None:
-        return None
-    return blob.get('v') if isinstance(blob, dict) else str(blob)
+def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
+    assert isinstance(provider.details, OAuthProviderDetails)
+    return provider.details
+
+
+def get_token_url(provider: AuthProvider) -> str | None:
+    """``token_url`` for a provider, or ``None`` for a non-OAuth2 kind.
+
+    Non-OAuth2 providers (currently just the integrated/password IDP) have
+    no external token endpoint to refresh against -- callers use this (rather
+    than ``_oauth_details``, which asserts the kind) exactly where that is a
+    normal, expected case, not a bug.
+    """
+    details = provider.details
+    return details.token_url if isinstance(details, OAuthProviderDetails) else None
+
+
+def get_permitted_drift_seconds(provider: AuthProvider) -> int:
+    """Clock-drift margin for a provider, defaulted for non-OAuth2 kinds."""
+    details = provider.details
+    if isinstance(details, OAuthProviderDetails):
+        return details.permitted_drift_seconds
+    return DEFAULT_PERMITTED_DRIFT_SECONDS
 
 
 def _parse_token_response(
@@ -64,23 +89,26 @@ def _parse_token_response(
 
 
 async def refresh_oauth_token(
-    provider: OAuthProvider, refresh_token: str
+    provider: AuthProvider, refresh_token: str
 ) -> dict[str, object]:
     """Exchange a refresh token for a new token pair at the provider's ``token_url``.
 
     Returns the normalized ``RefreshResult`` dict (datetimes, ``None`` for
     never-expires) expected by ``OAuthTokenStore.get_valid_access_token``.
     """
-    token_url = provider.token_url
+    details = _oauth_details(provider)
+    token_url = details.token_url
     if not token_url:
         raise ValueError(f'Provider {provider.id} has no token_url')
 
     payload: dict[str, str] = {
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
-        'client_id': provider.client_id,
+        'client_id': details.client_id,
     }
-    client_secret = _secret_str(provider)
+    client_secret = (
+        details.client_secret.get_secret_value() if details.client_secret else None
+    )
     if client_secret:
         payload['client_secret'] = client_secret
 
@@ -130,7 +158,7 @@ async def refresh_oauth_token(
 
 
 def make_refresh_callback(
-    provider: OAuthProvider,
+    provider: AuthProvider,
 ) -> Callable[[str, datetime | None, datetime | None], Awaitable[RefreshResult | None]]:
     """Build a ``RefreshCallback`` bound to ``provider``.
 
@@ -148,6 +176,24 @@ def make_refresh_callback(
     return _callback
 
 
+async def get_oauth_v2_git_token(
+    user_id: str, provider_type: ProviderType
+) -> str | None:
+    """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak."""
+    user_uuid = UUID(user_id)
+    provider = await AuthProviderStore().get_linked_git_provider(
+        user_uuid, provider_type.value
+    )
+    if provider is None:
+        return None
+    return await OAuthTokenStore(
+        user_id=user_uuid, oauth_provider_id=provider.id
+    ).get_valid_access_token(
+        permitted_drift_seconds=get_permitted_drift_seconds(provider),
+        refresh=make_refresh_callback(provider),
+    )
+
+
 def create_oauth_v2_cookie_payload(
     user_id: str,
     access_token_expires_at: datetime | None,
@@ -156,7 +202,7 @@ def create_oauth_v2_cookie_payload(
 ) -> dict:
     """Build the signed JWT payload for the ``openhands_auth`` cookie.
 
-    ``idp_provider_id`` identifies the ``oauth_providers`` row this session
+    ``idp_provider_id`` identifies the ``auth_providers`` row this session
     authenticated against -- every IDP a session can authenticate against,
     including the integrated/password one (a real row since migration 179),
     has a real id here. Carrying it in the cookie lets IDP-token refresh look

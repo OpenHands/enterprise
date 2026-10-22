@@ -13,13 +13,16 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import select
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.encryption_key import EncryptionKey
@@ -29,6 +32,9 @@ from server.auth.saas_user_auth import (
     saas_user_auth_from_cookie,
     saas_user_auth_from_oauth_v2_cookie,
 )
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.oauth_token import OAuthToken
+from storage.oauth_token_store import OAuthTokenStore
 from storage.user_authorization import UserAuthorizationType
 
 
@@ -304,8 +310,12 @@ async def test_v2_get_access_token_refreshes_and_sets_flag(jwt_svc):
 
     provider = MagicMock()
     provider.id = 1
-    provider.token_url = 'https://idp.example.com/token'
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.ENTERPRISE_SSO,
+        client_id='cid',
+        token_url='https://idp.example.com/token',
+        permitted_drift_seconds=60,
+    )
 
     raw_row = MagicMock()
     raw_row.access_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -324,7 +334,7 @@ async def test_v2_get_access_token_refreshes_and_sets_flag(jwt_svc):
 
     with (
         patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            'storage.auth_provider_store.AuthProviderStore.get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         patch(
@@ -362,8 +372,12 @@ async def test_v2_get_access_token_no_refresh_when_valid(jwt_svc):
 
     provider = MagicMock()
     provider.id = 1
-    provider.token_url = 'https://idp.example.com/token'
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.ENTERPRISE_SSO,
+        client_id='cid',
+        token_url='https://idp.example.com/token',
+        permitted_drift_seconds=60,
+    )
 
     raw_row = MagicMock()
     raw_row.access_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -375,7 +389,7 @@ async def test_v2_get_access_token_no_refresh_when_valid(jwt_svc):
 
     with (
         patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            'storage.auth_provider_store.AuthProviderStore.get_by_id',
             new=AsyncMock(return_value=provider),
         ),
         patch(
@@ -408,10 +422,10 @@ async def test_v2_get_access_token_integrated_idp_returns_none_without_probing(
 
     integrated_provider = MagicMock()
     integrated_provider.id = 9
-    integrated_provider.token_url = None
+    integrated_provider.details = PasswordProviderDetails()
 
     with patch(
-        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+        'storage.auth_provider_store.AuthProviderStore.get_by_id',
         new=AsyncMock(return_value=integrated_provider),
     ) as mock_get_by_id:
         token = await auth.get_access_token()
@@ -438,7 +452,7 @@ async def test_v2_get_access_token_no_idp_provider_id_returns_none(jwt_svc):
     )
 
     with patch(
-        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+        'storage.auth_provider_store.AuthProviderStore.get_by_id',
     ) as mock_get_by_id:
         token = await auth.get_access_token()
 
@@ -463,7 +477,7 @@ async def test_v2_get_access_token_unknown_provider_id_raises_expired(jwt_svc):
     )
 
     with patch(
-        'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+        'storage.auth_provider_store.AuthProviderStore.get_by_id',
         new=AsyncMock(return_value=None),
     ):
         with pytest.raises(ExpiredError):
@@ -489,7 +503,11 @@ async def test_v2_get_access_token_legacy_cookie_falls_back_to_probing(jwt_svc):
 
     provider = MagicMock()
     provider.id = 5
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.ENTERPRISE_SSO,
+        client_id='cid',
+        permitted_drift_seconds=60,
+    )
 
     raw_row = MagicMock()
     raw_row.access_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -501,7 +519,7 @@ async def test_v2_get_access_token_legacy_cookie_falls_back_to_probing(jwt_svc):
 
     with (
         patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_idp_providers',
+            'storage.auth_provider_store.AuthProviderStore.get_idp_providers',
             new=AsyncMock(return_value=[provider]),
         ),
         patch(
@@ -532,8 +550,11 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
 
     git_provider = MagicMock()
     git_provider.id = 2
-    git_provider.provider_category = 'github'
-    git_provider.permitted_drift_seconds = 60
+    git_provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.GITHUB,
+        client_id='cid',
+        permitted_drift_seconds=60,
+    )
 
     raw_row = MagicMock()
     token_store = MagicMock()
@@ -546,7 +567,7 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
 
     with (
         patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_git_providers',
+            'storage.auth_provider_store.AuthProviderStore.get_git_providers',
             new=AsyncMock(return_value=[git_provider]),
         ),
         patch(
@@ -562,7 +583,48 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
         result = await auth.get_provider_tokens()
 
     assert result is not None
-    from openhands.app_server.integrations.service_types import ProviderType
-
     assert ProviderType.GITHUB in result
     assert result[ProviderType.GITHUB].token.get_secret_value() == 'gh-token'
+
+
+@pytest.mark.asyncio
+async def test_v2_get_provider_tokens_keeps_the_row_on_a_lock_timeout(
+    async_session_maker, create_git_provider, store_oauth_token, create_user
+):
+    """A refresh held by another worker (e.g. a background job) must not cost
+    the user their linked token."""
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(
+        user.id,
+        gitlab,
+        'glpat-expired',
+        access_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    auth = SaasUserAuth(
+        user_id=str(user.id),
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+    )
+    store = OAuthTokenStore(user_id=user.id, oauth_provider_id=gitlab.id)
+
+    async with async_session_maker() as other_worker, other_worker.begin():
+        await other_worker.execute(
+            select(OAuthToken)
+            .where(OAuthToken.oauth_provider_id == gitlab.id)
+            .with_for_update()
+        )
+        with (
+            patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 1),
+            patch.object(
+                auth,
+                'get_secrets',
+                new=AsyncMock(return_value=MagicMock(provider_tokens={})),
+            ),
+            pytest.raises(AuthError),
+        ):
+            # Bounded: deleting the row would wait on the lock held above.
+            await asyncio.wait_for(auth.get_provider_tokens(), timeout=10)
+
+    assert await store.get_raw() is not None

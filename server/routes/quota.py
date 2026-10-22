@@ -12,9 +12,9 @@ from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
-from server.services.daily_conversation_quota_service import (
+from server.services.daily_sandbox_quota_service import (
     EXEMPT_LIMIT,
-    DailyConversationQuotaService,
+    DailySandboxQuotaService,
 )
 from server.services.quota_increase_request_service import (
     QuotaIncreaseRequestService,
@@ -72,14 +72,14 @@ async def get_quota_status(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
 ) -> QuotaStatusResponse:
-    """Return the authenticated user's daily conversation quota status.
+    """Return the authenticated user's daily sandbox quota status.
 
     Scoped to the request's effective org (``X-Org-Id`` / API-key binding),
     so a user in several orgs sees the quota of the org they are actually
     working in.
     """
     async with a_session_maker() as session:
-        quota_service = DailyConversationQuotaService(session)
+        quota_service = DailySandboxQuotaService(session)
         status_result = await quota_service.get_status(user_id, effective_org_id)
 
         request_service = QuotaIncreaseRequestService(session)
@@ -231,7 +231,7 @@ def _send_verification_email(email: str, token: str) -> None:
                 'html': f"""
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                     <p>Hi,</p>
-                    <p>You requested an increase to your daily conversation quota on OpenHands.</p>
+                    <p>You requested an increase to your daily sandbox quota on OpenHands.</p>
                     <p>Click the button below to verify your work email and activate your new limit:</p>
                     <p style="margin: 30px 0;">
                         <a href="{verify_url}"
@@ -294,14 +294,14 @@ async def _capture_quota_event(
 
 
 class OrgQuotaUpdateRequest(BaseModel):
-    daily_conversation_limit: int | None = Field(
+    daily_sandbox_limit: int | None = Field(
         description=(
             'NULL to inherit the deployment default, -1 to exempt the org '
             'entirely, or a positive integer for an org-specific limit.'
         ),
     )
 
-    @field_validator('daily_conversation_limit')
+    @field_validator('daily_sandbox_limit')
     @classmethod
     def _reject_meaningless_limits(cls, value: int | None) -> int | None:
         """Allow only NULL, the exemption sentinel, and positive limits.
@@ -315,7 +315,7 @@ class OrgQuotaUpdateRequest(BaseModel):
         if value is None or value == EXEMPT_LIMIT or value > 0:
             return value
         raise ValueError(
-            f'daily_conversation_limit must be null (inherit), {EXEMPT_LIMIT} '
+            f'daily_sandbox_limit must be null (inherit), {EXEMPT_LIMIT} '
             f'(exempt), or a positive integer; got {value}'
         )
 
@@ -323,7 +323,7 @@ class OrgQuotaUpdateRequest(BaseModel):
 class OrgQuotaResponse(BaseModel):
     org_id: str
     org_name: str
-    daily_conversation_limit: int | None
+    daily_sandbox_limit: int | None
 
 
 @quota_admin_router.put('/orgs/{org_id}/quota', response_model=OrgQuotaResponse)
@@ -332,7 +332,7 @@ async def set_org_quota(
     body: OrgQuotaUpdateRequest,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
 ) -> OrgQuotaResponse:
-    """Set or clear an org-level daily conversation limit override.
+    """Set or clear an org-level daily sandbox limit override.
 
     Requires the instance-level ``MANAGE_ORG_QUOTA`` permission, which is
     granted only to the superadmin super role. Going through
@@ -351,7 +351,7 @@ async def set_org_quota(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Organization not found',
             )
-        org.daily_conversation_limit = body.daily_conversation_limit
+        org.daily_sandbox_limit = body.daily_sandbox_limit
         await session.commit()
 
         logger.info(
@@ -359,13 +359,13 @@ async def set_org_quota(
             extra={
                 'caller_user_id': caller_user_id,
                 'org_id': str(org.id),
-                'daily_conversation_limit': org.daily_conversation_limit,
-                'exempt': org.daily_conversation_limit == EXEMPT_LIMIT,
+                'daily_sandbox_limit': org.daily_sandbox_limit,
+                'exempt': org.daily_sandbox_limit == EXEMPT_LIMIT,
             },
         )
 
         return OrgQuotaResponse(
             org_id=str(org.id),
             org_name=org.name,
-            daily_conversation_limit=org.daily_conversation_limit,
+            daily_sandbox_limit=org.daily_sandbox_limit,
         )

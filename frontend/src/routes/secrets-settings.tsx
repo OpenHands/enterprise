@@ -1,7 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import {
+  ORG_SECRETS_QUERY_KEY,
+  useOrgSecrets,
+  useSearchSecrets,
+} from "#/hooks/query/use-get-secrets";
 import { useDeleteSecret } from "#/hooks/mutation/use-delete-secret";
 import { SecretForm } from "#/components/features/settings/secrets-settings/secret-form";
 import {
@@ -18,6 +22,7 @@ import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import {
+  settingsListContainerClassName,
   settingsListScrollContainerClassName,
   settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
@@ -26,10 +31,36 @@ import {
 } from "#/utils/settings-list-classes";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
+import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 
 export const clientLoader = createPermissionGuard("manage_secrets");
 
 export const handle = { hideTitle: true };
+
+function SecretsTableHead() {
+  const { t } = useTranslation();
+
+  return (
+    <thead className={settingsListTableHeadClassName}>
+      <tr>
+        <th className={cn(settingsListTableHeaderCellClassName, "w-1/4")}>
+          {t(I18nKey.SETTINGS$NAME)}
+        </th>
+        <th className={cn(settingsListTableHeaderCellClassName, "w-1/2")}>
+          {t(I18nKey.SECRETS$DESCRIPTION)}
+        </th>
+        <th
+          className={cn(
+            settingsListTableHeaderCellClassName,
+            "w-1/4 text-right",
+          )}
+        >
+          {t(I18nKey.SETTINGS$ACTIONS)}
+        </th>
+      </tr>
+    </thead>
+  );
+}
 
 function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
@@ -47,6 +78,12 @@ function SecretsSettingsScreen() {
     isFetchingNextPage,
     onLoadMore,
   } = useSearchSecrets({ pageSize: 30 });
+  const { data: orgSecrets } = useOrgSecrets();
+  // Org-shared secrets are listed from the org endpoint below. The search
+  // results interleave them after the personal pages, so leave them out here.
+  const personalSecrets = secrets.filter(
+    (secret) => secret.scope !== "organization",
+  );
 
   const { mutate: deleteSecret } = useDeleteSecret();
 
@@ -58,6 +95,8 @@ function SecretsSettingsScreen() {
   );
   const [selectedSecretIsShared, setSelectedSecretIsShared] =
     React.useState(false);
+  const [selectedSecretDescription, setSelectedSecretDescription] =
+    React.useState<string | undefined>(undefined);
   const [confirmationModalIsVisible, setConfirmationModalIsVisible] =
     React.useState(false);
 
@@ -83,6 +122,25 @@ function SecretsSettingsScreen() {
     queryClient.invalidateQueries({
       queryKey: ["secrets", organizationId],
     });
+    queryClient.invalidateQueries({
+      queryKey: [ORG_SECRETS_QUERY_KEY],
+    });
+  };
+
+  const openEditForm = (
+    secret: CustomSecretWithoutValue,
+    isShared: boolean,
+  ) => {
+    setView("edit-secret-form");
+    setSelectedSecret(secret.name);
+    setSelectedSecretIsShared(isShared);
+    setSelectedSecretDescription(secret.description);
+  };
+
+  const openDeleteConfirmation = (secretName: string, isShared: boolean) => {
+    setConfirmationModalIsVisible(true);
+    setSelectedSecret(secretName);
+    setSelectedSecretIsShared(isShared);
   };
 
   const handleDeleteSecret = (secret: string, isShared: boolean) => {
@@ -156,61 +214,17 @@ function SecretsSettingsScreen() {
               className="w-full table-fixed"
               style={settingsListTableMinWidthStyle(3)}
             >
-              <thead className={settingsListTableHeadClassName}>
-                <tr>
-                  <th
-                    className={cn(
-                      settingsListTableHeaderCellClassName,
-                      "w-1/4",
-                    )}
-                  >
-                    {t(I18nKey.SETTINGS$NAME)}
-                  </th>
-                  <th
-                    className={cn(
-                      settingsListTableHeaderCellClassName,
-                      "w-1/2",
-                    )}
-                  >
-                    {t(I18nKey.SECRETS$DESCRIPTION)}
-                  </th>
-                  <th
-                    className={cn(
-                      settingsListTableHeaderCellClassName,
-                      "w-1/4 text-right",
-                    )}
-                  >
-                    {t(I18nKey.SETTINGS$ACTIONS)}
-                  </th>
-                </tr>
-              </thead>
+              <SecretsTableHead />
               <tbody>
-                {secrets?.map((secret) => {
-                  const isOrgShared = secret.scope === "organization";
-                  // A user can edit/delete a secret if they own it (personal
-                  // scope) or if it is org-shared and they have
-                  // manage_org_secrets permission (admins/owners).
-                  const canEdit = !isOrgShared || canManageOrgSecrets;
-                  return (
-                    <SecretListItem
-                      key={secret.name}
-                      title={secret.name}
-                      description={secret.description}
-                      scope={secret.scope ?? "personal"}
-                      canEdit={canEdit}
-                      onEdit={() => {
-                        setView("edit-secret-form");
-                        setSelectedSecret(secret.name);
-                        setSelectedSecretIsShared(isOrgShared);
-                      }}
-                      onDelete={() => {
-                        setConfirmationModalIsVisible(true);
-                        setSelectedSecret(secret.name);
-                        setSelectedSecretIsShared(isOrgShared);
-                      }}
-                    />
-                  );
-                })}
+                {personalSecrets.map((secret) => (
+                  <SecretListItem
+                    key={secret.name}
+                    title={secret.name}
+                    description={secret.description}
+                    onEdit={() => openEditForm(secret, false)}
+                    onDelete={() => openDeleteConfirmation(secret.name, false)}
+                  />
+                ))}
               </tbody>
             </table>
           </HorizontalScrollFade>
@@ -224,10 +238,55 @@ function SecretsSettingsScreen() {
         </div>
       )}
 
+      {view === "list" && !isLoadingSecrets && orgSecrets.length > 0 && (
+        <section
+          data-testid="org-secrets-section"
+          className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
+        >
+          <header className="min-w-0 space-y-1">
+            <Typography.H2>
+              {t(I18nKey.SECRETS$ORG_SECRETS_TITLE)}
+            </Typography.H2>
+            <p className="text-sm leading-5 text-muted">
+              {t(I18nKey.SECRETS$SHARE_WITH_ORGANIZATION_DESCRIPTION)}
+            </p>
+          </header>
+          <div
+            className={cn(
+              settingsListContainerClassName,
+              settingsListScrollFadeFromClassName,
+            )}
+          >
+            <HorizontalScrollFade testId="org-secrets-table-scroll">
+              <table
+                className="w-full table-fixed"
+                style={settingsListTableMinWidthStyle(3)}
+              >
+                <SecretsTableHead />
+                <tbody>
+                  {orgSecrets.map((secret) => (
+                    <SecretListItem
+                      key={secret.name}
+                      title={secret.name}
+                      description={secret.description}
+                      canEdit={canManageOrgSecrets}
+                      onEdit={() => openEditForm(secret, true)}
+                      onDelete={() => openDeleteConfirmation(secret.name, true)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </HorizontalScrollFade>
+          </div>
+        </section>
+      )}
+
       {(view === "add-secret-form" || view === "edit-secret-form") && (
         <SecretForm
           mode={view === "add-secret-form" ? "add" : "edit"}
           selectedSecret={selectedSecret}
+          isSharedSecret={selectedSecretIsShared}
+          initialDescription={selectedSecretDescription}
           onCancel={() => setView("list")}
         />
       )}

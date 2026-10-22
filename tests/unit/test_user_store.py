@@ -15,7 +15,7 @@ from openhands.app_server.settings.settings_models import Settings
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.device_code import DeviceCode
 from storage.instance_settings import InstanceSettings
 from storage.org import Org
@@ -2966,10 +2966,10 @@ async def _seed_user_to_delete(
             )
         session.add_all(
             [
-                DailyConversationUsage(
+                DailySandboxUsage(
                     user_id=user_id,
                     usage_date=date.today(),
-                    conversation_count=1,
+                    sandbox_count=1,
                     created_at=now,
                     updated_at=now,
                 ),
@@ -3072,7 +3072,7 @@ async def test_delete_user_and_owned_data_removes_the_account_and_its_rows_in_ev
         OrgMember.user_id == user_id,
         StoredConversationMetadataSaas.user_id == user_id,
         StoredConversationMetadata.conversation_id.in_(['conv-personal', 'conv-team']),
-        DailyConversationUsage.user_id == user_id,
+        DailySandboxUsage.user_id == user_id,
         QuotaIncreaseRequest.user_id == user_id,
         OrgUserBudgetOverride.user_id == user_id,
         AuthTokens.keycloak_user_id == str(user_id),
@@ -3157,3 +3157,40 @@ async def test_delete_user_and_owned_data_leaves_a_personal_workspace_that_can_b
     assert deleted_org is not None
     async with async_session_maker() as session:
         assert await session.get(Org, user_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', [True, False])
+async def test_create_user_sets_allow_match_by_email(async_session_maker, flag):
+    await _seed_admin_role(async_session_maker)
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            str(uuid.uuid4()),
+            {'email': 'flag@example.com'},
+            allow_match_by_email=flag,
+        )
+
+    assert user is not None
+    assert user.allow_match_by_email is flag
+
+
+@pytest.mark.asyncio
+async def test_create_user_allow_match_by_email_defaults_to_false(async_session_maker):
+    await _seed_admin_role(async_session_maker)
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            str(uuid.uuid4()), {'email': 'default@example.com'}
+        )
+
+    assert user is not None
+    assert user.allow_match_by_email is False

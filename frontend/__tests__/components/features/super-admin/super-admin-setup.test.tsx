@@ -18,7 +18,11 @@ import {
   type SetupState,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminSetupGuide } from "#/components/features/super-admin/super-admin-setup-guide";
-import { useSuperAdminSetup } from "#/components/features/super-admin/super-admin-setup";
+import {
+  SUPER_ADMIN_SETUP_STEPS,
+  useSuperAdminSetup,
+} from "#/components/features/super-admin/super-admin-setup";
+import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
@@ -129,6 +133,16 @@ describe("useSuperAdminSetup", () => {
     expect(result.current.nextStep).toBeNull();
     expect(result.current.progress).toBe(1);
     expect(result.current.visible).toBe(false);
+  });
+
+  it("sends the optional SAML step to the Auth Providers page", () => {
+    // Arrange
+    const step = SUPER_ADMIN_SETUP_STEPS.find(
+      (candidate) => candidate.id === "optional-saml",
+    );
+
+    // Assert
+    expect(step?.to).toBe(SUPER_ADMIN_PATHS.authProviders);
   });
 
   it.each([
@@ -258,7 +272,7 @@ describe("SuperAdminSetupGuide", () => {
       // Assert: Agent Canvas starts the step's tour.
       await waitFor(() =>
         expect(replace).toHaveBeenCalledWith(
-          "/canvas/mcp?setup_tour=add-integration",
+          "/canvas/mcp?setup_tour=add-integration&org=guide-org",
         ),
       );
     });
@@ -276,7 +290,7 @@ describe("SuperAdminSetupGuide", () => {
       );
 
       // Assert
-      expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+      expect(replace).toHaveBeenCalledWith("/canvas/mcp?org=guide-org");
     });
   });
 

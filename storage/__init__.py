@@ -3,7 +3,7 @@ from storage.auth_tokens import AuthTokens
 from storage.billing_session import BillingSession
 from storage.billing_session_type import BillingSessionType
 from storage.conversation_work import ConversationWork
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.feedback import ConversationFeedback, Feedback
 from storage.github_app_installation import GithubAppInstallation
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
@@ -54,7 +54,7 @@ __all__ = [
     'ConversationFeedback',
     'StoredConversationMetadataSaas',
     'ConversationWork',
-    'DailyConversationUsage',
+    'DailySandboxUsage',
     'QuotaIncreaseRequest',
     'Feedback',
     'GithubAppInstallation',

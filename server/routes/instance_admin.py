@@ -39,11 +39,12 @@ from server.routes.org_models import (
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.instance_settings import InstanceSettings
 from storage.lite_llm_manager import LiteLlmManager
-from storage.oauth_provider import OAuthProvider
 from storage.oauth_token import OAuthToken
 from storage.org import Org
 from storage.org_invitation import OrgInvitation
@@ -111,9 +112,14 @@ class AdminMembershipResponse(BaseModel):
 
 
 class AdminUserResponse(BaseModel):
-    """A single user in the instance directory."""
+    """A single user in the instance directory.
 
-    user_id: str
+    ``user_id`` is ``None`` for someone invited by email who has not signed
+    up yet; such a row carries each pending invitation as an ``invited``
+    membership.
+    """
+
+    user_id: str | None
     email: str | None = None
     name: str | None = None
     memberships: list[AdminMembershipResponse] = Field(default_factory=list)
@@ -375,6 +381,21 @@ async def list_admin_users(
                 .join(Role, Role.id == OrgMember.role_id)
             )
         ).all()
+        # Pending invitations only expire when someone touches them, so check
+        # the date too. ``expires_at`` is stored as naive UTC.
+        now = datetime.now(UTC).replace(tzinfo=None)
+        invitation_rows = (
+            await session.execute(
+                select(OrgInvitation, Org, Role)
+                .join(Org, Org.id == OrgInvitation.org_id)
+                .join(Role, Role.id == OrgInvitation.role_id)
+                .where(
+                    OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+                    OrgInvitation.expires_at > now,
+                )
+                .order_by(OrgInvitation.email)
+            )
+        ).all()
 
     by_user: dict[UUID, list[AdminMembershipResponse]] = {}
     for org_member, org, role in membership_rows:
@@ -400,6 +421,34 @@ async def list_admin_users(
                 name=_display_name(user),
                 memberships=memberships,
                 status='inactive' if user.is_disabled else 'active',
+            )
+        )
+
+    # Someone invited by email who has not signed up yet has no ``User`` row;
+    # list them once, with each pending invitation as an ``invited``
+    # membership. Invitation emails are stored lower-cased.
+    known_emails = {user.email.lower() for user in users if user.email}
+    invited: dict[str, dict[str, AdminMembershipResponse]] = {}
+    for invitation, org, role in invitation_rows:
+        email = invitation.email.lower()
+        if email in known_emails:
+            continue
+        by_org = invited.setdefault(email, {})
+        if str(org.id) not in by_org:
+            by_org[str(org.id)] = AdminMembershipResponse(
+                org_id=str(org.id),
+                org_name=org.name,
+                role=role.name,
+                status='invited',
+            )
+    for email, by_org in invited.items():
+        users_out.append(
+            AdminUserResponse(
+                user_id=None,
+                email=email,
+                name=email.split('@', 1)[0],
+                memberships=sorted(by_org.values(), key=lambda m: m.org_name.lower()),
+                status='active',
             )
         )
     return AdminUserListResponse(users=users_out)
@@ -873,12 +922,29 @@ async def _user_has_automation_git_account(
     )
     if keycloak_token is not None:
         return True
+
+    # ``provider_type`` lives inside the encrypted ``details`` blob, not a
+    # plain column, so this can no longer be a single joined/filtered query
+    # -- resolve the matching provider ids in Python first (the provider
+    # table is tiny: one row per configured provider, not per user). Not
+    # filtered by ``is_idp``: a git provider configured as the sign-in IDP
+    # still counts, matching the pre-refactor query (which had no such
+    # filter either).
+    git_providers = await session.scalars(select(AuthProvider))
+    automation_provider_ids = [
+        provider.id
+        for provider in git_providers
+        if isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type.value in _AUTOMATION_GIT_PROVIDERS
+    ]
+    if not automation_provider_ids:
+        return False
+
     oauth_v2_token = await session.scalar(
         select(OAuthToken.id)
-        .join(OAuthProvider, OAuthProvider.id == OAuthToken.oauth_provider_id)
         .where(
             OAuthToken.user_id == user_id,
-            OAuthProvider.provider_category.in_(_AUTOMATION_GIT_PROVIDERS),
+            OAuthToken.oauth_provider_id.in_(automation_provider_ids),
         )
         .limit(1)
     )

@@ -14,17 +14,23 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping
-from typing import Any
-from urllib.parse import urlparse
+from types import MappingProxyType
+from typing import Any, cast
+from urllib.parse import unquote, urlparse
 
 import httpx
 from pydantic import BaseModel
 
-from openhands.app_server.integrations.provider import ProviderHandler, ProviderType
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import AuthenticationError
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
@@ -429,6 +435,64 @@ def parse_marketplace_source(source: str) -> tuple[str, str]:
 # parse_marketplace_source, never treated as scp-style host:path.
 _PROVIDER_SOURCE_PREFIXES = ('github:', 'gitlab:', 'bitbucket:', 'azure-devops:')
 
+# Source forms the agent-server clones (mirrors the SDK's parse_extension_source).
+# Anything else is read as a path in the sandbox, or not loaded at all.
+_AGENT_SERVER_REPOSITORY_RE = re.compile(
+    r'^(?:github:|https?://|git://|file://|[\w.-]+@[\w.-]+:)'
+)
+
+
+def is_agent_server_repository_source(source: str) -> bool:
+    """Whether the agent-server clones ``source`` rather than reading a path."""
+    return bool(_AGENT_SERVER_REPOSITORY_RE.match(source.strip()))
+
+
+_SOURCE_PREFIX_PROVIDERS = {
+    'github:': ProviderType.GITHUB,
+    'gitlab:': ProviderType.GITLAB,
+    'bitbucket:': ProviderType.BITBUCKET,
+    'azure-devops:': ProviderType.AZURE_DEVOPS,
+}
+_PUBLIC_HOST_PROVIDERS = {
+    'github.com': ProviderType.GITHUB,
+    'gitlab.com': ProviderType.GITLAB,
+    'bitbucket.org': ProviderType.BITBUCKET,
+}
+
+
+def explicit_source_provider(source: str) -> ProviderType | None:
+    """Return the provider a marketplace source names, if it names one.
+
+    ``github:owner/repo``-style prefixes and URLs on a public provider host
+    name their provider; a bare ``owner/repo`` does not.
+    """
+    s = source.strip()
+    for prefix, provider in _SOURCE_PREFIX_PROVIDERS.items():
+        if s.startswith(prefix):
+            return provider
+    split = _split_git_url_source(s)
+    if split is None:
+        return None
+    return _PUBLIC_HOST_PROVIDERS.get(split[0])
+
+
+async def provider_handler_with_token(
+    user_context: UserContext, provider: ProviderType
+) -> ProviderHandler | None:
+    """Return a handler for the user's tokens if they include ``provider``."""
+    try:
+        provider_tokens = await user_context.get_provider_tokens()
+    except Exception:
+        return None
+    if not isinstance(provider_tokens, Mapping) or provider not in provider_tokens:
+        return None
+    return ProviderHandler(
+        provider_tokens=MappingProxyType(
+            dict(cast(PROVIDER_TOKEN_TYPE, provider_tokens))
+        ),
+        external_auth_id=await user_context.get_user_id(),
+    )
+
 
 def _split_git_url_source(source: str) -> tuple[str, str] | None:
     """Return ``(host, path)`` for a URL/scp git source, else ``None``.
@@ -462,6 +526,14 @@ def _repo_path_from_url_path(path: str, provider: ProviderType) -> str:
     # /scm/. Both reduce to <project>/<repo> (personal repos use ~user).
     if provider == ProviderType.BITBUCKET_DATA_CENTER and p.startswith('scm/'):
         p = p[len('scm/') :]
+    # Azure DevOps clone URLs are /<org>/<project>/_git/<repo> with encoded
+    # segments (e.g. 'Web%20Apps'); the Azure service takes decoded names and
+    # encodes each part itself. Other providers pass names to their APIs as-is.
+    if provider == ProviderType.AZURE_DEVOPS:
+        parts = p.split('/')
+        if len(parts) == 4 and parts[2] == '_git':
+            parts = [parts[0], parts[1], parts[3]]
+        p = '/'.join(unquote(part) for part in parts)
     return p
 
 
@@ -506,6 +578,65 @@ async def _match_url_source_to_provider(
                 return None
             return provider_type, repo_path
     return None
+
+
+async def get_azure_devops_bearer_token(user_context: UserContext) -> str | None:
+    """Return the user's Azure DevOps token when it is an Entra (JWT) token.
+
+    PATs are embedded in authenticated git URLs; Entra tokens are not, so git
+    callers must send them as a Bearer header or through a credential helper.
+    """
+    try:
+        token = await user_context.get_latest_token(ProviderType.AZURE_DEVOPS)
+    except Exception as exc:
+        _logger.warning(f'Failed to get Azure DevOps token for git: {exc}')
+        return None
+    if token and looks_like_jwt(token):
+        return token
+    return None
+
+
+async def azure_devops_marketplace_orgs(
+    registered_marketplaces: list[MarketplaceRegistration] | None,
+    user_context: UserContext,
+) -> list[str]:
+    """Return the Azure DevOps organizations of auto-load marketplace sources."""
+    orgs: list[str] = []
+    for reg in registered_marketplaces or []:
+        if not reg.auto_load:
+            continue
+        matched = await _match_url_source_to_provider(reg.source, user_context)
+        if matched is None or matched[0] != ProviderType.AZURE_DEVOPS:
+            continue
+        org = matched[1].split('/')[0]
+        if org not in orgs:
+            orgs.append(org)
+    return orgs
+
+
+async def azure_devops_user_orgs(
+    user_context: UserContext,
+    selected_repository: str | None = None,
+) -> list[str]:
+    """Return every Azure DevOps organization the user can reach.
+
+    Covers the organizations the user's Azure DevOps token is installed on, plus
+    the selected repository's organization when one is given, so the git
+    credential helper is installed for all of the user's Azure DevOps repos (not
+    only the selected one). Failures degrade to the orgs already collected.
+    """
+    orgs: list[str] = []
+    if selected_repository and len(selected_repository.split('/')) >= 2:
+        orgs.append(selected_repository.split('/')[0])
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        if ProviderType.AZURE_DEVOPS in provider_handler.provider_tokens:
+            for org in await provider_handler.get_azure_devops_organizations():
+                if org and org not in orgs:
+                    orgs.append(org)
+    except Exception as exc:
+        _logger.debug(f'Failed to enumerate Azure DevOps organizations: {exc}')
+    return orgs
 
 
 async def authenticate_marketplace_sources(
@@ -570,11 +701,28 @@ async def authenticate_marketplace_sources(
         _, repo_name = parse_marketplace_source(reg.source)
         if not repo_name or '/' not in repo_name or '://' in repo_name:
             return reg
+        # A named provider is never resolved through another provider's token;
+        # without a token for it, the agent-server clones the public source.
+        named_provider = explicit_source_provider(reg.source)
+        named_handler = None
+        if named_provider is not None:
+            named_handler = await provider_handler_with_token(
+                user_context, named_provider
+            )
+            if named_handler is None:
+                return reg
         try:
             async with sem:
-                url = await user_context.get_authenticated_git_url(
-                    repo_name, is_optional=True
-                )
+                if named_handler is not None:
+                    url = await named_handler.get_authenticated_git_url(
+                        repo_name,
+                        is_optional=True,
+                        specified_provider=named_provider,
+                    )
+                else:
+                    url = await user_context.get_authenticated_git_url(
+                        repo_name, is_optional=True
+                    )
         except Exception as e:
             _logger.debug(
                 f'Could not resolve authenticated URL for marketplace '

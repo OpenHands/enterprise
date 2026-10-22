@@ -24,7 +24,19 @@ def mock_analytics_service():
     return svc
 
 
+@pytest.fixture
+def no_sandbox_spec_prepare():
+    """Keep startup tests away from the Docker daemon."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    with patch.object(
+        SaasAppLifespanService, '_prepare_sandbox_specs', new_callable=AsyncMock
+    ) as mock_prepare:
+        yield mock_prepare
+
+
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_calls_init_analytics_service():
     """SaasAppLifespanService.__aenter__ initializes the analytics service."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -38,6 +50,7 @@ async def test_aenter_calls_init_analytics_service():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_runs_org_condenser_reconciliation():
     """Startup must run the org condenser defaults rollout hook."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -58,6 +71,7 @@ async def test_aenter_runs_org_condenser_reconciliation():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('flag', [None, 'false', '0'])
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_does_not_migrate_unless_enabled(monkeypatch, flag):
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
 
@@ -100,10 +114,27 @@ async def test_aenter_migrates_before_anything_else_when_enabled(monkeypatch, fl
             '_reconcile_org_condenser_defaults',
             new=AsyncMock(side_effect=lambda: order.append('reconcile')),
         ),
+        patch.object(
+            SaasAppLifespanService,
+            '_prepare_sandbox_specs',
+            new=AsyncMock(side_effect=lambda: order.append('sandbox_specs')),
+        ),
     ):
         await SaasAppLifespanService().__aenter__()
 
-    assert order == ['migrate', 'analytics', 'reconcile']
+    assert order == ['migrate', 'analytics', 'reconcile', 'sandbox_specs']
+
+
+@pytest.mark.asyncio
+async def test_prepare_sandbox_specs_prepares_the_configured_injector():
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    config = MagicMock()
+    config.sandbox_spec.prepare = AsyncMock()
+    with patch('openhands.app_server.config.get_global_config', return_value=config):
+        await SaasAppLifespanService()._prepare_sandbox_specs()
+
+    config.sandbox_spec.prepare.assert_awaited_once_with()
 
 
 @pytest.fixture
@@ -314,6 +345,7 @@ async def test_reconciliation_runs_when_apply_to_existing(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_passes_env_vars_to_init():
     """SaasAppLifespanService reads config from env vars."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -345,6 +377,7 @@ async def test_aenter_passes_env_vars_to_init():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_disables_analytics_when_self_hosted():
     """Self-hosted Enterprise ignores any configured PostHog key."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -492,6 +525,7 @@ async def test_reconciliation_takes_advisory_lock_with_timeout():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aexit_calls_shutdown_when_service_exists(mock_analytics_service):
     """SaasAppLifespanService.__aexit__ calls shutdown on the analytics service."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -511,6 +545,7 @@ async def test_aexit_calls_shutdown_when_service_exists(mock_analytics_service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aexit_does_not_raise_when_service_is_none():
     """SaasAppLifespanService.__aexit__ does not raise if analytics service is None."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
@@ -529,6 +564,7 @@ async def test_aexit_does_not_raise_when_service_is_none():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aexit_does_not_raise_on_shutdown_error(mock_analytics_service):
     """SaasAppLifespanService.__aexit__ swallows errors from shutdown."""
     from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService

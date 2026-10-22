@@ -4,6 +4,7 @@ import {
   InfiniteData,
 } from "@tanstack/react-query";
 import { SecretsService } from "#/api/secrets-service";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useConfig } from "./use-config";
 import { useIsAuthed } from "#/hooks/query/use-is-authed";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
@@ -83,5 +84,34 @@ export const useSearchSecrets = (options: UseSearchSecretsOptions = {}) => {
     fetchNextPage: query.fetchNextPage,
     onLoadMore,
     refetch: query.refetch,
+  };
+};
+
+export const ORG_SECRETS_QUERY_KEY = "org-secrets";
+
+/**
+ * Hook listing the organization-shared secrets (names + descriptions) of the
+ * selected organization. Unlike the search endpoint, this list is complete
+ * rather than paginated and carries the raw names the org endpoints expect.
+ */
+export const useOrgSecrets = () => {
+  const { data: config } = useConfig();
+  const { data: isAuthed } = useIsAuthed();
+  const { organizationId } = useSelectedOrganizationId();
+
+  const isOss = config?.app_mode === "oss";
+
+  const query = useQuery({
+    queryKey: [ORG_SECRETS_QUERY_KEY, organizationId],
+    queryFn: () => organizationService.getOrgSecrets(organizationId!),
+    enabled: !isOss && !!isAuthed && !!organizationId,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    gcTime: 1000 * 60 * 15, // 15 minutes
+  });
+
+  return {
+    data: query.data?.items ?? [],
+    isLoading: query.isLoading,
+    isError: query.isError,
   };
 };

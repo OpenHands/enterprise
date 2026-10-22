@@ -96,7 +96,7 @@ def upgrade() -> None:
         ),
         {
             'provider_category': _INTEGRATED_IDP_CATEGORY,
-            'display_name': 'Password Login',
+            'display_name': 'Login with Password',
             'client_id': 'integrated-idp',
         },
     )

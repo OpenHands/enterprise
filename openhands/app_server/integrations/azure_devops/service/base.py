@@ -8,7 +8,44 @@ from openhands.app_server.integrations.protocols.http_client import HTTPClient
 from openhands.app_server.integrations.service_types import (
     BaseGitService,
     RequestMethod,
+    UnknownException,
 )
+
+# Azure error messages are short; cap what we log and show to users.
+_MAX_AZURE_ERROR_MESSAGE_LENGTH = 500
+
+
+class AzureDevOpsApiError(UnknownException):
+    """Azure DevOps rejected a request; keeps the reason Azure gave."""
+
+    def __init__(
+        self,
+        status_code: int,
+        azure_message: str | None,
+        type_key: str | None = None,
+    ):
+        self.status_code = status_code
+        self.azure_message = azure_message
+        self.type_key = type_key
+        reason = azure_message or 'no error message returned'
+        super().__init__(f'Azure DevOps API error {status_code}: {reason}')
+
+
+def azure_error_details(response: Any) -> tuple[str | None, str | None]:
+    """Return (message, typeKey) from an Azure DevOps error response body."""
+    try:
+        body = response.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        message = body.get('message')
+        type_key = body.get('typeKey')
+    else:
+        message = (getattr(response, 'text', '') or '').strip() or None
+        type_key = None
+    if message is not None:
+        message = str(message)[:_MAX_AZURE_ERROR_MESSAGE_LENGTH]
+    return message, str(type_key) if type_key else None
 
 
 class AzureDevOpsMixinBase(BaseGitService, HTTPClient):

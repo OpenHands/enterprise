@@ -5,20 +5,31 @@ and the recent bug fixes for git checkout operations.
 """
 
 import inspect
+import os
+import shutil
+import stat
 import subprocess
 from pathlib import Path
-from types import MethodType
+from types import MappingProxyType, MethodType
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.app_server.app_conversation.app_conversation_models import AgentType
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
+    _azure_devops_credential_helper_script,
 )
-from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
+from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
+from openhands.app_server.integrations.service_types import (
+    ProviderType,
+    Repository,
+)
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
+from openhands.app_server.settings.settings_models import MarketplaceRegistration
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.sdk.skills import Skill
 
@@ -904,96 +915,410 @@ async def test_clone_or_init_git_repo_quotes_selected_branch_before_checkout(
     )
 
 
+def _workspace_with_failing_clone(
+    stderr: str, repository_present: bool = False
+) -> MockWorkspace:
+    """A workspace whose ``git clone`` exits 128; other commands succeed.
+
+    ``repository_present`` says whether the clone target already holds a
+    checkout, as when a sub-conversation shares its parent's sandbox.
+    """
+    workspace = MockWorkspace(working_dir='/workspace/project')
+
+    async def execute_command(command, cwd=None, timeout=None):
+        if ' clone ' in command:
+            return MockCommandResult(exit_code=128, stderr=stderr)
+        if command.startswith('test -d '):
+            return MockCommandResult(exit_code=0 if repository_present else 1)
+        return MockCommandResult()
+
+    workspace.execute_command = AsyncMock(side_effect=execute_command)
+    return workspace
+
+
 @pytest.mark.asyncio
-async def test_clone_or_init_git_repo_configures_dynamic_azure_devops_helper(
-    mock_workspace,
+@pytest.mark.parametrize(
+    ('git_provider', 'repository', 'remote_url'),
+    [
+        (ProviderType.GITHUB, 'owner/repo', 'https://github.com/owner/repo.git'),
+        (
+            ProviderType.AZURE_DEVOPS,
+            'org/project/repo',
+            'https://dev.azure.com/org/project/_git/repo',
+        ),
+    ],
+)
+async def test_failed_selected_repository_clone_is_not_silent(
+    git_provider, repository, remote_url
 ):
-    user_info = MockUserInfo()
+    """A failed clone stops setup instead of continuing on an empty workspace."""
     service, mock_user_context = _create_service_with_mock_user_context(
-        user_info,
+        MockUserInfo(),
         bind_methods=(
             'clone_or_init_git_repo',
             '_get_azure_devops_bearer_token_for_git',
-            '_configure_azure_devops_git_credential_helper',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(return_value=remote_url)
+    mock_user_context.get_latest_token = AsyncMock(return_value='entra.access.token')
+    workspace = _workspace_with_failing_clone(
+        'fatal: Remote branch missing not found in upstream origin'
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository=repository,
+        selected_branch='missing',
+        git_provider=git_provider,
+    )
+
+    with pytest.raises(ValueError, match='clone') as exc_info:
+        await service.clone_or_init_git_repo(task, workspace)
+
+    assert f"{repository!r} at branch 'missing'" in str(exc_info.value)
+    commands = [call.args[0] for call in workspace.execute_command.call_args_list]
+    assert any(' clone ' in command for command in commands)
+    assert not any(command.startswith('git checkout') for command in commands), (
+        'checkout ran in a directory the failed clone never created'
+    )
+
+
+@pytest.mark.asyncio
+async def test_clone_into_an_existing_checkout_keeps_using_it():
+    """A sub-conversation sharing its parent's sandbox reuses the parent's clone."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://github.com/owner/repo.git'
+    )
+    workspace = _workspace_with_failing_clone(
+        "fatal: destination path 'repo' already exists and is not an empty directory.",
+        repository_present=True,
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    await service.clone_or_init_git_repo(task, workspace)
+
+    checkouts = [
+        call
+        for call in workspace.execute_command.call_args_list
+        if call.args[0].startswith('git checkout -b openhands-workspace-')
+    ]
+    assert len(checkouts) == 1
+    assert checkouts[0].args[1] == Path('/workspace/project') / 'repo'
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_existing_checkout_check_runs_in_a_real_shell(tmp_path):
+    """Run the produced check for real, with a repository name that needs quoting."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://dev.azure.com/org/project/_git/My%20Repo'
+    )
+    mock_user_context.get_latest_token = AsyncMock(return_value=None)
+    workspace = _workspace_with_failing_clone('fatal: Authentication failed')
+    task = Mock()
+    task.request = Mock(
+        selected_repository='org/project/My Repo',
+        selected_branch=None,
+        git_provider=ProviderType.AZURE_DEVOPS,
+    )
+
+    with pytest.raises(ValueError):
+        await service.clone_or_init_git_repo(task, workspace)
+
+    check = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if call.args[0].startswith('test -d ')
+    )
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith('GIT_')
+    }
+    env.update(HOME=str(tmp_path), GIT_CONFIG_NOSYSTEM='1')
+
+    def check_exit_code() -> int:
+        return subprocess.run(
+            ['sh', '-c', check], cwd=tmp_path, env=env, capture_output=True
+        ).returncode
+
+    # Nothing cloned yet.
+    assert check_exit_code() != 0
+    # An empty repository, as a failed clone can leave behind, is not a checkout.
+    repo = tmp_path / 'My Repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
+    assert check_exit_code() != 0
+    # A repository with a commit is.
+    subprocess.run(
+        [
+            'git',
+            '-C',
+            str(repo),
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.com',
+            'commit',
+            '--allow-empty',
+            '-q',
+            '-m',
+            'initial',
+        ],
+        env=env,
+        check=True,
+    )
+    assert check_exit_code() == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_clone_error_does_not_include_credentials():
+    """The error names the repository, never the token-bearing URL or git output."""
+    token = 'ghp_cloneSecretValue123'
+    remote_url = f'https://x-access-token:{token}@github.com/owner/repo.git'
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(return_value=remote_url)
+    workspace = _workspace_with_failing_clone(
+        f"fatal: unable to access '{remote_url}/': "
+        'The requested URL returned error: 403'
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base._logger'
+        ) as mock_logger,
+        pytest.raises(ValueError) as exc_info,
+    ):
+        await service.clone_or_init_git_repo(task, workspace)
+
+    message = str(exc_info.value)
+    assert 'owner/repo' in message
+    assert token not in message
+    assert 'x-access-token' not in message
+    assert 'unable to access' not in message
+    # The server log keeps git's output for debugging, without the credential.
+    logged = ' '.join(
+        str(arg) for call in mock_logger.warning.call_args_list for arg in call.args
+    )
+    assert 'unable to access' in logged
+    assert token not in logged
+
+
+@pytest.mark.asyncio
+async def test_failed_azure_devops_clone_error_does_not_include_bearer_token():
+    """The Entra bearer token sent with the clone stays out of the error."""
+    bearer_token = 'entra.access.token'
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
         ),
     )
     service.init_git_in_empty_workspace = True
     mock_user_context.get_authenticated_git_url = AsyncMock(
         return_value='https://dev.azure.com/org/project/_git/repo'
     )
-    mock_user_context.get_latest_token = AsyncMock(
-        return_value='header.payload.signature'
-    )
+    mock_user_context.get_latest_token = AsyncMock(return_value=bearer_token)
+    workspace = _workspace_with_failing_clone('fatal: Authentication failed')
     task = Mock()
     task.request = Mock(
         selected_repository='org/project/repo',
-        selected_branch='main',
+        selected_branch=None,
         git_provider=ProviderType.AZURE_DEVOPS,
     )
-    sandbox = SandboxInfo(
-        id='sandbox-123',
-        created_by_user_id='user-123',
-        sandbox_spec_id='spec-123',
-        status=SandboxStatus.RUNNING,
-        session_api_key='session-key',
-    )
 
-    await service.clone_or_init_git_repo(task, mock_workspace, sandbox)
+    with pytest.raises(ValueError) as exc_info:
+        await service.clone_or_init_git_repo(task, workspace)
 
-    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
-    assert any(
-        "git -c http.extraheader='Authorization: Bearer header.payload.signature' clone --depth 1 --branch main"
-        in command
-        for command in commands
+    clone_command = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if ' clone ' in call.args[0]
     )
-    helper_command = next(
-        command
-        for command in commands
-        if 'openhands-azure-devops-credential-helper' in command
-    )
-    assert (
-        '/api/v1/sandboxes/sandbox-123/settings/secrets/azure_devops_token'
-        in helper_command
-    )
-    assert (
-        'git config --local --unset-all http.https://dev.azure.com/org/.extraheader'
-        in helper_command
-    )
-    assert 'credential.https://dev.azure.com/org.helper' in helper_command
-    assert not any(
-        command.startswith(
-            'git config --local http.https://dev.azure.com/org/.extraheader'
-        )
-        for command in commands
-    )
+    assert bearer_token in clone_command
+    assert bearer_token not in str(exc_info.value)
+
+
+def _azure_devops_provider_handler(orgs: list[str]):
+    """A provider handler mock whose Azure DevOps installations are ``orgs``."""
+    handler = MagicMock()
+    handler.provider_tokens = {ProviderType.AZURE_DEVOPS: object()}
+    handler.get_azure_devops_organizations = AsyncMock(return_value=orgs)
+    return handler
 
 
 @pytest.mark.asyncio
-async def test_azure_devops_git_credential_helper_logs_without_web_url(
+async def test_configure_azure_devops_git_credentials_writes_token_file_and_helper(
+    mock_workspace,
+):
+    user_info = MockUserInfo()
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=('_configure_azure_devops_git_credentials',),
+    )
+    service.web_url = 'https://app.example.com'
+    # The user belongs to a second Azure DevOps org beyond the selected repo's.
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org', 'org2'])
+    )
+
+    await service._configure_azure_devops_git_credentials(
+        mock_workspace, 'header.payload.signature', 'org/project/repo'
+    )
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    command = next(c for c in commands if 'azure-devops-credential-helper' in c)
+    # The per-conversation JWT is written to a mode-600 file the helper reads.
+    assert 'azure-devops-access-token' in command
+    assert 'header.payload.signature' in command  # the token value is written
+    assert 'chmod 600' in command
+    # The helper authenticates via the webhooks secrets endpoint, reading the
+    # token from the file — not the session key or a startup env var.
+    assert '/api/v1/webhooks/secrets' in command
+    assert 'X-Access-Token' in command
+    assert 'OH_SESSION_API_KEYS_0' not in command
+    assert 'SESSION_API_KEY' not in command
+    assert '/api/v1/sandboxes/' not in command
+    # Installed globally for every org the user belongs to.
+    assert 'git config --global' in command
+    assert 'credential.https://dev.azure.com/org.helper' in command
+    assert 'credential.https://dev.azure.com/org2.helper' in command
+    assert 'git config --local' not in command
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_configure_azure_devops_git_credentials_command_runs(
+    mock_workspace, tmp_path
+):
+    """Execute the produced command for real and assert it takes effect.
+
+    The substring assertions above mock the executor, so they cannot catch a
+    command that assembles correctly but fails at runtime (e.g. a quoted
+    ``$HOME`` that never expands and aborts the ``&&`` chain before any
+    ``git config``). This runs the exact command in a scratch ``HOME`` and
+    checks the token file and per-org git config actually land.
+    """
+    user_info = MockUserInfo()
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=('_configure_azure_devops_git_credentials',),
+    )
+    service.web_url = 'https://app.example.com'
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org', 'org2'])
+    )
+
+    await service._configure_azure_devops_git_credentials(
+        mock_workspace, 'header.payload.signature', 'org/project/repo'
+    )
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    command = next(c for c in commands if 'azure-devops-credential-helper' in c)
+
+    env = os.environ.copy()
+    env['HOME'] = str(tmp_path)
+    # Mirror the sandbox: the helper setup runs from '/'.
+    result = subprocess.run(
+        ['sh', '-c', command],
+        cwd='/',
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    token_file = tmp_path / '.openhands' / 'azure-devops-access-token'
+    assert token_file.read_text() == 'header.payload.signature'
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    assert (tmp_path / '.openhands' / 'azure-devops-credential-helper').exists()
+
+    # The && chain reached the git config steps for every org.
+    for org in ('org', 'org2'):
+        helper = subprocess.run(
+            [
+                'git',
+                'config',
+                '--global',
+                '--get-all',
+                f'credential.https://dev.azure.com/{org}.helper',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert helper.returncode == 0
+        assert 'azure-devops-credential-helper' in helper.stdout
+
+
+@pytest.mark.asyncio
+async def test_configure_azure_devops_git_credentials_skips_without_token(
     mock_workspace,
 ):
     user_info = MockUserInfo()
     service, _ = _create_service_with_mock_user_context(
         user_info,
-        bind_methods=('_configure_azure_devops_git_credential_helper',),
+        bind_methods=('_configure_azure_devops_git_credentials',),
+    )
+    service.web_url = 'https://app.example.com'
+
+    # No token minted for this conversation → leave the sandbox untouched.
+    await service._configure_azure_devops_git_credentials(
+        mock_workspace, None, 'org/project/repo'
+    )
+
+    mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_git_credentials_logs_without_web_url(mock_workspace):
+    user_info = MockUserInfo()
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=('_configure_azure_devops_git_credentials',),
     )
     service.web_url = None
-    sandbox = SandboxInfo(
-        id='sandbox-123',
-        created_by_user_id='user-123',
-        sandbox_spec_id='spec-123',
-        status=SandboxStatus.RUNNING,
-        session_api_key='session-key',
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org'])
     )
 
     with patch(
         'openhands.app_server.app_conversation.app_conversation_service_base._logger.debug'
     ) as mock_debug:
-        await service._configure_azure_devops_git_credential_helper(
-            mock_workspace,
-            Path(mock_workspace.working_dir),
-            'org/project/repo',
-            sandbox,
+        await service._configure_azure_devops_git_credentials(
+            mock_workspace, 'header.payload.signature', 'org/project/repo'
         )
 
     mock_debug.assert_called_once_with(
@@ -1029,58 +1354,59 @@ async def test_configure_git_user_settings_both_name_and_email(mock_workspace):
     )
 
 
+def _assert_git_identity(workspace: MockWorkspace, name: str, email: str) -> None:
+    """Assert exactly the user.name and user.email commands were run."""
+    assert workspace.execute_command.call_count == 2
+    workspace.execute_command.assert_any_call(
+        f'git config --global user.name {name}', '/workspace/project'
+    )
+    workspace.execute_command.assert_any_call(
+        f'git config --global user.email {email}', '/workspace/project'
+    )
+
+
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_only_name(mock_workspace):
-    """Test configuring only git user name."""
+    """A saved name is kept; the missing email falls back to the default."""
     user_info = MockUserInfo(git_user_name='Test User', git_user_email=None)
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify only user.name was configured
-    assert mock_workspace.execute_command.call_count == 1
-    mock_workspace.execute_command.assert_called_once_with(
-        "git config --global user.name 'Test User'", '/workspace/project'
-    )
+    _assert_git_identity(mock_workspace, "'Test User'", 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_only_email(mock_workspace):
-    """Test configuring only git user email."""
+    """A saved email is kept; the missing name falls back to the default."""
     user_info = MockUserInfo(git_user_name=None, git_user_email='test@example.com')
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify only user.email was configured
-    assert mock_workspace.execute_command.call_count == 1
-    mock_workspace.execute_command.assert_called_once_with(
-        'git config --global user.email test@example.com', '/workspace/project'
-    )
+    _assert_git_identity(mock_workspace, 'openhands', 'test@example.com')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_neither_set(mock_workspace):
-    """Test when neither git user name nor email is set."""
+    """Without a saved identity, the default is set."""
     user_info = MockUserInfo(git_user_name=None, git_user_email=None)
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify no git config commands were executed
-    mock_workspace.execute_command.assert_not_called()
+    _assert_git_identity(mock_workspace, 'openhands', 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_empty_strings(mock_workspace):
-    """Test when git user name and email are empty strings."""
+    """Empty saved values are treated as missing."""
     user_info = MockUserInfo(git_user_name='', git_user_email='')
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Empty strings are falsy, so no commands should be executed
-    mock_workspace.execute_command.assert_not_called()
+    _assert_git_identity(mock_workspace, 'openhands', 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
@@ -1097,6 +1423,56 @@ async def test_configure_git_user_settings_get_user_info_fails(mock_workspace):
 
     # Verify no git config commands were executed
     mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_configured_git_identity_lets_git_commit(mock_workspace, tmp_path):
+    """Run the produced git config commands for real, then commit.
+
+    Without them a fresh sandbox has no identity and the agent's first commit
+    fails with "Please tell me who you are". ``user.useConfigOnly`` stands in
+    for a sandbox whose identity cannot be guessed from its hostname.
+    """
+    service, _ = _create_service_with_mock_user_context(MockUserInfo())
+
+    await service._configure_git_user_settings(mock_workspace)
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(('GIT_', 'EMAIL'))
+    }
+    env.update(
+        HOME=str(tmp_path),
+        XDG_CONFIG_HOME=str(tmp_path / '.config'),
+        GIT_CONFIG_NOSYSTEM='1',
+        GIT_CONFIG_COUNT='1',
+        GIT_CONFIG_KEY_0='user.useConfigOnly',
+        GIT_CONFIG_VALUE_0='true',
+    )
+    for call in mock_workspace.execute_command.call_args_list:
+        subprocess.run(['sh', '-c', call.args[0]], env=env, check=True)
+
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
+    commit = subprocess.run(
+        ['git', 'commit', '--allow-empty', '-q', '-m', 'test'],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert commit.returncode == 0, commit.stderr
+    author = subprocess.run(
+        ['git', 'log', '-1', '--format=%an <%ae>'],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert author.stdout.strip() == 'openhands <openhands@all-hands.dev>'
 
 
 @pytest.mark.asyncio
@@ -1815,10 +2191,18 @@ class TestLoadAndMergeAllSkills:
 
         authenticated_url = 'https://x-access-token:tok@github.com/o/private.git'
         mock_user_context = Mock(spec=UserContext)
-        mock_user_context.get_authenticated_git_url = AsyncMock(
-            return_value=authenticated_url
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={ProviderType.GITHUB: ProviderToken(token=SecretStr('tok'))}
         )
-        with patch.object(AppConversationServiceBase, '__abstractmethods__', set()):
+        mock_user_context.get_user_id = AsyncMock(return_value='user-1')
+        with (
+            patch.object(AppConversationServiceBase, '__abstractmethods__', set()),
+            patch.object(
+                ProviderHandler,
+                'get_authenticated_git_url',
+                return_value=authenticated_url,
+            ),
+        ):
             service = AppConversationServiceBase(
                 init_git_in_empty_workspace=True, user_context=mock_user_context
             )
@@ -1849,6 +2233,116 @@ class TestLoadAndMergeAllSkills:
             # Assert
             sent = mock_load_skills.call_args.kwargs['registered_marketplaces']
             assert [reg.source for reg in sent] == [authenticated_url]
+
+
+class TestMarketplaceGitCredentials:
+    """Entra-authenticated Azure marketplaces get a token-free credential helper."""
+
+    @staticmethod
+    def _service(token: str | None):
+        mock_user_context = Mock(spec=UserContext)
+        mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={ProviderType.AZURE_DEVOPS: ProviderToken()}
+        )
+        mock_user_context.get_latest_token = AsyncMock(return_value=token)
+        with patch.object(AppConversationServiceBase, '__abstractmethods__', set()):
+            service = AppConversationServiceBase(
+                init_git_in_empty_workspace=True, user_context=mock_user_context
+            )
+        sandbox = Mock(spec=SandboxInfo)
+        sandbox.id = 'sandbox-123'
+        sandbox.exposed_urls = []
+        sandbox.session_api_key = 'session-key'
+        marketplaces = [
+            MarketplaceRegistration(
+                name='azure',
+                source='https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+                auto_load=True,
+            )
+        ]
+        return service, sandbox, marketplaces
+
+    @pytest.mark.asyncio
+    async def test_installs_global_helper_for_entra_token(self):
+        """The helper is configured per org and the token never enters the command."""
+        token = 'header.payload.signature'
+        service, sandbox, marketplaces = self._service(token)
+        workspace = AsyncMock()
+        workspace.execute_command.return_value = Mock(exit_code=0, stderr='')
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base.AsyncRemoteWorkspace',
+            return_value=workspace,
+        ):
+            await service._configure_marketplace_git_credentials(
+                sandbox, 'http://agent:8000', '/workspace', marketplaces
+            )
+
+        command = workspace.execute_command.call_args.args[0]
+        assert token not in command
+        # The helper reads the per-conversation token file and exchanges it at
+        # the webhooks secrets endpoint, not the sandbox session key. The
+        # marketplace path installs the helper but does not write the token file
+        # (the per-conversation setup flow does), so the token never appears here.
+        assert '/api/v1/webhooks/secrets' in command
+        assert 'azure-devops-access-token' in command
+        assert 'X-Access-Token' in command
+        assert 'OH_SESSION_API_KEYS_0' not in command
+        assert '/api/v1/sandboxes/' not in command
+        assert (
+            'git config --global credential.https://dev.azure.com/acme.username oauth2'
+            in command
+        )
+        assert 'credential.https://dev.azure.com/acme.helper' in command
+        assert (
+            'git config --global credential.https://dev.azure.com.useHttpPath true'
+            in command
+        )
+        workspace.reset_client.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_helper_for_pat(self):
+        """PATs are embedded in the authenticated URL; no helper is installed."""
+        service, sandbox, marketplaces = self._service('plain-pat')
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base.AsyncRemoteWorkspace'
+        ) as workspace_cls:
+            await service._configure_marketplace_git_credentials(
+                sandbox, 'http://agent:8000', '/workspace', marketplaces
+            )
+
+        workspace_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base.load_skills_from_agent_server'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base.build_org_configs'
+    )
+    async def test_load_and_merge_configures_credentials_before_loading(
+        self, mock_build_org_configs, mock_load_skills
+    ):
+        """Skill loading installs the helper before the agent-server clones."""
+        service, sandbox, marketplaces = self._service('header.payload.signature')
+        mock_build_org_configs.return_value = []
+        mock_load_skills.return_value = []
+        order: list[str] = []
+        service._configure_marketplace_git_credentials = AsyncMock(
+            side_effect=lambda *a, **k: order.append('credentials')
+        )
+        mock_load_skills.side_effect = lambda **k: order.append('load') or []
+
+        await service.load_and_merge_all_skills(
+            sandbox,
+            None,
+            '/workspace',
+            'http://agent:8000',
+            registered_marketplaces=marketplaces,
+        )
+
+        assert order == ['credentials', 'load']
 
 
 class TestLoadSkillsAndUpdateAgent:
@@ -1892,3 +2386,138 @@ class TestLoadSkillsAndUpdateAgent:
                 'registered_marketplaces'
             ]
             assert forwarded == marketplaces
+
+
+def test_warns_for_auto_load_marketplace_read_as_sandbox_path():
+    """Auto-load sources the agent-server will not clone are logged."""
+    from openhands.app_server.app_conversation.app_conversation_service_base import (
+        _warn_unresolved_marketplace_sources,
+    )
+    from openhands.app_server.settings.settings_models import (
+        MarketplaceRegistration,
+    )
+
+    registrations = [
+        MarketplaceRegistration(name='bare', source='owner/repo', auto_load=True),
+        MarketplaceRegistration(name='off', source='owner/other', auto_load=False),
+        MarketplaceRegistration(name='gh', source='github:o/r', auto_load=True),
+        MarketplaceRegistration(
+            name='url', source='https://github.com/o/r.git', auto_load=True
+        ),
+        MarketplaceRegistration(
+            name='scp', source='git@gitlab.example.com:o/r.git', auto_load=True
+        ),
+    ]
+
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_service_base._logger'
+    ) as logger:
+        _warn_unresolved_marketplace_sources(registrations)
+
+    assert [c.args[1:] for c in logger.warning.call_args_list] == [
+        ('bare', 'owner/repo')
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: provider-correct clone URLs and a session-key-free credential
+# helper (Azure DevOps git parity for Microsoft Entra sign-in).
+# ---------------------------------------------------------------------------
+
+
+def _provider_resolution_service(user_context) -> MagicMock:
+    service = MagicMock()
+    service.user_context = user_context
+    service.init_git_in_empty_workspace = True
+    for name in (
+        'clone_or_init_git_repo',
+        '_get_azure_devops_bearer_token_for_git',
+        '_configure_git_user_settings',
+        '_configure_gpg_signing',
+    ):
+        setattr(
+            service,
+            name,
+            MethodType(getattr(AppConversationServiceBase, name), service),
+        )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_clone_url_uses_the_requested_git_provider():
+    """A same-named repository on another provider must not win URL resolution."""
+    entra_token = 'header.payload.signature'
+    handler = ProviderHandler(
+        provider_tokens=MappingProxyType(
+            {
+                ProviderType.GITLAB: ProviderToken(
+                    token=SecretStr('glpat-token'), host='gitlab.example.com'
+                ),
+                ProviderType.AZURE_DEVOPS: ProviderToken(
+                    token=SecretStr(entra_token), host='dev.azure.com/contoso'
+                ),
+            }
+        )
+    )
+
+    def service_for(provider):
+        provider_service = Mock()
+        provider_service.get_repository_details_from_repo_name = AsyncMock(
+            return_value=Repository(
+                id='1',
+                full_name='contoso/web/app',
+                git_provider=provider,
+                is_public=False,
+            )
+        )
+        return provider_service
+
+    user_context = MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=MockUserInfo(git_full_clone=False)
+    )
+    user_context.get_secrets = AsyncMock(return_value={})
+    user_context.get_provider_handler = AsyncMock(return_value=handler)
+    user_context.get_latest_token = AsyncMock(return_value=entra_token)
+    user_context.get_authenticated_git_url = MethodType(
+        AuthUserContext.get_authenticated_git_url, user_context
+    )
+
+    workspace = MockWorkspace(working_dir='/workspace/project')
+    task = Mock()
+    task.request = Mock(
+        selected_repository='contoso/web/app',
+        selected_branch='main',
+        git_provider=ProviderType.AZURE_DEVOPS,
+    )
+
+    with patch.object(ProviderHandler, 'get_service', side_effect=service_for):
+        service = _provider_resolution_service(user_context)
+        await service.clone_or_init_git_repo(task, workspace)
+
+    clone = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if ' clone ' in call.args[0]
+    )
+    assert 'https://dev.azure.com/contoso/web/_git/app' in clone
+    assert 'gitlab.example.com' not in clone
+
+
+def test_azure_devops_credential_helper_script_auth_source():
+    """The helper reads the JWT from the per-conversation file, not the env/key."""
+    script = _azure_devops_credential_helper_script('https://app.example.com')
+
+    # Reads the per-conversation token file and exchanges it at the webhooks
+    # secrets endpoint.
+    assert 'azure-devops-access-token' in script
+    assert '/api/v1/webhooks/secrets' in script
+    assert 'X-Access-Token' in script
+
+    # Does not read the token from an environment variable, nor depend on the
+    # session key or the old sandbox-settings path.
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' not in script
+    assert 'OH_SESSION_API_KEYS_0' not in script
+    assert 'SESSION_API_KEY' not in script
+    assert 'X-Session-API-Key' not in script
+    assert '/api/v1/sandboxes/' not in script

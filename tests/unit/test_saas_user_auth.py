@@ -421,6 +421,77 @@ class TestGetProviderTokensBitbucketDCHost:
         mock_session.execute.assert_called_once()
 
 
+class TestGetProviderTokensGitLabHost:
+    """Tests for the self-hosted GitLab host fallback from GITLAB_HOST."""
+
+    def _make_user_auth(self, mock_session_maker):
+        mock_token = MagicMock()
+        mock_token.identity_provider = 'gitlab'
+        mock_token.id = 'token-id-1'
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_token]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_maker.return_value = mock_session
+
+        access_payload = {'sub': 'test_user_id', 'exp': int(time.time()) + 3600}
+        access_token = jwt.encode(access_payload, 'secret', algorithm='HS256')
+
+        return SaasUserAuth(
+            user_id='test_user_id',
+            refresh_token=SecretStr('refresh_token'),
+            access_token=SecretStr(access_token),
+        )
+
+    async def _provider_tokens(self, gitlab_host, user_secrets=None):
+        with (
+            patch('server.auth.saas_user_auth.token_manager') as mock_tm,
+            patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+            patch('server.auth.saas_user_auth.GITLAB_HOST', gitlab_host),
+        ):
+            mock_tm.get_idp_token_by_user_id = AsyncMock(
+                return_value='gitlab_access_token'
+            )
+            user_auth = self._make_user_auth(mock_session_maker)
+            user_auth.get_secrets = AsyncMock(return_value=user_secrets)
+            return await user_auth.get_provider_tokens()
+
+    @pytest.mark.asyncio
+    async def test_self_hosted_gitlab_host_is_reported(self):
+        """An IdP token on a self-hosted install carries the configured GITLAB_HOST."""
+        result = await self._provider_tokens('gitlab.company.com')
+
+        assert ProviderType.GITLAB in result
+        assert result[ProviderType.GITLAB].host == 'gitlab.company.com'
+        assert result[ProviderType.GITLAB].token.get_secret_value() == (
+            'gitlab_access_token'
+        )
+
+    @pytest.mark.asyncio
+    async def test_host_from_user_secrets_takes_priority(self):
+        """A host the user stored with their own token wins over GITLAB_HOST."""
+        user_secrets = Secrets(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(
+                    token=SecretStr('existing_token'), host='custom.gitlab.host'
+                )
+            }
+        )
+        result = await self._provider_tokens('gitlab.company.com', user_secrets)
+
+        assert result[ProviderType.GITLAB].host == 'custom.gitlab.host'
+
+    @pytest.mark.asyncio
+    async def test_hosted_gitlab_reports_its_host_too(self):
+        """gitlab.com is reported as well, so a missing host means an older server."""
+        result = await self._provider_tokens('gitlab.com')
+
+        assert ProviderType.GITLAB in result
+        assert result[ProviderType.GITLAB].host == 'gitlab.com'
+
+
 @pytest.mark.asyncio
 async def test_get_provider_tokens_skips_enterprise_sso_rows():
     """enterprise_sso auth_tokens rows are a login IdP, not a git provider."""

@@ -87,10 +87,13 @@ def _runtime_hosts_from_web_host() -> str:
     (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
     (``vscode-<sandbox>.<sibling>.<registrable>``).
 
-    Returns an empty string when ``WEB_HOST`` is unset or single-label
-    (e.g. ``localhost``), where the wildcard would either be invalid or
-    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
-    case.
+    Returns ``http://localhost:* http://127.0.0.1:*`` when ``WEB_HOST`` is
+    ``localhost``: local sandboxes are published on random ports of the
+    Docker host, and ``'self'`` only matches the app's own port.
+
+    Returns an empty string when ``WEB_HOST`` is unset or any other
+    single-label host, where the wildcard would either be invalid or too
+    broad.
     """
     web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
     if not web_host:
@@ -105,6 +108,8 @@ def _runtime_hosts_from_web_host() -> str:
     # Strip port (e.g. `localhost:3000`) so the dot-split below is sane.
     if ':' in web_host:
         web_host = web_host.split(':', 1)[0]
+    if web_host == 'localhost':
+        return 'http://localhost:* http://127.0.0.1:*'
     parts = web_host.split('.')
     if len(parts) < 2:
         # Single-label host (`localhost`, `nginx`, ...); no registrable
@@ -229,6 +234,9 @@ class LocalhostCORSMiddleware(CORSMiddleware):
         return result
 
 
+_FINGERPRINTED_ASSET_RE = re.compile(r'(^|/)assets/')
+
+
 class CacheControlMiddleware(BaseHTTPMiddleware):
     """Middleware to disable caching for all routes by adding appropriate headers"""
 
@@ -236,8 +244,13 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         response = await call_next(request)
-        if request.url.path.startswith('/assets'):
-            # The content of the assets directory has fingerprinted file names so we cache aggressively
+        if _FINGERPRINTED_ASSET_RE.search(request.url.path):
+            # The content of the assets directory has fingerprinted file names
+            # so we cache aggressively. This matches both the top-level SPA
+            # (`/assets/...`) and the Agent Canvas SPA mounted under a
+            # sub-path (`/canvas/assets/...`); a plain prefix check here
+            # would miss the latter and force full re-downloads of every
+            # Canvas JS/CSS chunk on each page load.
             response.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
         else:
             response.headers['Cache-Control'] = (
@@ -305,8 +318,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     def is_rate_limited_request(self, request: StarletteRequest) -> bool:
+        # Fingerprinted static assets (see CacheControlMiddleware) are
+        # exempt: a single page load can easily request more of these than
+        # `requests` allows in `seconds`, and since they're content-hashed
+        # and served straight off disk there's no abuse risk in letting them
+        # through uncounted. Using the same regex as CacheControlMiddleware
+        # keeps the two middlewares' definitions of "asset path" in sync —
+        # a prior `startswith('/assets')` check here missed the Agent Canvas
+        # SPA's `/canvas/assets/*` files, so every cold load of /canvas
+        # tripped the limiter and each file past the first 10/s picked up an
+        # extra ~1s `asyncio.sleep` (or an outright 429 past 20/s).
         return not (
-            request.url.path.startswith('/assets')
+            _FINGERPRINTED_ASSET_RE.search(request.url.path)
             or self._is_sandbox_resume_request(request)
         )
 

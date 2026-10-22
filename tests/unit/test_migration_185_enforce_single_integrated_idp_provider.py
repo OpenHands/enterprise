@@ -7,6 +7,7 @@ real-Postgres tests (the ``engine``/``test_database`` fixtures, already
 migrated to head) proving the constraints actually enforce the invariant.
 """
 
+import json
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -74,32 +75,38 @@ def test_downgrade_drops_constraint_then_index():
 
 
 # ── real-DB enforcement (head already includes migration 185) ──────────────
+#
+# Migration 186 renamed ``oauth_providers`` to ``auth_providers`` and
+# collapsed ``provider_category`` into ``kind``/``details`` -- see that
+# migration's module docstring. It also re-created migration 185's "at most
+# one integrated/password IDP row" guard on the new columns
+# (``uq_auth_providers_one_password_provider`` /
+# ``ck_auth_providers_password_provider_is_idp``, keyed off
+# ``kind == 'PasswordProviderDetails'``), so these tests insert against the
+# post-186 shape to prove that invariant survives at head.
 
 
 def _insert_provider(
     engine: Engine,
     *,
-    provider_category: str,
+    kind: str,
     is_idp: bool,
-    client_id: str,
-    display_name: str = 'Test Provider',
+    details: dict,
+    title: str = 'Test Provider',
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
                 """
-                INSERT INTO oauth_providers
-                    (provider_category, display_name, is_idp, client_id,
-                     permitted_drift_seconds)
-                VALUES
-                    (:provider_category, :display_name, :is_idp, :client_id, 60)
+                INSERT INTO auth_providers (kind, title, is_idp, details)
+                VALUES (:kind, :title, :is_idp, :details)
                 """
             ),
             {
-                'provider_category': provider_category,
-                'display_name': display_name,
+                'kind': kind,
+                'title': title,
                 'is_idp': is_idp,
-                'client_id': client_id,
+                'details': json.dumps(details),
             },
         )
 
@@ -107,15 +114,14 @@ def _insert_provider(
 def test_single_integrated_idp_row_can_be_inserted(engine: Engine):
     _insert_provider(
         engine,
-        provider_category='integrated_idp',
+        kind='PasswordProviderDetails',
         is_idp=True,
-        client_id='integrated-idp',
+        details={'kind': 'PasswordProviderDetails'},
     )
     with engine.connect() as conn:
         count = conn.execute(
             text(
-                'SELECT COUNT(*) FROM oauth_providers '
-                "WHERE provider_category = 'integrated_idp'"
+                "SELECT COUNT(*) FROM auth_providers WHERE kind = 'PasswordProviderDetails'"
             )
         ).scalar_one()
     assert count == 1
@@ -124,16 +130,16 @@ def test_single_integrated_idp_row_can_be_inserted(engine: Engine):
 def test_second_integrated_idp_row_violates_unique_index(engine: Engine):
     _insert_provider(
         engine,
-        provider_category='integrated_idp',
+        kind='PasswordProviderDetails',
         is_idp=True,
-        client_id='integrated-idp',
+        details={'kind': 'PasswordProviderDetails'},
     )
-    with pytest.raises(IntegrityError, match='uq_oauth_providers_one_integrated_idp'):
+    with pytest.raises(IntegrityError, match='uq_auth_providers_one_password_provider'):
         _insert_provider(
             engine,
-            provider_category='integrated_idp',
+            kind='PasswordProviderDetails',
             is_idp=True,
-            client_id='integrated-idp-2',
+            details={'kind': 'PasswordProviderDetails'},
         )
 
 
@@ -144,24 +150,49 @@ def test_integrated_idp_row_with_is_idp_false_violates_check_constraint(
     # (23505) to ``IntegrityError``; a "check_violation" (23514) surfaces as
     # the more general ``DBAPIError`` -- both are DB-level rejections, so
     # either is an acceptable proof the constraint fired.
-    with pytest.raises(DBAPIError, match='ck_oauth_providers_integrated_idp_is_idp'):
+    with pytest.raises(DBAPIError, match='ck_auth_providers_password_provider_is_idp'):
         _insert_provider(
             engine,
-            provider_category='integrated_idp',
+            kind='PasswordProviderDetails',
             is_idp=False,
-            client_id='integrated-idp',
+            details={'kind': 'PasswordProviderDetails'},
         )
 
 
 def test_non_integrated_idp_rows_are_unrestricted(engine: Engine):
     """The unique index/check constraint only apply to
-    ``provider_category == 'integrated_idp'`` -- every other category (git
+    ``kind == 'PasswordProviderDetails'`` -- every other kind (git
     providers, real IDPs) can have any number of rows, any ``is_idp`` value."""
-    _insert_provider(engine, provider_category='github', is_idp=False, client_id='gh-1')
-    _insert_provider(engine, provider_category='github', is_idp=False, client_id='gh-2')
     _insert_provider(
-        engine, provider_category='enterprise_sso', is_idp=True, client_id='sso-1'
+        engine,
+        kind='OAuthProviderDetails',
+        is_idp=False,
+        details={
+            'kind': 'OAuthProviderDetails',
+            'provider_type': 'github',
+            'client_id': 'gh-1',
+        },
+    )
+    _insert_provider(
+        engine,
+        kind='OAuthProviderDetails',
+        is_idp=False,
+        details={
+            'kind': 'OAuthProviderDetails',
+            'provider_type': 'github',
+            'client_id': 'gh-2',
+        },
+    )
+    _insert_provider(
+        engine,
+        kind='OAuthProviderDetails',
+        is_idp=True,
+        details={
+            'kind': 'OAuthProviderDetails',
+            'provider_type': 'enterprise_sso',
+            'client_id': 'sso-1',
+        },
     )
     with engine.connect() as conn:
-        count = conn.execute(text('SELECT COUNT(*) FROM oauth_providers')).scalar_one()
+        count = conn.execute(text('SELECT COUNT(*) FROM auth_providers')).scalar_one()
     assert count == 3

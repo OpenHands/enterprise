@@ -7,6 +7,23 @@
 # `python -m sync.<job>` and `alembic upgrade head` all run from /app.
 # Python dependencies are installed with uv from the committed uv.lock.
 ARG OPENHANDS_BUILD_VERSION=dev
+# Global so the `FROM` below can use it: `COPY --from` does not expand variables.
+ARG AGENT_CANVAS_SOURCE=none
+
+# Optional source for the Agent Canvas build below, selected by the
+# AGENT_CANVAS_SOURCE build arg (`none` by default). With `git`, BuildKit
+# fetches AGENT_CANVAS_REF (a tag or branch) itself and caches the layer on the
+# resolved commit rather than on the ref's name. A branch such as `main` is
+# therefore rebuilt exactly when it moves, which `git clone` inside a RUN would
+# not do: that layer is reused for as long as the build args stay the same.
+FROM scratch AS agent-canvas-source-none
+FROM scratch AS agent-canvas-source-git
+ARG AGENT_CANVAS_REPO=https://github.com/OpenHands/OpenHands.git
+ARG AGENT_CANVAS_REF=main
+ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
+
+FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
+
 FROM node:26.10.0-trixie-slim AS frontend-builder
 
 WORKDIR /app
@@ -15,6 +32,42 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend ./
+
+# Agent Canvas (OpenHands/OpenHands) is NOT built here by default: building it
+# clones a second repository over the network (scripts/build-agent-canvas.sh),
+# which cloud doesn't need (it serves /canvas from a separate service behind
+# an ingress rule) and which would add a network dependency to every image
+# build otherwise. Opt in with `--build-arg AGENT_CANVAS=1` to bake /canvas
+# into this image, served by the app.py/saas_server.py static mount at /canvas
+# once frontend/build/canvas exists. docker-compose.yml does not: it runs the
+# released agent-canvas image as its own service behind the proxy.
+ARG AGENT_CANVAS=
+# `none` (default): scripts/build-agent-canvas.sh clones its own pinned ref.
+# `git`: build the source fetched by the agent-canvas-source-git stage above.
+ARG AGENT_CANVAS_SOURCE
+COPY --from=agent-canvas-source / /agent-canvas-source
+# Same-origin URL (scheme + host + port) the browser will use to reach this
+# app, e.g. http://localhost:3100. Passed through to
+# scripts/build-agent-canvas.sh as AGENT_CANVAS_LOCK_TO_CLOUD, which bakes it
+# into the Canvas bundle as VITE_LOCK_TO_CLOUD -- this is what lets Canvas
+# skip its own onboarding and authenticate via this app's existing session
+# cookie (POST /api/authenticate) instead of prompting to connect to
+# OpenHands Cloud. Must match exactly what the compose stack's APP_PORT
+# publishes, or cookie auth won't engage.
+ARG AGENT_CANVAS_LOCK_TO_CLOUD=
+# Fail-soft, same as the `build-agent-canvas` Makefile target: Canvas is
+# scaffolding over a still-working OSS frontend, so a failed clone/build
+# (e.g. no network) must not fail the whole image build.
+RUN if [ -n "$AGENT_CANVAS" ]; then \
+        (apt-get update -y \
+            && apt-get install -y --no-install-recommends git ca-certificates \
+            && rm -rf /var/lib/apt/lists/* \
+            && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" \
+                AGENT_CANVAS_SOURCE_DIR="$([ "$AGENT_CANVAS_SOURCE" = none ] || echo /agent-canvas-source)" \
+                npm run build:agent-canvas) \
+        || echo "Agent Canvas build failed; continuing without /canvas."; \
+    fi
+
 RUN npm run build
 
 FROM python:3.13.13-slim-trixie AS base

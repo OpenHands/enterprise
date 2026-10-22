@@ -68,7 +68,7 @@ def test_settings_loads_persisted_settings_via_sdk_loaders():
             conversation_settings={'legacy': True},
         )
 
-    agent_loader.assert_called_once_with({'legacy': True})
+    agent_loader.assert_called_once_with({'legacy': True}, persisted=True)
     conversation_loader.assert_called_once_with({'legacy': True})
     assert settings.agent_settings.agent == 'migrated-agent'
     assert settings.conversation_settings.max_iterations == 77
@@ -1584,6 +1584,50 @@ class TestMarketplaceRegistration:
                 source='https://user:secret@host.example.com/scm/proj/repo.git',
             )
 
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%20Apps/_git/skills',
+            'https://acme@dev.azure.com/acme/Web%20Apps/_git/skills',
+            'https://dev.azure.com/acme/R%26D%2b%C3%A9/_git/skills',
+        ],
+    )
+    def test_source_validation_accepts_percent_encoded_url_path(self, source):
+        """Azure DevOps project names with spaces arrive percent-encoded."""
+        reg = MarketplaceRegistration(name='azure', source=source)
+        assert reg.source == source
+
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%2/_git/skills',  # one hex digit
+            'https://dev.azure.com/acme/Web%zzApps/_git/skills',  # not hex
+            'https://dev.azure.com/acme/Web%/_git/skills',  # bare '%'
+            'https://dev.azure.com/acme/Web Apps/_git/skills',  # raw space
+            'https://dev%2Eazure.com/acme/Web/_git/skills',  # escape in host
+            'https://ac%6De@dev.azure.com/acme/Web/_git/skills',  # in userinfo
+        ],
+    )
+    def test_source_validation_rejects_malformed_percent_encoding(self, source):
+        """Only well-formed %XX escapes in the URL path are accepted."""
+        with pytest.raises(ValidationError, match='source must be'):
+            MarketplaceRegistration(name='azure', source=source)
+
+    @pytest.mark.parametrize(
+        'source',
+        [
+            'https://dev.azure.com/acme/Web%0aApps/_git/skills',  # newline
+            'https://dev.azure.com/acme/Web%00Apps/_git/skills',  # NUL
+            'https://dev.azure.com/acme/Web%7FApps/_git/skills',  # DEL
+            'https://dev.azure.com/acme/Web%2FApps/_git/skills',  # '/'
+            'https://dev.azure.com/acme/Web%5cApps/_git/skills',  # '\'
+        ],
+    )
+    def test_source_validation_rejects_unsafe_percent_escapes(self, source):
+        """Escapes decoding to control characters or path separators stay out."""
+        with pytest.raises(ValidationError, match='percent-encoded'):
+            MarketplaceRegistration(name='azure', source=source)
+
     def test_source_validation_rejects_tilde_local_path(self):
         """'~' stays rejected for local paths (no home-dir expansion)."""
         with pytest.raises(ValidationError, match='source must be'):
@@ -1608,6 +1652,33 @@ class TestMarketplaceRegistration:
         """Test that parent directory traversal in source is rejected."""
         with pytest.raises(ValidationError, match="cannot contain '..'"):
             MarketplaceRegistration(name='test', source='../escape/path')
+
+    @pytest.mark.parametrize(
+        'source, expected',
+        [
+            ('github.com/acme/skills', 'https://github.com/acme/skills'),
+            ('github.com/acme/skills.git', 'https://github.com/acme/skills.git'),
+            (
+                ' gitlab.example.com/group/skills ',
+                'https://gitlab.example.com/group/skills',
+            ),
+            (
+                'bitbucket.example.com:7990/scm/proj/skills.git',
+                'https://bitbucket.example.com:7990/scm/proj/skills.git',
+            ),
+        ],
+    )
+    def test_source_validation_adds_https_to_host_without_scheme(
+        self, source, expected
+    ):
+        """A repository address without a scheme is stored as an https URL."""
+        assert MarketplaceRegistration(name='test', source=source).source == expected
+
+    @pytest.mark.parametrize(
+        'source', ['marketplaces/internal', 'skills', 'my_dir/v1.2/skills']
+    )
+    def test_source_validation_keeps_plain_relative_paths(self, source):
+        assert MarketplaceRegistration(name='test', source=source).source == source
 
 
 # --- Tests for Settings.registered_marketplaces ---
@@ -1874,3 +1945,65 @@ def test_git_full_clone_defaults_to_false_and_updates():
 
     assert settings.git_full_clone is True
     assert settings.model_dump(mode='json')['git_full_clone'] is True
+
+
+class TestMarketplaceSourceWithoutScheme:
+    """Sources entered or saved without a scheme load as https URLs."""
+
+    def test_stored_host_without_scheme_loads_as_https(self):
+        from openhands.app_server.settings.settings_models import (
+            validate_and_convert_marketplaces,
+        )
+
+        result = validate_and_convert_marketplaces(
+            [
+                {
+                    'name': 'acme',
+                    'source': 'github.com/acme/skills',
+                    'auto_load': True,
+                },
+                {'name': 'local', 'source': 'marketplaces/internal'},
+            ]
+        )
+
+        assert [(m.name, m.source, m.auto_load) for m in result] == [
+            ('acme', 'https://github.com/acme/skills', True),
+            ('local', 'marketplaces/internal', False),
+        ]
+
+    def test_settings_load_upgrades_stored_host_without_scheme(self):
+        """Loading saved settings must not fail on a source stored without a scheme."""
+        settings = Settings(
+            registered_marketplaces=[
+                {
+                    'name': 'mine',
+                    'source': 'github.com/owner/repo',
+                    'auto_load': True,
+                    'scope': 'personal',
+                }
+            ],
+            inherited_marketplaces=[
+                {'name': 'org', 'source': 'github.com/acme/skills', 'scope': 'org'}
+            ],
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )
+        assert settings.inherited_marketplaces[0].source == (
+            'https://github.com/acme/skills'
+        )
+
+    def test_settings_update_saves_host_without_scheme_as_https(self):
+        settings = Settings()
+        settings.update(
+            {
+                'registered_marketplaces': [
+                    {'name': 'mine', 'source': 'github.com/owner/repo'}
+                ]
+            }
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )

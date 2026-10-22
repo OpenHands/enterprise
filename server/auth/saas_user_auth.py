@@ -37,8 +37,9 @@ from server.auth.authorization import (
     get_user_super_role,
 )
 from server.auth.constants import (
-    AZURE_DEVOPS_ORGANIZATION,
     BITBUCKET_DATA_CENTER_HOST,
+    GITLAB_HOST,
+    is_oauth_v2_login_enabled,
 )
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
@@ -69,6 +70,24 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
             return False
         exc = retry_exc
     return isinstance(exc, KeycloakConnectionError)
+
+
+def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
+    """The host an IdP-sourced git token belongs to.
+
+    A host the user stored with their own token wins. Otherwise the install's
+    deployment-wide host is used, so the frontend addresses repositories on it.
+    GitLab always gets one (``gitlab.com`` included): the same provider name
+    covers the hosted service and self-managed instances, so a missing host
+    would read as the hosted service.
+    """
+    if host:
+        return host
+    if idp_type == ProviderType.BITBUCKET_DATA_CENTER:
+        return BITBUCKET_DATA_CENTER_HOST or None
+    if idp_type == ProviderType.GITLAB:
+        return GITLAB_HOST or None
+    return None
 
 
 @dataclass
@@ -102,7 +121,7 @@ class SaasUserAuth(UserAuth):
     # IDP token resolution. The middleware uses it to compute the re-minted
     # cookie's ``Max-Age`` (30-day cap).
     idp_refresh_token_expires_at: datetime | None = field(default=None, repr=False)
-    # ``oauth_providers.id`` of the IDP this v2 cookie session authenticated
+    # ``auth_providers.id`` of the IDP this v2 cookie session authenticated
     # against, carried in the cookie at mint time (``oauth_v2.py`` /
     # ``idp.py``). Lets ``_v2_get_idp_access_token`` look the provider up
     # directly instead of probing every currently-configured IDP and
@@ -600,7 +619,11 @@ class SaasUserAuth(UserAuth):
         real row with a real id; ``None`` only occurs for a *legacy* cookie
         minted before this field existed, handled separately below.
         """
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            get_token_url,
+        )
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
         try:
@@ -615,12 +638,12 @@ class SaasUserAuth(UserAuth):
         if self.idp_provider_id is None:
             return None
 
-        provider = await OAuthProviderStore().get_by_id(self.idp_provider_id)
+        provider = await AuthProviderStore().get_by_id(self.idp_provider_id)
         if provider is None:
             # The provider was deleted/reconfigured since this cookie was
             # minted -- the cookie is stale, the caller should clear it.
             raise ExpiredError()
-        if not provider.token_url:
+        if not get_token_url(provider):
             # No external IDP to refresh against (the integrated/password
             # IDP never has one).
             return None
@@ -640,7 +663,7 @@ class SaasUserAuth(UserAuth):
             return result
 
         token = await store.get_valid_access_token(
-            permitted_drift_seconds=provider.permitted_drift_seconds,
+            permitted_drift_seconds=get_permitted_drift_seconds(provider),
             refresh=_refresh_cb,
         )
         if token is None:
@@ -672,10 +695,11 @@ class SaasUserAuth(UserAuth):
         ``idp_provider_id`` is set so the next re-mint upgrades the cookie to
         the direct-lookup path above.
         """
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import get_permitted_drift_seconds
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
-        idp_providers = await OAuthProviderStore().get_idp_providers()
+        idp_providers = await AuthProviderStore().get_idp_providers()
         for provider in idp_providers:
             store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
             raw = await store.get_raw()
@@ -699,7 +723,7 @@ class SaasUserAuth(UserAuth):
                 return result
 
             token = await store.get_valid_access_token(
-                permitted_drift_seconds=provider.permitted_drift_seconds,
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
                 refresh=_refresh_cb,
             )
             if token is None:
@@ -722,7 +746,7 @@ class SaasUserAuth(UserAuth):
         # authenticated by the cookie JWT alone, so return None instead of
         # raising ExpiredError. For real IDP sessions, a missing token row
         # means the cookie is stale and the caller should clear it.
-        if not await OAuthProviderStore()._has_real_idp():
+        if not await AuthProviderStore()._has_real_idp():
             return None
         raise ExpiredError()
 
@@ -735,7 +759,7 @@ class SaasUserAuth(UserAuth):
         at refresh time (see ``_v2_get_idp_access_token``); here we use the
         default 60s so the trigger fires early enough.
         """
-        from storage.oauth_provider import DEFAULT_PERMITTED_DRIFT_SECONDS
+        from storage.auth_provider_details import DEFAULT_PERMITTED_DRIFT_SECONDS
 
         if self.access_token_expires_at is None:
             return False
@@ -805,8 +829,12 @@ class SaasUserAuth(UserAuth):
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
-        from server.auth.oauth_v2_refresh import make_refresh_callback
-        from storage.oauth_provider_store import OAuthProviderStore
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
         provider_tokens: dict[ProviderType, ProviderToken] = {}
@@ -817,7 +845,7 @@ class SaasUserAuth(UserAuth):
             raise AuthError('Invalid user identity') from exc
 
         try:
-            git_providers = await OAuthProviderStore().get_git_providers()
+            git_providers = await AuthProviderStore().get_git_providers()
             for provider in git_providers:
                 store = OAuthTokenStore(
                     user_id=user_uuid, oauth_provider_id=provider.id
@@ -825,19 +853,19 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
+                # Git providers (is_idp=False) are always OAuth2 -- there is
+                # no password/SAML "git integration".
+                assert isinstance(provider.details, OAuthProviderDetails)
                 try:
-                    idp_type = ProviderType(provider.provider_category)
+                    idp_type = provider.details.provider_type
 
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
-                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
-                        host = AZURE_DEVOPS_ORGANIZATION or None
+                    host = _idp_token_host(idp_type, host)
 
                     token = await store.get_valid_access_token(
-                        permitted_drift_seconds=provider.permitted_drift_seconds,
+                        permitted_drift_seconds=get_permitted_drift_seconds(provider),
                         refresh=make_refresh_callback(provider),
                     )
                     if token is None:
@@ -845,12 +873,23 @@ class SaasUserAuth(UserAuth):
                     provider_tokens[idp_type] = ProviderToken(
                         token=SecretStr(token), user_id=None, host=host
                     )
+                except TokenRefreshError:
+                    # Lock timeout: another request or a background job is
+                    # refreshing this row. Deleting it would discard their result.
+                    logger.warning(
+                        'v2 provider token refresh lock timeout',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.details.provider_type.value,
+                        },
+                    )
+                    raise
                 except Exception:
                     logger.exception(
                         'Error refreshing v2 provider token',
                         extra={
                             'user_id': self.user_id,
-                            'provider': provider.provider_category,
+                            'provider': provider.details.provider_type.value,
                         },
                         stack_info=True,
                     )
@@ -864,6 +903,45 @@ class SaasUserAuth(UserAuth):
         except Exception as e:
             raise AuthError() from e
 
+    async def _oauth_v2_git_tokens(
+        self, user_secrets: Secrets | None
+    ) -> dict[ProviderType, ProviderToken]:
+        """Git tokens the user linked through OAuth v2, read from ``oauth_tokens``
+        only. A provider whose read fails is left to the ``auth_tokens`` loop, so
+        this path never needs the Keycloak offline session.
+        """
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return {}
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
+        for provider in await AuthProviderStore().get_git_providers():
+            if not isinstance(provider.details, OAuthProviderDetails):
+                continue
+            idp_type = provider.details.provider_type
+            if idp_type in provider_tokens:
+                continue
+            store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
+            if await store.get_raw() is None:
+                continue
+            token = await token_manager._get_oauth_v2_git_token(
+                self.user_id, idp_type, None
+            )
+            if not token:
+                continue
+            host = None
+            if user_secrets and idp_type in user_secrets.provider_tokens:
+                host = user_secrets.provider_tokens[idp_type].host
+            host = _idp_token_host(idp_type, host)
+            provider_tokens[idp_type] = ProviderToken(
+                token=SecretStr(token), user_id=None, host=host
+            )
+        return provider_tokens
+
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
@@ -875,6 +953,11 @@ class SaasUserAuth(UserAuth):
         user_secrets = await self.get_secrets()
 
         try:
+            # Background jobs and Keycloak sessions: with the flag on, an OAuth v2
+            # git token wins, and auth_tokens covers the providers it doesn't.
+            if is_oauth_v2_login_enabled():
+                provider_tokens.update(await self._oauth_v2_git_tokens(user_secrets))
+
             # TODO: I think we can do this in a single request if we refactor
             async with a_session_maker() as session:
                 result = await session.execute(
@@ -886,6 +969,8 @@ class SaasUserAuth(UserAuth):
 
             for token in tokens:
                 idp_type = ProviderType(token.identity_provider)
+                if idp_type in provider_tokens:
+                    continue
                 if idp_type == ProviderType.ENTERPRISE_SSO:
                     # enterprise_sso is a login-only IdP, not a git provider:
                     # ProviderHandler has no service for it and its tokens
@@ -897,11 +982,7 @@ class SaasUserAuth(UserAuth):
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
 
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
-
-                    if idp_type == ProviderType.AZURE_DEVOPS and not host:
-                        host = AZURE_DEVOPS_ORGANIZATION or None
+                    host = _idp_token_host(idp_type, host)
 
                     # Resolve the provider token by user_id directly. This reads
                     # the encrypted token from the auth_tokens table and refreshes

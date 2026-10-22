@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from openhands.app_server.user_auth import get_user_id
 from server.auth.org_context import resolve_effective_org_id
 from server.routes.quota import quota_router
-from server.services.daily_conversation_quota_service import QuotaStatus
+from server.services.daily_sandbox_quota_service import QuotaStatus
 
 CALLER_USER_ID = str(uuid.uuid4())
 EFFECTIVE_ORG = uuid.uuid4()
@@ -60,7 +60,7 @@ async def test_status_is_scoped_to_the_effective_org(mock_app):
     with (
         patch('server.routes.quota.a_session_maker', lambda **kwargs: _session()),
         patch(
-            'server.routes.quota.DailyConversationQuotaService.get_status',
+            'server.routes.quota.DailySandboxQuotaService.get_status',
             get_status,
         ),
         patch(
@@ -98,7 +98,7 @@ async def test_status_reports_unlimited_without_a_limit(mock_app):
     with (
         patch('server.routes.quota.a_session_maker', lambda **kwargs: _session()),
         patch(
-            'server.routes.quota.DailyConversationQuotaService.get_status',
+            'server.routes.quota.DailySandboxQuotaService.get_status',
             AsyncMock(return_value=status),
         ),
         patch(

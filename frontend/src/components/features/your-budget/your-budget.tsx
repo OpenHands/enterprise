@@ -1,3 +1,4 @@
+import { BarChart2, Wallet } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -11,6 +12,7 @@ import {
   formatShortDate,
 } from "#/components/features/admin-dashboard/usage-dashboard-utils";
 import { SpendMeter } from "#/components/features/budgets/budgets-components";
+import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { FeatureDisabledScreen } from "#/components/shared/feature-disabled-screen";
 import { useConfig } from "#/hooks/query/use-config";
 import { useMyBudget } from "#/hooks/query/use-my-budget";
@@ -18,7 +20,13 @@ import { useMyUsage } from "#/hooks/query/use-my-usage";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import { formatTimeDelta } from "#/utils/format-time-delta";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+  settingsListRowHoverClassName,
+} from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
 
 const DAY_MS = 86_400_000;
@@ -48,6 +56,15 @@ const TIME_WINDOWS = [
 
 type TimeWindow = (typeof TIME_WINDOWS)[number];
 
+// The third card can show either the member's own figures or the
+// organization's; LiteLLM enforces both caps.
+const BUDGET_SCOPES = [
+  { value: "user", label: I18nKey.SETTINGS$NAV_YOUR_BUDGET },
+  { value: "org", label: I18nKey.SETTINGS$YOUR_BUDGET_SCOPE_ORG },
+] as const;
+
+type BudgetScope = (typeof BUDGET_SCOPES)[number]["value"];
+
 const formatLongDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, {
     year: "numeric",
@@ -66,45 +83,93 @@ function Spinner({ testId }: { testId: string }) {
   );
 }
 
-function StatCard({
-  label,
-  value,
-  sublines,
-  testId,
-}: {
+interface StatFigureProps {
   label: string;
   value: string;
-  sublines: (string | null)[];
   testId: string;
-}) {
+  sublines?: (string | null)[];
+  /** Explanation shown in an info tooltip next to the label. */
+  help?: string;
+  /** Optional icon chip, top-right — same treatment as credits/payment. */
+  icon?: React.ReactNode;
+  /** Sentence-case label for the compact figures inside the scope card. */
+  plainLabel?: boolean;
+}
+
+function StatFigure({
+  label,
+  value,
+  testId,
+  sublines = [],
+  help,
+  icon,
+  plainLabel = false,
+}: StatFigureProps) {
   return (
     <div
-      className={cn(CARD_CLASS_NAME, "flex flex-col gap-2 px-4 py-5")}
+      className="flex items-start justify-between gap-3"
       data-testid={testId}
     >
-      <span className="text-xs font-medium uppercase tracking-wide text-muted">
-        {label}
-      </span>
-      <span className="text-2xl font-bold leading-none text-foreground">
-        {value}
-      </span>
-      {sublines.filter(Boolean).map((subline) => (
-        <span key={subline} className="text-xs text-muted">
-          {subline}
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <span
+          className={cn(
+            "flex items-center gap-1.5 text-muted",
+            plainLabel ? "text-sm" : "text-xs font-medium leading-tight",
+          )}
+        >
+          {label}
+          {help && <InfoTooltip content={help} />}
         </span>
-      ))}
+        <span className="text-2xl font-bold leading-none tabular-nums tracking-tight text-foreground">
+          {value}
+        </span>
+        {sublines.filter(Boolean).map((subline) => (
+          <span key={subline} className="text-xs text-muted">
+            {subline}
+          </span>
+        ))}
+      </div>
+      {icon && (
+        <span
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary"
+          aria-hidden
+        >
+          {icon}
+        </span>
+      )}
     </div>
   );
 }
 
 function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
   const { t } = useTranslation();
+  const [scope, setScope] = React.useState<BudgetScope>("user");
 
   const limit = budget.monthly_limit ?? null;
   const spend = budget.current_spend ?? null;
   const remaining =
     limit !== null && spend !== null ? Math.max(limit - spend, 0) : null;
-  const percentage = limit && spend !== null ? (spend / limit) * 100 : null;
+  const orgLimit = budget.org_monthly_limit ?? null;
+  const orgSpend = budget.org_current_spend ?? null;
+  const orgRemaining =
+    orgLimit !== null && orgSpend !== null
+      ? Math.max(orgLimit - orgSpend, 0)
+      : null;
+  // LiteLLM enforces the organization cap as well as the personal one, so
+  // the tighter of the two is what can actually still be spent. When one
+  // side is unknown or unlimited, the other is the only cap.
+  let available = remaining ?? orgRemaining;
+  if (remaining !== null && orgRemaining !== null) {
+    available = Math.min(remaining, orgRemaining);
+  }
+  const scoped =
+    scope === "user"
+      ? { limit, spend, remaining }
+      : { limit: orgLimit, spend: orgSpend, remaining: orgRemaining };
+  const percentage =
+    scoped.limit && scoped.spend !== null
+      ? (scoped.spend / scoped.limit) * 100
+      : null;
 
   const now = Date.now();
   const elapsedDays = budget.cycle_start_at
@@ -176,32 +241,98 @@ function BudgetSummary({ budget }: { budget: OrgMyBudget }) {
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <StatCard
-          testId="your-budget-allocation"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_ALLOCATION)}
-          value={
-            limit === null
-              ? t(I18nKey.SETTINGS$YOUR_BUDGET_NO_LIMIT)
-              : formatCost(limit)
-          }
-          sublines={[allocationNote]}
-        />
-        <StatCard
-          testId="your-budget-spent"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_SPENT)}
-          value={spend === null ? EMPTY_VALUE : formatCost(spend)}
-          sublines={[spendNote, staleNote]}
-        />
-        <StatCard
-          testId="your-budget-remaining"
-          label={t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING)}
-          value={remaining === null ? EMPTY_VALUE : formatCost(remaining)}
-          sublines={[remainingNote]}
-        />
+      <div className="@container">
+        <div className="grid grid-cols-1 gap-4 @xl:grid-cols-2">
+          <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
+            <StatFigure
+              testId="your-budget-available"
+              icon={<Wallet size={18} strokeWidth={2} />}
+              label={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE)}
+              help={t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE_TOOLTIP)}
+              value={available === null ? EMPTY_VALUE : formatCost(available)}
+              sublines={[t(I18nKey.SETTINGS$YOUR_BUDGET_AVAILABLE_HELP)]}
+            />
+          </div>
+          <div className={cn(CARD_CLASS_NAME, "px-4 py-5")}>
+            <StatFigure
+              testId="your-budget-spent"
+              icon={<BarChart2 size={18} strokeWidth={2} />}
+              label={t(I18nKey.SETTINGS$YOUR_BUDGET_SPENT)}
+              value={spend === null ? EMPTY_VALUE : formatCost(spend)}
+              sublines={[spendNote, staleNote]}
+            />
+          </div>
+          {/* The scope card needs the most room, so it takes a full row. */}
+          <div
+            className={cn(
+              CARD_CLASS_NAME,
+              "flex flex-col gap-4 px-4 py-5 @xl:col-span-2",
+            )}
+            data-testid="your-budget-scope"
+          >
+            <div
+              className="flex rounded-lg border border-border-subtle p-0.5"
+              data-testid="your-budget-scope-toggle"
+            >
+              {BUDGET_SCOPES.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setScope(option.value)}
+                  aria-pressed={option.value === scope}
+                  className={cn(
+                    "flex-1 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium",
+                    option.value === scope
+                      ? "bg-tertiary text-foreground"
+                      : "text-muted hover:text-foreground",
+                  )}
+                >
+                  {t(option.label)}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 divide-x divide-border-subtle">
+              <div className="pr-4">
+                <StatFigure
+                  testId="your-budget-allocation"
+                  plainLabel
+                  label={t(I18nKey.SETTINGS$YOUR_BUDGET_ALLOCATION)}
+                  help={
+                    scope === "user"
+                      ? allocationNote
+                      : t(I18nKey.SETTINGS$YOUR_BUDGET_ORG_ALLOCATION_HELP)
+                  }
+                  value={
+                    scoped.limit === null
+                      ? t(I18nKey.SETTINGS$YOUR_BUDGET_NO_LIMIT)
+                      : formatCost(scoped.limit)
+                  }
+                />
+              </div>
+              <div className="pl-4">
+                <StatFigure
+                  testId="your-budget-remaining"
+                  plainLabel
+                  label={t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING)}
+                  help={
+                    scope === "user"
+                      ? (remainingNote ??
+                        t(I18nKey.SETTINGS$YOUR_BUDGET_REMAINING_HELP))
+                      : t(I18nKey.SETTINGS$YOUR_BUDGET_ORG_REMAINING_HELP)
+                  }
+                  value={
+                    scoped.remaining === null
+                      ? EMPTY_VALUE
+                      : formatCost(scoped.remaining)
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {limit !== null && (
+      {scoped.limit !== null && (
         <div
           className={cn(CARD_CLASS_NAME, "flex flex-col gap-3 p-4")}
           data-testid="your-budget-meter"
@@ -241,50 +372,56 @@ function DailySpendChart({ days }: { days: OrgMyUsageStats["daily_spend"] }) {
   const [hoveredDate, setHoveredDate] = React.useState<string | null>(null);
   const maxCost = Math.max(...days.map((day) => day.cost), 0);
   const labelEvery = Math.ceil(days.length / 7);
+  const gapClassName = days.length > 31 ? "gap-px" : "gap-1";
 
   return (
-    // Cleared on the chart rather than per bar so the tooltip does not flicker
-    // while the pointer crosses the gaps between bars.
+    // Labels live outside the bar track so a 100% bar cannot grow the column
+    // past the baseline (which made taller bars stick out below shorter ones).
     <div
-      className={cn(
-        "flex h-40 items-end",
-        days.length > 31 ? "gap-px" : "gap-1",
-      )}
       data-testid="your-budget-daily-chart"
       onMouseLeave={() => setHoveredDate(null)}
     >
-      {days.map((day, index) => (
-        <div
-          key={day.date}
-          className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1"
-          data-testid="your-budget-daily-bar"
-          onMouseEnter={() => setHoveredDate(day.date)}
-        >
+      <div className={cn("flex h-36 items-end", gapClassName)}>
+        {days.map((day) => (
           <div
-            className="relative min-h-[2px] w-full rounded-t bg-primary"
-            style={{
-              height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
-            }}
+            key={day.date}
+            className="flex h-full min-h-0 min-w-0 flex-1 items-end"
+            data-testid="your-budget-daily-bar"
+            onMouseEnter={() => setHoveredDate(day.date)}
           >
-            {hoveredDate === day.date && (
-              <div
-                className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
-                data-testid="your-budget-daily-tooltip"
-              >
-                <div className="text-sm font-medium text-foreground">
-                  {formatShortDate(day.date)}
+            <div
+              className="relative w-full min-h-[2px] rounded-t bg-primary"
+              style={{
+                height: maxCost > 0 ? `${(day.cost / maxCost) * 100}%` : 0,
+              }}
+            >
+              {hoveredDate === day.date && (
+                <div
+                  className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg border border-border-subtle bg-base-secondary px-3 py-2 shadow-lg"
+                  data-testid="your-budget-daily-tooltip"
+                >
+                  <div className="text-sm font-medium text-foreground">
+                    {formatShortDate(day.date)}
+                  </div>
+                  <div className="mt-0.5 text-xs tabular-nums text-muted">
+                    {formatCost(day.cost)}
+                  </div>
                 </div>
-                <div className="mt-0.5 text-xs tabular-nums text-muted">
-                  {formatCost(day.cost)}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-          <span className="h-4 whitespace-nowrap text-[10px] text-muted">
+        ))}
+      </div>
+      <div className={cn("mt-1 flex", gapClassName)}>
+        {days.map((day, index) => (
+          <span
+            key={day.date}
+            className="h-4 min-w-0 flex-1 whitespace-nowrap text-[10px] text-muted"
+          >
             {index % labelEvery === 0 ? formatShortDate(day.date) : ""}
           </span>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -359,26 +496,38 @@ function RecentUsageList({
 }) {
   const { t } = useTranslation();
 
+  // Same list chrome as MCP servers / budget thresholds: bordered shell,
+  // dividers, title/subtitle + trailing value.
   return (
-    <ul className="flex flex-col gap-0.5" data-testid="your-budget-recent">
+    <ul
+      className={cn(
+        settingsListContainerClassName,
+        settingsListDividerClassName,
+      )}
+      data-testid="your-budget-recent"
+    >
       {items.map((item) => (
         <li key={item.conversation_id}>
           <a
             href={`/canvas/conversations/${item.conversation_id}`}
-            className="flex items-center gap-3 rounded-md px-3 py-2.5 hover:bg-[var(--oh-interactive-hover-low)]"
+            className={cn(
+              "flex items-center gap-3 px-3 py-3",
+              formControlTransitionClassName,
+              settingsListRowHoverClassName,
+            )}
           >
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm text-foreground">
+              <div className="truncate text-sm font-medium leading-5 text-foreground">
                 {item.title || t(I18nKey.SETTINGS$YOUR_BUDGET_UNTITLED)}
               </div>
               {item.updated_at && (
-                <div className="mt-0.5 text-xs text-muted">
+                <div className="mt-0.5 truncate text-xs leading-4 text-muted">
                   {formatTimeDelta(item.updated_at)}{" "}
                   {t(I18nKey.CONVERSATION$AGO)}
                 </div>
               )}
             </div>
-            <span className="shrink-0 text-sm font-medium text-foreground">
+            <span className="shrink-0 text-sm font-medium tabular-nums text-foreground">
               {formatCost(item.accumulated_cost)}
             </span>
           </a>
@@ -466,14 +615,18 @@ function UsageBreakdown({ timeWindow }: { timeWindow: TimeWindow }) {
         </section>
       </div>
 
-      <section className={cn(CARD_CLASS_NAME, "p-5")}>
-        <h3 className="mb-3 text-sm font-semibold text-foreground">
+      <section className="flex flex-col gap-3">
+        <h3 className="text-sm font-semibold text-foreground">
           {t(I18nKey.SETTINGS$YOUR_BUDGET_RECENT_USAGE)}
         </h3>
         {usage.recent_usage.length > 0 ? (
           <RecentUsageList items={usage.recent_usage} />
         ) : (
-          emptyNote
+          <div
+            className={cn(settingsListContainerClassName, "p-8 text-center")}
+          >
+            {emptyNote}
+          </div>
         )}
       </section>
 

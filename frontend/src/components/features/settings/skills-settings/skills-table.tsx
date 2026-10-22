@@ -117,10 +117,13 @@ export function SkillsTable({
           >
             <colgroup>
               <col className="w-[28%]" />
-              <col className="w-[30%]" />
+              {/* Source takes whatever width the sized columns leave. */}
+              <col />
               <col className="w-[16%]" />
               <col className="w-[16%]" />
-              <col className="w-[10%]" />
+              {/* Fixed so the "Enabled" header plus its info icon never
+                  overflows the last cell (a 10% column was ~1px short). */}
+              <col className="w-28" />
             </colgroup>
             <thead className={settingsListTableHeadClassName}>
               <tr>
@@ -156,7 +159,7 @@ export function SkillsTable({
                   </td>
                   <td className={cn(CELL_CLASS, "text-tertiary-alt")}>
                     <span className="block truncate" title={skill.repository}>
-                      {skill.repository}
+                      {skill.marketplaceName ?? skill.repository}
                     </span>
                   </td>
                   <td className={CELL_CLASS}>

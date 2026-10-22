@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
@@ -23,14 +24,12 @@ import {
 } from "#/hooks/query/use-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import { HelpLink } from "#/ui/help-link";
 import {
   SUPER_ADMIN_NAV_ITEMS,
   SUPER_ADMIN_PATHS,
 } from "#/constants/super-admin-nav";
 import {
   BrandButton,
-  SettingsInput,
   SuperAdminPageHeader,
   SuperAdminRowMenu,
   SuperAdminSearchField,
@@ -91,6 +90,14 @@ export function SuperAdminSetup() {
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
   const { data: me } = useMe();
+  const { data: config } = useConfig();
+  // Invitations are sent by email, so without SMTP or Resend on the instance
+  // (``email_enabled``) there is nothing to send and the item is not offered.
+  const emailEnabled = Boolean(config?.email_enabled);
+  // Org-only installs hide personal workspaces (see useOrganizations), so the
+  // table lists team organizations only.
+  const hidePersonalWorkspaces =
+    config?.feature_flags?.hide_personal_workspaces === true;
   const {
     viewOrg,
     canViewOrg,
@@ -109,17 +116,19 @@ export function SuperAdminOrganizations() {
 
   const orgs: SuperAdminOrgRow[] = useMemo(
     () =>
-      (data ?? []).map((org) => ({
-        id: org.id,
-        // A personal workspace is stored as user_<id>_org; show the name the
-        // rest of the app uses.
-        name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
-        members: org.member_count,
-        status: org.status === "suspended" ? "suspended" : "active",
-        contactEmail: org.contact_email ?? "",
-        isPersonal: org.is_personal,
-      })),
-    [data, t],
+      (data ?? [])
+        .filter((org) => !(hidePersonalWorkspaces && org.is_personal))
+        .map((org) => ({
+          id: org.id,
+          // A personal workspace is stored as user_<id>_org; show the name the
+          // rest of the app uses.
+          name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
+          members: org.member_count,
+          status: org.status === "suspended" ? "suspended" : "active",
+          contactEmail: org.contact_email ?? "",
+          isPersonal: org.is_personal,
+        })),
+    [data, hidePersonalWorkspaces, t],
   );
 
   const rows = useMemo(
@@ -244,11 +253,15 @@ export function SuperAdminOrganizations() {
                     ...(row.isPersonal
                       ? []
                       : [
-                          {
-                            label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
-                            testId: `super-admin-org-invite-${row.id}`,
-                            onSelect: () => setInviteOrgId(row.id),
-                          },
+                          ...(emailEnabled
+                            ? [
+                                {
+                                  label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
+                                  testId: `super-admin-org-invite-${row.id}`,
+                                  onSelect: () => setInviteOrgId(row.id),
+                                },
+                              ]
+                            : []),
                           {
                             label: t(I18nKey.SUPER_ADMIN$REMOVE),
                             testId: `super-admin-org-remove-${row.id}`,
@@ -338,12 +351,24 @@ export function SuperAdminUsers() {
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const [userForPasswordReset, setUserForPasswordReset] =
     useState<SuperAdminUserRow | null>(null);
+  const [userToGrant, setUserToGrant] = useState<SuperAdminUserRow | null>(
+    null,
+  );
   const { data, isLoading, isError } = useSuperAdminUsers();
   const { data: orgs } = useSuperAdminOrganizations();
+  const { data: superAdmins } = useSuperAdmins();
+  const grant = useGrantSuperAdmin();
+
+  const superAdminIds = useMemo(
+    () => new Set((superAdmins ?? []).map((admin) => admin.user_id)),
+    [superAdmins],
+  );
 
   const users: SuperAdminUserRow[] = useMemo(
     () =>
       (data ?? []).map((user) => {
+        // A pending invitation has no account yet, so its email keys the row.
+        const id = user.user_id ?? user.email ?? "";
         const memberships: SuperAdminMembership[] = user.memberships.map(
           (membership) => ({
             orgId: membership.org_id,
@@ -358,14 +383,15 @@ export function SuperAdminUsers() {
           }),
         );
         return {
-          id: user.user_id,
-          name: user.name || user.email || user.user_id,
+          id,
+          name: user.name || user.email || id,
           email: user.email ?? "",
           memberships,
           status:
             user.status === "inactive"
               ? "inactive"
               : deriveUserStatus(user.memberships),
+          isPendingInvite: user.user_id === null,
         };
       }),
     [data, t],
@@ -431,6 +457,7 @@ export function SuperAdminUsers() {
         getRowKey={(row) => row.id}
         empty={t(I18nKey.SUPER_ADMIN$EMPTY_USERS)}
         onRowClick={(row) => setManagedUserId(row.id)}
+        isRowClickable={(row) => !row.isPendingInvite}
         columns={[
           {
             key: "name",
@@ -485,28 +512,42 @@ export function SuperAdminUsers() {
               "w-12 min-w-12 text-right",
               USER_TABLE_CELL_CLASS_NAME,
             ),
-            render: (row) => (
-              <SuperAdminRowMenu
-                testId={`super-admin-user-actions-${row.id}`}
-                ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
-                items={[
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
-                    testId: `super-admin-manage-user-${row.id}`,
-                    onSelect: () => setManagedUserId(row.id),
-                  },
-                  ...(enableIntegratedIdp
-                    ? [
-                        {
-                          label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
-                          testId: `super-admin-reset-password-${row.id}`,
-                          onSelect: () => setUserForPasswordReset(row),
-                        },
-                      ]
-                    : []),
-                ]}
-              />
-            ),
+            // A pending invitation has no account to manage yet.
+            render: (row) =>
+              row.isPendingInvite ? null : (
+                <SuperAdminRowMenu
+                  testId={`super-admin-user-actions-${row.id}`}
+                  ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
+                  items={[
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$MANAGE_USER),
+                      testId: `super-admin-manage-user-${row.id}`,
+                      onSelect: () => setManagedUserId(row.id),
+                    },
+                    {
+                      label: t(I18nKey.SUPER_ADMIN$GRANT_ADMIN),
+                      testId: `super-admin-user-grant-admin-${row.id}`,
+                      // Already a Super Admin -- grant it again would be a
+                      // no-op, so disable rather than letting it silently
+                      // succeed and confuse whoever clicked it.
+                      isDisabled: superAdminIds.has(row.id),
+                      title: superAdminIds.has(row.id)
+                        ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
+                        : undefined,
+                      onSelect: () => setUserToGrant(row),
+                    },
+                    ...(enableIntegratedIdp
+                      ? [
+                          {
+                            label: t(I18nKey.ORG$CREATE_PASSWORD_RESET_LINK),
+                            testId: `super-admin-reset-password-${row.id}`,
+                            onSelect: () => setUserForPasswordReset(row),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              ),
           },
         ]}
       />
@@ -531,6 +572,31 @@ export function SuperAdminUsers() {
           onClose={() => setManagedUserId(null)}
         />
       ) : null}
+      {userToGrant ? (
+        <OrgModal
+          testId="super-admin-user-grant-admin-confirm"
+          title={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
+          description={
+            <Trans
+              i18nKey={I18nKey.SUPER_ADMIN$GRANT_ADMIN_CONFIRM}
+              values={{ name: userToGrant.email || userToGrant.name }}
+              components={{ name: <span className="text-white" /> }}
+            />
+          }
+          primaryButtonText={t(I18nKey.BUTTON$CONFIRM)}
+          secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
+          primaryButtonTestId="super-admin-user-grant-admin-confirm-submit"
+          secondaryButtonTestId="super-admin-user-grant-admin-confirm-cancel"
+          onPrimaryClick={() =>
+            grant.mutate(
+              { userId: userToGrant.id },
+              { onSuccess: () => setUserToGrant(null) },
+            )
+          }
+          onClose={() => setUserToGrant(null)}
+          isLoading={grant.isPending}
+        />
+      ) : null}
       {pendingOrg ? (
         <SuperAdminGrantSelfAccessModal
           orgId={pendingOrg.orgId}
@@ -552,15 +618,13 @@ export function SuperAdminUsers() {
 
 export function SuperAdminAdmins() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { userId } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.admins);
-  const [grantOpen, setGrantOpen] = useState(false);
-  const [email, setEmail] = useState("");
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
     null,
   );
   const { data, isLoading, isError } = useSuperAdmins();
-  const grant = useGrantSuperAdmin();
   const revoke = useRevokeSuperAdmin();
 
   const admins: SuperAdminAdminRow[] = useMemo(
@@ -573,22 +637,6 @@ export function SuperAdminAdmins() {
     [data],
   );
 
-  const handleGrant = () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      return;
-    }
-    grant.mutate(
-      { email: trimmedEmail },
-      {
-        onSuccess: () => {
-          setEmail("");
-          setGrantOpen(false);
-        },
-      },
-    );
-  };
-
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
       <SuperAdminPageHeader
@@ -597,11 +645,11 @@ export function SuperAdminAdmins() {
         action={
           <BrandButton
             type="button"
-            variant="primary"
-            startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setGrantOpen(true)}
+            variant="secondary"
+            testId="super-admin-admins-go-to-users"
+            onClick={() => navigate(SUPER_ADMIN_PATHS.users)}
           >
-            {t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
+            {t(I18nKey.SUPER_ADMIN$ADMINS_GO_TO_USERS)}
           </BrandButton>
         }
       />
@@ -665,24 +713,6 @@ export function SuperAdminAdmins() {
           },
         ]}
       />
-      {grantOpen && (
-        <OrgModal
-          testId="super-admin-grant-form"
-          title={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-          description={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN_DESCRIPTION)}
-          primaryButtonText={t(I18nKey.SUPER_ADMIN$GRANT_ADMIN)}
-          onPrimaryClick={handleGrant}
-          onClose={() => setGrantOpen(false)}
-        >
-          <SettingsInput
-            type="email"
-            label={t(I18nKey.ORG$CONTACT_EMAIL)}
-            value={email}
-            placeholder={t(I18nKey.ORG$CONTACT_EMAIL_PLACEHOLDER)}
-            onChange={setEmail}
-          />
-        </OrgModal>
-      )}
       {adminToRevoke ? (
         <OrgModal
           testId="super-admin-revoke-confirm"
@@ -712,13 +742,9 @@ export function SuperAdminAdmins() {
   );
 }
 
-const SAML_SSO_DOCS_URL =
-  "https://docs.openhands.dev/enterprise/integrations/saml-sso";
-
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
-  const emailEnabled = Boolean(config?.email_enabled);
   const personalWorkspacesHidden =
     config?.feature_flags?.hide_personal_workspaces === true;
   const { data: setupState } = useSetupState();
@@ -731,18 +757,6 @@ export function SuperAdminInstance() {
       <InstanceCompanyNameSetting />
       <div className="flex flex-col gap-1">
         <SettingsSwitch
-          isToggled={emailEnabled}
-          isDisabled
-          onToggle={() => undefined}
-        >
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL)}
-        </SettingsSwitch>
-        <p className="pl-0 text-xs text-[var(--oh-muted)]">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_EMAIL_HINT)}
-        </p>
-      </div>
-      <div className="flex flex-col gap-1">
-        <SettingsSwitch
           isToggled={!personalWorkspacesHidden}
           isDisabled
           onToggle={() => undefined}
@@ -752,22 +766,6 @@ export function SuperAdminInstance() {
         <p className="text-xs text-[var(--oh-muted)]">
           {t(I18nKey.SUPER_ADMIN$INSTANCE_AUTO_ORG_HINT)}
         </p>
-      </div>
-      <div
-        className="flex flex-col gap-1"
-        data-testid="super-admin-instance-sso"
-      >
-        <p className="text-sm text-white">
-          {t(I18nKey.SUPER_ADMIN$INSTANCE_SSO)}
-        </p>
-        <HelpLink
-          testId="super-admin-instance-sso-docs"
-          text={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_HINT)}
-          linkText={t(I18nKey.SUPER_ADMIN$INSTANCE_SSO_DOCS)}
-          href={SAML_SSO_DOCS_URL}
-          linkColor="white"
-          className="text-[var(--oh-muted)]"
-        />
       </div>
       {/* Only the first Super Admin has a guide to show or hide. */}
       <SettingsSwitch

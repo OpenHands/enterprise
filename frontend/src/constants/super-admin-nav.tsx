@@ -16,7 +16,7 @@ export const SUPER_ADMIN_PATHS = {
   users: "/super-admin/users",
   admins: "/super-admin/admins",
   instance: "/super-admin/instance",
-  oauthProviders: "/super-admin/oauth-providers",
+  authProviders: "/super-admin/auth-providers",
 } as const;
 
 export const SUPER_ADMIN_SETUP_ITEM: SettingsNavItem = {
@@ -67,8 +67,8 @@ export const SUPER_ADMIN_NAV_ITEMS: SettingsNavItem[] = [
   },
   {
     icon: <KeyRound className="size-4" strokeWidth={2} aria-hidden />,
-    to: SUPER_ADMIN_PATHS.oauthProviders,
-    text: "SUPER_ADMIN$NAV_OAUTH_PROVIDERS",
-    subtitle: "SUPER_ADMIN$OAUTH_PROVIDERS_SUBLINE",
+    to: SUPER_ADMIN_PATHS.authProviders,
+    text: "SUPER_ADMIN$NAV_AUTH_PROVIDERS",
+    subtitle: "SUPER_ADMIN$AUTH_PROVIDERS_SUBLINE",
   },
 ];

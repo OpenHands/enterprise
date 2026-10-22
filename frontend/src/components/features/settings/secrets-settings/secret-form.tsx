@@ -11,7 +11,10 @@ import {
   formControlSettingsFieldClassName,
 } from "#/utils/form-control-classes";
 import { BrandButton } from "../brand-button";
-import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import {
+  ORG_SECRETS_QUERY_KEY,
+  useSearchSecrets,
+} from "#/hooks/query/use-get-secrets";
 import { OptionalTag } from "../optional-tag";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useMe } from "#/hooks/query/use-me";
@@ -20,12 +23,21 @@ import { usePermission } from "#/hooks/organizations/use-permissions";
 interface SecretFormProps {
   mode: "add" | "edit";
   selectedSecret: string | null;
+  /** Whether the secret being edited is org-shared. Org-shared secrets are
+   * listed from the org endpoint, which the search results may not contain,
+   * so the caller passes this rather than relying on the lookup below. */
+  isSharedSecret?: boolean;
+  /** Description of the secret being edited, from the row that opened the
+   * form. */
+  initialDescription?: string;
   onCancel: () => void;
 }
 
 export function SecretForm({
   mode,
   selectedSecret,
+  isSharedSecret,
+  initialDescription,
   onCancel,
 }: SecretFormProps) {
   const queryClient = useQueryClient();
@@ -45,10 +57,14 @@ export function SecretForm({
     mode === "edit" && selectedSecret
       ? secrets?.find((secret) => secret.name === selectedSecret)
       : undefined;
-  const selectedSecretIsShared = selectedSecretObj?.scope === "organization";
+  const selectedSecretIsShared =
+    mode === "edit" &&
+    (isSharedSecret ?? selectedSecretObj?.scope === "organization");
 
   const secretDescription =
-    (selectedSecretObj?.description?.trim() as string) || "";
+    mode === "edit"
+      ? (initialDescription ?? selectedSecretObj?.description)?.trim() || ""
+      : "";
 
   const invalidateSecrets = () => {
     // Invalidate both the new infinite query and the legacy query for compatibility
@@ -57,6 +73,9 @@ export function SecretForm({
     });
     queryClient.invalidateQueries({
       queryKey: ["secrets", organizationId],
+    });
+    queryClient.invalidateQueries({
+      queryKey: [ORG_SECRETS_QUERY_KEY],
     });
   };
 

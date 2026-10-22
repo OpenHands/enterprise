@@ -60,8 +60,13 @@ class User(Base):
     onboarding_completed: Mapped[bool | None] = mapped_column(
         nullable=True, default=False
     )
-    # NULL inherits the deployment-wide daily conversation limit.
-    daily_conversation_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # NULL inherits the deployment-wide daily sandbox limit.
+    # Physical column keeps its legacy name: pods on images from before
+    # this change still map daily_conversation_limit and must keep
+    # working during rolling deploys.
+    daily_sandbox_limit: Mapped[int | None] = mapped_column(
+        'daily_conversation_limit', nullable=True
+    )
     # Work email submitted for quota increase requests; verified via
     # signed email link before the requested limit is applied.
     work_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -80,7 +85,7 @@ class User(Base):
     memory_context: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     # One-time identity-seeding flag for IDP swap-over (OHE-3293 / ALL-5978).
     # When True, the v2 login resolver may use ``email`` as a one-time hint to
-    # bind a new IDP's ``sub`` to this existing User via ``oauth_provider_users``.
+    # bind a new IDP's ``sub`` to this existing User via ``auth_provider_users``.
     # The flag is self-cleared on a successful link, so the email-match window
     # is exactly one login wide per user. Off by default; bulk-set by an
     # operator at the swap-over moment.

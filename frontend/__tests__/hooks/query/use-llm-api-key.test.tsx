@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import { useLlmApiKey } from "#/hooks/query/use-llm-api-key";
+import { useConfig } from "#/hooks/query/use-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { openHands } from "#/api/open-hands-axios";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -136,5 +137,47 @@ describe("useLlmApiKey", () => {
 
     await waitFor(() => expect(result.current.data?.key).toBe("sk-flag-true"));
     expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("should fetch the key on SaaS when billing is enabled and an organization is selected", async () => {
+    const defaultConfig = createMockWebClientConfig();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          ...defaultConfig.feature_flags,
+          enable_billing: true,
+        },
+      }),
+    );
+    const getSpy = vi
+      .spyOn(openHands, "get")
+      .mockResolvedValue({ data: { key: "sk-saas" } });
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    const { result } = renderHook(() => useLlmApiKey(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data?.key).toBe("sk-saas"));
+    expect(getSpy).toHaveBeenCalledWith("/api/keys/llm/byor");
+  });
+
+  it("should not fetch the key on SaaS when billing and BYOR export are both disabled", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    const getSpy = vi.spyOn(openHands, "get");
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    const { result } = renderHook(
+      () => ({ config: useConfig(), llmKey: useLlmApiKey() }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.config.data).toBeDefined());
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(result.current.llmKey.isLoading).toBe(false);
+    expect(result.current.llmKey.data).toBeUndefined();
   });
 });

@@ -8,6 +8,7 @@ from openhands.app_server.integrations.service_types import (
     Branch,
     PaginatedBranchesResponse,
 )
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 @pytest.mark.asyncio
@@ -95,9 +96,8 @@ async def test_search_branches_gitlab_uses_search_param():
     ]
 
     with patch.object(service, '_make_request', return_value=(mock_response, {})) as m:
-        branches = await service.search_branches(
-            'group/repo', query='feat', per_page=50
-        )
+        result = await service.search_branches('group/repo', query='feat', per_page=50)
+        branches = result.branches
 
         # Verify parameters
         args, kwargs = m.call_args
@@ -120,3 +120,29 @@ async def test_search_branches_gitlab_uses_search_param():
             protected=True,
             last_push_date='2024-01-05T00:00:00Z',
         )
+
+
+@pytest.mark.asyncio
+async def test_search_branches_gitlab_passes_page():
+    service = GitLabService(token=SecretStr('t'))
+
+    with patch.object(service, '_make_request', return_value=([], {})) as m:
+        await service.search_branches(
+            'group/repo', query='feat', per_page=50, page_id=encode_page_id(3)
+        )
+
+        params = m.call_args[0][1]
+        assert params['page'] == '3'
+        assert params['per_page'] == '50'
+
+
+@pytest.mark.asyncio
+async def test_search_branches_gitlab_page_below_one_is_page_one():
+    service = GitLabService(token=SecretStr('t'))
+
+    with patch.object(service, '_make_request', return_value=([], {})) as m:
+        await service.search_branches(
+            'group/repo', query='feat', per_page=50, page_id=encode_page_id(-3)
+        )
+
+        assert m.call_args[0][1]['page'] == '1'

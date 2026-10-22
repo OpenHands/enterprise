@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import cast
 
 from jinja2 import Environment, FileSystemLoader
 from pydantic import SecretStr
 
-from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.azure_devops.azure_devops_view import (
     AzureDevOpsFactory,
     AzureDevOpsPRComment,
     AzureDevOpsViewType,
     actor_email,
     mark_openhands_comment,
+    mark_openhands_work_item_comment,
 )
 from integrations.manager import Manager
 from integrations.models import Message, SourceType
@@ -104,13 +103,9 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
             logger.info('[Azure DevOps] No repository resolved for event; ignoring.')
             return
 
-        # Gate on write access, mirroring the GitHub/GitLab/Bitbucket resolvers.
-        # The lazy proxy is typed as the base; the enterprise impl adds the method.
-        azure_service = cast(
-            SaaSAzureDevOpsService,
-            AzureDevOpsServiceImpl(external_auth_id=keycloak_user_id),
-        )
-        if not await azure_service.has_contribute_access(
+        # Gate on write access in the event's organization, mirroring the
+        # GitHub/GitLab/Bitbucket resolvers.
+        if not await azure_view.azure_service().has_contribute_access(
             azure_view.project_id, azure_view.repository_id
         ):
             logger.info(
@@ -151,7 +146,7 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
             await azure_service.add_work_item_comment(
                 azure_view.full_repo_name,
                 azure_view.issue_number,
-                message,
+                mark_openhands_work_item_comment(message),
             )
 
     async def start_job(self, azure_view: AzureDevOpsViewType) -> None:
@@ -163,15 +158,8 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     f'in {azure_view.full_repo_name}#{azure_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token,
-                    ProviderType.AZURE_DEVOPS,
+                user_token = await self.token_manager.get_idp_token_for_user(
+                    user_info.keycloak_user_id, ProviderType.AZURE_DEVOPS
                 )
                 if not user_token:
                     raise MissingSettingsError('Missing settings')

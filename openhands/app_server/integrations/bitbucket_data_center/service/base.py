@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import time
 from typing import Any
 from urllib.parse import unquote
 
@@ -17,6 +19,29 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+
+X_TOKEN_AUTH = 'x-token-auth'
+
+# The git username Data Center accepts for an access token depends only on the
+# server and the token. Reuse a definite answer for a while: probing for every
+# clone URL costs two requests and often a rejected login in the server's logs.
+_GIT_USERNAME_TTL_SECONDS = 600
+_git_usernames: dict[tuple[str, str], tuple[str, float]] = {}
+
+
+def split_bitbucket_dc_token(token_value: str) -> tuple[str | None, str]:
+    """Split a stored token into (username, secret).
+
+    ``username:secret`` has a username. A bare token, or one stored in the
+    Bitbucket Cloud style ``x-token-auth:<token>``, has none: it is an access
+    or OAuth token.
+    """
+    username, colon, secret = token_value.partition(':')
+    if not colon:
+        return None, token_value
+    if username == X_TOKEN_AUTH:
+        return None, secret
+    return username, secret
 
 
 class BitbucketDCMixinBase(BaseGitService, HTTPClient):
@@ -76,28 +101,78 @@ class BitbucketDCMixinBase(BaseGitService, HTTPClient):
         the header would be ``Authorization: Basic `` with an empty base64
         payload and httpx rejects it as ``Illegal header value``.
 
-        Tokens in ``username:secret`` form (e.g. ``x-token-auth:<PAT>`` or
-        ``user:pass``) use HTTP Basic auth. Raw OAuth 2.0 access tokens
-        (no colon) use Bearer per RFC 6750 — this is the format the SaaS
-        broker flow returns from Keycloak.
+        Tokens in ``username:secret`` form (e.g. ``user:<PAT>`` or
+        ``user:pass``) use HTTP Basic auth. Access and OAuth tokens, bare or
+        as ``x-token-auth:<token>``, use Bearer: Data Center accepts them
+        that way on every version, but rejects ``x-token-auth`` Basic for
+        personal tokens, and for project and repository tokens on 8.x.
         """
         if not self.token or not self.token.get_secret_value():
             latest_token = await self.get_latest_token()
             if latest_token:
                 self.token = latest_token
 
-        token_value = self.token.get_secret_value()
+        username, secret = split_bitbucket_dc_token(self.token.get_secret_value())
 
-        if ':' in token_value:
-            auth_str = base64.b64encode(token_value.encode()).decode()
+        if username is not None:
+            auth_str = base64.b64encode(f'{username}:{secret}'.encode()).decode()
             return {
                 'Authorization': f'Basic {auth_str}',
                 'Accept': 'application/json',
             }
         return {
-            'Authorization': f'Bearer {token_value}',
+            'Authorization': f'Bearer {secret}',
             'Accept': 'application/json',
         }
+
+    async def get_git_credentials(self) -> tuple[str, str]:
+        """The username and password to put in a git URL for this token.
+
+        A git URL cannot carry a Bearer token, and the Basic username Data
+        Center accepts depends on the token and the version: OAuth tokens,
+        and on 9.x project and repository tokens, accept ``x-token-auth``;
+        personal tokens, and on 8.x project and repository tokens, need the
+        token's own user. So use ``x-token-auth`` when the server accepts it,
+        otherwise that user.
+        """
+        username, secret = split_bitbucket_dc_token(self.token.get_secret_value())
+        if username is not None:
+            return username, secret
+        # Keyed by a hash of the token, never the token itself.
+        key = (self.BASE_URL, hashlib.sha256(secret.encode()).hexdigest())
+        cached = _git_usernames.get(key)
+        if cached and cached[1] > time.monotonic():
+            return cached[0], secret
+
+        accepted = await self._accepts_basic_auth(X_TOKEN_AUTH, secret)
+        git_username = (
+            X_TOKEN_AUTH if accepted else await self._get_authenticated_username()
+        )
+        if accepted is not None and git_username:
+            now = time.monotonic()
+            for stale in [k for k, (_, ends) in _git_usernames.items() if ends <= now]:
+                del _git_usernames[stale]
+            _git_usernames[key] = (git_username, now + _GIT_USERNAME_TTL_SECONDS)
+        return git_username or X_TOKEN_AUTH, secret
+
+    async def _accepts_basic_auth(self, username: str, secret: str) -> bool | None:
+        """Whether the server accepts this Basic login, or None when the check
+        gives no definite answer (no server, a network error, or a status
+        other than 200 or 401)."""
+        if not self.BASE_URL:
+            return None
+        auth_str = base64.b64encode(f'{username}:{secret}'.encode()).decode()
+        try:
+            async with httpx.AsyncClient(verify=httpx_verify_option()) as client:
+                response = await client.get(
+                    f'{self.BASE_URL}/projects',
+                    params={'limit': '0'},
+                    headers={'Authorization': f'Basic {auth_str}'},
+                )
+        except Exception as e:
+            logger.warning(f'Bitbucket data center login check failed: {e}')
+            return None
+        return {200: True, 401: False}.get(response.status_code)
 
     async def _make_request(
         self,

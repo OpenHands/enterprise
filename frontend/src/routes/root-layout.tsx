@@ -26,6 +26,7 @@ import { useAutoLogin } from "#/hooks/use-auto-login";
 import { useAuthCallback } from "#/hooks/use-auth-callback";
 import { useSyncPostHogConsent } from "#/hooks/use-sync-posthog-consent";
 import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization";
+import { useHydrateFreeModels } from "#/hooks/query/use-free-models";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
 import { EmailVerificationGuard } from "#/components/features/guards/email-verification-guard";
 import { OnboardingGuard } from "#/components/features/guards/onboarding-guard";
@@ -125,6 +126,11 @@ export default function MainApp() {
 
   // Auto-select the first organization when none is selected
   useAutoSelectOrganization();
+
+  // Hydrate the DB-driven free / default OpenHands model flags into the
+  // free-models store so leaf components (e.g. the model selector) can read
+  // them synchronously. The UI is additionally domain-gated at render sites.
+  useHydrateFreeModels();
 
   React.useEffect(() => {
     // Don't change language when on intermediate pages (TOS, profile questions)
@@ -243,39 +249,26 @@ export default function MainApp() {
     config.data?.app_mode === "saas" &&
     !loginMethodExists;
 
-  const enableOauthV2Login = config.data?.feature_flags?.enable_oauth_v2_login;
-
   React.useEffect(() => {
     if (shouldRedirectToLogin) {
       // Include search params in returnTo to preserve query string (e.g., user_code for device OAuth)
       const searchString = searchParams.toString();
       const fullPath = searchString ? `${pathname}?${searchString}` : pathname;
 
-      if (enableOauthV2Login) {
-        // /oauth/idp-login is a backend-only redirect endpoint (not a
-        // frontend route), so it needs a full page navigation rather than
-        // client-side routing.
-        const redirectUrl =
-          fullPath === "/"
-            ? "/oauth/idp-login"
-            : `/oauth/idp-login?redirect_url=${encodeURIComponent(fullPath)}`;
-        window.location.href = redirectUrl;
-        return;
-      }
-
+      // Both branches route through the SPA `/login` page rather than
+      // straight to the backend's `/oauth/idp-login` redirect endpoint, so
+      // that page can render a "choose how to sign in" screen -- populated
+      // from `auth_providers` branding -- when more than one login IDP is
+      // configured. `/login` itself auto-redirects to the single configured
+      // IDP when there is exactly one, so the common single-provider case
+      // behaves the same as before, just with one extra same-origin hop.
       const loginUrl =
         fullPath === "/"
           ? "/login"
           : `/login?returnTo=${encodeURIComponent(fullPath)}`;
       navigate(loginUrl, { replace: true });
     }
-  }, [
-    shouldRedirectToLogin,
-    pathname,
-    searchParams,
-    navigate,
-    enableOauthV2Login,
-  ]);
+  }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
 
   // Show loading spinner while loading OR when about to redirect
   if (isLoading || shouldRedirectToLogin) {

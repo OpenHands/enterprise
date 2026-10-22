@@ -1,0 +1,467 @@
+# Local/evaluation Docker Compose stack for OpenHands Enterprise (OHE).
+#
+# `docker compose up` is meant to be the entire setup: the app and the
+# automation service migrate their own databases on startup
+# (RUN_MIGRATIONS_ON_STARTUP, AUTOMATION_RUN_MIGRATIONS_ON_STARTUP), the app
+# uses the built-in password-based admin login instead of Keycloak
+# (ENABLE_INTEGRATED_IDP + OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN),
+# and lets each user configure their own LLM in Settings instead of requiring
+# a LiteLLM proxy (OH_LLM_MODEL_KIND). See OHE-3376.
+#
+# Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
+# the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
+# goes to the automation service, `/canvas*` to Agent Canvas,
+# `/runtime/<sandbox>/<port>/*` to that port of the sandbox container, and
+# everything else to the app. Agent
+# Canvas calls same-origin `/api/automation/v1/...`, so no extra port or CORS
+# setup is needed. `/api/service/*` is deliberately not reachable through the
+# proxy (see the `caddyfile` config at the bottom).
+#
+# Sandbox containers join this stack's network, so they reach the other
+# services by service name (`app`, `proxy`, `automation-server`). Because they
+# are not managed by Compose, `docker compose down` cannot remove the network
+# while sandboxes are still attached to it.
+#
+# First run: the app pulls the agent server image before it starts serving, so
+# http://localhost:3100 is not reachable until that pull finishes (the app logs
+# show its progress). Then open http://localhost:3100/oauth/idp/signup to create
+# the admin account, and add an LLM under Settings. `/` then redirects to Agent Canvas
+# at /canvas, which is served by the `canvas-server` service and locked to this
+# stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
+# existing session cookie instead of prompting to connect to OpenHands Cloud.
+#
+# Data persists across `docker compose down` and `up` in named volumes
+# (`db-data`, `app-filestore`, `automation-data`). `docker compose down -v`
+# removes them and resets everything. The database keeps the credentials it was
+# first created with, so changing DB_USER/DB_PASS later requires a reset.
+#
+# By default this stack runs RELEASED images (pinned below) and builds nothing.
+# To use other versions, set these (shell or `.env`):
+#   APP_IMAGE          enterprise-server image for `app` and `worker`
+#   AUTOMATION_IMAGE   automation service image
+#   AGENT_CANVAS_IMAGE Agent Canvas image
+# e.g. `APP_IMAGE=ghcr.io/openhands/enterprise-server:main` runs the latest
+# `main` build, and `...:pr-123` / `...:sha-<sha>` run a PR / commit build.
+# To build `app` and `worker` from this checkout instead, layer on
+# docker-compose.build.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
+# (or set COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml in `.env`).
+# The compose file and the app image are versioned together, since this file
+# sets env vars the app code reads; keep the pinned tag in step with the
+# release (release-please bumps the annotated `x-app-image` line below).
+#
+# Known gaps, tracked separately rather than worked around here:
+#   * Redis-backed features (MCP OAuth connections, conversation-export
+#     locking) are not wired up for Compose. Redis-backed *rate limiting* is
+#     explicitly disabled below (RATE_LIMITING_ENABLED=false) since it adds no
+#     value in a single-evaluator environment with no Redis.
+#   * The remaining Helm CronJobs (maintenance-tasks, budget-maintenance,
+#     resend-sync, install-gitlab-webhooks, enrich-user-interaction) are not
+#     included: they are standalone script entrypoints, not yet ported to the
+#     Postgres-backed Procrastinate worker (`worker`, below, only runs the
+#     sandbox-lifecycle and task-queue housekeeping jobs that have been
+#     migrated so far). Tracked by OHE-3425 / OHE-3451; skip until that work
+#     produces something Compose-suitable instead of reimplementing
+#     Kubernetes-style scheduling here.
+
+# enterprise-server tag must match the release this file ships with.
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.77.0} # x-release-please-version
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${DB_USER:-openhands}
+      POSTGRES_PASSWORD: ${DB_PASS:-openhands}
+      POSTGRES_DB: ${DB_NAME:-openhands}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    image: *app-image
+    # the enterprise-server image ends on `USER openhands` (its production,
+    # Kubernetes-oriented default), so the container itself must be told to
+    # run as root -- `ENV SANDBOX_USER_ID=0` baked into the image only
+    # affects entrypoint.sh's own branching (see containers/app/entrypoint.sh),
+    # it does not change the UID the container starts as. Without this,
+    # entrypoint.sh's `[ "$(id -u)" -ne 0 ]` check fails immediately and the
+    # container crashloops.
+    user: '0:0'
+    depends_on:
+      db:
+        condition: service_healthy
+    # Not published: reached through `proxy`, which owns APP_PORT.
+    expose:
+      - '3000'
+    # The Docker sandbox backend creates sibling containers via the host's
+    # Docker daemon (same pattern as containers/dev/compose.yml), so the app
+    # and `worker` containers need the socket -- not `privileged: true`, since
+    # they run as root (via `user: '0:0'`, above) and root can always reach
+    # the socket.
+    volumes: &app-volumes
+      - /var/run/docker.sock:/var/run/docker.sock
+      - app-filestore:/.openhands
+    # The app and `worker` reach a sandbox at its URL. With the default
+    # WEB_URL, they rewrite `localhost` in it to host.docker.internal, which
+    # reaches the proxy's published port.
+    extra_hosts: &app-extra-hosts
+      - 'host.docker.internal:host-gateway'
+    # `worker` shares this environment, so both build the same sandbox
+    # backend and lifecycle settings.
+    environment: &app-environment
+      DB_HOST: db
+      DB_PORT: '5432'
+      DB_NAME: ${DB_NAME:-openhands}
+      DB_USER: ${DB_USER:-openhands}
+      DB_PASS: ${DB_PASS:-openhands}
+
+      # server/constants.py defaults WEB_HOST to the literal cloud hostname
+      # (app.all-hands.dev) when unset, which makes DEPLOYMENT_MODE resolve
+      # to 'cloud' here -- that in turn makes server/config.py's
+      # verify_config() require POSTHOG_CLIENT_KEY (fine for actual cloud,
+      # pointless for this stack), and defaults PERMITTED_CORS_ORIGINS to
+      # https://app.all-hands.dev instead of this stack's own origin.
+      # OH_DEPLOYMENT_MODE is the explicit override built for exactly this
+      # (see server/constants.py's _get_deployment_mode()).
+      OH_DEPLOYMENT_MODE: self_hosted
+      PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+
+      # AppServerConfig.app_mode defaults to 'oss'; without 'saas' the login
+      # page redirects to /canvas/ instead of the IDP login, causing a loop.
+      # .vscode/launch.json sets this same env var for local SaaS dev.
+      OH_APP_MODE: saas
+
+      # server/utils/url_utils.py's get_web_url() only trusts
+      # AppServerConfig.web_url (OH_WEB_URL) when it's set; otherwise it
+      # falls back per-request to `'http' if request.url.hostname ==
+      # 'localhost' else 'https'`. That fallback -- not just a misconfigured
+      # WEB_HOST -- is itself the redirect-loop trap: visit this stack as
+      # http://127.0.0.1:<port> (or any LAN IP/hostname that isn't the
+      # literal string "localhost") and every oauth/idp Location this app
+      # builds, plus the `openhands_auth` cookie, gets `secure=True` even
+      # though the connection is plain HTTP. Browsers silently refuse to
+      # store or resend a Secure cookie over HTTP, so login "succeeds",
+      # bounces back to /oauth/<id>/login, and repeats forever -- with no
+      # error, just a loop. OH_WEB_URL pins web_url to a known http:// value
+      # so that heuristic is never consulted. Pair it with WEB_HOST=localhost
+      # so IS_LOCAL_ENV stays true and get_cookie_domain() keeps returning
+      # None (a host-only cookie) instead of pinning Domain=localhost, which
+      # would itself stop matching if you access via 127.0.0.1.
+      #
+      # This only covers "browser and Docker host are the same machine, and
+      # you reach it via localhost or 127.0.0.1". If you need to reach this
+      # stack from another host/VM or through a tunnel (e.g. a LAN IP or a
+      # work-host URL), override both from the shell/.env to match exactly
+      # what's in the browser's address bar, e.g.:
+      #   WEB_HOST=my-tunnel-host.example.com \
+      #   WEB_URL=https://my-tunnel-host.example.com \
+      #   docker compose up --build
+      WEB_HOST: ${WEB_HOST:-localhost}
+      OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
+
+      # Sandboxes reach the app through this URL instead of OH_WEB_URL. The
+      # agent uses it to call the automation API and the default MCP server,
+      # and `localhost` inside a sandbox is the sandbox itself. It points at
+      # the proxy, because only the proxy routes /api/automation.
+      OH_SANDBOX_WEB_URL: http://proxy
+
+      # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
+      # defaults to 'true'. With it on, storage/lite_llm_manager.py's
+      # create_entries() tries to provision every new user a LiteLLM gateway
+      # key against LITE_LLM_API_URL (default: the real
+      # https://llm-proxy.app.all-hands.dev, which this stack has no
+      # credentials for), logs "LiteLLM API configuration not found", and
+      # returns None -- which idp_signup treats as a fatal failure, so even
+      # the very first admin-account signup 500s with "Failed to create
+      # user" and no user row is ever committed. Disabling it makes
+      # create_entries() skip straight to BYOK (each user configures their
+      # own LLM key in Settings), which is what a bundled-proxy-less stack
+      # like this one needs.
+      ENABLE_LEGACY_LITELLM: 'false'
+
+      # The app migrates itself on startup -- no separate `alembic upgrade
+      # head` step, per OHE-3376's "one command" requirement.
+      RUN_MIGRATIONS_ON_STARTUP: 'true'
+
+      # New password-based admin login (no Keycloak). With this set and no
+      # KEYCLOAK_* vars configured, the old Keycloak-coupled login path is
+      # simply never exercised.
+      ENABLE_INTEGRATED_IDP: 'true'
+      OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
+
+      # Super-admin: the backend flag enables the /super-admin routes, and the
+      # web-client flag shows the entry points in the UI.
+      ENABLE_SUPER_ADMIN: '1'
+      OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
+
+      # No managed LiteLLM proxy. With ENABLE_LEGACY_LITELLM off, this service
+      # offers only the direct-provider (BYOK) catalogue and omits the
+      # managed ``openhands`` provider, unlike DefaultLLMModelServiceInjector,
+      # which always adds the SDK's hardcoded ``openhands/*`` models.
+      OH_LLM_MODEL_KIND: server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
+      # Each user brings their own LLM key (BYOK).
+      OH_ALLOW_USER_LLM_CONFIGURATION: 'true'
+
+      # No billing/Stripe in this stack.
+      ENABLE_BILLING: 'false'
+
+      # Redis-backed rate limiting adds no value without Redis in a
+      # single-evaluator environment; see server/utils/rate_limit_utils.py.
+      # (Everything else that touches Redis already fails open with a log
+      # warning when Redis is unreachable -- this flag just avoids the
+      # doomed connection attempt and its log noise.)
+      RATE_LIMITING_ENABLED: 'false'
+
+      # Optional: telemetry is already force-disabled for self-hosted
+      # installs regardless of this value (see server/config.py), so leaving
+      # it unset opts out cleanly. Set a real key here to make the field
+      # available to a future opt-in, if you want one.
+      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
+
+      # RUNTIME is intentionally left unset: the Docker sandbox backend is
+      # the default (see openhands/app_server/config.py) and needs nothing
+      # else beyond the socket mount above.
+      #
+      # Sandbox (sibling) containers call back to the app over
+      # host.docker.internal at this port -- it must match whatever
+      # APP_PORT is published as (see `ports`, above), or sandboxes won't
+      # be able to reach the app.
+      SANDBOX_HOST_PORT: ${APP_PORT:-3100}
+
+      # Compose's default network for this project. Sandboxes join it so they
+      # can resolve the service names, and publish no ports on the host.
+      SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
+
+      # Sandbox URLs go through the proxy, which sends
+      # /runtime/<sandbox>/<port> to that port of the sandbox container over
+      # this network. The browser reaches every sandbox on the same origin as
+      # the app, so this follows WEB_URL.
+      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{sandbox_id}/{port}
+
+      # Automation runs connect to the agent server in their sandbox on this
+      # port. The SDK otherwise uses the remote runtime's port, 60000.
+      OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
+
+      # Automation service wiring. AUTOMATIONS_SERVICE_KEY lets the
+      # automation service mint per-user API keys through /api/service/*, and
+      # must match AUTOMATION_SERVICE_KEY on the `automation-server` service. The
+      # proxy does not expose /api/service/*, but sandboxes are on this
+      # network and can call http://app:3000 directly, so set a real value.
+      # AUTOMATION_SERVICE_URL includes the /api/automation base path (the
+      # app appends /v1 to it).
+      AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
+      AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
+      AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
+      AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+    # The app opens its port only after startup, which pulls the agent server
+    # image if the Docker host does not have it. That pull can take many
+    # minutes on the first run, hence the long start_period.
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 1h
+    restart: unless-stopped
+
+  # Scheduled and event-driven automations (OpenHands/automation). It
+  # authenticates users by calling the app's /api/v1/users/me with the
+  # browser's session cookie, and starts each run as a Docker sandbox through
+  # the app's sandbox API.
+  # Named `automation-server`, not `automation`: a bare `automation` hostname
+  # can be captured by the host's DNS search domains (e.g. a Kubernetes
+  # namespace that has a service called `automation`) before Docker's own DNS.
+  automation-server:
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.24.0}
+    # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
+    # here.
+    command:
+      ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - '8000'
+    # Tarball storage. The image's /data is owned by its service user, and
+    # Docker gives a new volume there the same owner.
+    volumes:
+      - automation-data:/data
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+      # With the default WEB_URL, the app reports each sandbox's URL as
+      # http://localhost:<APP_PORT>/runtime/<sandbox>/<port> (the browser
+      # needs that), and the automation service uses it as-is to reach the
+      # sandbox, unlike the app, which rewrites localhost to
+      # host.docker.internal. Resolving localhost to the Docker host as well
+      # makes the connection fall through from this container's own loopback
+      # (nothing listens there) to the proxy's published port.
+      - 'localhost:host-gateway'
+    environment:
+      # The automation service needs its own database: it and the app both run
+      # Alembic against an `alembic_version` table, so sharing one database
+      # would collide. The service creates that database if it is missing and
+      # migrates it on startup. DB_USER is the Postgres superuser, so it is
+      # allowed to create databases.
+      AUTOMATION_RUN_MIGRATIONS_ON_STARTUP: 'true'
+      AUTOMATION_CREATE_DATABASE_IF_MISSING: 'true'
+      AUTOMATION_DB_HOST: db
+      AUTOMATION_DB_PORT: '5432'
+      AUTOMATION_DB_NAME: ${AUTOMATION_DB_NAME:-automations}
+      AUTOMATION_DB_USER: ${DB_USER:-openhands}
+      AUTOMATION_DB_PASS: ${DB_PASS:-openhands}
+      AUTOMATION_DB_SSL_MODE: disable
+      FILE_STORE: local
+      LOCAL_STORAGE_PATH: /data
+
+      # Cloud mode (AUTOMATION_AGENT_SERVER_URL unset): every run gets its own
+      # Docker sandbox, created through the app. The service and the run's
+      # sandbox, which is on this network too, both use the service name.
+      AUTOMATION_OPENHANDS_API_BASE_URL: http://app:3000
+      AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
+      AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
+      AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
+
+      # Callback URL handed to sandbox containers, so it must be reachable
+      # from them (not from the browser): the proxy, like OH_SANDBOX_WEB_URL
+      # on the app.
+      AUTOMATION_BASE_URL: http://proxy
+      AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Agent Canvas (OpenHands/OpenHands), served at /canvas. Named
+  # `canvas-server`, not `agent-canvas`, for the same DNS search-domain reason
+  # as `automation-server`.
+  #
+  # The released agent-canvas image is an all-in-one (agent server + automation
+  # + static server); only the static server is wanted here, so the entrypoint
+  # is replaced to run just that. It has no `--route`, so nothing is proxied to
+  # a bundled agent server. The cloud lock is injected into index.html at
+  # runtime (--lock-to-cloud), so it must be the *exact* origin the browser
+  # loads -- scheme, host and port -- or Canvas's cookie-auth detection won't
+  # match and it falls back to the cloud-connect prompt. If you reach this
+  # stack via anything other than http://localhost:<APP_PORT> (a different
+  # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
+  # Telemetry is disabled at runtime: the released bundle has a PostHog key.
+  canvas-server:
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.30.1}
+    init: true
+    entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
+    # The static server only accepts `--flag value`, not `--flag=value`.
+    command:
+      - --port
+      - '8000'
+      - --host
+      - 0.0.0.0
+      - --dir
+      - /opt/agent-canvas/frontend
+      - --base-path
+      - /canvas
+      - --lock-to-cloud
+      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+      - --disable-telemetry
+    expose:
+      - '8000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8000/canvas/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Single entry point on APP_PORT. Caddy handles WebSocket upgrades and
+  # streams event-stream responses without extra configuration.
+  proxy:
+    image: caddy:2
+    depends_on:
+      app:
+        condition: service_healthy
+      automation-server:
+        condition: service_healthy
+      canvas-server:
+        condition: service_healthy
+    ports:
+      - '${APP_PORT:-3100}:80'
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    restart: unless-stopped
+
+  # Runs the Postgres-backed Procrastinate tasks that replace Kubernetes
+  # CronJobs. See openhands/app_server/worker/.
+  # The lifecycle jobs pause and delete sandboxes through the same Docker
+  # backend as the app, so the worker gets the app's socket, hosts and
+  # environment.
+  worker:
+    image: *app-image
+    # See the `app` service above: the image defaults to `USER openhands`,
+    # so entrypoint.sh's root check needs this override too.
+    user: '0:0'
+    command: ['python', '-m', 'openhands.app_server.worker']
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes: *app-volumes
+    extra_hosts: *app-extra-hosts
+    environment:
+      <<: *app-environment
+      OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  app-filestore:
+  automation-data:
+
+configs:
+  caddyfile:
+    content: |
+      {
+        auto_https off
+        admin off
+      }
+      :80 {
+        # Server-to-server only: the automation service reaches it as
+        # http://app:3000, so it never needs to be reachable from outside.
+        @internal path /api/service /api/service/*
+        handle @internal {
+          respond 404
+        }
+
+        # Sandboxes: /runtime/<sandbox>/<port>/... goes to that port of the
+        # sandbox container, without the prefix. Only sandbox container names
+        # match, so this route cannot reach the other services.
+        @runtime path_regexp runtime ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/(\d+)(/.*)?$$
+        handle @runtime {
+          uri strip_prefix /runtime/{re.runtime.1}/{re.runtime.2}
+          reverse_proxy {re.runtime.1}:{re.runtime.2}
+        }
+
+        # The automation service already serves under /api/automation, so the
+        # path is forwarded unchanged.
+        @automation path /api/automation /api/automation/*
+        handle @automation {
+          reverse_proxy automation-server:8000
+        }
+
+        # Served by the `canvas-server` service, which mounts its SPA under
+        # /canvas itself, so the path is forwarded unchanged.
+        @canvas path /canvas /canvas/*
+        handle @canvas {
+          reverse_proxy canvas-server:8000
+        }
+
+        handle {
+          reverse_proxy app:3000
+        }
+      }

@@ -1719,20 +1719,43 @@ class OrgConversationService:
 
 
 class OrgConversationServiceInjector(Injector[OrgConversationService]):
-    """Injector that composes db_session and sandbox_service for OrgConversationService."""
+    """Injector that composes db_session and sandbox_service for OrgConversationService.
+
+    The sandbox service runs with the instance-wide ``ADMIN`` user context
+    rather than the caller's. Sandbox lookups are otherwise scoped to rows the
+    caller created, so an org admin saw ``sandbox_status: null`` for other
+    members' conversations and ``stop_conversation`` reported success without
+    stopping anything. This is safe because every route that reaches the
+    sandbox service requires ``VIEW_ORG_CONVERSATIONS`` (admin/owner), the
+    service only passes sandbox ids taken from conversations of the requested
+    org, and responses never expose the sandbox ``session_api_key``. Routes
+    open to members (the my-usage stats) must not start calling
+    ``sandbox_service``.
+    """
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
     ) -> AsyncGenerator[OrgConversationService, None]:
         # Local imports to avoid circular dependencies
         from openhands.app_server.config import get_db_session, get_sandbox_service
+        from openhands.app_server.services.db_session_injector import DB_SESSION_ATTR
+        from openhands.app_server.user.specifiy_user_context import (
+            ADMIN,
+            USER_CONTEXT_ATTR,
+        )
 
         async with get_db_session(state, request) as db_session:
             service = OrgConversationService(db_session=db_session)
 
+            # Share the request's DB session, but look sandboxes up
+            # instance-wide (see the class docstring).
+            sandbox_state = InjectorState()
+            setattr(sandbox_state, USER_CONTEXT_ATTR, ADMIN)
+            setattr(sandbox_state, DB_SESSION_ATTR, db_session)
+
             # Try to inject sandbox service if available
             try:
-                async with get_sandbox_service(state, request) as sandbox_service:
+                async with get_sandbox_service(sandbox_state) as sandbox_service:
                     service.set_sandbox_service(sandbox_service)
                     yield service
                     return

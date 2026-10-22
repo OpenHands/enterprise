@@ -16,7 +16,7 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => ({
-    data: { app_mode: "saas" },
+    data: { app_mode: "saas", feature_flags: { enable_billing: true } },
   }),
 }));
 

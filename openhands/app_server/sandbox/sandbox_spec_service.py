@@ -77,7 +77,9 @@ class SandboxSpecService(ABC):
 class SandboxSpecServiceInjector(
     DiscriminatedUnionMixin, Injector[SandboxSpecService], ABC
 ):
-    pass
+    async def prepare(self) -> None:
+        """Make the specs ready to use. The app runs this once, at startup,
+        before it accepts requests."""
 
 
 async def resolve_sandbox_spec(

@@ -9,6 +9,9 @@ from openhands.app_server.integrations.bitbucket_data_center.service import (
     BitbucketDCResolverMixin,
     BitbucketDCWebhooksMixin,
 )
+from openhands.app_server.integrations.bitbucket_data_center.service.base import (
+    split_bitbucket_dc_token,
+)
 from openhands.app_server.integrations.service_types import (
     GitService,
     InstallationsService,
@@ -60,16 +63,11 @@ class BitbucketDCService(
         self.BASE_URL = f'https://{base_domain}/rest/api/1.0' if base_domain else ''
 
         if token:
-            token_val = token.get_secret_value()
-            if ':' not in token_val:
-                token = SecretStr(f'x-token-auth:{token_val}')
             self.token = token
 
-        # Derive user_id from token when not explicitly provided.
+        # Derive user_id from a username:secret token when not explicitly provided.
         if not user_id and token:
-            token_val = token.get_secret_value()
-            if not token_val.startswith('x-token-auth:'):
-                user_id = token_val.split(':', 1)[0]
+            user_id, _ = split_bitbucket_dc_token(token.get_secret_value())
 
         self.user_id = user_id
 

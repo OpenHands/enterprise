@@ -104,7 +104,7 @@ def test_upgrade_seeds_row_when_enabled(
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
+        test_database.server, test_database.name, 'upgrade', '179'
     )
 
     rows = _provider_rows(engine)
@@ -130,7 +130,7 @@ def test_upgrade_noop_when_disabled(
 
     monkeypatch.delenv('ENABLE_INTEGRATED_IDP', raising=False)
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
+        test_database.server, test_database.name, 'upgrade', '179'
     )
 
     assert _provider_rows(engine) == []
@@ -147,7 +147,7 @@ def test_upgrade_idempotent_when_row_already_exists(
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
+        test_database.server, test_database.name, 'upgrade', '179'
     )
     assert len(_provider_rows(engine)) == 1
 
@@ -173,7 +173,7 @@ def test_downgrade_removes_only_integrated_idp_row(
 
     monkeypatch.setenv('ENABLE_INTEGRATED_IDP', 'true')
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', 'head'
+        test_database.server, test_database.name, 'upgrade', '179'
     )
     with engine.begin() as conn:
         conn.execute(

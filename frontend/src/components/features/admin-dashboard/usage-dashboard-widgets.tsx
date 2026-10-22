@@ -217,11 +217,11 @@ export function MultiLineChart({
               />
             );
           })}
-      </div>
-      <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
-        <span>{maxValue.toLocaleString()}</span>
-        <span>{Math.round(maxValue / 2).toLocaleString()}</span>
-        <span>0</span>
+        <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
+          <span>{maxValue.toLocaleString()}</span>
+          <span>{Math.round(maxValue / 2).toLocaleString()}</span>
+          <span>0</span>
+        </div>
       </div>
       <div className="absolute bottom-0 left-0 right-0 mt-2 flex justify-between text-xs text-text-dim">
         {dates
@@ -380,11 +380,11 @@ export function AreaChart({
             color="var(--oh-color-primary)"
           />
         )}
-      </div>
-      <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
-        <span>{maxValue.toLocaleString()}</span>
-        <span>{Math.round((maxValue + minValue) / 2).toLocaleString()}</span>
-        <span>{minValue.toLocaleString()}</span>
+        <div className="absolute left-0 top-0 bottom-0 flex flex-col justify-between text-xs text-text-dim -ml-2">
+          <span>{maxValue.toLocaleString()}</span>
+          <span>{Math.round((maxValue + minValue) / 2).toLocaleString()}</span>
+          <span>{minValue.toLocaleString()}</span>
+        </div>
       </div>
       <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-text-dim mt-2">
         {data

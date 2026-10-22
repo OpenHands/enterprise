@@ -16,8 +16,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import (
+    KeycloakAuthenticationError,
+    KeycloakConnectionError,
+    KeycloakError,
+)
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
@@ -804,6 +808,47 @@ async def github_dummy_callback(request: Request):
     return RedirectResponse(web_url, status_code=302)
 
 
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return an authenticated routing hint, never credentials or authorization.
+
+    Keycloak still verifies account ownership and authorizes the Git connection.
+    Stored account attributes are not session provenance. Only suggest corporate
+    SSO when browser login history is absent; never suggest a Git provider.
+    """
+    user_auth = await get_user_auth(request)
+    if (
+        not isinstance(user_auth, SaasUserAuth)
+        or user_auth.oauth_v2_cookie
+        or user_auth.auth_type != AuthType.COOKIE
+    ):
+        # Native IdP and API-key credentials must not be sent to Keycloak.
+        return KeycloakLinkContext()
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakError as exc:
+        if exc.response_code in (401, 403):
+            raise HTTPException(401, 'Keycloak authentication required') from exc
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    return KeycloakLinkContext(
+        provider=ProviderType.ENTERPRISE_SSO.value
+        if provider == ProviderType.ENTERPRISE_SSO.value
+        else None
+    )
+
+
 @api_router.post('/authenticate')
 async def authenticate(request: Request):
     try:
@@ -1096,17 +1141,31 @@ async def _get_post_auth_redirect(
 @api_router.post('/accept_tos')
 async def accept_tos(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    access_token = await user_auth.get_access_token()
-    refresh_token = user_auth.refresh_token
     user_id = await user_auth.get_user_id()
 
-    if not access_token or not refresh_token or not user_id:
+    # The legacy ``keycloak_auth`` cookie this endpoint re-mints below is
+    # itself a JWS-signed {access_token, refresh_token, accepted_tos}
+    # triple, so rebuilding it needs real values for all three (even though
+    # access/refresh are only ever carried forward unchanged from the
+    # pre-TOS cookie). An oauth_v2/SAML/integrated-IDP session instead
+    # re-mints the small ``openhands_auth`` cookie below, which carries no
+    # tokens at all -- user_id is the only thing that identifies it.
+    access_token: SecretStr | None = None
+    refresh_token: SecretStr | None = None
+    if not user_auth.oauth_v2_cookie:
+        access_token = await user_auth.get_access_token()
+        refresh_token = user_auth.refresh_token
+
+    if not user_id or (
+        not user_auth.oauth_v2_cookie and (not access_token or not refresh_token)
+    ):
         logger.warning(
             'accept_tos: missing authentication state',
             extra={
                 'has_access_token': bool(access_token),
                 'has_refresh_token': bool(refresh_token),
                 'user_id': user_id,
+                'oauth_v2_cookie': user_auth.oauth_v2_cookie,
             },
         )
         return JSONResponse(
@@ -1178,14 +1237,28 @@ async def accept_tos(request: Request):
         status_code=status.HTTP_200_OK, content={'redirect_url': redirect_url}
     )
 
-    set_response_cookie(
-        request=request,
-        response=response,
-        keycloak_access_token=access_token.get_secret_value(),
-        keycloak_refresh_token=refresh_token.get_secret_value(),
-        secure=True if web_url.startswith('https') else False,
-        accepted_tos=True,
-    )
+    if user_auth.oauth_v2_cookie:
+        from server.auth.provider_identity import set_oauth_v2_cookie
+
+        set_oauth_v2_cookie(
+            request=request,
+            response=response,
+            user_id=user_id,
+            access_token_expires_at=user_auth.access_token_expires_at,
+            accepted_tos=True,
+            idp_provider_id=user_auth.idp_provider_id,
+            refresh_token_expires_at=user_auth.idp_refresh_token_expires_at,
+        )
+    else:
+        assert access_token is not None and refresh_token is not None
+        set_response_cookie(
+            request=request,
+            response=response,
+            keycloak_access_token=access_token.get_secret_value(),
+            keycloak_refresh_token=refresh_token.get_secret_value(),
+            secure=True if web_url.startswith('https') else False,
+            accepted_tos=True,
+        )
     return response
 
 

@@ -145,7 +145,12 @@ def get_summary_instruction():
 
 
 def has_exact_mention(text: str, mention: str) -> bool:
-    """Check if the text contains an exact mention (not part of a larger word).
+    """Check if the text contains an exact mention.
+
+    The mention must not be part of a larger word, a scoped package name
+    (@openhands/pkg), a package glob (@openhands/*), a URL-encoded scoped
+    package name (@openhands%2fpkg), a domain (@openhands.com) or a URL
+    query parameter (@openhands%20help).
 
     Args:
         text: The text to check for mentions
@@ -160,14 +165,30 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("(@openhands)", "@openhands")  # True
         >>> has_exact_mention("user@openhands.com", "@openhands")  # False
         >>> has_exact_mention("Hello @OpenHands!", "@openhands")  # True (case-insensitive)
+        >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
+        >>> has_exact_mention("*Thanks @openhands.*", "@openhands")  # True
+        >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
+        >>> has_exact_mention("see @openhands.com", "@openhands")  # False
+        >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
+        >>> has_exact_mention("npmjs.org/@openhands%2fpkg", "@openhands")  # False
+        >>> has_exact_mention("?q=@openhands%20help", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
     mention_lower = mention.lower()
 
     pattern = re.escape(mention_lower)
-    # Match mention that is not part of a larger word
-    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-])', text_lower))
+    # Match mention that is not part of a larger word. A '/' ends the mention
+    # only when no word character, '-' or '*' follows it, so scoped package
+    # names (@openhands/pkg) and package globs (@openhands/*) do not match. A
+    # '.' ends the mention only when no word character or '-' follows it, so
+    # domains (@openhands.com) and @openhands.Please do not match, but a
+    # sentence end (Thanks @openhands.) and a sentence end inside emphasis
+    # (*Thanks @openhands.*) do. A URL-encoded character (@openhands%2fpkg,
+    # @openhands%20help) does not match either.
+    return bool(
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|/[\w*-]|\.[\w-]|%\w)', text_lower)
+    )
 
 
 def infer_repo_from_message(user_msg: str) -> list[str]:

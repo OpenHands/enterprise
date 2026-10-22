@@ -1,6 +1,11 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { Tooltip } from "@heroui/react";
 import { cn } from "#/utils/utils";
+import CheckCircleIcon from "#/icons/u-check-circle.svg?react";
+import CircleIcon from "#/icons/u-circle.svg?react";
+import InfoCircleIcon from "#/icons/info-circle.svg?react";
+import WarningIcon from "#/icons/u-warning.svg?react";
 
 export function PillBadge({
   active,
@@ -124,5 +129,73 @@ export function StatusPill({ status }: { status: string }) {
     >
       {status}
     </span>
+  );
+}
+
+export type LiteLlmStatus = "healthy" | "degraded" | "pending" | "inactive";
+
+const LITELLM_STATUS_BADGE: Record<
+  LiteLlmStatus,
+  {
+    label: string;
+    className: string;
+    Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  }
+> = {
+  healthy: {
+    label: "Healthy",
+    className: "bg-success/10 text-success border-success/30",
+    Icon: CheckCircleIcon,
+  },
+  degraded: {
+    label: "Degraded",
+    className: "bg-danger/10 text-danger border-danger/30",
+    Icon: WarningIcon,
+  },
+  pending: {
+    label: "Pending",
+    className: "bg-logo/10 text-logo border-logo/30",
+    Icon: InfoCircleIcon,
+  },
+  inactive: {
+    label: "Inactive",
+    className:
+      "bg-base-secondary text-[var(--oh-muted)] border-[var(--oh-border)]",
+    Icon: CircleIcon,
+  },
+};
+
+/**
+ * LiteLLM connection state for the organization budget. The badge is a real
+ * button, and the Tooltip's direct child, so the explanation opens on keyboard
+ * focus as well as hover: react-aria only listens for focus on the trigger
+ * element itself, not on focusable descendants of a wrapper.
+ */
+export function LiteLlmStatusBadge({
+  status,
+  tooltip,
+}: {
+  status: LiteLlmStatus;
+  tooltip: React.ReactNode;
+}) {
+  const { label, className, Icon } = LITELLM_STATUS_BADGE[status];
+  return (
+    <Tooltip
+      content={tooltip}
+      placement="bottom-end"
+      closeDelay={100}
+      className="max-w-xs whitespace-normal bg-white text-black text-xs"
+    >
+      <button
+        type="button"
+        className={cn(
+          "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+          className,
+        )}
+      >
+        <Icon width={14} height={14} aria-hidden />
+        {label}
+      </button>
+    </Tooltip>
   );
 }

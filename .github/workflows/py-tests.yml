@@ -58,7 +58,12 @@ jobs:
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
         # [tool.coverage.run] in pyproject.toml.
-        run: uv run pytest -n auto -s ./tests/unit --cov --cov-branch --cov-fail-under=72
+        # --dist worksteal rebalances tests across workers as they finish,
+        # rather than handing out fixed batches up front; this matters here
+        # because DB-backed tests run noticeably slower than the rest of the
+        # suite. `-s` is dropped so output stays captured per-test instead of
+        # every worker writing straight through, uncaptured, under -n auto.
+        run: uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch --cov-fail-under=72
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}"
       - name: Store coverage file

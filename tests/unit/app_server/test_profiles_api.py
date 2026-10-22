@@ -28,7 +28,7 @@ from openhands.app_server.settings.settings_router import _user_profile_locks
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.llm import LLM
-from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 
 
 @pytest.fixture(autouse=True)
@@ -682,6 +682,43 @@ def test_activate_profile_returns_404_when_unknown(test_client):
 
     assert response.status_code == 404
     assert "'ghost'" in response.json()['detail']
+
+
+def _acp_settings() -> Settings:
+    """ACP settings that keep a saved LLM profile for the OpenHands agent."""
+    settings = Settings(agent_settings=ACPAgentSettings(acp_server='claude-code'))
+    settings.llm_profiles.save(
+        'my-claude',
+        LLM(model='anthropic/claude-opus-4', api_key=SecretStr('sk-claude')),
+    )
+    return settings
+
+
+@pytest.mark.asyncio
+async def test_activate_profile_keeps_acp_agent(test_client, settings_store):
+    """ACP settings have no LLM: activating a profile only marks it active."""
+    await _seed(settings_store, _acp_settings())
+
+    response = test_client.post('/api/v1/settings/profiles/my-claude/activate')
+
+    assert response.status_code == 200
+    assert response.json()['model'] == 'anthropic/claude-opus-4'
+    stored = await settings_store.load()
+    assert stored.agent_settings.agent_kind == 'acp'
+    assert stored.llm_profiles.active == 'my-claude'
+
+
+@pytest.mark.asyncio
+async def test_save_profile_snapshot_for_acp_agent_returns_400(
+    test_client, settings_store
+):
+    """There is no current LLM to snapshot for an ACP agent."""
+    await _seed(settings_store, _acp_settings())
+
+    response = test_client.post('/api/v1/settings/profiles/snapshot')
+
+    assert response.status_code == 400
+    assert 'ACP' in response.json()['detail']
 
 
 @pytest.mark.asyncio

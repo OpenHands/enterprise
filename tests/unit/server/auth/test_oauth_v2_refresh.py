@@ -16,10 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth import oauth_v2_refresh
-from storage.oauth_provider import OAuthProvider
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
 
 
 def _make_jwt_service() -> JwtService:
@@ -33,12 +35,15 @@ def jwt_svc():
 
 
 def _fake_provider(*, token_url='https://example.com/token', client_secret='sec'):
-    provider = MagicMock(spec=OAuthProvider)
+    provider = MagicMock(spec=AuthProvider)
     provider.id = 1
-    provider.client_id = 'cid'
-    provider.client_secret = {'v': client_secret} if client_secret else None
-    provider.token_url = token_url
-    provider.permitted_drift_seconds = 60
+    provider.details = OAuthProviderDetails(
+        provider_type=ProviderType.GITHUB,
+        client_id='cid',
+        client_secret=SecretStr(client_secret) if client_secret else None,
+        token_url=token_url,
+        permitted_drift_seconds=60,
+    )
     return provider
 
 
@@ -146,6 +151,37 @@ async def test_make_refresh_callback_delegates(jwt_svc):
         result = await cb('old-rt', None, None)
     assert result is not None
     assert result['access_token'] == 'at'
+
+
+# ── get_token_url / get_permitted_drift_seconds ─────────────────────────
+
+
+def test_get_token_url_oauth2():
+    provider = _fake_provider(token_url='https://example.com/token')
+    assert oauth_v2_refresh.get_token_url(provider) == 'https://example.com/token'
+
+
+def test_get_token_url_none_for_password_provider():
+    provider = MagicMock(spec=AuthProvider)
+    provider.details = PasswordProviderDetails()
+    assert oauth_v2_refresh.get_token_url(provider) is None
+
+
+def test_get_permitted_drift_seconds_oauth2():
+    provider = _fake_provider()
+    provider.details.permitted_drift_seconds = 42
+    assert oauth_v2_refresh.get_permitted_drift_seconds(provider) == 42
+
+
+def test_get_permitted_drift_seconds_defaults_for_password_provider():
+    from storage.auth_provider_details import DEFAULT_PERMITTED_DRIFT_SECONDS
+
+    provider = MagicMock(spec=AuthProvider)
+    provider.details = PasswordProviderDetails()
+    assert (
+        oauth_v2_refresh.get_permitted_drift_seconds(provider)
+        == DEFAULT_PERMITTED_DRIFT_SECONDS
+    )
 
 
 # ── compute_cookie_max_age ───────────────────────────────────────────────

@@ -48,13 +48,13 @@ from server.routes.idp import (
     derive_idp_user_id,
     is_idp_available,
 )
+from storage.auth_provider_details import PasswordProviderDetails
 from storage.instance_settings import InstanceSettings
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY
 
 # Fixed id used in route-dispatch tests (``/oauth/{id}/login`` etc.) that
 # exercise the integrated IDP through ``oauth_v2.py``'s generic
 # provider-id-keyed routes. Not a sentinel the app recognizes specially —
-# just a stand-in DB id that ``_available()`` wires ``OAuthProviderStore``
+# just a stand-in DB id that ``_available()`` wires ``AuthProviderStore``
 # lookups to resolve to the fake integrated-idp row below.
 _TEST_IDP_PROVIDER_ID = 999001
 
@@ -63,14 +63,34 @@ def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
     """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
     provider = MagicMock()
     provider.id = provider_id
-    provider.provider_category = INTEGRATED_IDP_CATEGORY
+    provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
-    provider.token_url = None
-    provider.display_name = 'Password Login'
+    provider.details = PasswordProviderDetails()
+    provider.title = 'Password Login'
     return provider
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def link_store():
+    """Stand-in ``auth_provider_users`` store with no pre-existing link.
+
+    Tests asserting link behavior configure ``link_store.get`` themselves.
+    """
+    with (
+        patch(
+            'server.routes.idp.AuthProviderUserStore.get',
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as get,
+        patch(
+            'server.routes.idp.AuthProviderUserStore.link',
+            new_callable=AsyncMock,
+        ) as link,
+    ):
+        yield MagicMock(get=get, link=link)
 
 
 @pytest.fixture
@@ -138,7 +158,7 @@ def _available(
     Patches ``_get_integrated_idp_provider`` (the single source of truth for
     availability and the row's id, used by both ``idp.py`` and, through
     ``is_idp_available``, the web-client config) *and*
-    ``OAuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
+    ``AuthProviderStore.get_by_id`` (used by ``oauth_v2.py``'s generic
     ``/oauth/{id}/...`` routes) so both halves of the integrated-IDP
     dispatch agree on the same fake row.
 
@@ -163,7 +183,7 @@ def _available(
         )
         stack.enter_context(
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+                'storage.auth_provider_store.AuthProviderStore.get_by_id',
                 new_callable=AsyncMock,
                 return_value=fake_provider,
             )
@@ -277,7 +297,7 @@ class TestDeriveIdpUserId:
 class TestIsIdpAvailable:
     def test_disabled_when_no_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -288,7 +308,7 @@ class TestIsIdpAvailable:
 
     def test_enabled_when_row_exists(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=_fake_integrated_idp_provider(),
         ):
@@ -299,16 +319,17 @@ class TestIsIdpAvailable:
 
     def test_queries_integrated_idp_category(self):
         """``is_idp_available`` looks up the row by
-        ``INTEGRATED_IDP_CATEGORY`` specifically -- not just "any IDP"."""
+        ``PasswordProviderDetails.__name__`` specifically -- not just "any
+        IDP"."""
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_get:
             import asyncio
 
             asyncio.run(is_idp_available())
-        mock_get.assert_awaited_once_with(INTEGRATED_IDP_CATEGORY)
+        mock_get.assert_awaited_once_with(PasswordProviderDetails.__name__)
 
     def test_enabled_even_when_real_idp_configured(self):
         """Availability is governed solely by whether the integrated IDP's
@@ -322,7 +343,7 @@ class TestIsIdpAvailable:
                 new=AsyncMock(return_value=_fake_integrated_idp_provider()),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -340,7 +361,7 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_when_available(self):
         fake = _fake_integrated_idp_provider()
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -351,7 +372,7 @@ class TestGetIntegratedIdpProvider:
 
     def test_returns_none_without_row(self):
         with patch(
-            'server.routes.idp.OAuthProviderStore.get_first_by_category',
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -363,12 +384,12 @@ class TestGetIntegratedIdpProvider:
     def test_returns_row_even_when_real_idp_configured(self):
         with (
             patch(
-                'server.routes.idp.OAuthProviderStore.get_first_by_category',
+                'server.routes.idp.AuthProviderStore.get_first_by_kind',
                 new_callable=AsyncMock,
                 return_value=_fake_integrated_idp_provider(),
             ),
             patch(
-                'storage.oauth_provider_store.OAuthProviderStore._has_real_idp',
+                'storage.auth_provider_store.AuthProviderStore._has_real_idp',
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -389,7 +410,7 @@ class TestIdpLoginRedirect:
         integrated IDP's row."""
         fake = _fake_integrated_idp_provider()
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=fake,
         ):
@@ -399,7 +420,7 @@ class TestIdpLoginRedirect:
 
     def test_returns_404_when_no_idp_configured(self, client):
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_first_idp',
+            'storage.auth_provider_store.AuthProviderStore.get_first_idp',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -434,7 +455,7 @@ class TestOAuthV2LoginRedirectsIdp:
         """Not an "integrated IDP disabled" case anymore -- just the
         standard ``_get_provider`` 404 for an id with no row at all."""
         with patch(
-            'storage.oauth_provider_store.OAuthProviderStore.get_by_id',
+            'storage.auth_provider_store.AuthProviderStore.get_by_id',
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -874,10 +895,23 @@ class TestIdpSignup:
     ):
         """On a clean install ``create_user`` records the first account as the
         instance's setup user. Sign-up must then land on ``/install`` (the
-        first-install wizard), not on the default page (OHE-3560)."""
+        first-install wizard), not on the default page (OHE-3560).
+
+        TOS acceptance is no longer auto-granted for the integrated IDP, so
+        this exercises the install-wizard redirect in isolation by giving
+        the user an already-accepted TOS -- the detour to ``/accept-tos``
+        for a not-yet-accepted user is covered separately by
+        ``test_redirects_to_accept_tos_when_not_yet_accepted``.
+        """
+        from datetime import datetime, timezone
+
         # Arrange: a brand-new account that ``create_user`` made the setup user.
         user_id = derive_idp_user_id('dev@example.com')
-        new_user = _mock_user(user_id=user_id, email='dev@example.com')
+        new_user = _mock_user(
+            user_id=user_id,
+            email='dev@example.com',
+            accepted_tos=datetime.now(timezone.utc),
+        )
         async with async_session_maker() as session:
             session.add(
                 InstanceSettings(
@@ -904,7 +938,6 @@ class TestIdpSignup:
                 return_value=new_user,
             ),
             patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-            patch('server.routes.idp._accept_tos_for_idp_user', new_callable=AsyncMock),
             patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
             patch(
                 'server.routes.idp.DefaultOrgBootstrapService.apply_for_user',
@@ -1081,16 +1114,19 @@ class TestIdpLogin:
 
 class TestCompleteIdpLogin:
     @pytest.mark.asyncio
-    async def test_tos_auto_accepted_for_new_user(self):
+    async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
+        """TOS is no longer auto-accepted for the integrated IDP: a user who
+        hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
+        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        yet -- it only runs once TOS is actually accepted, via
+        ``POST /api/accept_tos``.
+        """
         user_id = derive_idp_user_id('dev@example.com')
         mock_user = _mock_user(user_id=user_id, accepted_tos=None)
         request = MagicMock()
 
         with (
-            patch(
-                'server.routes.idp._accept_tos_for_idp_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
             patch(
                 'server.routes.idp.UserStore.record_login',
                 new_callable=AsyncMock,
@@ -1108,8 +1144,8 @@ class TestCompleteIdpLogin:
                 'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
                 return_value='http://testserver/',
-            ),
-            patch('server.routes.idp._set_idp_cookie'),
+            ) as mock_post_auth_redirect,
+            patch('server.routes.idp._set_idp_cookie') as mock_set_cookie,
             patch(
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
@@ -1126,8 +1162,12 @@ class TestCompleteIdpLogin:
                 email='dev@example.com',
                 redirect_url='',
             )
-        mock_accept_tos.assert_awaited_once_with(user_id)
+        mock_post_auth_redirect.assert_not_awaited()
         assert response.status_code == 302
+        assert response.headers['location'] == (
+            'http://testserver/accept-tos?redirect_url=%2F'
+        )
+        assert mock_set_cookie.call_args.kwargs['accepted_tos'] is False
 
     @pytest.mark.asyncio
     async def test_tos_skip_if_already_accepted(self):
@@ -1138,10 +1178,6 @@ class TestCompleteIdpLogin:
         request = MagicMock()
 
         with (
-            patch(
-                'server.routes.idp._accept_tos_for_idp_user',
-                new_callable=AsyncMock,
-            ) as mock_accept_tos,
             patch(
                 'server.routes.idp.UserStore.record_login',
                 new_callable=AsyncMock,
@@ -1154,8 +1190,8 @@ class TestCompleteIdpLogin:
                 'server.routes.auth._get_post_auth_redirect',
                 new_callable=AsyncMock,
                 return_value='http://testserver/',
-            ),
-            patch('server.routes.idp._set_idp_cookie'),
+            ) as mock_post_auth_redirect,
+            patch('server.routes.idp._set_idp_cookie') as mock_set_cookie,
             patch(
                 'server.routes.idp.get_web_url',
                 return_value='http://testserver',
@@ -1165,14 +1201,16 @@ class TestCompleteIdpLogin:
                 new=AsyncMock(return_value=_fake_integrated_idp_provider()),
             ),
         ):
-            await idp._complete_idp_login(
+            response = await idp._complete_idp_login(
                 request=request,
                 user=mock_user,
                 is_new_user=False,
                 email='dev@example.com',
                 redirect_url='',
             )
-        mock_accept_tos.assert_not_called()
+        mock_post_auth_redirect.assert_awaited_once()
+        assert response.headers['location'] == 'http://testserver/'
+        assert mock_set_cookie.call_args.kwargs['accepted_tos'] is True
 
 
 # ── status endpoint ───────────────────────────────────────────────────────
@@ -2768,3 +2806,174 @@ class TestInviteAcceptRole:
         mock_get_role.assert_awaited_once_with('owner')
         mock_add.assert_awaited_once()
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
+
+
+# ── auth_provider_users links + allow_match_by_email ──────────────────────
+
+
+class TestIdpProviderLinks:
+    @pytest.mark.parametrize('flag', [True, False])
+    def test_signup_new_user_gets_provider_flag(self, client, flag):
+        user_id = derive_idp_user_id('dev@example.com')
+        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
+
+        with (
+            _available(has_password_super_admin=False) as provider,
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ) as mock_create,
+            patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
+            _patch_complete_login() as mock_complete,
+        ):
+            provider.allow_match_by_email = flag
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'dev@example.com',
+                    'password': 'password<secret-hidden>',
+                    'confirm_password': 'password<secret-hidden>',
+                },
+                follow_redirects=False,
+            )
+
+        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
+
+    @pytest.mark.parametrize('flag', [True, False])
+    def test_invite_new_user_gets_provider_flag(self, client, jwt_svc, flag):
+        user_id = derive_idp_user_id('invitee@example.com')
+        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            with (
+                _available() as provider,
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=mock_user,
+                ) as mock_create,
+                patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
+                _patch_complete_login() as mock_complete,
+            ):
+                provider.allow_match_by_email = flag
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password<secret-hidden>',
+                        'confirm_password': 'password<secret-hidden>',
+                    },
+                    follow_redirects=False,
+                )
+
+        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
+
+    def test_login_resolves_user_through_link(self, client, link_store):
+        # The linked user's id is not the id derived from the email -- only
+        # the link can find it.
+        linked_user = _mock_user(
+            user_id=str(uuid.uuid4()),
+            password_hash=hash_password('password<secret-hidden>'),
+        )
+        link_store.get.return_value = MagicMock(user_id=linked_user.id)
+
+        with (
+            _available() as provider,
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=linked_user,
+            ) as mock_get_by_id,
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={
+                    'email': 'Dev@Example.com',
+                    'password': 'password<secret-hidden>',
+                },
+                follow_redirects=False,
+            )
+
+        link_store.get.assert_awaited_once_with(provider.id, 'dev@example.com')
+        mock_get_by_id.assert_awaited_once_with(str(linked_user.id))
+        assert mock_complete.call_args.kwargs['user'] is linked_user
+
+    @pytest.mark.asyncio
+    async def test_complete_login_links_user_when_no_link_exists(self, link_store):
+        user = _mock_user(
+            user_id=derive_idp_user_id('dev@example.com'), accepted_tos=None
+        )
+
+        await self._complete_login(user)
+
+        link_store.get.assert_awaited_once_with(
+            _TEST_IDP_PROVIDER_ID, 'dev@example.com'
+        )
+        link_store.link.assert_awaited_once_with(
+            oauth_provider_id=_TEST_IDP_PROVIDER_ID,
+            user_id=user.id,
+            external_subject_id='dev@example.com',
+            external_email='dev@example.com',
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_login_does_not_relink_existing_link(self, link_store):
+        user = _mock_user(
+            user_id=derive_idp_user_id('dev@example.com'), accepted_tos=None
+        )
+        link_store.get.return_value = MagicMock(user_id=user.id)
+
+        await self._complete_login(user)
+
+        link_store.link.assert_not_awaited()
+
+    @staticmethod
+    async def _complete_login(user):
+        with (
+            patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
+            patch('server.routes.idp._track_idp_login', new_callable=AsyncMock),
+            patch('server.routes.idp._set_idp_cookie'),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
+        ):
+            return await idp._complete_idp_login(
+                request=MagicMock(),
+                user=user,
+                is_new_user=False,
+                email='dev@example.com',
+                redirect_url='',
+            )

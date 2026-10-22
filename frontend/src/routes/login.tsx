@@ -5,6 +5,7 @@ import { useConfig } from "#/hooks/query/use-config";
 import { useGitHubAuthUrl } from "#/hooks/use-github-auth-url";
 import { useEmailVerification } from "#/hooks/use-email-verification";
 import { useInvitation } from "#/hooks/use-invitation";
+import { usePublicIdpProviders } from "#/hooks/query/use-auth-providers";
 import { LoginContent } from "#/components/features/auth/login-content";
 import { EmailVerificationModal } from "#/components/features/waitlist/email-verification-modal";
 import { RequestSubmittedModal } from "#/components/features/onboarding/request-submitted-modal";
@@ -50,6 +51,30 @@ export default function LoginPage() {
     authUrl: config.data?.auth_url,
   });
 
+  const enableOauthV2Login =
+    !!config.data?.feature_flags?.enable_oauth_v2_login;
+  const { data: v2IdpProviders, isLoading: v2ProvidersLoading } =
+    usePublicIdpProviders(enableOauthV2Login);
+
+  // Mirrors the single-provider convenience of the backend's
+  // `/oauth/idp-login` shortcut: when there's exactly one configured login
+  // IDP, skip the chooser screen and go straight to it rather than making
+  // the user click a single button.
+  const singleV2Provider =
+    enableOauthV2Login && v2IdpProviders?.length === 1
+      ? v2IdpProviders[0]
+      : null;
+
+  React.useEffect(() => {
+    if (singleV2Provider) {
+      const target =
+        returnTo && returnTo !== "/"
+          ? `/oauth/${singleV2Provider.id}/login?redirect_url=${encodeURIComponent(returnTo)}`
+          : `/oauth/${singleV2Provider.id}/login`;
+      window.location.href = target;
+    }
+  }, [singleV2Provider, returnTo]);
+
   const [showRequestModal, setShowRequestModal] = React.useState(
     () => locationState?.showRequestSubmittedModal ?? false,
   );
@@ -80,7 +105,12 @@ export default function LoginPage() {
     }
   }, [isAuthed, isAuthLoading, navigate, returnTo, searchParams]);
 
-  if (isAuthLoading || config.isLoading) {
+  if (
+    isAuthLoading ||
+    config.isLoading ||
+    (enableOauthV2Login && v2ProvidersLoading) ||
+    singleV2Provider
+  ) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-base">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
@@ -110,6 +140,8 @@ export default function LoginPage() {
           accountDisabled={accountDisabled}
           hasInvitation={hasInvitation}
           buildOAuthStateData={buildOAuthStateData}
+          v2IdpProviders={enableOauthV2Login ? (v2IdpProviders ?? []) : null}
+          v2ReturnTo={returnTo}
         />
       </main>
 

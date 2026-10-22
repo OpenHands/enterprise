@@ -1,10 +1,63 @@
 import base64
+from datetime import datetime, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
 
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+)
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+)
 from server.routes.integration import azure_devops
+from storage.azure_devops_webhook import AzureDevOpsWebhook
+
+
+class _FakeWebhookStore:
+    """In-memory stand-in for AzureDevOpsWebhookStore, keyed like the real one."""
+
+    def __init__(self):
+        self.rows: dict[str, AzureDevOpsWebhook] = {}
+
+    async def get_webhook(self, organization):
+        return self.rows.get(organization.casefold())
+
+    async def record_install(self, organization, *, user_id, **ids):
+        now = datetime.now(timezone.utc)
+        return self._upsert(
+            organization,
+            installed_by_user_id=user_id,
+            installed_at=now,
+            last_verified_at=now,
+            **ids,
+        )
+
+    async def record_verified(self, organization, **ids):
+        return self._upsert(
+            organization, last_verified_at=datetime.now(timezone.utc), **ids
+        )
+
+    async def delete_webhook(self, organization):
+        return self.rows.pop(organization.casefold(), None) is not None
+
+    def _upsert(self, organization, **values):
+        row = self.rows.setdefault(
+            organization.casefold(),
+            AzureDevOpsWebhook(organization=organization.casefold()),
+        )
+        for name, value in values.items():
+            setattr(row, name, value)
+        return row
+
+
+@pytest.fixture(autouse=True)
+def webhook_store(monkeypatch):
+    store = _FakeWebhookStore()
+    monkeypatch.setattr(azure_devops, 'azure_devops_webhook_store', store)
+    return store
 
 
 @pytest.mark.asyncio
@@ -43,6 +96,9 @@ async def test_get_azure_devops_resources_reports_installed_status(monkeypatch):
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             # Org-wide subscriptions carry no projectId.
             return [
@@ -69,10 +125,12 @@ async def test_get_azure_devops_resources_reports_installed_status(monkeypatch):
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert status.organization == 'alonaking'
     assert status.webhook_installed is True
@@ -96,6 +154,9 @@ async def test_get_azure_devops_resources_reports_disabled_hook_as_not_installed
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             return [
                 {
@@ -117,10 +178,12 @@ async def test_get_azure_devops_resources_reports_disabled_hook_as_not_installed
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     # Disabled work-item hook -> org not fully installed, but id still surfaced.
     assert status.webhook_installed is False
@@ -161,6 +224,9 @@ async def test_get_azure_devops_resources_ignores_project_scoped_hooks(monkeypat
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
         async def list_service_hook_subscriptions(self):
             # Same event types + url, but project-scoped (projectId set) -> must
             # NOT be reported as the org-wide install.
@@ -182,10 +248,12 @@ async def test_get_azure_devops_resources_ignores_project_scoped_hooks(monkeypat
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
-    status = await azure_devops.get_azure_devops_resources(user_id='user-id')
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert status.webhook_installed is False
     assert status.pr_webhook_installed is False
@@ -202,6 +270,9 @@ async def test_reinstall_azure_devops_webhook_replaces_existing_hooks(monkeypatc
 
     class FakeAzureDevOpsService:
         organization = 'alonaking'
+
+        async def get_accessible_organizations(self):
+            return ['alonaking']
 
         def __init__(self):
             self.delete_service_hook_subscription = AsyncMock()
@@ -236,10 +307,12 @@ async def test_reinstall_azure_devops_webhook_replaces_existing_hooks(monkeypatc
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
-    response = await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
 
     assert response.success is True
     assert response.organization == 'alonaking'
@@ -269,14 +342,19 @@ async def test_reinstall_azure_devops_webhook_requires_configured_secret(monkeyp
     class FakeAzureDevOpsService:
         organization = 'alonaking'
 
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
     monkeypatch.setattr(
         azure_devops,
         'SaaSAzureDevOpsService',
-        lambda external_auth_id: FakeAzureDevOpsService(),
+        lambda **kwargs: FakeAzureDevOpsService(),
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await azure_devops.reinstall_azure_devops_webhook(user_id='user-id')
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
 
     assert exc_info.value.status_code == 503
 
@@ -341,3 +419,1014 @@ async def test_events_route_skips_duplicate_without_scheduling(monkeypatch):
 
     assert response.status_code == 200
     background_tasks.add_task.assert_not_called()
+
+
+_PR_CREATED_EVENT = {
+    'id': 'evt-2',
+    'subscriptionId': 'sub-1',
+    'eventType': 'git.pullrequest.created',
+    'resourceContainers': {'account': {'baseUrl': 'https://dev.azure.com/fabrikam/'}},
+}
+
+
+class _PayloadRequest:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+def _events_route_fakes(monkeypatch, *, forwarding_enabled, duplicate=False):
+    monkeypatch.setattr(azure_devops, 'IS_LOCAL_DEPLOYMENT', False)
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    monkeypatch.setattr(
+        azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', forwarding_enabled
+    )
+
+    fake_redis = MagicMock()
+    fake_redis.set = AsyncMock(return_value=not duplicate)
+    monkeypatch.setattr(azure_devops, 'get_redis_client_async', lambda: fake_redis)
+
+    fake_manager = MagicMock()
+    fake_manager.receive_message = AsyncMock()
+    monkeypatch.setattr(azure_devops, 'get_azure_devops_manager', lambda: fake_manager)
+
+    fake_forwarder = MagicMock()
+    fake_forwarder.forward_event = AsyncMock()
+    monkeypatch.setattr(
+        azure_devops, 'get_automation_event_service', lambda: fake_forwarder
+    )
+    return fake_manager, fake_forwarder
+
+
+@pytest.mark.asyncio
+async def test_events_route_forwards_to_automations_in_background(monkeypatch):
+    fake_manager, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=True
+    )
+    background_tasks = MagicMock()
+
+    response = await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_CREATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+    )
+
+    assert response.status_code == 200
+    background_tasks.add_task.assert_any_call(
+        fake_forwarder.forward_event,
+        provider=ProviderType.AZURE_DEVOPS,
+        payload=_PR_CREATED_EVENT,
+        installation_id='sub-1',
+        event_type='git.pullrequest.created',
+    )
+    # The resolver still gets the event.
+    background_tasks.add_task.assert_any_call(fake_manager.receive_message, ANY)
+    fake_forwarder.forward_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'forwarding_enabled,duplicate',
+    [(False, False), (True, True)],
+    ids=['forwarding-disabled', 'duplicate-delivery'],
+)
+async def test_events_route_does_not_forward_when_disabled_or_duplicate(
+    monkeypatch, forwarding_enabled, duplicate
+):
+    _, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=forwarding_enabled, duplicate=duplicate
+    )
+    background_tasks = MagicMock()
+
+    response = await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_CREATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+    )
+
+    assert response.status_code == 200
+    scheduled = [call.args[0] for call in background_tasks.add_task.call_args_list]
+    assert fake_forwarder.forward_event not in scheduled
+
+
+@pytest.mark.asyncio
+async def test_events_route_does_not_forward_unauthenticated_events(monkeypatch):
+    _events_route_fakes(monkeypatch, forwarding_enabled=True)
+    background_tasks = MagicMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.azure_devops_events(
+            request=_PayloadRequest(_PR_CREATED_EVENT),
+            background_tasks=background_tasks,
+            x_openhands_webhook_secret='wrong',
+            authorization=None,
+        )
+
+    assert exc_info.value.status_code == 403
+    background_tasks.add_task.assert_not_called()
+
+
+_PR_UPDATED_EVENT = {
+    'id': 'evt-3',
+    'subscriptionId': 'sub-2',
+    'eventType': 'git.pullrequest.updated',
+    'resourceContainers': {'account': {'baseUrl': 'https://dev.azure.com/fabrikam/'}},
+}
+
+
+async def _forwarded_and_resolver_payloads(monkeypatch, notification_type):
+    fake_manager, fake_forwarder = _events_route_fakes(
+        monkeypatch, forwarding_enabled=True
+    )
+    background_tasks = MagicMock()
+
+    await azure_devops.azure_devops_events(
+        request=_PayloadRequest(_PR_UPDATED_EVENT),
+        background_tasks=background_tasks,
+        x_openhands_webhook_secret='secret',
+        authorization=None,
+        x_openhands_notification_type=notification_type,
+    )
+
+    calls = background_tasks.add_task.call_args_list
+    forwarded = next(
+        call.kwargs['payload']
+        for call in calls
+        if call.args[0] is fake_forwarder.forward_event
+    )
+    message = next(
+        call.args[1] for call in calls if call.args[0] is fake_manager.receive_message
+    )
+    return forwarded, message.message['payload']
+
+
+@pytest.mark.asyncio
+async def test_events_route_names_the_kind_of_pull_request_update(monkeypatch):
+    forwarded, resolver_payload = await _forwarded_and_resolver_payloads(
+        monkeypatch, 'ReviewerVoteNotification'
+    )
+
+    assert forwarded == {
+        **_PR_UPDATED_EVENT,
+        'openhands': {'notificationType': 'ReviewerVoteNotification'},
+    }
+    # The resolver gets the payload as Azure DevOps sent it.
+    assert resolver_payload == _PR_UPDATED_EVENT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('notification_type', [None, 'SomethingElse'])
+async def test_events_route_forwards_other_events_unchanged(
+    monkeypatch, notification_type
+):
+    forwarded, _ = await _forwarded_and_resolver_payloads(
+        monkeypatch, notification_type
+    )
+
+    assert forwarded == _PR_UPDATED_EVENT
+
+
+_HOOK_URL = 'https://app.example.com/integration/azure-devops/events'
+
+
+def _hook(subscription_id, event_type, status='enabled', notification_type=None):
+    return {
+        'id': subscription_id,
+        'status': status,
+        'eventType': event_type,
+        'publisherInputs': (
+            {'notificationType': notification_type} if notification_type else {}
+        ),
+        'consumerInputs': {'url': _HOOK_URL},
+    }
+
+
+def _automation_hooks(prefix):
+    """One hook per AUTOMATION_HOOKS entry, keyed '<prefix>-<event or update kind>'."""
+    hooks = {}
+    for event_type, notification_type in azure_devops.AUTOMATION_HOOKS:
+        subscription_id = f'{prefix}-{notification_type or event_type}'
+        hooks[subscription_id] = _hook(
+            subscription_id, event_type, notification_type=notification_type
+        )
+    return hooks
+
+
+class _InMemoryAzureOrg:
+    """Fake service that tracks which Service Hooks exist and call order."""
+
+    organization = 'alonaking'
+
+    def __init__(self, *, fail_create=None, fail_delete=()):
+        self.hooks = {
+            'old-pr': _hook('old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+            'old-wi': _hook(
+                'old-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT
+            ),
+        }
+        self.fail_create = fail_create
+        self.fail_delete = set(fail_delete)
+        self.calls = []
+
+    async def list_service_hook_subscriptions(self):
+        return list(self.hooks.values())
+
+    async def get_service_hook_permissions(self):
+        return True, True
+
+    async def delete_service_hook_subscription(self, subscription_id):
+        self.calls.append(('delete', subscription_id))
+        if subscription_id in self.fail_delete:
+            raise RuntimeError('delete failed')
+        self.hooks.pop(subscription_id)
+
+    def _create(self, kind, event_type, notification_type=None):
+        self.calls.append(('create', kind))
+        if self.fail_create == kind:
+            raise AzureDevOpsApiError(
+                400, 'The user does not have permission to edit subscriptions.'
+            )
+        subscription_id = f'new-{kind}'
+        self.hooks[subscription_id] = _hook(
+            subscription_id, event_type, notification_type=notification_type
+        )
+        return {'id': subscription_id}
+
+    async def create_pr_comment_service_hook(self, **_):
+        return self._create('pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT)
+
+    async def create_work_item_comment_service_hook(self, **_):
+        return self._create('wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT)
+
+    async def create_automation_service_hook(
+        self, *, event_type, notification_type=None, **_
+    ):
+        return self._create(
+            notification_type or event_type, event_type, notification_type
+        )
+
+
+def _use_service(monkeypatch, service):
+    monkeypatch.setattr(azure_devops, 'HOST_URL', 'https://app.example.com')
+    monkeypatch.setattr(azure_devops, 'IS_LOCAL_DEPLOYMENT', False)
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    service.get_accessible_organizations = AsyncMock(return_value=['alonaking'])
+    monkeypatch.setattr(
+        azure_devops, 'SaaSAzureDevOpsService', lambda external_auth_id: service
+    )
+
+
+@pytest.mark.asyncio
+async def test_reinstall_creates_new_hooks_before_deleting_old_ones(monkeypatch):
+    service = _InMemoryAzureOrg()
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert response.success is True
+    assert set(service.hooks) == {'new-pr', 'new-wi'}
+    assert service.calls == [
+        ('create', 'pr'),
+        ('create', 'wi'),
+        ('delete', 'old-pr'),
+        ('delete', 'old-wi'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reinstall_keeps_existing_hooks_when_azure_rejects_create(monkeypatch):
+    service = _InMemoryAzureOrg(fail_create='pr')
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert 'HTTP 400' in exc_info.value.detail
+    assert (
+        'The user does not have permission to edit subscriptions.'
+        in exc_info.value.detail
+    )
+    assert set(service.hooks) == {'old-pr', 'old-wi'}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_rolls_back_new_hook_when_second_create_fails(monkeypatch):
+    service = _InMemoryAzureOrg(fail_create='wi')
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert set(service.hooks) == {'old-pr', 'old-wi'}
+    assert ('delete', 'new-pr') in service.calls
+
+
+@pytest.mark.asyncio
+async def test_reinstall_succeeds_when_old_hook_cleanup_fails(monkeypatch):
+    service = _InMemoryAzureOrg(fail_delete={'old-pr'})
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert response.success is True
+    assert response.pr_subscription_id == 'new-pr'
+    assert set(service.hooks) == {'old-pr', 'new-pr', 'new-wi'}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_adds_automation_hooks_when_events_are_forwarded(monkeypatch):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg()
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert response.success is True
+    assert service.hooks == {
+        'new-pr': _hook('new-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+        'new-wi': _hook('new-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT),
+        **_automation_hooks('new'),
+    }
+    assert response.automation_subscription_ids == list(_automation_hooks('new'))
+
+
+@pytest.mark.asyncio
+async def test_reinstall_replaces_automation_hooks_after_creating_new_ones(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert set(service.hooks) == {'new-pr', 'new-wi', *_automation_hooks('new')}
+    first_delete = next(
+        index for index, call in enumerate(service.calls) if call[0] == 'delete'
+    )
+    assert len(service.calls[:first_delete]) == 2 + len(azure_devops.AUTOMATION_HOOKS)
+
+
+@pytest.mark.asyncio
+async def test_reinstall_rolls_back_every_new_hook_when_an_automation_hook_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    service = _InMemoryAzureOrg(fail_create='ReviewerVoteNotification')
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert set(service.hooks) == {'old-pr', 'old-wi', *_automation_hooks('old')}
+
+
+@pytest.mark.asyncio
+async def test_reinstall_removes_automation_hooks_when_events_are_not_forwarded(
+    monkeypatch,
+):
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', False)
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert set(service.hooks) == {'new-pr', 'new-wi'}
+    assert response.automation_subscription_ids == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'forwarding_enabled,disabled_hook,expected',
+    [
+        (True, None, (True, True)),
+        (True, 'old-ReviewerVoteNotification', (True, False)),
+        (False, None, (False, False)),
+    ],
+    ids=['all-installed', 'one-disabled', 'forwarding-off'],
+)
+async def test_resources_reports_automation_hooks(
+    monkeypatch, forwarding_enabled, disabled_hook, expected
+):
+    monkeypatch.setattr(
+        azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', forwarding_enabled
+    )
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    if disabled_hook:
+        service.hooks[disabled_hook]['status'] = 'disabledBySystem'
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert (
+        status.automation_events_enabled,
+        status.automation_webhooks_installed,
+    ) == expected
+
+
+@pytest.mark.asyncio
+async def test_uninstall_deletes_automation_hooks(monkeypatch):
+    service = _InMemoryAzureOrg()
+    service.hooks.update(_automation_hooks('old'))
+    _use_service(monkeypatch, service)
+
+    response = await azure_devops.uninstall_azure_devops_webhook(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert service.hooks == {}
+    assert sorted(response.automation_subscription_ids) == sorted(
+        _automation_hooks('old')
+    )
+
+
+@pytest.mark.asyncio
+async def test_resources_prefers_enabled_hook_over_stale_copy(monkeypatch):
+    service = _InMemoryAzureOrg()
+    service.hooks = {
+        'stale-pr': _hook(
+            'stale-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'disabledBySystem'
+        ),
+        'new-pr': _hook('new-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT),
+        'new-wi': _hook('new-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT),
+    }
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.pr_subscription_id == 'new-pr'
+
+
+@pytest.mark.asyncio
+async def test_uninstall_reports_azure_error_message(monkeypatch):
+    service = _InMemoryAzureOrg()
+
+    async def reject_delete(subscription_id):
+        raise AzureDevOpsApiError(403, 'Access denied.')
+
+    service.delete_service_hook_subscription = reject_delete
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.uninstall_azure_devops_webhook(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert 'Access denied.' in exc_info.value.detail
+
+
+@pytest.fixture
+def organization_service(monkeypatch):
+    service = MagicMock()
+    service.organization = 'configured-org'
+    service.get_accessible_organizations = AsyncMock(return_value=['Alpha', 'Beta'])
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    service.get_service_hook_permissions = AsyncMock(return_value=(True, True))
+    service.delete_service_hook_subscription = AsyncMock()
+    service.create_pr_comment_service_hook = AsyncMock(return_value={'id': 'pr'})
+    service.create_work_item_comment_service_hook = AsyncMock(return_value={'id': 'wi'})
+    monkeypatch.setattr(
+        azure_devops, 'SaaSAzureDevOpsService', lambda **kwargs: service
+    )
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'test-secret')
+    return service
+
+
+@pytest.mark.asyncio
+async def test_organizations_list_uses_membership_not_configured_default(
+    organization_service,
+):
+    result = await azure_devops.get_azure_devops_organizations(user_id='user')
+    assert result.organizations == ['Alpha', 'Beta']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize('requested,expected', [(' alpha ', 'Alpha'), ('BETA', 'Beta')])
+async def test_operations_use_explicit_canonical_organization(
+    organization_service, operation, requested, expected
+):
+    result = await operation(user_id='user', organization=requested)
+    assert result.organization == expected
+    assert organization_service.organization == expected
+    organization_service.get_accessible_organizations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+@pytest.mark.parametrize(
+    'requested,code',
+    [
+        ('configured-org', 403),
+        ('https://attacker.invalid', 403),
+        (' ', 400),
+    ],
+)
+async def test_inaccessible_organization_never_reads_or_changes_hooks(
+    organization_service, operation, requested, code
+):
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization=requested)
+    assert error.value.status_code == code
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+    organization_service.delete_service_hook_subscription.assert_not_awaited()
+    organization_service.create_pr_comment_service_hook.assert_not_awaited()
+    organization_service.create_work_item_comment_service_hook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'operation',
+    [
+        azure_devops.get_azure_devops_resources,
+        azure_devops.reinstall_azure_devops_webhook,
+        azure_devops.uninstall_azure_devops_webhook,
+    ],
+)
+async def test_membership_failure_blocks_hook_operations(
+    organization_service, operation
+):
+    organization_service.get_accessible_organizations.side_effect = RuntimeError(
+        'Azure unavailable'
+    )
+    with pytest.raises(HTTPException) as error:
+        await operation(user_id='user', organization='Alpha')
+    assert error.value.status_code == 503
+    organization_service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sequential_users_cannot_reuse_another_users_membership(monkeypatch):
+    memberships = {
+        'shared-user': ['Alpha', 'Beta'],
+        'alpha-user': ['Alpha'],
+        'beta-user': ['Beta'],
+    }
+    services = []
+
+    def make_service(external_auth_id):
+        service = MagicMock()
+        service.organization = ''
+        service.get_accessible_organizations = AsyncMock(
+            return_value=memberships[external_auth_id]
+        )
+        service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+        services.append(service)
+        return service
+
+    monkeypatch.setattr(azure_devops, 'SaaSAzureDevOpsService', make_service)
+    for user, org in [
+        ('shared-user', 'Alpha'),
+        ('shared-user', 'Beta'),
+        ('alpha-user', 'Alpha'),
+        ('beta-user', 'Beta'),
+    ]:
+        result = await azure_devops.get_azure_devops_resources(
+            user_id=user, organization=org
+        )
+        assert result.organization == org
+    with pytest.raises(HTTPException) as error:
+        await azure_devops.get_azure_devops_resources(
+            user_id='alpha-user', organization='Beta'
+        )
+    assert error.value.status_code == 403
+    services[-1].list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('organization', [None, ' '])
+async def test_scoped_routes_require_an_organization(
+    organization_service, organization
+):
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.get_azure_devops_resources(
+            user_id='user', organization=organization
+        )
+
+    assert exc_info.value.status_code == 400
+    organization_service.get_accessible_organizations.assert_not_awaited()
+
+
+def _with_permissions(service, *, view=True, edit=True):
+    service.get_service_hook_permissions = AsyncMock(return_value=(view, edit))
+    return service
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_installed_hooks_for_member_who_can_manage(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.pr_subscription_id == 'old-pr'
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_not_installed_when_visible_list_is_empty(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.hooks = {}
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is False
+    assert status.pr_webhook_installed is False
+    assert status.work_item_webhook_installed is False
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_does_not_trust_empty_list_without_view_permission(
+    monkeypatch,
+):
+    # Azure returns an empty list to members who can't view Service Hooks,
+    # even though the org-wide hooks are installed.
+    service = _with_permissions(_InMemoryAzureOrg(), view=False, edit=False)
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.can_view_webhooks is False
+    assert status.can_manage_webhooks is False
+    assert status.webhook_installed is False
+    assert status.pr_subscription_id is None
+    service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'error',
+    [
+        AuthenticationError('Invalid azure_devops token'),
+        AzureDevOpsApiError(403, 'Access denied.'),
+    ],
+)
+async def test_resources_reports_unverifiable_when_azure_denies_listing(
+    monkeypatch, error
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.list_service_hook_subscriptions = AsyncMock(side_effect=error)
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.can_view_webhooks is False
+    assert status.can_manage_webhooks is False
+    assert status.webhook_installed is False
+
+
+@pytest.mark.asyncio
+async def test_resources_reports_status_but_no_actions_for_view_only_member(
+    monkeypatch,
+):
+    service = _with_permissions(_InMemoryAzureOrg(), view=True, edit=False)
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is False
+
+
+@pytest.mark.asyncio
+async def test_resources_keeps_listing_status_when_permissions_are_unknown(
+    monkeypatch,
+):
+    service = _InMemoryAzureOrg()
+    service.get_service_hook_permissions = AsyncMock(
+        side_effect=AzureDevOpsApiError(400, 'Bad request.')
+    )
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.can_view_webhooks is True
+    assert status.can_manage_webhooks is True
+
+
+@pytest.mark.asyncio
+async def test_resources_still_reports_other_azure_listing_errors(monkeypatch):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.list_service_hook_subscriptions = AsyncMock(
+        side_effect=AzureDevOpsApiError(500, 'Service unavailable.')
+    )
+    _use_service(monkeypatch, service)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await azure_devops.get_azure_devops_resources(
+            user_id='user-id', organization='alonaking'
+        )
+
+    assert exc_info.value.status_code == 502
+    assert 'Service unavailable.' in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_reinstall_records_who_installed_the_hooks_and_when(
+    monkeypatch, webhook_store
+):
+    _use_service(monkeypatch, _InMemoryAzureOrg())
+
+    await azure_devops.reinstall_azure_devops_webhook(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    record = webhook_store.rows['alonaking']
+    assert record.installed_by_user_id == 'owner-id'
+    assert record.installed_at is not None
+    assert record.last_verified_at == record.installed_at
+    assert (record.pr_subscription_id, record.work_item_subscription_id) == (
+        'new-pr',
+        'new-wi',
+    )
+
+
+@pytest.mark.asyncio
+async def test_uninstall_deletes_the_install_record(monkeypatch, webhook_store):
+    _use_service(monkeypatch, _InMemoryAzureOrg())
+    await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+
+    await azure_devops.uninstall_azure_devops_webhook(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    assert webhook_store.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_member_without_view_permission_sees_the_recorded_install(
+    monkeypatch, webhook_store
+):
+    service = _with_permissions(_InMemoryAzureOrg(), view=False, edit=False)
+    service.list_service_hook_subscriptions = AsyncMock(return_value=[])
+    _use_service(monkeypatch, service)
+    record = await webhook_store.record_install(
+        'AlonaKing',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='member-id', organization='alonaking'
+    )
+
+    assert status.can_view_webhooks is False
+    assert status.install_recorded is True
+    assert status.installed_at == record.installed_at
+    assert status.last_verified_at == record.last_verified_at
+    assert webhook_store.rows['alonaking'] is record
+    service.list_service_hook_subscriptions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_without_view_permission_and_no_record_sees_none(monkeypatch):
+    service = _with_permissions(_InMemoryAzureOrg(), view=False, edit=False)
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='member-id', organization='alonaking'
+    )
+
+    assert status.install_recorded is False
+    assert status.installed_at is None
+
+
+@pytest.mark.asyncio
+async def test_viewer_who_sees_installed_hooks_backfills_the_record(
+    monkeypatch, webhook_store
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    _use_service(monkeypatch, service)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    record = webhook_store.rows['alonaking']
+    assert status.install_recorded is True
+    # Installed outside OpenHands (or before records existed): no install date.
+    assert record.installed_at is None and status.installed_at is None
+    assert record.last_verified_at is not None
+    assert status.last_verified_at == record.last_verified_at
+
+
+@pytest.mark.asyncio
+async def test_viewer_keeps_original_install_details_when_reverifying(
+    monkeypatch, webhook_store
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    _use_service(monkeypatch, service)
+    installed = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    record = await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+    record.installed_at = record.last_verified_at = installed
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='other-owner-id', organization='alonaking'
+    )
+
+    assert status.installed_at == installed
+    assert status.last_verified_at > installed
+    assert record.installed_by_user_id == 'owner-id'
+
+
+@pytest.mark.asyncio
+async def test_confirmed_viewer_who_sees_no_hooks_clears_the_record(
+    monkeypatch, webhook_store
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.hooks = {}
+    _use_service(monkeypatch, service)
+    await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is False
+    assert status.install_recorded is False
+    assert webhook_store.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_empty_listing_does_not_clear_the_record(
+    monkeypatch, webhook_store
+):
+    # The permission check failed, so an empty list may only mean the user
+    # can't see the hooks.
+    service = _InMemoryAzureOrg()
+    service.hooks = {}
+    service.get_service_hook_permissions = AsyncMock(
+        side_effect=AzureDevOpsApiError(400, 'Bad request.')
+    )
+    _use_service(monkeypatch, service)
+    await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='member-id', organization='alonaking'
+    )
+
+    assert status.install_recorded is True
+    assert 'alonaking' in webhook_store.rows
+
+
+@pytest.mark.asyncio
+async def test_status_still_returns_when_the_record_store_fails(monkeypatch):
+    service = _with_permissions(_InMemoryAzureOrg())
+    _use_service(monkeypatch, service)
+    broken = MagicMock()
+    broken.record_verified = AsyncMock(side_effect=RuntimeError('db down'))
+    monkeypatch.setattr(azure_devops, 'azure_devops_webhook_store', broken)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is True
+    assert status.install_recorded is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'remaining',
+    [
+        # Both hooks still exist but Azure paused deliveries.
+        {
+            'old-pr': _hook(
+                'old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'onProbation'
+            ),
+            'old-wi': _hook(
+                'old-wi',
+                azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT,
+                'onProbation',
+            ),
+        },
+        {
+            'old-pr': _hook(
+                'old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT, 'disabledBySystem'
+            ),
+            'old-wi': _hook(
+                'old-wi', azure_devops.AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT
+            ),
+        },
+        # Only one of the two hooks is left.
+        {'old-pr': _hook('old-pr', azure_devops.AZURE_DEVOPS_PR_COMMENT_EVENT)},
+    ],
+)
+async def test_hooks_that_still_exist_keep_the_install_record(
+    monkeypatch, webhook_store, remaining
+):
+    service = _with_permissions(_InMemoryAzureOrg())
+    service.hooks = remaining
+    _use_service(monkeypatch, service)
+    installed = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    record = await webhook_store.record_install(
+        'alonaking',
+        user_id='owner-id',
+        pr_subscription_id='old-pr',
+        work_item_subscription_id='old-wi',
+    )
+    record.installed_at = record.last_verified_at = installed
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='owner-id', organization='alonaking'
+    )
+
+    assert status.webhook_installed is False
+    assert status.install_recorded is True
+    assert status.installed_at == installed
+    # Not reconfirmed while the hooks aren't delivering.
+    assert status.last_verified_at == installed
+    assert webhook_store.rows['alonaking'].installed_by_user_id == 'owner-id'

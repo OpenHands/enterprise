@@ -32,6 +32,9 @@ import aiohttp
 import jmespath
 from jmespath import exceptions as jmespath_exceptions
 
+from integrations.azure_devops.azure_devops_payload import (
+    extract_org as extract_azure_devops_org,
+)
 from integrations.resolver_org_router import resolve_org_for_repo
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -47,7 +50,8 @@ from storage.redis import get_redis_client_async
 
 # Cache TTL constants
 ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
-USER_ID_CACHE_TTL_SECONDS = 86400  # 24 hours for user ID mappings (never change)
+# OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
+USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
 DEFAULT_ORG_FALLBACK_CACHE_TTL_SECONDS = 300
 REQUESTED_EVENT_TYPES_CACHE_TTL_SECONDS = int(
@@ -60,6 +64,24 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
+
+
+def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
+    return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+async def invalidate_user_id_cache(
+    provider: ProviderType, provider_user_id: int | str
+) -> None:
+    """Drop the cached provider user → OpenHands user mapping, hit or miss."""
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(_user_id_cache_key(provider, provider_user_id))
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate user ID cache for '
+            f'{provider.value} user {provider_user_id}: {e}'
+        )
 
 
 @dataclass
@@ -226,6 +248,12 @@ class AutomationEventService:
         self, provider: ProviderType, payload: dict[str, Any], event_type: str | None
     ) -> bool:
         """Return whether this provider event should be forwarded."""
+        if provider == ProviderType.AZURE_DEVOPS:
+            # The automation service has no Azure DevOps detection rules, so
+            # asking which event types it wants would cost a signed request per
+            # event and then forward anyway.
+            return True
+
         source = provider.value
         metadata = await self._get_requested_event_metadata(source)
         if metadata is None:
@@ -524,6 +552,10 @@ class AutomationEventService:
             repo = self._extract_bitbucket_data_center_repository(payload)
             project = repo.get('project') or {}
             return project.get('key'), 'Project', None
+        if provider == ProviderType.AZURE_DEVOPS:
+            # Azure DevOps org claims hold the organization name. There is no
+            # user owner to fall back to.
+            return extract_azure_devops_org(payload) or None, 'Organization', None
 
         logger.warning(f'Unsupported provider ({provider.value})')
         return None, None, None
@@ -648,14 +680,14 @@ class AutomationEventService:
         """
         Convert a provider user ID to a Keycloak user ID.
 
-        Uses Redis caching with 24-hour TTL since this mapping never changes.
-        Caches negative results to avoid repeated Keycloak queries.
+        Uses Redis caching with a 24-hour TTL, including negative results to
+        avoid repeated lookups. OAuth v2 link and unlink invalidate the entry.
 
         Args:
             provider: The Git provider type
             provider_user_id: The user ID from the provider
         """
-        cache_key = f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+        cache_key = _user_id_cache_key(provider, provider_user_id)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)

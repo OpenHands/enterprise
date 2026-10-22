@@ -36,6 +36,7 @@ from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
     ACPAgentSettings,
@@ -46,6 +47,12 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+    fold_retired_tool_switches,
+)
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 logger = logging.getLogger(__name__)
@@ -54,14 +61,23 @@ logger = logging.getLogger(__name__)
 # - github:owner/repo format
 _GITHUB_SOURCE_PATTERN = re.compile(r'^github:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$')
 # - Git URLs (https, git, ssh protocols). '~' in paths covers Bitbucket Data
-#   Center personal repos (/scm/~user/repo); userinfo may only be a bare
-#   username — 'user:password@' forms stay rejected.
+#   Center personal repos (/scm/~user/repo); '%XX' escapes cover encoded path
+#   segments such as Azure DevOps project names with spaces (/Web%20Apps/).
+#   userinfo may only be a bare username — 'user:password@' forms stay rejected.
 _GIT_URL_PATTERN = re.compile(
     r'^(https?://(?:[a-zA-Z0-9_.-]+@)?|git@|ssh://(?:[a-zA-Z0-9_.-]+@)?|git://)'
-    r'[a-zA-Z0-9_.-]+[:/][a-zA-Z0-9_.~/-]+$'
+    r'[a-zA-Z0-9_.-]+[:/](?:[a-zA-Z0-9_.~/-]|%[0-9a-fA-F]{2})+$'
 )
+# Escapes that decode to control characters or path separators.
+_UNSAFE_PERCENT_ESCAPE = re.compile(r'%(?:[01][0-9a-fA-F]|7[fF]|2[fF]|5[cC])')
 # - Relative local paths (no absolute paths, no parent traversal)
 _LOCAL_PATH_PATTERN = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_./-]*$')
+# A host name, optional port and path, e.g. 'github.com/owner/repo': a
+# repository URL without its scheme. The agent-server would read it as a
+# sandbox path.
+_HOST_WITHOUT_SCHEME_PATTERN = re.compile(
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?::[0-9]{1,5})?/[^/]'
+)
 
 
 class MarketplaceScope(str, Enum):
@@ -172,11 +188,18 @@ class MarketplaceRegistration(BaseModel):
         if not v or not v.strip():
             raise ValueError('source cannot be empty')
         v = v.strip()
+        if _HOST_WITHOUT_SCHEME_PATTERN.match(v):
+            v = f'https://{v}'
 
         # Check for valid source patterns
         if _GITHUB_SOURCE_PATTERN.match(v):
             return v
         if _GIT_URL_PATTERN.match(v):
+            if _UNSAFE_PERCENT_ESCAPE.search(v):
+                raise ValueError(
+                    'source cannot contain percent-encoded control characters '
+                    'or path separators'
+                )
             return v
         # Local path: must be relative, no parent traversal
         if v.startswith('/'):
@@ -635,9 +658,55 @@ def _load_persisted_agent_settings(
     Routes the raw payload through :func:`validate_agent_settings`, which
     applies registered schema migrations, canonicalizes the legacy
     ``agent_kind: 'llm'`` tag to ``'openhands'``, and validates against the
-    discriminated :data:`AgentSettingsConfig` union.
+    discriminated :data:`AgentSettingsConfig` union. Rows without a
+    ``schema_version`` are migrated as legacy rows, not rejected as requests.
     """
-    return validate_agent_settings(data or {})
+    return validate_agent_settings(data or {}, persisted=True)
+
+
+def agent_llm(agent_settings: AgentSettingsConfig) -> LLM | None:
+    """The OpenHands agent's LLM, or None for an ACP agent.
+
+    ACP agents make their own model calls, and SDK 1.56 removed the unused
+    ``llm`` that ACP settings used to carry.
+    """
+    return getattr(agent_settings, 'llm', None)
+
+
+# From this schema version on, rows hold sub-agents in ``tools`` and any
+# retired switch beside them is a stale copy.
+_SWITCHES_FOLDED_SCHEMA_VERSION = 8
+
+
+def normalize_member_agent_settings_diff(diff: dict[str, Any]) -> dict[str, Any]:
+    """Prepare a member's stored agent settings for merging over the org's dump.
+
+    The org's dump is at the current schema version, so a member diff without
+    its own ``schema_version`` gets no SDK migrations once merged. The retired
+    tool switches are folded into ``tools`` when the diff has no version,
+    dropped when ``tools`` already holds them, and otherwise left for the SDK's
+    migrations.
+    """
+    if not any(key in diff for key in RETIRED_TOOL_SWITCHES):
+        return diff
+    version = diff.get('schema_version')
+    if version is None:
+        return fold_retired_tool_switches_into_json(diff)
+    if isinstance(version, int) and version >= _SWITCHES_FOLDED_SCHEMA_VERSION:
+        return drop_retired_tool_switches(diff)
+    return diff
+
+
+def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]:
+    """Fold a sparse diff's retired tool switches into JSON ``tools`` entries."""
+    folded = fold_retired_tool_switches(diff, sparse=True)
+    tools = folded.get('tools')
+    if isinstance(tools, list):
+        folded['tools'] = [
+            tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
+            for tool in tools
+        ]
+    return folded
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
@@ -818,7 +887,8 @@ class Settings(BaseModel):
 
     @property
     def llm_api_key_is_set(self) -> bool:
-        raw = self.agent_settings.llm.api_key
+        llm = agent_llm(self.agent_settings)
+        raw = llm.api_key if llm is not None else None
         if raw is None:
             return False
         secret_value = (
@@ -861,6 +931,9 @@ class Settings(BaseModel):
 
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
+            # Older clients still send the SDK's retired tool switches, which it
+            # now rejects; fold them into ``tools`` as the SDK used to.
+            agent_update = fold_retired_tool_switches(agent_update, sparse=True)
             coerced: dict[str, Any] = {}
             for key, value in agent_update.items():
                 coerced[key] = (
@@ -1002,9 +1075,12 @@ class Settings(BaseModel):
         # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
         # update value is shared with ``llm_profiles.profiles[name]``.
         llm = self.llm_profiles.require(name)
-        self.agent_settings = self.agent_settings.model_copy(
-            update={'llm': llm.model_copy()}
-        )
+        # ACP settings have no ``llm``; the profile stays active for the
+        # OpenHands agent.
+        if isinstance(self.agent_settings, OpenHandsAgentSettings):
+            self.agent_settings = self.agent_settings.model_copy(
+                update={'llm': llm.model_copy()}
+            )
         self.llm_profiles.active = name
 
     def delete_profile(self, name: str) -> bool:

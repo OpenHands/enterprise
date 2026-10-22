@@ -15,6 +15,8 @@
 #   AGENT_CANVAS_REF        git tag/branch/commit to build (default: v1.21.0)
 #   AGENT_CANVAS_REPO       repository URL
 #   AGENT_CANVAS_CACHE_DIR  where to keep the checkout (default: frontend/.cache/agent-canvas)
+#   AGENT_CANVAS_SOURCE_DIR an already-fetched source tree to build as-is, skipping
+#                           the clone (used by containers/app/Dockerfile)
 set -euo pipefail
 
 # Never prompt for credentials: without this, an unreachable/private repo makes
@@ -41,11 +43,14 @@ CANVAS_BASE_PATH="${AGENT_CANVAS_BASE_PATH:-/canvas}"
 # When set, VITE_LOCK_TO_CLOUD is passed to the Canvas build.
 CANVAS_LOCK_TO_CLOUD="${AGENT_CANVAS_LOCK_TO_CLOUD:-}"
 
-echo "Building Agent Canvas ($CANVAS_REF) -> $OUT_DIR"
+echo "Building Agent Canvas (${AGENT_CANVAS_SOURCE_DIR:+pre-fetched source at }${AGENT_CANVAS_SOURCE_DIR:-$CANVAS_REF}) -> $OUT_DIR"
 
 # The Canvas build is large and immutable per ref, so a full re-run is only
 # needed when the ref changes. Reuse the checkout when the ref is unchanged.
-if [ -d "$CACHE_DIR/.git" ] && [ "$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)" != "" ] \
+if [ -n "${AGENT_CANVAS_SOURCE_DIR:-}" ]; then
+  CACHE_DIR="$AGENT_CANVAS_SOURCE_DIR"
+  echo "Using pre-fetched source at $CACHE_DIR"
+elif [ -d "$CACHE_DIR/.git" ] && [ "$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)" != "" ] \
   && [ "$(git -C "$CACHE_DIR" describe --tags --always 2>/dev/null || true)" = "$CANVAS_REF" ]; then
   echo "Reusing cached checkout at $CACHE_DIR"
 else

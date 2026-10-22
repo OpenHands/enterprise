@@ -93,7 +93,7 @@ function OrgComparePicker({
         onClick={() => setOpen((current) => !current)}
         className={cn(
           formControlFilterTriggerClassName,
-          "w-36 max-w-36 justify-between gap-1.5",
+          "w-44 max-w-44 justify-between gap-1.5",
         )}
       >
         <span className="min-w-0 truncate">{label}</span>

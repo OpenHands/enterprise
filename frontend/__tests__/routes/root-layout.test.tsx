@@ -416,12 +416,6 @@ describe("MainApp", () => {
 
     describe("when enable_oauth_v2_login is on", () => {
       beforeEach(() => {
-        // /oauth/idp-login is a backend-only endpoint, so the redirect is a
-        // full page navigation (window.location.href) rather than
-        // client-side routing; jsdom doesn't implement real navigation, so
-        // stub location with a plain mutable object to observe the write.
-        vi.stubGlobal("location", { href: "" });
-
         // @ts-expect-error - partial mock for testing
         vi.spyOn(OptionService, "getConfig").mockResolvedValue({
           app_mode: "saas",
@@ -443,23 +437,25 @@ describe("MainApp", () => {
         });
       });
 
-      it("should hard-redirect to /oauth/idp-login instead of /login", async () => {
+      // The chooser screen populated from `auth_providers` branding (and the
+      // single-provider auto-redirect convenience) now lives on `/login`
+      // itself (see `#/routes/login`), so root-layout routes there via
+      // client-side navigation the same way it does when the flag is off --
+      // it no longer hard-redirects straight to the backend's
+      // `/oauth/idp-login` shortcut.
+      it("should still route to /login rather than hard-redirecting to /oauth/idp-login", async () => {
         renderWithLoginStub(RouterStubWithLogin, ["/"]);
 
         await waitFor(() => {
-          expect(window.location.href).toContain("/oauth/idp-login");
+          expect(screen.getByTestId("login-page")).toBeInTheDocument();
         });
-
-        expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
       });
 
-      it("should forward the current path as redirect_url", async () => {
+      it("should still route to /login (with its returnTo param) when on a specific page", async () => {
         renderWithLoginStub(RouterStubWithLogin, ["/settings"]);
 
         await waitFor(() => {
-          expect(window.location.href).toContain(
-            `/oauth/idp-login?redirect_url=${encodeURIComponent("/settings")}`,
-          );
+          expect(screen.getByTestId("login-page")).toBeInTheDocument();
         });
       });
     });

@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import {
   ExportIcon,
@@ -625,7 +626,7 @@ export function ConversationsTab({
                 <th className={usageTableHeaderCellClassName}>Associated PR</th>
                 <th className={usageTableHeaderCellClassName}>Merged?</th>
                 <th className={usageTableHeaderCellClassName}>Agent</th>
-                <th className={usageTableHeaderCellClassName}>Type</th>
+                <th className={usageTableHeaderCellClassName}>Source</th>
                 <th className={usageTableHeaderCellRightClassName}>Stop</th>
               </tr>
             </thead>
@@ -652,8 +653,11 @@ export function ConversationsTab({
                   </tr>
                 )}
               {conversationsData?.items.map((conversation) => {
+                // The stored execution status goes stale when a runtime is
+                // paused or reaped, so also require a live RUNNING sandbox.
                 const isRunning =
-                  conversation.execution_status?.toLowerCase() === "running";
+                  conversation.execution_status?.toLowerCase() === "running" &&
+                  conversation.sandbox_status === "RUNNING";
                 return (
                   <tr
                     key={conversation.id}
@@ -840,6 +844,7 @@ export function UsersTab({
   userUsage?: UserUsageResponse;
   userUsageLoading: boolean;
 }) {
+  const { t } = useTranslation();
   const showOrgColumn =
     userUsage?.items.some((user) => Boolean(user.org_name)) === true;
   const userColumnCount = showOrgColumn ? 12 : 11;
@@ -961,7 +966,7 @@ export function UsersTab({
                     {formatCost(user.spend_lifetime)}
                   </td>
                   <td className={cn(usageTableCellClassName, "text-muted")}>
-                    {formatBudget(user)}
+                    {formatBudget(user, t)}
                   </td>
                   <td
                     className={cn(usageTableCellRightClassName, "text-muted")}

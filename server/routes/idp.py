@@ -6,23 +6,24 @@ no real IDP configured yet, with their first administrator account bootstrapped
 directly, instead of standing up an external IDP just to get started.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
-regular IDP provider, and (since migration 179) *is* one: a real row in
-``oauth_providers`` (``provider_category=INTEGRATED_IDP_CATEGORY``) seeded
-once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an in-memory
-sentinel re-checked on every request. This removes the need to special-case
-it anywhere: whether it is "available" is simply whether that row exists
-(``_get_integrated_idp_provider``), and every session authenticated through
-it carries the row's real id wherever a provider id is needed, including the
-``openhands_auth`` cookie — the same as a real external IDP. Subsequent
-enable/disable is expected to go through a future ``oauth_providers`` CRUD
-API, not this env var (which is only read by the migration).
+regular IDP provider, and (since migration 179, reshaped by migration 186)
+*is* one: a real row in ``auth_providers`` (``kind='PasswordProviderDetails'``)
+seeded once from the ``ENABLE_INTEGRATED_IDP`` env var, rather than an
+in-memory sentinel re-checked on every request. This removes the need to
+special-case it anywhere: whether it is "available" is simply whether that
+row exists (``_get_integrated_idp_provider``), and every session
+authenticated through it carries the row's real id wherever a provider id is
+needed, including the ``openhands_auth`` cookie — the same as a real
+external IDP. Subsequent enable/disable goes through the ``auth_providers``
+CRUD API (``server.routes.oauth_providers_admin``), not this env var (which
+is only read by the migration).
 
-* ``OAuthProviderStore.get_first_idp()`` picks whichever ``is_idp`` row was
+* ``AuthProviderStore.get_first_idp()`` picks whichever ``is_idp`` row was
   created most recently — no special-casing of the integrated IDP vs. a
   configured real IDP.
 * ``GET /oauth/idp-login`` redirects to ``/oauth/{id}/login`` for that row,
-  which ``oauth_v2`` intercepts (by ``provider_category``, not by id) and
-  redirects to the fixed ``/oauth/idp/login`` page served by this module.
+  which ``oauth_v2`` intercepts (by ``kind``, not by id) and redirects to
+  the fixed ``/oauth/idp/login`` page served by this module.
 * Unlike a real IDP, this one requires a **password**: ``GET
   /oauth/idp/login`` and ``GET /oauth/idp/signup`` serve HTML
   email+password forms; the corresponding ``POST`` routes verify credentials
@@ -91,13 +92,14 @@ import html
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
@@ -121,9 +123,11 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import PasswordProviderDetails
+from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.default_org_service import DefaultOrgBootstrapService
-from storage.oauth_provider import INTEGRATED_IDP_CATEGORY, OAuthProvider
-from storage.oauth_provider_store import OAuthProviderStore
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
@@ -135,7 +139,7 @@ idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
 # Fixed path segments for the dev IDP's own login/signup pages — not keyed by
 # the provider's DB id. ``server.routes.oauth_v2`` redirects here once it
-# intercepts a login/callback for the ``INTEGRATED_IDP_CATEGORY`` row. Named
+# intercepts a login/callback for the ``PasswordProviderDetails`` row. Named
 # "idp" rather than "dev-idp" because this is an integrated IDP offered to
 # customers who are evaluating the product or have no real IDP of their own,
 # not merely a developer-only tool.
@@ -273,8 +277,8 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
 
 
-async def _get_integrated_idp_provider() -> OAuthProvider | None:
-    """Return the integrated/password IDP's ``oauth_providers`` row, if any.
+async def _get_integrated_idp_provider() -> AuthProvider | None:
+    """Return the integrated/password IDP's ``auth_providers`` row, if any.
 
     The single source of truth for whether the integrated IDP is available
     and, when it is, which row backs it: used both to gate every route in
@@ -282,13 +286,13 @@ async def _get_integrated_idp_provider() -> OAuthProvider | None:
     resolve the id baked into the ``openhands_auth`` cookie at login
     (``_complete_idp_login``), so the two can never disagree.
     """
-    return await OAuthProviderStore().get_first_by_category(INTEGRATED_IDP_CATEGORY)
+    return await AuthProviderStore().get_first_by_kind(PasswordProviderDetails.__name__)
 
 
 async def is_idp_available() -> bool:
     """Whether the dev IDP login path is available on this deployment.
 
-    Governed solely by whether migration 179 seeded an ``oauth_providers``
+    Governed solely by whether migration 179 seeded an ``auth_providers``
     row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
     migration time). Whether a real IDP is *also* configured does not affect
     availability.
@@ -487,12 +491,30 @@ def _render_invite_form(
     )
 
 
-async def _require_idp_available() -> None:
-    if not await is_idp_available():
+async def _require_idp_available() -> AuthProvider:
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
         )
+    return provider
+
+
+async def _find_existing_user(provider: AuthProvider, email: str) -> User | None:
+    """Resolve the user behind a password-IDP identity (the normalized email).
+
+    The ``auth_provider_users`` link is checked first; accounts that predate
+    it are found by derived id, then by email, and get linked on their next
+    successful login (``_complete_idp_login``).
+    """
+    link = await AuthProviderUserStore().get(provider.id, email)
+    if link is not None:
+        return await UserStore.get_user_by_id(str(link.user_id))
+    user = await UserStore.get_user_by_id(derive_idp_user_id(email))
+    if user is None:
+        user = await UserStore.get_user_by_email(email)
+    return user
 
 
 def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
@@ -585,15 +607,13 @@ async def idp_login(
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
-    user = await UserStore.get_user_by_id(derive_idp_user_id(email_str))
-    if user is None:
-        user = await UserStore.get_user_by_email(email_str)
+    user = await _find_existing_user(provider, email_str)
 
     if (
         user is None
@@ -643,7 +663,7 @@ async def idp_signup(
     (password already set), a too-short password, or a confirm-password
     mismatch.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
@@ -670,9 +690,7 @@ async def idp_signup(
         )
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
 
     if existing is not None and (existing.is_disabled or existing.deletion_pending):
         return RedirectResponse(
@@ -719,7 +737,9 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        user = await UserStore.create_user(
+            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
+        )
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -823,8 +843,8 @@ async def idp_invite_accept(
     invite that was never completed, or an ordinary existing user who needs
     their password reset by an admin). A genuinely new email instead
     creates a brand-new account via ``UserStore.create_user``, exactly like
-    the bootstrap sign-up form, including default-org bootstrap and TOS
-    auto-acceptance in ``_complete_idp_login``. Whether the recipient ends
+    the bootstrap sign-up form, including default-org bootstrap and the TOS
+    detour in ``_complete_idp_login``. Whether the recipient ends
     up with an org membership or the instance-level super-admin role
     depends on the token's ``role`` claim, set at mint time by the super
     admin who called ``create_signup_link``: an org-scoped role (with
@@ -832,7 +852,7 @@ async def idp_invite_accept(
     — a no-op if they're already a member — while
     ``_SIGNUP_LINK_ROLE_SUPERADMIN`` instead grants the super-admin role.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     try:
         link = _verify_signup_link_token(token)
@@ -849,9 +869,7 @@ async def idp_invite_accept(
         return _invite_form_redirect(web_url, token=token, error='password_too_short')
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
 
     if existing is not None and (existing.is_disabled or existing.deletion_pending):
         return RedirectResponse(
@@ -873,7 +891,9 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        user = await UserStore.create_user(
+            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
+        )
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -947,7 +967,9 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
 
     try:
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
-        llm_api_key_secret = settings.agent_settings.llm.api_key
+        llm_api_key_secret = getattr(
+            agent_llm(settings.agent_settings), 'api_key', None
+        )
         llm_api_key = (
             llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
         )
@@ -1113,13 +1135,16 @@ async def _complete_idp_login(
         )
 
     user_id = str(user.id)
-
-    # Auto-accept TOS in dev mode — the dev IDP is for trial/dev only and
-    # requiring TOS acceptance adds friction without security value.
     has_accepted_tos = user.accepted_tos is not None
-    if not has_accepted_tos:
-        await _accept_tos_for_idp_user(user_id)
-        has_accepted_tos = True
+
+    link_store = AuthProviderUserStore()
+    if await link_store.get(provider.id, email) is None:
+        await link_store.link(
+            oauth_provider_id=provider.id,
+            user_id=user.id,
+            external_subject_id=email,
+            external_email=email,
+        )
 
     await UserStore.record_login(user_id)
 
@@ -1145,13 +1170,22 @@ async def _complete_idp_login(
     web_url = get_web_url(request)
     final_redirect_url = redirect_url or '/'
 
-    from server.routes.auth import _get_post_auth_redirect
+    if has_accepted_tos:
+        from server.routes.auth import _get_post_auth_redirect
 
-    # Same destination rules as the Keycloak callbacks: the first Super
-    # Admin's install wizard, then onboarding, then the requested page.
-    final_redirect_url = await _get_post_auth_redirect(
-        user_id, final_redirect_url, web_url, user
-    )
+        # Same destination rules as the Keycloak callbacks: the first Super
+        # Admin's install wizard, then onboarding, then the requested page.
+        final_redirect_url = await _get_post_auth_redirect(
+            user_id, final_redirect_url, web_url, user
+        )
+    else:
+        # Mirror oauth_v2_callback / saml_acs: detour through the TOS page
+        # when it hasn't been accepted yet. Onboarding/install-wizard
+        # redirects are deferred to ``/api/accept_tos`` (via
+        # ``_get_post_auth_redirect``), which only runs once TOS is
+        # actually accepted.
+        encoded_redirect_url = quote(final_redirect_url, safe='')
+        final_redirect_url = f'{web_url}/accept-tos?redirect_url={encoded_redirect_url}'
 
     response = RedirectResponse(final_redirect_url, status_code=302)
 
@@ -1319,7 +1353,7 @@ def _set_idp_cookie(
     Mirrors ``_set_oauth_v2_cookie`` from ``oauth_v2.py`` but with no IDP
     token expiry (the integrated IDP has no external token to refresh).
     ``idp_provider_id`` is still baked in (the integrated IDP's real
-    ``oauth_providers.id``, resolved by the caller) so IDP-token refresh can
+    ``auth_providers.id``, resolved by the caller) so IDP-token refresh can
     identify this session the same uniform way as a real external IDP.
     """
     from server.auth.oauth_v2_refresh import COOKIE_MAX_AGE_CAP_SECONDS
@@ -1357,25 +1391,6 @@ async def _set_password_hash(user_id: str, password_hash: str) -> None:
         if user is None:
             return
         user.password_hash = password_hash
-        await session.commit()
-
-
-async def _accept_tos_for_idp_user(user_id: str) -> None:
-    """Auto-accept TOS for a dev IDP user (dev mode only)."""
-    from sqlalchemy import select
-
-    from storage.database import a_session_maker
-
-    accepted_tos = datetime.now(timezone.utc).replace(tzinfo=None)
-    async with a_session_maker() as session:
-        result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        if user is None:
-            return
-        user.accepted_tos = accepted_tos
-        user.user_consents_to_analytics = True
         await session.commit()
 
 

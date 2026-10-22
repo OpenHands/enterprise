@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
+import { SettingsTextarea } from "#/components/features/settings/settings-textarea";
 import { SuperAdminSearchField as SuperAdminSearchInput } from "#/components/features/super-admin/super-admin-search-field";
 import { ContextMenuListItem } from "#/components/features/context-menu/context-menu-list-item";
 import { ContextMenu } from "#/ui/context-menu";
@@ -31,7 +32,7 @@ import type { SuperAdminMembership } from "./super-admin-types";
 
 interface SuperAdminPageHeaderProps {
   title: string;
-  subtitle: string;
+  subtitle: ReactNode;
   action?: ReactNode;
 }
 
@@ -89,6 +90,8 @@ interface SuperAdminTableProps<T> {
   getRowKey: (row: T) => string;
   empty: string;
   onRowClick?: (row: T) => void;
+  /** Rows this returns false for get no click handler or pointer cursor. */
+  isRowClickable?: (row: T) => boolean;
 }
 
 export function SuperAdminTable<T>({
@@ -98,7 +101,10 @@ export function SuperAdminTable<T>({
   getRowKey,
   empty,
   onRowClick,
+  isRowClickable,
 }: SuperAdminTableProps<T>) {
+  const isClickable = (row: T) =>
+    onRowClick !== undefined && (isRowClickable?.(row) ?? true);
   return (
     <div
       data-testid={testId}
@@ -143,9 +149,13 @@ export function SuperAdminTable<T>({
                   key={getRowKey(row)}
                   className={cn(
                     settingsListTableRowClassName,
-                    onRowClick && "cursor-pointer",
+                    isClickable(row) && "cursor-pointer",
                   )}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  onClick={
+                    onRowClick && isClickable(row)
+                      ? () => onRowClick(row)
+                      : undefined
+                  }
                 >
                   {columns.map((column) => (
                     <td
@@ -374,4 +384,9 @@ export function SuperAdminStatusLabel({ status }: { status: string }) {
   );
 }
 
-export { BrandButton, SettingsInput, USER_TABLE_CELL_CLASS_NAME };
+export {
+  BrandButton,
+  SettingsInput,
+  SettingsTextarea,
+  USER_TABLE_CELL_CLASS_NAME,
+};

@@ -369,6 +369,37 @@ async def test_conversation_trigger_detected_from_tags(
 
 
 @pytest.mark.asyncio
+async def test_conversation_without_trigger_or_automation_tags_defaults_to_api_key(
+    async_session, service, sandbox_record
+):
+    """Conversations created directly on the agent-server are attributed to the API."""
+    conversation_info = _make_llm_conversation_info().model_copy(
+        update={'tags': {'origin': 'sdk-script'}}
+    )
+    existing = AppConversationInfo(
+        id=conversation_info.id,
+        title='Test',
+        sandbox_id=sandbox_record.id,
+        created_by_user_id=sandbox_record.created_by_user_id,
+        trigger=None,
+    )
+
+    with patch(
+        'openhands.app_server.event_callback.webhook_router.valid_conversation',
+        return_value=existing,
+    ):
+        await on_conversation_update(
+            conversation_info=conversation_info,
+            sandbox_record=sandbox_record,
+            app_conversation_info_service=service,
+        )
+
+    saved = await service.get_app_conversation_info(conversation_info.id)
+    assert saved.trigger == ConversationTrigger.REMOTE_API_KEY
+    assert 'clientsource' not in saved.tags
+
+
+@pytest.mark.asyncio
 async def test_gui_trigger_stamps_clientsource_tag(
     async_session, service, sandbox_record
 ):

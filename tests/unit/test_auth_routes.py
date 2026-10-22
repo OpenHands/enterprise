@@ -2640,6 +2640,7 @@ async def test_accept_tos_stores_timezone_naive_datetime(mock_request):
     mock_session_context.__aexit__.return_value = None
 
     mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.oauth_v2_cookie = False
     mock_user_auth.get_access_token = AsyncMock(
         return_value=SecretStr('test_access_token')
     )
@@ -2696,6 +2697,7 @@ async def test_accept_tos_preserves_offline_flow_redirect(mock_request):
     mock_session_context.__aexit__.return_value = None
 
     mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.oauth_v2_cookie = False
     mock_user_auth.get_access_token = AsyncMock(
         return_value=SecretStr('test_access_token')
     )
@@ -2734,6 +2736,117 @@ async def test_accept_tos_preserves_offline_flow_redirect(mock_request):
 
         response_body = json.loads(result.body.decode())
         assert response_body['redirect_url'] == offline_redirect_url
+
+
+@pytest.mark.asyncio
+async def test_accept_tos_succeeds_for_oauth_v2_cookie_session_without_tokens(
+    mock_request,
+):
+    """SAML/oauth_v2/integrated-IDP sessions carry no access/refresh token at
+    all (``saas_user_auth_from_oauth_v2_cookie`` always sets
+    ``refresh_token=SecretStr('')``, and ``get_access_token()`` returns
+    ``None`` whenever the IDP has no token to refresh, e.g. SAML). This must
+    not be treated as "missing authentication state" -- ``user_id`` alone is
+    sufficient, and the small ``openhands_auth`` cookie (not the legacy
+    ``keycloak_auth`` one) must be the one re-minted.
+    """
+    test_user_id = '12345678-1234-5678-1234-567812345678'
+
+    mock_user = MagicMock()
+    mock_user.id = test_user_id
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+
+    mock_session = AsyncMock()
+    mock_session.execute.return_value = mock_result
+    mock_session.commit = AsyncMock()
+
+    mock_session_context = AsyncMock()
+    mock_session_context.__aenter__.return_value = mock_session
+    mock_session_context.__aexit__.return_value = None
+
+    mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.oauth_v2_cookie = True
+    mock_user_auth.get_access_token = AsyncMock(return_value=None)
+    mock_user_auth.refresh_token = SecretStr('')
+    mock_user_auth.get_user_id = AsyncMock(return_value=test_user_id)
+    mock_user_auth.idp_provider_id = 7
+    mock_user_auth.access_token_expires_at = None
+    mock_user_auth.idp_refresh_token_expires_at = None
+
+    mock_request.json = AsyncMock(return_value={'redirect_url': 'http://example.com'})
+
+    mock_user_for_onboarding = MagicMock()
+    mock_user_for_onboarding.onboarding_completed = True
+
+    with (
+        patch(
+            'server.routes.auth.get_user_auth', AsyncMock(return_value=mock_user_auth)
+        ),
+        patch('server.routes.auth.a_session_maker', return_value=mock_session_context),
+        patch(
+            'server.auth.provider_identity.set_oauth_v2_cookie'
+        ) as mock_set_oauth_v2_cookie,
+        patch('server.routes.auth.set_response_cookie') as mock_set_response_cookie,
+        patch(
+            'server.routes.auth._get_post_auth_redirect',
+            AsyncMock(return_value='http://example.com'),
+        ),
+    ):
+        result = await accept_tos(mock_request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_200_OK
+    mock_set_response_cookie.assert_not_called()
+    mock_set_oauth_v2_cookie.assert_called_once()
+    call_kwargs = mock_set_oauth_v2_cookie.call_args.kwargs
+    assert call_kwargs['user_id'] == test_user_id
+    assert call_kwargs['accepted_tos'] is True
+    assert call_kwargs['idp_provider_id'] == 7
+
+
+@pytest.mark.asyncio
+async def test_accept_tos_rejects_oauth_v2_cookie_session_without_user_id(
+    mock_request,
+):
+    """Even for an oauth_v2/SAML session, a missing ``user_id`` is still a
+    hard 401 -- the relaxed precondition only drops the token requirement,
+    never the identity check."""
+    mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.oauth_v2_cookie = True
+    mock_user_auth.get_access_token = AsyncMock(return_value=None)
+    mock_user_auth.refresh_token = SecretStr('')
+    mock_user_auth.get_user_id = AsyncMock(return_value=None)
+
+    with patch(
+        'server.routes.auth.get_user_auth', AsyncMock(return_value=mock_user_auth)
+    ):
+        result = await accept_tos(mock_request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_accept_tos_rejects_legacy_cookie_session_without_tokens(mock_request):
+    """A legacy (non-oauth_v2) session still requires real access/refresh
+    tokens, since the ``keycloak_auth`` cookie it re-mints IS that triple."""
+    mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.oauth_v2_cookie = False
+    mock_user_auth.get_access_token = AsyncMock(return_value=None)
+    mock_user_auth.refresh_token = SecretStr('')
+    mock_user_auth.get_user_id = AsyncMock(
+        return_value='12345678-1234-5678-1234-567812345678'
+    )
+
+    with patch(
+        'server.routes.auth.get_user_auth', AsyncMock(return_value=mock_user_auth)
+    ):
+        result = await accept_tos(mock_request)
+
+    assert isinstance(result, JSONResponse)
+    assert result.status_code == status.HTTP_401_UNAUTHORIZED
 
 
 # ---------------------------------------------------------------------------
