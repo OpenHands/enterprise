@@ -75,16 +75,18 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
 def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
     """The host an IdP-sourced git token belongs to.
 
-    A host the user stored with their own token wins. Otherwise a self-hosted
-    install's deployment-wide host is used, so the frontend addresses repositories
-    on it; the hosted services keep ``None``.
+    A host the user stored with their own token wins. Otherwise the install's
+    deployment-wide host is used, so the frontend addresses repositories on it.
+    GitLab always gets one (``gitlab.com`` included): the same provider name
+    covers the hosted service and self-managed instances, so a missing host
+    would read as the hosted service.
     """
     if host:
         return host
     if idp_type == ProviderType.BITBUCKET_DATA_CENTER:
         return BITBUCKET_DATA_CENTER_HOST or None
-    if idp_type == ProviderType.GITLAB and GITLAB_HOST != 'gitlab.com':
-        return GITLAB_HOST
+    if idp_type == ProviderType.GITLAB:
+        return GITLAB_HOST or None
     return None
 
 

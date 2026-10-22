@@ -475,12 +475,12 @@ class TestGetProviderTokensGitLabHost:
         assert result[ProviderType.GITLAB].host == 'custom.gitlab.host'
 
     @pytest.mark.asyncio
-    async def test_hosted_gitlab_keeps_no_host(self):
-        """gitlab.com stays the hosted service: no host, as before."""
+    async def test_hosted_gitlab_reports_its_host_too(self):
+        """gitlab.com is reported as well, so a missing host means an older server."""
         result = await self._provider_tokens('gitlab.com')
 
         assert ProviderType.GITLAB in result
-        assert result[ProviderType.GITLAB].host is None
+        assert result[ProviderType.GITLAB].host == 'gitlab.com'
 
 
 @pytest.mark.asyncio
