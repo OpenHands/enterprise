@@ -18,7 +18,7 @@ services:
 
   app:
     image: *app-image
-    # The image's entrypoint must start as root.
+    # The entrypoint script in the image must run as root.
     user: '0:0'
     depends_on:
       db:
@@ -40,18 +40,18 @@ services:
       OH_DEPLOYMENT_MODE: self_hosted
       OH_APP_MODE: saas
       PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
-      # If you do not browse to localhost, set WEB_HOST and WEB_URL to the address in the browser.
+      # If you open the app on an address other than localhost, set WEB_HOST and WEB_URL to that address.
       WEB_HOST: ${WEB_HOST:-localhost}
       OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
       # Sandboxes reach the app through the proxy.
       OH_SANDBOX_WEB_URL: http://proxy
       RUN_MIGRATIONS_ON_STARTUP: 'true'
-      # Password-based admin login, without Keycloak.
+      # The app uses its own password login, so Keycloak is not needed.
       ENABLE_INTEGRATED_IDP: 'true'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
       ENABLE_SUPER_ADMIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
-      # No LiteLLM proxy: each user adds their own LLM key in Settings.
+      # Each user adds their own LLM key in Settings, so no LiteLLM proxy is needed.
       ENABLE_LEGACY_LITELLM: 'false'
       OH_LLM_MODEL_KIND: server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
       OH_ALLOW_USER_LLM_CONFIGURATION: 'true'
@@ -66,7 +66,7 @@ services:
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
       OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
       AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
-      # Must match AUTOMATION_SERVICE_KEY on automation-server.
+      # This value must match AUTOMATION_SERVICE_KEY on automation-server.
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
@@ -90,7 +90,7 @@ services:
       - '8000'
     volumes:
       - automation-data:/data
-    # localhost resolves to the Docker host, so sandbox URLs reach the proxy.
+    # Sandbox URLs use localhost:3100, so localhost must point to the Docker host, where the proxy listens.
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       - 'localhost:host-gateway'
@@ -110,7 +110,7 @@ services:
       AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
-      # Sandboxes call back to this URL.
+      # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
     healthcheck:
@@ -123,9 +123,9 @@ services:
   canvas-server:
     image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.32.0}
     init: true
-    # Runs only the image's static file server.
+    # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
-    # AGENT_CANVAS_LOCK_TO_CLOUD must be the exact origin in the browser's address bar.
+    # AGENT_CANVAS_LOCK_TO_CLOUD must exactly match the address in your browser, such as http://localhost:3100.
     command:
       - --port
       - '8000'
@@ -147,7 +147,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # The single entry point: routes each request to the right service.
+  # Caddy is used as a reverse proxy, and all traffic is served via localhost:3100.
   proxy:
     image: caddy:2
     depends_on:
@@ -164,7 +164,7 @@ services:
         target: /etc/caddy/Caddyfile
     restart: unless-stopped
 
-  # Runs background jobs, such as sandbox cleanup.
+  # The worker runs background jobs, such as sandbox cleanup.
   worker:
     image: *app-image
     user: '0:0'
@@ -192,13 +192,13 @@ configs:
         admin off
       }
       :80 {
-        # Internal API, used only by automation-server.
+        # Only automation-server uses this API, so the proxy blocks it.
         @internal path /api/service /api/service/*
         handle @internal {
           respond 404
         }
 
-        # /runtime/<sandbox>/<port>/... goes to that port of the sandbox container.
+        # Requests to /runtime/<sandbox>/<port>/ go to that port on the sandbox container.
         @runtime path_regexp runtime ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/(\d+)(/.*)?$$
         handle @runtime {
           uri strip_prefix /runtime/{re.runtime.1}/{re.runtime.2}
