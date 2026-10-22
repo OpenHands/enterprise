@@ -12,7 +12,6 @@ distributed lock; that's exercised separately by the SaaS-specific tests.
 """
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -69,13 +68,9 @@ async def test_client(app):
     the same event loop as the test. This is critical for exercising
     the asyncio.Lock: a separate loop would create its own lock object
     and the requests would no longer serialize."""
-    with patch.dict(os.environ, {'SESSION_API_KEY': ''}, clear=False):
-        with patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None):
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url='http://test'
-            ) as client:
-                yield client
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
+        yield client
 
 
 @pytest.fixture(autouse=True)

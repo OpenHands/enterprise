@@ -85,8 +85,6 @@ class MockUserAuth(UserAuth):
 @pytest.fixture
 def test_client():
     with (
-        patch.dict(os.environ, {'SESSION_API_KEY': ''}, clear=False),
-        patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None),
         patch(
             'openhands.app_server.user_auth.user_auth.UserAuth.get_instance',
             return_value=MockUserAuth(),

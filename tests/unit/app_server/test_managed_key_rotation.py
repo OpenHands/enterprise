@@ -117,12 +117,7 @@ def _make_saas_test_client(
     saas_store = _SaasFileStore(file_store.file_store)  # reuse the same file store
     auth = _MockUserAuth(saas_store)
     with (
-        patch.dict(
-            'os.environ',
-            {'SESSION_API_KEY': '', 'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'},
-            clear=False,
-        ),
-        patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None),
+        patch.dict('os.environ', {'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'}, clear=False),
         patch(
             'openhands.app_server.user_auth.user_auth.UserAuth.get_instance',
             return_value=auth,
