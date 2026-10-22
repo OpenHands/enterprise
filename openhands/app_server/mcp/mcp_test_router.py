@@ -16,6 +16,10 @@ Differences from the sandbox endpoint, by design:
   /api/v1/settings`` applies — so a test exercises exactly the credentials a
   save would persist, without the browser ever seeing them. Restored values are
   scrubbed from the response text.
+- ``${NAME}`` / ``${NAME:-default}`` references are expanded from the secrets a
+  conversation receives (custom secrets and ``<PROVIDER>_TOKEN`` git tokens),
+  never from the app server's environment. A reference without a default that
+  matches no secret fails the test by name instead of being sent literally.
 - OAuth-authenticated servers are not probed here; ``mcp_oauth_router`` runs
   the browser-coordinated OAuth install flow for them.
 - The probe originates from the app-server pod, not from a sandbox, so network
@@ -50,8 +54,9 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import socket
-from typing import Any
+from typing import Any, NamedTuple, cast
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -64,16 +69,22 @@ from openhands.agent_server.mcp_router import (
     MCPToolCallSpec,
     _probe_mcp_server,
 )
+from openhands.app_server.config import depends_user_context
+from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE
 from openhands.app_server.settings.settings_models import (
     Settings,
     _preserve_redacted_mcp_secrets,
 )
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.skills.utils import expand_variable_references
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 _DEFAULT_SERVER_NAME = 'test-server'
+# The references a conversation expands in its MCP config (SDK skills.utils).
+_SECRET_REFERENCE = re.compile(r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)(:-[^}]*)?\}')
 _ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
 # Local development only: lets the probe reach MCP servers on localhost.
 _ALLOW_LOCAL_TARGETS = os.environ.get('MCP_TEST_ALLOW_LOCAL_TARGETS', '').lower() in (
@@ -87,6 +98,7 @@ router = APIRouter(
     tags=['MCP'],
     dependencies=get_dependencies(),
 )
+user_context_dependency = depends_user_context()
 
 
 class MCPTestRequestBody(BaseModel):
@@ -242,6 +254,90 @@ def _scrub_secrets(response: MCPTestResponse, secrets: set[str]) -> MCPTestRespo
     return response
 
 
+class _SecretExpansion(NamedTuple):
+    server: dict[str, Any]
+    values: set[str]
+    missing: list[str]
+
+
+def _collect_references(data: Any, names: set[str], required: set[str]) -> None:
+    """Collect referenced names; ``required`` holds those used without a default."""
+    if isinstance(data, str):
+        for match in _SECRET_REFERENCE.finditer(data):
+            names.add(match.group(1))
+            if match.group(2) is None:
+                required.add(match.group(1))
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            _collect_references(key, names, required)
+            _collect_references(value, names, required)
+    elif isinstance(data, list):
+        for item in data:
+            _collect_references(item, names, required)
+
+
+async def _conversation_secret_values(
+    names: set[str], user_context: UserContext
+) -> dict[str, str]:
+    """Values for ``names`` among the secrets a conversation receives.
+
+    Mirrors conversation setup: custom secrets (personal and org-shared), with
+    git provider tokens exposed as ``<PROVIDER>_TOKEN`` taking precedence.
+    """
+    values: dict[str, str] = {}
+    custom_secrets = await user_context.get_secrets()
+    for name in names:
+        source = custom_secrets.get(name)
+        value = source.get_value() if source else None
+        if value is not None:
+            values[name] = value
+
+    if any(name.endswith('_TOKEN') for name in names):
+        provider_tokens = cast(
+            PROVIDER_TOKEN_TYPE | None, await user_context.get_provider_tokens()
+        )
+        for provider_type, provider_token in (provider_tokens or {}).items():
+            name = f'{provider_type.name}_TOKEN'
+            if name in names and provider_token.token:
+                token = await user_context.get_latest_token(provider_type)
+                if token:
+                    values[name] = token
+    return values
+
+
+async def _expand_secret_references(
+    server: dict[str, Any], user_context: UserContext
+) -> _SecretExpansion:
+    names: set[str] = set()
+    required: set[str] = set()
+    _collect_references(server, names, required)
+    if not names:
+        return _SecretExpansion(server, set(), [])
+
+    values = await _conversation_secret_values(names, user_context)
+    # Only the lookup above: never the app server's own environment.
+    expanded = expand_variable_references(
+        server, get_secret=values.get, check_env=False
+    )
+    return _SecretExpansion(
+        expanded,
+        {value for value in values.values() if value},
+        sorted(required - values.keys()),
+    )
+
+
+def _restore_redacted_server(
+    body: MCPTestRequestBody, settings: Settings | None
+) -> dict[str, Any]:
+    # Always run the restore pass: with no stored match the redaction marker
+    # is dropped rather than sent upstream as a literal credential.
+    restored = _preserve_redacted_mcp_secrets(
+        {body.name: body.server},
+        settings.agent_settings.mcp_config if settings else None,
+    )
+    return restored[body.name]
+
+
 async def prepare_probe_request(
     body: MCPTestRequestBody, settings: Settings | None
 ) -> MCPTestRequest:
@@ -252,13 +348,13 @@ async def prepare_probe_request(
     result against the SDK model, and rejects ``stdio`` servers and targets
     the SSRF guard refuses with 422.
     """
-    # Always run the restore pass: with no stored match the redaction marker
-    # is dropped rather than sent upstream as a literal credential.
-    restored = _preserve_redacted_mcp_secrets(
-        {body.name: body.server},
-        settings.agent_settings.mcp_config if settings else None,
-    )
-    payload = {**body.model_dump(exclude_none=True), 'server': restored[body.name]}
+    return await _validate_probe_request(body, _restore_redacted_server(body, settings))
+
+
+async def _validate_probe_request(
+    body: MCPTestRequestBody, server: dict[str, Any]
+) -> MCPTestRequest:
+    payload = {**body.model_dump(exclude_none=True), 'server': server}
 
     try:
         request = MCPTestRequest.model_validate(payload)
@@ -296,18 +392,35 @@ async def prepare_probe_request(
     description=(
         'Connect to a candidate remote MCP server and list its tools without '
         'persisting any settings. Redacted secrets submitted for an already '
-        'stored server are restored from the saved configuration before the '
-        'connection is attempted. Returns 200 with `ok=false` for connection '
-        'and timeout failures; `stdio` servers and URLs that resolve to '
-        'loopback or link-local addresses are rejected with 422.'
+        'stored server are restored from the saved configuration, and '
+        '`${NAME}` secret references are expanded as a conversation would, '
+        'before the connection is attempted. Returns 200 with `ok=false` for '
+        'connection and timeout failures and for references to secrets that '
+        'are not set; `stdio` servers and URLs that resolve to loopback or '
+        'link-local addresses are rejected with 422.'
     ),
 )
 async def test_mcp_server(
     body: MCPTestRequestBody,
     settings: Settings | None = Depends(get_user_settings),
+    user_context: UserContext = user_context_dependency,
 ) -> MCPTestResponse:
     """Probe a single remote MCP server config and report whether it works."""
-    request = await prepare_probe_request(body, settings)
+    expansion = await _expand_secret_references(
+        _restore_redacted_server(body, settings), user_context
+    )
+    if expansion.missing:
+        # Bare names: settings UIs mask the typed credential, here the
+        # ``${NAME}`` reference itself, wherever it appears in the error.
+        names = ', '.join(expansion.missing)
+        return MCPTestFailure(
+            error=(
+                f'No secret named {names} is set. Add it on the Secrets '
+                'page or correct the reference.'
+            ),
+            error_kind='unknown',
+        )
+    request = await _validate_probe_request(body, expansion.server)
     resolved_server = request.resolved_server
 
     if resolved_server.oauth_auth is not None:
@@ -321,4 +434,4 @@ async def test_mcp_server(
 
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(None, _probe_mcp_server, request, None)
-    return _scrub_secrets(response, _secret_values(resolved_server))
+    return _scrub_secrets(response, _secret_values(resolved_server) | expansion.values)
