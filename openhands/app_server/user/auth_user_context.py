@@ -99,7 +99,7 @@ class AuthUserContext(UserContext):
 
         Args:
             as_env_vars: When True, return a ``dict[str, str]`` mapping env
-                var names (e.g. ``github_token``) to plain-text token values,
+                var names (e.g. ``GITHUB_TOKEN``) to plain-text token values,
                 resolving the latest value at call time.  When False (default),
                 return the raw ``dict[ProviderType, ProviderToken]``.
         """

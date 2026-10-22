@@ -377,7 +377,7 @@ class ProviderHandler:
     @classmethod
     def get_provider_env_key(cls, provider: ProviderType) -> str:
         """Map ProviderType value to the environment variable name in the runtime"""
-        return f'{provider.value}_token'.lower()
+        return f'{provider.name}_TOKEN'
 
     async def verify_repo_provider(
         self,
