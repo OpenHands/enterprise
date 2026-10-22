@@ -410,10 +410,12 @@ async def test_mcp_server(
         _restore_redacted_server(body, settings), user_context
     )
     if expansion.missing:
-        references = ', '.join(f'${{{name}}}' for name in expansion.missing)
+        # Bare names: settings UIs mask the typed credential, here the
+        # ``${NAME}`` reference itself, wherever it appears in the error.
+        names = ', '.join(expansion.missing)
         return MCPTestFailure(
             error=(
-                f'No secret is set for {references}. Add it on the Secrets '
+                f'No secret named {names} is set. Add it on the Secrets '
                 'page or correct the reference.'
             ),
             error_kind='unknown',

@@ -384,7 +384,9 @@ def test_reports_unset_secret_reference_by_name(probe):
     assert response.status_code == 200
     body = response.json()
     assert body['ok'] is False
-    assert '${JIRA_TOKN}' in body['error']
+    assert 'JIRA_TOKN' in body['error']
+    # Agent Canvas masks the typed credential, i.e. the reference itself.
+    assert '${JIRA_TOKN}' not in body['error']
     probe.assert_not_called()
 
 
