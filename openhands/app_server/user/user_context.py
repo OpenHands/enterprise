@@ -62,7 +62,10 @@ class UserContext(ABC):
 
     @abstractmethod
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
         """Get an authenticated git URL for a repository.
 
@@ -70,6 +73,10 @@ class UserContext(ABC):
             repository: Repository name (owner/repo)
             is_optional: If True, logs at debug level instead of error level
                 when repository is not found. Use for optional repositories.
+            specified_provider: If set, resolve only against this provider
+                instead of trying every token in turn. This prevents a
+                host-blind resolver from claiming a same-named repository on
+                the wrong provider.
         """
 
     @abstractmethod

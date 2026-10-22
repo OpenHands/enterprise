@@ -64,7 +64,8 @@ async def test_resume_schedules_git_identity_restore():
 
 
 @pytest.mark.asyncio
-async def test_resume_without_saved_git_identity_does_not_schedule_restore():
+async def test_resume_without_saved_git_identity_still_restores_one():
+    """The resumed sandbox's home is recreated; it gets the default identity."""
     user_context = AsyncMock()
     user_context.get_user_info.return_value = MagicMock(
         git_user_name=None,
@@ -74,9 +75,20 @@ async def test_resume_without_saved_git_identity_does_not_schedule_restore():
     sandbox_service.resume_sandbox.return_value = True
     db_session = AsyncMock()
 
-    with patch(
-        'openhands.app_server.sandbox.sandbox_router.asyncio.create_task'
-    ) as schedule:
+    def create_task(coroutine):
+        coroutine.close()
+        return MagicMock()
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.sandbox_router._restore_git_user_settings_after_resume',
+            new=AsyncMock(),
+        ) as restore,
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.asyncio.create_task',
+            side_effect=create_task,
+        ) as schedule,
+    ):
         await resume_sandbox(
             'sandbox-1',
             user_context,
@@ -85,7 +97,8 @@ async def test_resume_without_saved_git_identity_does_not_schedule_restore():
         )
 
     db_session.commit.assert_awaited_once_with()
-    schedule.assert_not_called()
+    restore.assert_called_once_with('sandbox-1', None, None)
+    schedule.assert_called_once()
 
 
 @pytest.mark.asyncio

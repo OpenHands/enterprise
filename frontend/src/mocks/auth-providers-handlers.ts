@@ -110,6 +110,18 @@ export const AUTH_PROVIDERS_HANDLERS = [
     HttpResponse.json(authProviders),
   ),
 
+  http.get("/api/admin/oauth-providers/:id", ({ params }) => {
+    const id = Number(params.id);
+    const existing = authProviders.find((provider) => provider.id === id);
+    if (!existing) {
+      return HttpResponse.json(
+        { detail: "OAuth provider not found" },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json(existing);
+  }),
+
   http.post("/api/admin/oauth-providers", async ({ request }) => {
     const body = (await request.json()) as CreateAuthProviderParams;
     const id = nextId;
