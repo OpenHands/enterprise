@@ -55,6 +55,7 @@ from openhands.sdk.security import (
     SecurityAnalyzerBase,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.utils.redact import redact_url_credentials_in_text
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
@@ -419,7 +420,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
         """Configure git global user settings from user preferences.
 
         Reads git_user_name and git_user_email from user settings and
-        configures them as git global settings in the workspace.
+        configures them (or the default identity) as git global settings in
+        the workspace.
 
         Args:
             workspace: The remote workspace to configure git settings in.
@@ -747,7 +749,26 @@ class AppConversationServiceBase(AppConversationService, ABC):
             clone_command, workspace.working_dir, 120
         )
         if result.exit_code:
-            _logger.warning(f'Git clone failed: {result.stderr}')
+            _logger.warning(
+                f'Git clone failed: {redact_url_credentials_in_text(result.stderr)}'
+            )
+            # A conversation sharing its sandbox (e.g. a sub-conversation) finds
+            # the repository already cloned and keeps using it. Otherwise,
+            # including an empty repository left by an earlier failed clone,
+            # stop rather than start on an empty workspace, naming only the
+            # repository: the URL and git's output can hold credentials.
+            existing = await workspace.execute_command(
+                f'test -d {quoted_dir_name}/.git && '
+                f'git -C {quoted_dir_name} rev-parse --verify --quiet HEAD',
+                workspace.working_dir,
+            )
+            if existing.exit_code:
+                raise ValueError(
+                    'Could not clone the selected repository '
+                    f'{request.selected_repository!r}. Check that the repository '
+                    'and branch exist and that you have access to them, then try '
+                    'again.'
+                )
 
         # Checkout the appropriate branch
         if request.selected_branch:

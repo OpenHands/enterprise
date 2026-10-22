@@ -915,6 +915,262 @@ async def test_clone_or_init_git_repo_quotes_selected_branch_before_checkout(
     )
 
 
+def _workspace_with_failing_clone(
+    stderr: str, repository_present: bool = False
+) -> MockWorkspace:
+    """A workspace whose ``git clone`` exits 128; other commands succeed.
+
+    ``repository_present`` says whether the clone target already holds a
+    checkout, as when a sub-conversation shares its parent's sandbox.
+    """
+    workspace = MockWorkspace(working_dir='/workspace/project')
+
+    async def execute_command(command, cwd=None, timeout=None):
+        if ' clone ' in command:
+            return MockCommandResult(exit_code=128, stderr=stderr)
+        if command.startswith('test -d '):
+            return MockCommandResult(exit_code=0 if repository_present else 1)
+        return MockCommandResult()
+
+    workspace.execute_command = AsyncMock(side_effect=execute_command)
+    return workspace
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('git_provider', 'repository', 'remote_url'),
+    [
+        (ProviderType.GITHUB, 'owner/repo', 'https://github.com/owner/repo.git'),
+        (
+            ProviderType.AZURE_DEVOPS,
+            'org/project/repo',
+            'https://dev.azure.com/org/project/_git/repo',
+        ),
+    ],
+)
+async def test_failed_selected_repository_clone_is_not_silent(
+    git_provider, repository, remote_url
+):
+    """A failed clone stops setup instead of continuing on an empty workspace."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(return_value=remote_url)
+    mock_user_context.get_latest_token = AsyncMock(return_value='entra.access.token')
+    workspace = _workspace_with_failing_clone(
+        'fatal: Remote branch missing not found in upstream origin'
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository=repository,
+        selected_branch='missing',
+        git_provider=git_provider,
+    )
+
+    with pytest.raises(ValueError, match='clone') as exc_info:
+        await service.clone_or_init_git_repo(task, workspace)
+
+    assert repository in str(exc_info.value)
+    commands = [call.args[0] for call in workspace.execute_command.call_args_list]
+    assert any(' clone ' in command for command in commands)
+    assert not any(command.startswith('git checkout') for command in commands), (
+        'checkout ran in a directory the failed clone never created'
+    )
+
+
+@pytest.mark.asyncio
+async def test_clone_into_an_existing_checkout_keeps_using_it():
+    """A sub-conversation sharing its parent's sandbox reuses the parent's clone."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://github.com/owner/repo.git'
+    )
+    workspace = _workspace_with_failing_clone(
+        "fatal: destination path 'repo' already exists and is not an empty directory.",
+        repository_present=True,
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    await service.clone_or_init_git_repo(task, workspace)
+
+    checkouts = [
+        call
+        for call in workspace.execute_command.call_args_list
+        if call.args[0].startswith('git checkout -b openhands-workspace-')
+    ]
+    assert len(checkouts) == 1
+    assert checkouts[0].args[1] == Path('/workspace/project') / 'repo'
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_existing_checkout_check_runs_in_a_real_shell(tmp_path):
+    """Run the produced check for real, with a repository name that needs quoting."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://dev.azure.com/org/project/_git/My%20Repo'
+    )
+    mock_user_context.get_latest_token = AsyncMock(return_value=None)
+    workspace = _workspace_with_failing_clone('fatal: Authentication failed')
+    task = Mock()
+    task.request = Mock(
+        selected_repository='org/project/My Repo',
+        selected_branch=None,
+        git_provider=ProviderType.AZURE_DEVOPS,
+    )
+
+    with pytest.raises(ValueError):
+        await service.clone_or_init_git_repo(task, workspace)
+
+    check = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if call.args[0].startswith('test -d ')
+    )
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith('GIT_')
+    }
+    env.update(HOME=str(tmp_path), GIT_CONFIG_NOSYSTEM='1')
+
+    def check_exit_code() -> int:
+        return subprocess.run(
+            ['sh', '-c', check], cwd=tmp_path, env=env, capture_output=True
+        ).returncode
+
+    # Nothing cloned yet.
+    assert check_exit_code() != 0
+    # An empty repository, as a failed clone can leave behind, is not a checkout.
+    repo = tmp_path / 'My Repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
+    assert check_exit_code() != 0
+    # A repository with a commit is.
+    subprocess.run(
+        [
+            'git',
+            '-C',
+            str(repo),
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.com',
+            'commit',
+            '--allow-empty',
+            '-q',
+            '-m',
+            'initial',
+        ],
+        env=env,
+        check=True,
+    )
+    assert check_exit_code() == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_clone_error_does_not_include_credentials():
+    """The error names the repository, never the token-bearing URL or git output."""
+    token = 'ghp_cloneSecretValue123'
+    remote_url = f'https://x-access-token:{token}@github.com/owner/repo.git'
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(return_value=remote_url)
+    workspace = _workspace_with_failing_clone(
+        f"fatal: unable to access '{remote_url}/': "
+        'The requested URL returned error: 403'
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+
+    with (
+        patch(
+            'openhands.app_server.app_conversation.app_conversation_service_base._logger'
+        ) as mock_logger,
+        pytest.raises(ValueError) as exc_info,
+    ):
+        await service.clone_or_init_git_repo(task, workspace)
+
+    message = str(exc_info.value)
+    assert 'owner/repo' in message
+    assert token not in message
+    assert 'x-access-token' not in message
+    assert 'unable to access' not in message
+    # The server log keeps git's output for debugging, without the credential.
+    logged = ' '.join(
+        str(arg) for call in mock_logger.warning.call_args_list for arg in call.args
+    )
+    assert 'unable to access' in logged
+    assert token not in logged
+
+
+@pytest.mark.asyncio
+async def test_failed_azure_devops_clone_error_does_not_include_bearer_token():
+    """The Entra bearer token sent with the clone stays out of the error."""
+    bearer_token = 'entra.access.token'
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://dev.azure.com/org/project/_git/repo'
+    )
+    mock_user_context.get_latest_token = AsyncMock(return_value=bearer_token)
+    workspace = _workspace_with_failing_clone('fatal: Authentication failed')
+    task = Mock()
+    task.request = Mock(
+        selected_repository='org/project/repo',
+        selected_branch=None,
+        git_provider=ProviderType.AZURE_DEVOPS,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await service.clone_or_init_git_repo(task, workspace)
+
+    clone_command = next(
+        call.args[0]
+        for call in workspace.execute_command.call_args_list
+        if ' clone ' in call.args[0]
+    )
+    assert bearer_token in clone_command
+    assert bearer_token not in str(exc_info.value)
+
+
 def _azure_devops_provider_handler(orgs: list[str]):
     """A provider handler mock whose Azure DevOps installations are ``orgs``."""
     handler = MagicMock()
@@ -1098,58 +1354,59 @@ async def test_configure_git_user_settings_both_name_and_email(mock_workspace):
     )
 
 
+def _assert_git_identity(workspace: MockWorkspace, name: str, email: str) -> None:
+    """Assert exactly the user.name and user.email commands were run."""
+    assert workspace.execute_command.call_count == 2
+    workspace.execute_command.assert_any_call(
+        f'git config --global user.name {name}', '/workspace/project'
+    )
+    workspace.execute_command.assert_any_call(
+        f'git config --global user.email {email}', '/workspace/project'
+    )
+
+
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_only_name(mock_workspace):
-    """Test configuring only git user name."""
+    """A saved name is kept; the missing email falls back to the default."""
     user_info = MockUserInfo(git_user_name='Test User', git_user_email=None)
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify only user.name was configured
-    assert mock_workspace.execute_command.call_count == 1
-    mock_workspace.execute_command.assert_called_once_with(
-        "git config --global user.name 'Test User'", '/workspace/project'
-    )
+    _assert_git_identity(mock_workspace, "'Test User'", 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_only_email(mock_workspace):
-    """Test configuring only git user email."""
+    """A saved email is kept; the missing name falls back to the default."""
     user_info = MockUserInfo(git_user_name=None, git_user_email='test@example.com')
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify only user.email was configured
-    assert mock_workspace.execute_command.call_count == 1
-    mock_workspace.execute_command.assert_called_once_with(
-        'git config --global user.email test@example.com', '/workspace/project'
-    )
+    _assert_git_identity(mock_workspace, 'openhands', 'test@example.com')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_neither_set(mock_workspace):
-    """Test when neither git user name nor email is set."""
+    """Without a saved identity, the default is set."""
     user_info = MockUserInfo(git_user_name=None, git_user_email=None)
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Verify no git config commands were executed
-    mock_workspace.execute_command.assert_not_called()
+    _assert_git_identity(mock_workspace, 'openhands', 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_empty_strings(mock_workspace):
-    """Test when git user name and email are empty strings."""
+    """Empty saved values are treated as missing."""
     user_info = MockUserInfo(git_user_name='', git_user_email='')
     service, _ = _create_service_with_mock_user_context(user_info)
 
     await service._configure_git_user_settings(mock_workspace)
 
-    # Empty strings are falsy, so no commands should be executed
-    mock_workspace.execute_command.assert_not_called()
+    _assert_git_identity(mock_workspace, 'openhands', 'openhands@all-hands.dev')
 
 
 @pytest.mark.asyncio
@@ -1166,6 +1423,56 @@ async def test_configure_git_user_settings_get_user_info_fails(mock_workspace):
 
     # Verify no git config commands were executed
     mock_workspace.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_configured_git_identity_lets_git_commit(mock_workspace, tmp_path):
+    """Run the produced git config commands for real, then commit.
+
+    Without them a fresh sandbox has no identity and the agent's first commit
+    fails with "Please tell me who you are". ``user.useConfigOnly`` stands in
+    for a sandbox whose identity cannot be guessed from its hostname.
+    """
+    service, _ = _create_service_with_mock_user_context(MockUserInfo())
+
+    await service._configure_git_user_settings(mock_workspace)
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(('GIT_', 'EMAIL'))
+    }
+    env.update(
+        HOME=str(tmp_path),
+        XDG_CONFIG_HOME=str(tmp_path / '.config'),
+        GIT_CONFIG_NOSYSTEM='1',
+        GIT_CONFIG_COUNT='1',
+        GIT_CONFIG_KEY_0='user.useConfigOnly',
+        GIT_CONFIG_VALUE_0='true',
+    )
+    for call in mock_workspace.execute_command.call_args_list:
+        subprocess.run(['sh', '-c', call.args[0]], env=env, check=True)
+
+    repo = tmp_path / 'repo'
+    subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
+    commit = subprocess.run(
+        ['git', 'commit', '--allow-empty', '-q', '-m', 'test'],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert commit.returncode == 0, commit.stderr
+    author = subprocess.run(
+        ['git', 'log', '-1', '--format=%an <%ae>'],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert author.stdout.strip() == 'openhands <openhands@all-hands.dev>'
 
 
 @pytest.mark.asyncio

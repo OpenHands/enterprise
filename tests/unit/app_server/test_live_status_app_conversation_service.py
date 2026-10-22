@@ -3637,6 +3637,70 @@ class TestLiveStatusAppConversationService:
         assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
         assert tasks[-1].detail == 'No sandbox specs available!'
 
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_failed_repository_clone(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A selected repository that cannot be cloned fails the start task with
+        a clear message instead of starting a conversation on an empty
+        workspace."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        # Run the real repository setup so the failure comes from the actual
+        # clone; the later setup steps are not under test.
+        del self.service.run_setup_scripts
+        self.service._configure_azure_devops_git_credentials = AsyncMock()
+        self.service.maybe_run_setup_script = AsyncMock()
+        self.service.maybe_setup_git_hooks = AsyncMock()
+        self.service.maybe_inject_memory_context = AsyncMock()
+        self.service.load_and_merge_all_skills = AsyncMock()
+        token = 'ghp_cloneSecretValue123'
+        self.mock_user.git_user_name = None
+        self.mock_user.git_user_email = None
+        self.mock_user_context.get_secrets = AsyncMock(return_value={})
+        self.mock_user_context.get_authenticated_git_url = AsyncMock(
+            return_value=f'https://x-access-token:{token}@github.com/owner/repo.git'
+        )
+
+        async def execute_command(command, cwd=None, timeout=None):
+            if ' clone ' in command:
+                return Mock(
+                    exit_code=128,
+                    stdout='',
+                    stderr=f"fatal: unable to access 'https://x-access-token:{token}@github.com/'",
+                )
+            if command.startswith('test -d '):
+                # The repository is not already cloned in this sandbox.
+                return Mock(exit_code=1, stdout='', stderr='')
+            return Mock(exit_code=0, stdout='', stderr='')
+
+        workspace = mock_remote_workspace_class.return_value
+        workspace.working_dir = '/test/workspace'
+        workspace.execute_command = AsyncMock(side_effect=execute_command)
+
+        statuses = []
+        async for task in self.service._start_app_conversation(
+            AppConversationStartRequest(
+                selected_repository='owner/repo', git_provider=ProviderType.GITHUB
+            )
+        ):
+            statuses.append(task.status)
+
+        assert AppConversationStartTaskStatus.READY not in statuses
+        assert statuses[-1] == AppConversationStartTaskStatus.ERROR
+        assert 'clone' in task.detail
+        assert 'owner/repo' in task.detail
+        assert token not in task.detail
+        self.service.maybe_run_setup_script.assert_not_called()
+        self.service._build_start_conversation_request_for_user.assert_not_called()
+        self.mock_httpx_client.post.assert_not_called()
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,

@@ -51,3 +51,22 @@ async def test_configure_git_user_settings_shell_quotes_values():
         'git config --global user.name \'Test "$(touch /tmp/bad)"\'',
         '/workspace/project',
     )
+
+
+@pytest.mark.asyncio
+async def test_configure_git_user_settings_defaults_missing_values():
+    """A missing name or email gets the default the settings page shows."""
+    workspace = MagicMock(working_dir='/workspace/project')
+    workspace.execute_command = AsyncMock(
+        return_value=MagicMock(exit_code=0, stderr='')
+    )
+
+    await configure_git_user_settings(workspace, None, '')
+
+    assert [call.args for call in workspace.execute_command.await_args_list] == [
+        ('git config --global user.name openhands', '/workspace/project'),
+        (
+            'git config --global user.email openhands@all-hands.dev',
+            '/workspace/project',
+        ),
+    ]
