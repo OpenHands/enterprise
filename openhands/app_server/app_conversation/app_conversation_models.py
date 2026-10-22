@@ -7,6 +7,7 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     Field,
+    PrivateAttr,
     SecretStr,
     computed_field,
     field_validator,
@@ -482,6 +483,9 @@ class AppConversationStartTask(OpenHandsModel):
     we kick off a background task for it. Once the conversation is started, the app_conversation_id
     is populated.
     """
+
+    # In-process callers can handle typed failures; only redacted detail is stored.
+    _startup_error: Exception | None = PrivateAttr(default=None)
 
     id: OpenHandsUUID = Field(default_factory=uuid4)
     created_by_user_id: str | None

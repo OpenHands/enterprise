@@ -67,6 +67,24 @@ class QuotaStatus(BaseModel):
     reset_at: str
 
 
+class DailySandboxLimitReached(HTTPException):
+    def __init__(self, limit: int, used: int, reset_at: datetime):
+        self.limit = limit
+        self.used = used
+        self.reset_at = reset_at
+        super().__init__(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                'code': 'daily_sandbox_limit_reached',
+                'error': 'DAILY_SANDBOX_LIMIT_REACHED',
+                'message': f'Daily sandbox limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}',
+                'limit': limit,
+                'used': used,
+                'reset_at': reset_at.isoformat(),
+            },
+        )
+
+
 @dataclass
 class DailySandboxQuotaService:
     """Quota status and enforcement. Enforcement is gated by a configured limit."""
@@ -170,21 +188,13 @@ class DailySandboxQuotaService:
         await self.db_session.commit()
 
     @staticmethod
-    def _limit_reached(limit: int, used: int, usage_date: date) -> HTTPException:
+    def _limit_reached(
+        limit: int, used: int, usage_date: date
+    ) -> DailySandboxLimitReached:
         reset_at = datetime.combine(
             usage_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC
         )
-        return HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                'code': 'daily_sandbox_limit_reached',
-                'error': 'DAILY_SANDBOX_LIMIT_REACHED',
-                'message': f'Daily sandbox limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}',
-                'limit': limit,
-                'used': used,
-                'reset_at': reset_at.isoformat(),
-            },
-        )
+        return DailySandboxLimitReached(limit, used, reset_at)
 
     @staticmethod
     def _next_reset_iso() -> str:

@@ -71,6 +71,20 @@ def sample_task(
     )
 
 
+@pytest.mark.asyncio
+async def test_startup_exception_is_not_persisted(service, sample_task):
+    sample_task.status = AppConversationStartTaskStatus.ERROR
+    sample_task.detail = 'Safe public detail'
+    sample_task._startup_error = RuntimeError('private diagnostic')
+
+    await service.save_app_conversation_start_task(sample_task)
+    saved = await service.get_app_conversation_start_task(sample_task.id)
+
+    assert saved.detail == 'Safe public detail'
+    assert saved._startup_error is None
+    assert 'private diagnostic' not in saved.model_dump_json()
+
+
 class TestSQLAppConversationStartTaskService:
     """Test cases for SQLAppConversationStartTaskService."""
 

@@ -1,3 +1,4 @@
+from datetime import UTC
 from types import MappingProxyType
 
 from github import Auth, Github, GithubIntegration
@@ -40,6 +41,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import ExpiredError
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 
 IGNORED_GITHUB_EVENT_SENDERS = frozenset(
     {
@@ -393,6 +395,17 @@ class GithubManager(Manager[GithubViewType]):
 
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = f"I'm on it! {user_info.username} can [track my progress at all-hands.dev]({conversation_link})"
+
+            except DailySandboxLimitReached as e:
+                reset_at = e.reset_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')
+                msg_info = (
+                    f'@{user_info.username} there was an error starting the job: your '
+                    f'daily sandbox quota is exhausted: **{e.used} used / {e.limit} limit**. '
+                    f'Your quota resets at **{reset_at}**. '
+                    'This quota is shared across your PRs and other sandbox starts. '
+                    f'[View your quota or request an increase]({HOST_URL}/settings/quota), '
+                    'or retry after the reset.'
+                )
 
             except MissingSettingsError as e:
                 logger.warning(

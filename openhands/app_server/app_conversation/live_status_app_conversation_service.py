@@ -772,6 +772,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except Exception as exc:
             _logger.exception('Error starting conversation', stack_info=True)
             task.status = AppConversationStartTaskStatus.ERROR
+            task._startup_error = exc
             task.detail = redact_text_secrets(
                 redact_api_key_literals(_exception_detail(exc))
             )

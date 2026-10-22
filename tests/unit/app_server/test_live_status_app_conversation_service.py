@@ -3637,6 +3637,38 @@ class TestLiveStatusAppConversationService:
         assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
         assert tasks[-1].detail == 'No sandbox specs available!'
 
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_preserves_quota_error_for_resolver(self):
+        from datetime import date
+
+        from server.services.daily_sandbox_quota_service import DailySandboxQuotaService
+
+        error = DailySandboxQuotaService._limit_reached(20, 20, date(2026, 10, 22))
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock(
+            side_effect=lambda task: task
+        )
+
+        async def fail_start(task):
+            raise error
+            yield task
+
+        self.service._wait_for_sandbox_start = fail_start
+        tasks = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest(title='Quota regression')
+            )
+        ]
+
+        failed = tasks[-1]
+        assert failed.status == AppConversationStartTaskStatus.ERROR
+        assert failed._startup_error is error
+        assert failed.detail == error.detail['message']
+        assert '_startup_error' not in failed.model_dump()
+        assert 'reset_at' not in failed.model_dump_json()
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,
