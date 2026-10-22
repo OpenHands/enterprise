@@ -6823,6 +6823,9 @@ async def test_recover_reused_sandbox_token_reads_back_for_masking():
 
     assert task._azure_devops_sandbox_token == 'existing.jwt.token'
     ws.execute_command.assert_awaited_once()
+    # Must run in a directory that already exists (the grouped per-conversation
+    # working_dir is created later by the setup scripts).
+    assert ws.execute_command.await_args.args[1] == '/'
 
 
 @pytest.mark.asyncio

@@ -1197,9 +1197,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         try:
             if not await get_azure_devops_bearer_token(self.user_context):
                 return
+            # Run in '/', which always exists. ``working_dir`` is the grouped
+            # per-conversation directory, which does not exist until the setup
+            # scripts create it; the env var is process-level, so the cwd does
+            # not matter (mirrors ``_configure_marketplace_git_credentials``).
             result = await remote_workspace.execute_command(
                 f'printf %s "${{{AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE}:-}}"',
-                remote_workspace.working_dir,
+                '/',
             )
             value = (getattr(result, 'stdout', '') or '').strip()
             if value:
