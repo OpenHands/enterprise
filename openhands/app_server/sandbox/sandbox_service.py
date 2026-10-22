@@ -31,13 +31,10 @@ REMOTE_SESSION_API_KEY_VARIABLE = 'SESSION_API_KEY'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
 
-# Carries the per-provider, time-limited access-token JWT that the Azure DevOps
-# git credential helper exchanges at /api/v1/webhooks/secrets for the user's
-# Azure DevOps token. Deliberately NOT a session-key name: the SDK terminal
-# sanitizer strips SESSION_API_KEY / OH_SECRET_KEY / OH_SESSION_API_KEYS_*, so
-# this variable survives into the sanitized terminal and plain git keeps working
-# without the sandbox session key. The JWT only re-fetches the same Azure DevOps
-# token the agent already holds as AZURE_DEVOPS_TOKEN, so it is not a new exposure.
+# Conversation-secret key under which the per-conversation Azure DevOps
+# credential-helper exchange JWT is registered, so SecretRegistry masks its value
+# in output. The helper reads the JWT from a per-conversation file (not this env
+# var); this name is only the registry key for masking.
 AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE = 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'
 
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key

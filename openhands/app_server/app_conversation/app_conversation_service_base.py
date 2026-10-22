@@ -36,9 +36,6 @@ from openhands.app_server.app_conversation.skill_loader import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
-from openhands.app_server.sandbox.sandbox_service import (
-    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
-)
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.git import (
@@ -125,24 +122,37 @@ def get_project_dir(
     return working_dir
 
 
+# Per-conversation file holding the Azure DevOps exchange JWT the credential
+# helper reads. Written fresh for each conversation (like GitHub/GitLab re-embed
+# their token per conversation), mode 600. The ADO token the helper returns to
+# git is never persisted — only this short-lived exchange JWT is, and only in the
+# sandbox the conversation controls.
+_AZURE_DEVOPS_ACCESS_TOKEN_FILE = '$HOME/.openhands/azure-devops-access-token'
+
+
 def _azure_devops_credential_helper_script(web_url: str | None) -> str:
     """Git credential helper fetching the user's Azure DevOps token on demand.
 
-    Authenticates with the per-provider, time-limited access-token JWT (scoped to
-    the user + Azure DevOps) against ``/api/v1/webhooks/secrets``. The JWT is read
-    from the sandbox environment variable set at sandbox creation, not the session
-    key, so the helper works for plain git even once the terminal environment is
-    sanitized (which strips the session key). The token itself is never written to
-    disk; only this script and its config are.
+    Reads the per-conversation, time-limited access-token JWT from
+    ``_AZURE_DEVOPS_ACCESS_TOKEN_FILE`` and exchanges it at
+    ``/api/v1/webhooks/secrets`` for the user's Azure DevOps token. The JWT is
+    delivered per conversation (not a sandbox-lifetime env var), so a conversation
+    that reuses a running sandbox gets its own fresh, masked credential. The ADO
+    token itself is never written to disk; only this script, its config and the
+    short-lived exchange JWT are.
     """
     app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
-    access_token_var = AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE
+    token_file = _AZURE_DEVOPS_ACCESS_TOKEN_FILE
     return f"""#!/bin/sh
 if [ "$1" != "get" ]; then
   exit 0
 fi
 
-access_token="${{{access_token_var}:-}}"
+token_file="{token_file}"
+access_token=""
+if [ -r "$token_file" ]; then
+  access_token="$(cat "$token_file" 2>/dev/null)"
+fi
 webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
 app_base_url={app_base_url}
 if [ -n "$webhook_url" ]; then
@@ -157,35 +167,15 @@ fi
 secret_url="$base_url/api/v1/webhooks/secrets"
 token="$(curl -fsS \\
   -H "X-Access-Token: $access_token" \\
-  "$secret_url" 2>/dev/null)" || exit 0
+  "$secret_url" 2>/dev/null)"
 if [ -z "$token" ]; then
+  echo "openhands: Azure DevOps credential exchange failed (token may be expired)" >&2
   exit 0
 fi
 
 printf '%s\\n' "username=oauth2"
 printf 'password=%s\\n' "$token"
 """
-
-
-def _skip_azure_devops_helper_install_without_token(install_command: str) -> str:
-    """Make the credential-helper install a no-op when the sandbox has no token.
-
-    A reused sandbox (``_find_running_sandbox_for_user``, an explicit
-    ``sandbox_id``, or one started before the user linked Entra or before this
-    deploy) never received ``OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN``. Installing
-    the token-based helper there would only clobber a working setup and then
-    exit 0 with no credentials, so skip quietly instead. Unlike GitHub/GitLab,
-    which embed the token in the clone URL, Azure DevOps is the only provider
-    with a runtime helper, so a loud per-git-call warning would be ADO-only
-    noise; a one-line note on stderr keeps it diagnosable.
-    """
-    var = AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE
-    guard = (
-        f'if [ -z "${{{var}:-}}" ]; then '
-        'echo "openhands: no Azure DevOps access token in this sandbox; '
-        'leaving the git credential helper unchanged" >&2; exit 0; fi'
-    )
-    return f'{guard}; {install_command}'
 
 
 @dataclass
@@ -383,6 +373,15 @@ class AppConversationServiceBase(AppConversationService, ABC):
         task.status = AppConversationStartTaskStatus.PREPARING_REPOSITORY
         yield task
         await self.clone_or_init_git_repo(task, workspace, sandbox)
+
+        # Deliver this conversation's Azure DevOps credential (per conversation,
+        # like GitHub/GitLab re-embed their token), independent of which repo was
+        # selected, so plain git works on any of the user's Azure DevOps repos.
+        await self._configure_azure_devops_git_credentials(
+            workspace,
+            task._azure_devops_access_token,
+            task.request.selected_repository,
+        )
 
         # Compute the project root — the cloned repo directory when a repo is
         # selected, or the sandbox working_dir otherwise.  This must be used
@@ -749,11 +748,6 @@ class AppConversationServiceBase(AppConversationService, ABC):
         )
         if result.exit_code:
             _logger.warning(f'Git clone failed: {result.stderr}')
-        elif azure_devops_bearer_token:
-            await self._configure_azure_devops_git_credential_helper(
-                workspace,
-                request.selected_repository,
-            )
 
         # Checkout the appropriate branch
         if request.selected_branch:
@@ -783,19 +777,25 @@ class AppConversationServiceBase(AppConversationService, ABC):
 
         return await get_azure_devops_bearer_token(self.user_context)
 
-    async def _configure_azure_devops_git_credential_helper(
+    async def _configure_azure_devops_git_credentials(
         self,
         workspace: AsyncRemoteWorkspace,
-        selected_repository: str,
+        access_token: str | None,
+        selected_repository: str | None,
     ) -> None:
-        """Install the Azure DevOps git credential helper globally, per org.
+        """Deliver this conversation's Azure DevOps credential to the sandbox.
 
-        Mirrors ``_configure_marketplace_git_credentials``: the helper is
-        installed once under ``$HOME`` and wired for every Azure DevOps
-        organization the user can reach, so plain git works on any of the user's
-        Azure DevOps repos, not only the selected one. Entra tokens cannot ride
-        in the authenticated URL, so the helper supplies them instead.
+        Writes the per-conversation exchange JWT to a mode-600 file, installs the
+        credential helper globally under ``$HOME`` and wires it for every Azure
+        DevOps organization the user can reach, so plain git works on any of the
+        user's Azure DevOps repos, not only the selected one. Mirrors
+        ``_configure_marketplace_git_credentials``. Skips entirely when no token
+        was minted for this conversation, so a sandbox without one is untouched.
+        Entra tokens cannot ride in the authenticated URL, so the helper supplies
+        them instead.
         """
+        if not access_token:
+            return
         orgs = await azure_devops_user_orgs(self.user_context, selected_repository)
         if not orgs:
             return
@@ -807,11 +807,15 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
         helper_script = _azure_devops_credential_helper_script(web_url)
+        token_file = shlex.quote(_AZURE_DEVOPS_ACCESS_TOKEN_FILE)
         commands = [
-            'helper="$HOME/.openhands/azure-devops-credential-helper"',
             'mkdir -p "$HOME/.openhands"',
+            'helper="$HOME/.openhands/azure-devops-credential-helper"',
             f'printf %s {shlex.quote(helper_script)} > "$helper"',
             'chmod 700 "$helper"',
+            # The token value is passed quoted and never echoed to stdout.
+            f'printf %s {shlex.quote(access_token)} > {token_file}',
+            f'chmod 600 {token_file}',
             'git config --global credential.https://dev.azure.com.useHttpPath true',
         ]
         for org in orgs:
@@ -821,13 +825,12 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'git config --global --replace-all '
                 f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\""',
             ]
-        result = await workspace.execute_command(
-            _skip_azure_devops_helper_install_without_token(' && '.join(commands)),
-            workspace.working_dir,
-        )
+        # Run in '/', which always exists (the grouped per-conversation working
+        # dir may not yet); every path here is absolute under $HOME.
+        result = await workspace.execute_command(' && '.join(commands), '/')
         if result.exit_code:
             _logger.warning(
-                f'Azure DevOps git credential helper setup failed: {result.stderr}'
+                f'Azure DevOps git credential setup failed: {result.stderr}'
             )
 
     async def _configure_marketplace_git_credentials(
@@ -873,12 +876,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 working_dir=working_dir,
             )
             try:
-                result = await workspace.execute_command(
-                    _skip_azure_devops_helper_install_without_token(
-                        ' && '.join(commands)
-                    ),
-                    '/',
-                )
+                result = await workspace.execute_command(' && '.join(commands), '/')
             finally:
                 await workspace.reset_client()
             if result.exit_code:

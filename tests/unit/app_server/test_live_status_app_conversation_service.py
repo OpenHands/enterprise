@@ -6671,183 +6671,102 @@ class TestACPProviderAllowlistAtServiceStart:
 
 
 # ---------------------------------------------------------------------------
-# Workstream A: the per-provider Azure DevOps access-token JWT injected into the
-# sandbox so the git credential helper works without the session key.
+# Workstream A: the per-conversation Azure DevOps credential-helper token —
+# minted fresh per conversation, delivered via a file, and masked in output.
 # ---------------------------------------------------------------------------
 
 
-def _azure_devops_env_service(
-    *,
-    web_url,
-    latest_token,
-    user_id='user-1',
-    minted='signed.jwt.token',
-    hard_timeout=None,
-):
+def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
     from types import MethodType
 
     service = Mock()
     service.web_url = web_url
-    service.access_token_hard_timeout = hard_timeout
     service.jwt_service = Mock()
-    service.jwt_service.create_jws_token = Mock(return_value=minted)
+    service.jwt_service.create_jws_token = Mock(return_value='signed.jwt.token')
     service.user_context = Mock()
     service.user_context.get_latest_token = AsyncMock(return_value=latest_token)
     service.user_context.get_user_id = AsyncMock(return_value=user_id)
-    service._azure_devops_sandbox_env = MethodType(
-        LiveStatusAppConversationService._azure_devops_sandbox_env, service
+    service._mint_azure_devops_access_token = MethodType(
+        LiveStatusAppConversationService._mint_azure_devops_access_token, service
     )
     return service
 
 
-def _task_for_env():
-    return types.SimpleNamespace(_azure_devops_sandbox_token=None)
+def _task_for_mint():
+    return types.SimpleNamespace(_azure_devops_access_token=None)
 
 
 @pytest.mark.asyncio
-async def test_azure_devops_sandbox_env_mints_scoped_jwt_for_entra_user():
-    from datetime import timedelta
-
+async def test_mint_azure_devops_access_token_for_entra_user():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+    )
     from openhands.app_server.integrations.service_types import ProviderType
 
-    service = _azure_devops_env_service(
-        web_url='https://app.example.com',
-        latest_token='header.payload.signature',
-        hard_timeout=timedelta(days=14),
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='header.payload.signature'
     )
-    task = _task_for_env()
+    task = _task_for_mint()
 
-    env = await service._azure_devops_sandbox_env(task)
+    await service._mint_azure_devops_access_token(task)
 
-    assert env == {'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN': 'signed.jwt.token'}
-    # The exact minted string is stashed on the task so the request builder can
-    # register it as a masked secret (same iat/exp string, not a re-mint).
-    assert task._azure_devops_sandbox_token == 'signed.jwt.token'
+    # A fresh JWT is minted per conversation and stashed on the task so the
+    # setup flow writes it and the request builder registers it for masking.
+    assert task._azure_devops_access_token == 'signed.jwt.token'
     kwargs = service.jwt_service.create_jws_token.call_args.kwargs
     assert kwargs['payload'] == {
         'user_id': 'user-1',
         'provider_type': ProviderType.AZURE_DEVOPS.value,
     }
-    # The JWT is baked into the sandbox env and cannot be refreshed, so it must
-    # live as long as the sandbox can be used: the git-provider hard timeout.
-    # Safe because the value is registered as a masked conversation secret.
-    assert (
-        kwargs['expires_in'] == service.access_token_hard_timeout == timedelta(days=14)
-    )
+    # Session-length, not the multi-day resume window nor the provider ceiling.
+    assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
 
 
 @pytest.mark.asyncio
-async def test_azure_devops_sandbox_env_empty_for_pat_user():
-    # A PAT is not a JWT, so no helper JWT is injected (PATs ride in the URL).
-    service = _azure_devops_env_service(
+async def test_mint_azure_devops_access_token_skips_for_pat_user():
+    service = _azure_devops_mint_service(
         web_url='https://app.example.com', latest_token='plain-pat-token'
     )
-    task = _task_for_env()
+    task = _task_for_mint()
 
-    env = await service._azure_devops_sandbox_env(task)
+    await service._mint_azure_devops_access_token(task)
 
-    assert env == {}
-    assert task._azure_devops_sandbox_token is None
+    assert task._azure_devops_access_token is None
     service.jwt_service.create_jws_token.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_azure_devops_sandbox_env_empty_without_web_url():
-    # The secrets endpoint lives under web_url; without it there is nothing to call.
-    service = _azure_devops_env_service(
+async def test_mint_azure_devops_access_token_skips_without_web_url():
+    service = _azure_devops_mint_service(
         web_url=None, latest_token='header.payload.signature'
     )
-    task = _task_for_env()
+    task = _task_for_mint()
 
-    env = await service._azure_devops_sandbox_env(task)
+    await service._mint_azure_devops_access_token(task)
 
-    assert env == {}
-    assert task._azure_devops_sandbox_token is None
+    assert task._azure_devops_access_token is None
     service.user_context.get_latest_token.assert_not_called()
 
 
-def test_register_azure_devops_sandbox_secret_masks_the_env_jwt():
-    # The env JWT must be registered as a conversation secret (same string) so
-    # SecretRegistry.mask_secrets_in_output hides it from events/terminal/LLM.
+def test_register_azure_devops_access_token_secret_masks_the_jwt():
+    # The per-conversation JWT must be registered as a conversation secret (same
+    # string) so SecretRegistry.mask_secrets_in_output hides it.
     from pydantic import SecretStr
 
     secrets: dict = {}
-    LiveStatusAppConversationService._register_azure_devops_sandbox_secret(
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
         secrets, 'signed.jwt.token'
     )
     assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in secrets
-    source = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN']
-    value = source.value
+    value = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'].value
     if isinstance(value, SecretStr):
         value = value.get_secret_value()
     assert value == 'signed.jwt.token'
 
 
-def test_register_azure_devops_sandbox_secret_noop_without_token():
+def test_register_azure_devops_access_token_secret_noop_without_token():
     secrets: dict = {}
-    LiveStatusAppConversationService._register_azure_devops_sandbox_secret(
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
         secrets, None
     )
     assert secrets == {}
-
-
-def _recover_service(*, entra_token='header.payload.signature', web_url='https://x'):
-    from types import MethodType
-
-    service = Mock()
-    service.web_url = web_url
-    service.user_context = Mock()
-    service.user_context.get_latest_token = AsyncMock(return_value=entra_token)
-    service._recover_azure_devops_sandbox_token_for_masking = MethodType(
-        LiveStatusAppConversationService._recover_azure_devops_sandbox_token_for_masking,
-        service,
-    )
-    return service
-
-
-def _workspace_with_env(value):
-    ws = Mock(working_dir='/workspace/project')
-    ws.execute_command = AsyncMock(return_value=Mock(stdout=value, exit_code=0))
-    return ws
-
-
-@pytest.mark.asyncio
-async def test_recover_reused_sandbox_token_reads_back_for_masking():
-    # A reused sandbox already holds the env var; recover it so this
-    # conversation registers it for masking.
-    service = _recover_service()
-    task = _task_for_env()
-    ws = _workspace_with_env('existing.jwt.token\n')
-
-    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
-
-    assert task._azure_devops_sandbox_token == 'existing.jwt.token'
-    ws.execute_command.assert_awaited_once()
-    # Must run in a directory that already exists (the grouped per-conversation
-    # working_dir is created later by the setup scripts).
-    assert ws.execute_command.await_args.args[1] == '/'
-
-
-@pytest.mark.asyncio
-async def test_recover_skips_when_token_already_minted():
-    # Fresh sandbox already stashed the minted token; do not read back.
-    service = _recover_service()
-    task = types.SimpleNamespace(_azure_devops_sandbox_token='minted.jwt.token')
-    ws = _workspace_with_env('other.jwt.token')
-
-    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
-
-    assert task._azure_devops_sandbox_token == 'minted.jwt.token'
-    ws.execute_command.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_recover_skips_for_non_entra_user():
-    service = _recover_service(entra_token='plain-pat-token')
-    task = _task_for_env()
-    ws = _workspace_with_env('existing.jwt.token')
-
-    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
-
-    assert task._azure_devops_sandbox_token is None
-    ws.execute_command.assert_not_awaited()
