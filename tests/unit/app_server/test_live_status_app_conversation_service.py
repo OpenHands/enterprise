@@ -10,7 +10,7 @@ import types
 import zipfile
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -56,9 +56,6 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
-from openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service import (
-    DynamicRemoteSandboxSpecService,
-)
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -3580,43 +3577,27 @@ class TestLiveStatusAppConversationService:
             profile_listing = Mock(raise_for_status=Mock())
             profile_listing.json.return_value = {'profiles': []}
             self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
-            self.service.sandbox_spec_service = DynamicRemoteSandboxSpecService(
-                api_url='https://runtime-api.example.com',
-                api_key='k',
-                default_spec_name='',
-                cache_ttl_seconds=60,
+            self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+                return_value=None
             )
-            runtime_api_response = MagicMock()
-            runtime_api_response.raise_for_status.return_value = None
-            runtime_api_response.json.return_value = {
-                'configs': [
-                    {
-                        'name': 'v1_current',
-                        'image': current_image,
-                        'command': ['--port', '60000'],
-                        'environment': {},
-                        'working_dir': '/workspace/project',
-                    }
-                ]
-            }
-            runtime_api_client = AsyncMock()
-            runtime_api_client.get = AsyncMock(return_value=runtime_api_response)
-            runtime_api_ctx = MagicMock()
-            runtime_api_ctx.__aenter__ = AsyncMock(return_value=runtime_api_client)
-            runtime_api_ctx.__aexit__ = AsyncMock(return_value=False)
+            default_spec = Mock(spec=SandboxSpecInfo)
+            default_spec.id = current_image
+            default_spec.working_dir = '/workspace/project'
+            self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+                return_value=default_spec
+            )
 
-            with patch('httpx.AsyncClient', return_value=runtime_api_ctx):
-                tasks = [
-                    task
-                    async for task in self.service._start_app_conversation(
-                        AppConversationStartRequest(
-                            title='Old sandbox', conversation_id=conversation_id
-                        )
+            tasks = [
+                task
+                async for task in self.service._start_app_conversation(
+                    AppConversationStartRequest(
+                        title='Old sandbox', conversation_id=conversation_id
                     )
-                ]
+                )
+            ]
 
-        assert (
-            await self.service.sandbox_spec_service.get_sandbox_spec(old_image) is None
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
+            old_image
         )
         assert tasks[-1].status == AppConversationStartTaskStatus.READY
         assert mock_remote_workspace_class.call_args.kwargs[
