@@ -2143,6 +2143,58 @@ class TestReadConversationFile:
         )
         assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
 
+    async def test_reads_from_sandbox_whose_image_is_no_longer_advertised(
+        self, tmp_path
+    ):
+        """A sandbox created before an agent-server image bump has no spec of
+        its own; the read must use the default spec instead of returning ''."""
+        conv_id = uuid4()
+        conv = self._make_conversation(conv_id)
+        sandbox, _ = self._make_sandbox()
+        default_spec = MagicMock()
+        default_spec.working_dir = '/workspace/project'
+
+        app_service = MagicMock()
+        app_service.get_app_conversation = AsyncMock(return_value=conv)
+        sb_service = MagicMock()
+        sb_service.get_sandbox = AsyncMock(return_value=sandbox)
+        spec_service = MagicMock()
+        spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        spec_service.get_default_sandbox_spec = AsyncMock(return_value=default_spec)
+
+        download_file = tmp_path / 'PLAN.md'
+        download_file.write_bytes(b'# Plan')
+        named_temp = MagicMock()
+        named_temp.__enter__.return_value.name = str(download_file)
+        named_temp.__exit__.return_value = False
+        workspace = AsyncMock()
+        workspace.file_download = AsyncMock(
+            return_value=self._make_download_result(success=True)
+        )
+
+        with (
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'AsyncRemoteWorkspace',
+                return_value=workspace,
+            ) as workspace_type,
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'tempfile.NamedTemporaryFile',
+                return_value=named_temp,
+            ),
+        ):
+            result = await read_conversation_file(
+                conversation_id=conv_id,
+                file_path='/workspace/project/PLAN.md',
+                app_conversation_service=app_service,
+                sandbox_service=sb_service,
+                sandbox_spec_service=spec_service,
+            )
+
+        assert result == '# Plan'
+        assert workspace_type.call_args.kwargs['working_dir'] == '/workspace/project'
+
 
 class TestFinalizeSandboxDelete:
     """The detached finalizer captures THIS conversation's workspace first

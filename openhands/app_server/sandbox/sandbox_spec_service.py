@@ -118,6 +118,35 @@ async def resolve_sandbox_spec(
     raise ValueError(f'Sandbox Spec {effective_id!r} not found')
 
 
+async def resolve_existing_sandbox_spec(
+    sandbox_spec_id: str,
+    sandbox_id: str,
+    sandbox_spec_service: SandboxSpecService,
+    logger: logging.Logger,
+) -> SandboxSpecInfo:
+    """Return the spec an existing sandbox was created from, or the default.
+
+    Runtime-api advertises only the current agent-server image, so a sandbox
+    created before an image bump has no spec of its own. Callers read only
+    ``working_dir`` from the result, which the default is assumed to share; do
+    not use this for image-specific fields (command, initial_env, run_as_user).
+    Raises ``SandboxError`` when there is no default either.
+    """
+    spec = await sandbox_spec_service.get_sandbox_spec(sandbox_spec_id)
+    if spec is not None:
+        return spec
+    spec = await sandbox_spec_service.get_default_sandbox_spec()
+    logger.warning(
+        'Sandbox spec %s not found for sandbox %s; using default spec %s '
+        '(working_dir=%s)',
+        sandbox_spec_id,
+        sandbox_id,
+        spec.id,
+        spec.working_dir,
+    )
+    return spec
+
+
 @cache  # memoize so the auto-correct warning fires once per process
 def get_agent_server_image() -> str:
     repository = os.getenv('AGENT_SERVER_IMAGE_REPOSITORY') or _DEFAULT_REPOSITORY

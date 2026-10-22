@@ -2651,6 +2651,30 @@ class TestArchiveConversationWorkspace:
         )
         assert path == '/workspace/project'
 
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_unadvertised_image(
+        self, remote_sandbox_service
+    ):
+        """A pre-pinning conversation in a sandbox whose image runtime-api no
+        longer advertises resolves from the default spec's working_dir instead
+        of failing the archive."""
+        stored = create_stored_sandbox(
+            spec_id='ghcr.io/openhands/agent-server:1.50.1-python'
+        )
+        remote_sandbox_service.sandbox_spec_service.get_sandbox_spec.return_value = None
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(
+                sandbox_grouping_strategy=SandboxGroupingStrategy.GROUP_BY_NEWEST
+            )
+        )
+
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+
+        # mock_sandbox_spec_service fixture pins the default working_dir.
+        assert path == '/workspace/project/deadbeef'
+
 
 class TestArchiveWorkspaceHelper:
     """Unit tests for the workspace_archive helper."""

@@ -52,6 +52,7 @@ from openhands.app_server.sandbox.sandbox_spec_models import (
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
+    resolve_existing_sandbox_spec,
     resolve_sandbox_spec,
 )
 from openhands.app_server.sandbox.sandbox_store import (
@@ -903,20 +904,21 @@ class RemoteSandboxService(SandboxService):
         Pre-pinning conversations have no pinned path; the legacy fallback re-reads
         the live grouping strategy, which can disagree with creation if the user
         toggled it — but a resulting 404 no longer silently tears the sandbox down
-        under REQUIRED (it blocks for the idle reap). Raises if the layout cannot
-        be resolved, so the caller never archives to the wrong path.
+        under REQUIRED (it blocks for the idle reap). A sandbox on an image that
+        runtime-api no longer advertises uses the default spec's ``working_dir``;
+        raises only if no spec resolves at all, so the caller never archives to
+        the wrong path.
         """
         if workspace_path:
             return workspace_path
         # For cloud conversations the sandbox id is the conversation_id.hex.
         conversation_key = conversation_id or stored_sandbox.id
-        sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-            stored_sandbox.sandbox_spec_id
+        sandbox_spec = await resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id,
+            stored_sandbox.id,
+            self.sandbox_spec_service,
+            _logger,
         )
-        if sandbox_spec is None:
-            raise SandboxError(
-                f'No sandbox spec {stored_sandbox.sandbox_spec_id} for archive'
-            )
         grouping = (await self.user_context.get_user_info()).sandbox_grouping_strategy
         return grouped_workspace_dir(
             sandbox_spec.working_dir, grouping, conversation_key

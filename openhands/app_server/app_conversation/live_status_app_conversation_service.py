@@ -113,6 +113,7 @@ from openhands.app_server.sandbox.sandbox_service import (
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
+    resolve_existing_sandbox_spec,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
@@ -603,24 +604,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_server_url = self._get_agent_server_url(sandbox)
 
             # Get the working dir
-            sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
+            sandbox_spec = await resolve_existing_sandbox_spec(
+                sandbox.sandbox_spec_id,
+                sandbox_id,
+                self.sandbox_spec_service,
+                _logger,
             )
-            if sandbox_spec is None:
-                # Runtime-api advertises only the current agent-server image, so a
-                # sandbox created before an image bump has no spec. Only
-                # ``working_dir`` is read from it, and the default shares it.
-                sandbox_spec = (
-                    await self.sandbox_spec_service.get_default_sandbox_spec()
-                )
-                _logger.warning(
-                    'Sandbox spec %s not found for sandbox %s; using default spec '
-                    '%s (working_dir=%s)',
-                    sandbox.sandbox_spec_id,
-                    sandbox_id,
-                    sandbox_spec.id,
-                    sandbox_spec.working_dir,
-                )
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
