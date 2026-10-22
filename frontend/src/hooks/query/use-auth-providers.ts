@@ -9,6 +9,19 @@ export const useAuthProviders = () =>
     queryFn: () => authProvidersService.listAuthProviders(),
   });
 
+export const authProviderQueryKey = (providerId: number) => [
+  ...AUTH_PROVIDERS_QUERY_KEY,
+  providerId,
+];
+
+/** A single provider -- backs ``/super-admin/auth-providers/{provider_id}``. */
+export const useAuthProvider = (providerId: number) =>
+  useQuery({
+    queryKey: authProviderQueryKey(providerId),
+    queryFn: () => authProvidersService.getAuthProvider(providerId),
+    enabled: Number.isFinite(providerId),
+  });
+
 export const authProviderUsersQueryKey = (
   providerId: number,
   page: number,
