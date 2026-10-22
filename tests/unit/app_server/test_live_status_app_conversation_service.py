@@ -3694,8 +3694,11 @@ class TestLiveStatusAppConversationService:
 
         assert AppConversationStartTaskStatus.READY not in statuses
         assert statuses[-1] == AppConversationStartTaskStatus.ERROR
-        assert 'clone' in task.detail
-        assert 'owner/repo' in task.detail
+        assert task.detail == (
+            "Could not clone the selected repository 'owner/repo'. Check that the "
+            'repository and branch exist and that you have access to them, then '
+            'try again.'
+        )
         assert token not in task.detail
         self.service.maybe_run_setup_script.assert_not_called()
         self.service._build_start_conversation_request_for_user.assert_not_called()

@@ -763,11 +763,16 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 workspace.working_dir,
             )
             if existing.exit_code:
+                at_branch = (
+                    f' at branch {request.selected_branch!r}'
+                    if request.selected_branch
+                    else ''
+                )
                 raise ValueError(
                     'Could not clone the selected repository '
-                    f'{request.selected_repository!r}. Check that the repository '
-                    'and branch exist and that you have access to them, then try '
-                    'again.'
+                    f'{request.selected_repository!r}{at_branch}. Check that the '
+                    'repository and branch exist and that you have access to '
+                    'them, then try again.'
                 )
 
         # Checkout the appropriate branch

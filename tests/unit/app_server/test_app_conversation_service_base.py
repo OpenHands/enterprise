@@ -975,7 +975,7 @@ async def test_failed_selected_repository_clone_is_not_silent(
     with pytest.raises(ValueError, match='clone') as exc_info:
         await service.clone_or_init_git_repo(task, workspace)
 
-    assert repository in str(exc_info.value)
+    assert f"{repository!r} at branch 'missing'" in str(exc_info.value)
     commands = [call.args[0] for call in workspace.execute_command.call_args_list]
     assert any(' clone ' in command for command in commands)
     assert not any(command.startswith('git checkout') for command in commands), (
