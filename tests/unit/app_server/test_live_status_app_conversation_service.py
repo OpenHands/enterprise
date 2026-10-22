@@ -3372,6 +3372,46 @@ class TestLiveStatusAppConversationService:
 
         assert result is old_sandbox
 
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_prefers_user_setting(self):
+        """An explicit user/org setting wins over the deployment default."""
+        self.service.sandbox_grouping_strategy = SandboxGroupingStrategy.GROUP_BY_NEWEST
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(
+                sandbox_grouping_strategy=SandboxGroupingStrategy.ADD_TO_ANY
+            )
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.ADD_TO_ANY
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_falls_back_to_deployment_default(
+        self,
+    ):
+        """No user/org setting: the deployment-configured default is used."""
+        self.service.sandbox_grouping_strategy = SandboxGroupingStrategy.GROUP_BY_NEWEST
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(sandbox_grouping_strategy=None)
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.GROUP_BY_NEWEST
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_falls_back_to_no_grouping(self):
+        """Neither a user/org setting nor a deployment default: NO_GROUPING."""
+        self.service.sandbox_grouping_strategy = None
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(sandbox_grouping_strategy=None)
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.NO_GROUPING
+
     async def test_export_conversation_success(self):
         """Test successful download of conversation trajectory."""
         conversation_id = uuid4()
@@ -3807,6 +3847,39 @@ class TestLiveStatusAppConversationService:
         """Test a negative export limit is rejected rather than treated as no cap."""
         with pytest.raises(ValidationError):
             LiveStatusAppConversationServiceInjector(export_max_events=-1)
+
+    def test_injector_sandbox_grouping_strategy_defaults_to_none(self):
+        """No deployment default is configured unless explicitly set."""
+        injector = LiveStatusAppConversationServiceInjector()
+
+        assert injector.sandbox_grouping_strategy is None
+
+    def test_injector_sandbox_grouping_strategy_explicit_value(self):
+        """The injector accepts an explicit deployment default."""
+        injector = LiveStatusAppConversationServiceInjector(
+            sandbox_grouping_strategy=SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+        assert injector.sandbox_grouping_strategy == (
+            SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+    def test_injector_sandbox_grouping_strategy_from_env(self, monkeypatch):
+        """The deployment default is settable via the standard ``OH_*`` env-var
+        mechanism (``from_env``), consistent with the other injector fields."""
+        from openhands.agent_server.env_parser import from_env
+
+        monkeypatch.setenv(
+            'OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY', 'GROUP_BY_NEWEST'
+        )
+
+        injector = from_env(
+            LiveStatusAppConversationServiceInjector, 'OH_APP_CONVERSATION'
+        )
+
+        assert injector.sandbox_grouping_strategy == (
+            SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

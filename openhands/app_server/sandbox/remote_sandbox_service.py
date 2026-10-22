@@ -66,7 +66,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     hash_session_api_key as _hash_session_api_key,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.settings.settings_models import grouped_workspace_dir
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
+)
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
@@ -915,7 +918,10 @@ class RemoteSandboxService(SandboxService):
         sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
             stored_sandbox.sandbox_spec_id, stored_sandbox.id
         )
-        grouping = (await self.user_context.get_user_info()).sandbox_grouping_strategy
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
         return grouped_workspace_dir(
             sandbox_spec.working_dir, grouping, conversation_key
         )

@@ -522,11 +522,6 @@ class SaasSettingsStore(SettingsStore):
         )
         if org.v1_enabled is None:
             kwargs['v1_enabled'] = True
-        # Apply default (DEFAULT_SANDBOX_GROUPING_STRATEGY, which is tunable
-        # via the DEFAULT_SANDBOX_GROUPING_STRATEGY env var) if
-        # sandbox_grouping_strategy is None in the database
-        if kwargs.get('sandbox_grouping_strategy') is None:
-            kwargs.pop('sandbox_grouping_strategy', None)
         # Apply defaults if nullable database columns are None in pre-existing rows
         if kwargs.get('git_full_clone') is None:
             kwargs.pop('git_full_clone', None)
