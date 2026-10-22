@@ -889,6 +889,162 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
     store_tokens.assert_not_awaited()
 
 
+def test_callback_login_grants_super_admin_for_configured_email(client, jwt_svc):
+    """A login whose email is in SUPER_ADMIN_EMAILS is promoted every time.
+
+    Covers both the new-account case and an email added to
+    ``SUPER_ADMIN_EMAILS`` after the account already existed -- the callback
+    doesn't distinguish the two, it just self-heals on every login.
+    """
+    provider = _fake_provider()
+    user_id = uuid4()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'Admin@Example.com'}
+
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.email = 'Admin@Example.com'
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'grant_super_admin',
+            new=AsyncMock(return_value=fake_user),
+        ) as grant_super_admin,
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ),
+        # Matched case-insensitively against the configured list.
+        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    grant_super_admin.assert_awaited_once_with(str(user_id))
+
+
+def test_callback_login_skips_super_admin_grant_when_email_not_configured(
+    client, jwt_svc
+):
+    """A login whose email is not in SUPER_ADMIN_EMAILS is left untouched."""
+    provider = _fake_provider()
+    user_id = uuid4()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+
+    fake_user = MagicMock()
+    fake_user.id = user_id
+    fake_user.email = 'a@b.com'
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'grant_super_admin',
+            new=AsyncMock(),
+        ) as grant_super_admin,
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ),
+        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    grant_super_admin.assert_not_awaited()
+
+
 def _link_state(user_id, *, nonce: str = 'nonce-1', issued_at: float | None = None):
     return oauth_v2._encrypt_state(
         {

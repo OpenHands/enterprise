@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import httpx
@@ -66,10 +67,15 @@ from openhands.app_server.app_conversation.conversation_secret_enricher import (
 from openhands.app_server.app_conversation.hook_loader import (
     load_hooks_from_agent_server,
 )
+from openhands.app_server.app_conversation.skill_loader import (
+    azure_devops_user_orgs,
+    get_azure_devops_bearer_token,
+)
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
 )
 from openhands.app_server.config import (
+    AppServerConfig,
     get_event_callback_service,
     resolve_provider_llm_base_url,
 )
@@ -85,7 +91,11 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE, ProviderType
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
@@ -96,7 +106,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_service import SandboxService
+from openhands.app_server.sandbox.sandbox_service import (
+    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    SandboxService,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
@@ -168,6 +181,15 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # Upper bound for the provider lookup of a repository started without a
 # provider, so a slow git provider cannot hold up the conversation start.
 _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
+
+# Lifetime of the per-conversation Azure DevOps credential-helper exchange JWT.
+# Sized to a working session (on the order of the sandbox max_session_seconds),
+# not the multi-day resume window: the credential is minted fresh at every
+# conversation start, matching how GitHub/GitLab deliver theirs. A conversation
+# resumed after a pause longer than this can meet an expired credential — the
+# same limit those providers have today; the durable fix is the sandbox-bound
+# credential tracked in ak684/oh#124.
+_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
@@ -257,6 +279,53 @@ def append_system_context(existing: str | None, block: str) -> str:
     return f'{existing.rstrip()}\n\n{block}'
 
 
+def azure_devops_context(
+    selected_repository: str | None,
+    organizations: Sequence[str],
+    git_credentials_configured: bool,
+) -> str:
+    """Describe an Azure DevOps conversation's provider, host and organizations.
+
+    Without it, an agent asked to clone ``org/project/repo`` assumes GitHub. Built
+    only from repository and organization names, never credentials. The plain-git
+    line mirrors the per-organization credential helper, which is installed only
+    when a credential was minted and ``organizations`` is non-empty.
+    """
+    host = ProviderHandler.PROVIDER_DOMAINS[ProviderType.AZURE_DEVOPS]
+    lines = [
+        f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
+    ]
+    parts = (selected_repository or '').split('/')
+    if len(parts) >= 3:
+        org, project, repo = parts[0], parts[1], parts[2]
+        url = (
+            f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
+            f'/_git/{quote(repo, safe="")}'
+        )
+        lines.append(
+            f'Selected repository: organization `{org}`, project `{project}`, '
+            f'repository `{repo}` ({url}).'
+        )
+    lines.append(
+        'An Azure DevOps repository written as ORG/PROJECT/REPO is cloned from '
+        f'https://{host}/ORG/PROJECT/_git/REPO.'
+    )
+    if organizations:
+        names = ', '.join(f'`{org}`' for org in organizations)
+        lines.append(f"The user's Azure DevOps organizations: {names}.")
+        if git_credentials_configured:
+            lines.append(
+                'Git credentials are configured for these organizations: use plain '
+                '`git clone`, `git fetch`, `git pull` and `git push`, and do not put '
+                'tokens in remote URLs or add authentication options.'
+            )
+    lines.append(
+        'For the Azure DevOps REST API and pull requests, use the azure-devops skill.'
+    )
+    body = '\n'.join(lines)
+    return f'<AZURE_DEVOPS_CONTEXT>\n{body}\n</AZURE_DEVOPS_CONTEXT>'
+
+
 def effective_disabled_skills(
     user: UserInfo, request_disabled_skills: Sequence[str] | None = None
 ) -> list[str]:
@@ -338,6 +407,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 system_message_suffix, GIT_SHALLOW_CLONE_CONTEXT
             )
         return system_message_suffix
+
+    async def _maybe_append_azure_devops_context(
+        self,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+    ) -> str | None:
+        if git_provider != ProviderType.AZURE_DEVOPS:
+            return system_message_suffix
+        # The same organizations the git credential helper is installed for.
+        organizations = await azure_devops_user_orgs(
+            self.user_context, selected_repository
+        )
+        return append_system_context(
+            system_message_suffix,
+            azure_devops_context(
+                selected_repository,
+                organizations,
+                git_credentials_configured=bool(azure_devops_access_token),
+            ),
+        )
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
         """Get the sandbox grouping strategy from user settings."""
@@ -510,7 +601,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
                 sandbox.sandbox_spec_id
             )
-            assert sandbox_spec is not None
+            if sandbox_spec is None:
+                # Runtime-api advertises only the current agent-server image, so a
+                # sandbox created before an image bump has no spec. Only
+                # ``working_dir`` is read from it, and the default shares it.
+                sandbox_spec = (
+                    await self.sandbox_spec_service.get_default_sandbox_spec()
+                )
+                _logger.warning(
+                    'Sandbox spec %s not found for sandbox %s; using default spec '
+                    '%s (working_dir=%s)',
+                    sandbox.sandbox_spec_id,
+                    sandbox_id,
+                    sandbox_spec.id,
+                    sandbox_spec.working_dir,
+                )
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
@@ -522,6 +627,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 sandbox_grouping_strategy,
                 conversation_id.hex,
             )
+
+            # Mint this conversation's Azure DevOps credential-helper token
+            # before setup runs (the setup flow writes it to the sandbox and the
+            # request builder registers it for masking).
+            await self._mint_azure_devops_access_token(task)
 
             # Run setup scripts
             remote_workspace = AsyncRemoteWorkspace(
@@ -575,6 +685,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     plugins=request.plugins,
                     client_tools=request.client_tools,
                     api_secrets=request.secrets,
+                    azure_devops_access_token=task._azure_devops_access_token,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
                     request_observability_metadata=request.observability_metadata,
@@ -1036,7 +1147,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
 
                 sandbox = await self.sandbox_service.start_sandbox(
-                    sandbox_id=sandbox_id_str
+                    sandbox_id=sandbox_id_str,
                 )
             task.sandbox_id = sandbox.id
         else:
@@ -1085,6 +1196,61 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             timeout=self.sandbox_startup_timeout,
             poll_interval=self.sandbox_startup_poll_frequency,
             httpx_client=self.httpx_client,
+        )
+
+    async def _mint_azure_devops_access_token(
+        self, task: AppConversationStartTask
+    ) -> None:
+        """Mint this conversation's Azure DevOps credential-helper exchange JWT.
+
+        Delivered per conversation (parity with how GitHub/GitLab re-embed their
+        token at every conversation start), not once per sandbox: the setup flow
+        writes it to a file the credential helper reads, and the request builder
+        registers the same string as a masked conversation secret. Because it is
+        minted per conversation, a conversation that reuses a running sandbox gets
+        its own fresh, masked credential. Only set when the user has an Entra (JWT)
+        Azure DevOps token and a ``web_url`` exists (the secrets endpoint lives
+        under it); left unset for every other user.
+        """
+        if not self.web_url:
+            return
+        # Best-effort: a failure to mint must never block conversation start
+        # (Azure DevOps git simply will not be set up), like the credential and
+        # marketplace helpers below.
+        try:
+            token = await get_azure_devops_bearer_token(self.user_context)
+            if not token:
+                return
+            user_id = await self.user_context.get_user_id()
+            if not user_id:
+                return
+            task._azure_devops_access_token = self.jwt_service.create_jws_token(
+                payload={
+                    'user_id': user_id,
+                    'provider_type': ProviderType.AZURE_DEVOPS.value,
+                },
+                expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+            )
+        except Exception as exc:
+            _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+
+    @staticmethod
+    def _register_azure_devops_access_token_secret(
+        secrets: dict, azure_devops_access_token: str | None
+    ) -> None:
+        """Register this conversation's Azure DevOps JWT as a masked secret.
+
+        The helper reads the JWT from a file the agent can also read, so without
+        this it would appear unmasked if the agent printed the file.
+        ``SecretRegistry.mask_secrets_in_output`` resolves and masks every
+        registered secret value. Must be the exact string minted for this
+        conversation (see ``_mint_azure_devops_access_token``).
+        """
+        if not azure_devops_access_token:
+            return
+        secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
+            value=SecretStr(azure_devops_access_token),
+            description='Azure DevOps git credential-helper access token',
         )
 
     async def _seed_sandbox_profiles(
@@ -2085,6 +2251,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
@@ -2192,6 +2359,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 plugins=plugins,
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
+                azure_devops_access_token=azure_devops_access_token,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2238,8 +2406,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
         )
 
         # --- LLM + MCP -----------------------------------------------------
@@ -2549,6 +2727,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -2648,8 +2827,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
         )
 
         # --- build the ACP agent ------------------------------------------
@@ -3311,6 +3500,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         return b''.join(chunks)
 
 
+def get_sandbox_web_url(
+    config: AppServerConfig, sandbox_service: SandboxService
+) -> str | None:
+    """Return the URL the sandbox uses to reach OpenHands."""
+    web_url = config.sandbox_web_url or config.web_url
+    # If no web url has been set and we are using docker, we can use host.docker.internal
+    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
+        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    return web_url
+
+
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     sandbox_startup_timeout: int = Field(
         default=120, description='The max timeout time for sandbox startup'
@@ -3396,11 +3596,8 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 )
             config = get_global_config()
 
-            # If no web url has been set and we are using docker, we can use host.docker.internal
-            web_url = config.web_url
-            if web_url is None:
-                if isinstance(sandbox_service, DockerSandboxService):
-                    web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+            # Every use of web_url in this service is a URL the sandbox calls.
+            web_url = get_sandbox_web_url(config, sandbox_service)
 
             # Get app_mode for SaaS mode
             app_mode = None

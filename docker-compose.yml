@@ -10,10 +10,17 @@
 #
 # Everything is served from one origin, http://localhost:${APP_PORT:-3100}, by
 # the `proxy` service (Caddy), mirroring the cloud ingress: `/api/automation/*`
-# goes to the automation service, `/canvas*` to Agent Canvas, and everything
-# else to the app. Agent Canvas calls same-origin `/api/automation/v1/...`, so
-# no extra port or CORS setup is needed. `/api/service/*` is deliberately not
-# reachable through the proxy (see the `caddyfile` config at the bottom).
+# goes to the automation service, `/canvas*` to Agent Canvas,
+# `/runtime/<sandbox>/<port>/*` to that port of the sandbox container, and
+# everything else to the app. Agent
+# Canvas calls same-origin `/api/automation/v1/...`, so no extra port or CORS
+# setup is needed. `/api/service/*` is deliberately not reachable through the
+# proxy (see the `caddyfile` config at the bottom).
+#
+# Sandbox containers join this stack's network, so they reach the other
+# services by service name (`app`, `proxy`, `automation-server`). Because they
+# are not managed by Compose, `docker compose down` cannot remove the network
+# while sandboxes are still attached to it.
 #
 # First run: the app pulls the agent server image before it starts serving, so
 # http://localhost:3100 is not reachable until that pull finishes (the app logs
@@ -22,6 +29,11 @@
 # at /canvas, which is served by the `canvas-server` service and locked to this
 # stack's own origin (AGENT_CANVAS_LOCK_TO_CLOUD) so it authenticates via your
 # existing session cookie instead of prompting to connect to OpenHands Cloud.
+#
+# Data persists across `docker compose down` and `up` in named volumes
+# (`db-data`, `app-filestore`, `automation-data`). `docker compose down -v`
+# removes them and resets everything. The database keeps the credentials it was
+# first created with, so changing DB_USER/DB_PASS later requires a reset.
 #
 # By default this stack runs RELEASED images (pinned below) and builds nothing.
 # To use other versions, set these (shell or `.env`):
@@ -53,7 +65,7 @@
 #     Kubernetes-style scheduling here.
 
 # enterprise-server tag must match the release this file ships with.
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.74.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.77.0} # x-release-please-version
 
 services:
   db:
@@ -62,12 +74,8 @@ services:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
       POSTGRES_DB: ${DB_NAME:-openhands}
-    # Intentionally no `db-data` volume mount here for now: this stack is
-    # meant to be completely ephemeral (see OHE-3376 investigation into the
-    # Docker named volume surviving `docker compose down`). Every
-    # `docker compose up --build` starts from a fresh, empty database.
-    # volumes:
-    #   - db-data:/var/lib/postgresql/data
+    volumes:
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-openhands}']
       interval: 5s
@@ -98,13 +106,10 @@ services:
     # the socket.
     volumes: &app-volumes
       - /var/run/docker.sock:/var/run/docker.sock
-      # `app-filestore` intentionally not mounted for now: this stack is
-      # meant to be completely ephemeral, so /.openhands starts empty on
-      # every `docker compose up --build` instead of surviving it via a
-      # Docker named volume.
-      # - app-filestore:/.openhands
-    # Sandboxes publish their ports on the Docker host, and the app and
-    # `worker` reach them through host.docker.internal.
+      - app-filestore:/.openhands
+    # The app and `worker` reach a sandbox at its URL. With the default
+    # WEB_URL, they rewrite `localhost` in it to host.docker.internal, which
+    # reaches the proxy's published port.
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
     # `worker` shares this environment, so both build the same sandbox
@@ -159,6 +164,12 @@ services:
       #   docker compose up --build
       WEB_HOST: ${WEB_HOST:-localhost}
       OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
+
+      # Sandboxes reach the app through this URL instead of OH_WEB_URL. The
+      # agent uses it to call the automation API and the default MCP server,
+      # and `localhost` inside a sandbox is the sandbox itself. It points at
+      # the proxy, because only the proxy routes /api/automation.
+      OH_SANDBOX_WEB_URL: http://proxy
 
       # This stack ships no LiteLLM proxy container, and ENABLE_LEGACY_LITELLM
       # defaults to 'true'. With it on, storage/lite_llm_manager.py's
@@ -223,11 +234,25 @@ services:
       # be able to reach the app.
       SANDBOX_HOST_PORT: ${APP_PORT:-3100}
 
+      # Compose's default network for this project. Sandboxes join it so they
+      # can resolve the service names, and publish no ports on the host.
+      SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
+
+      # Sandbox URLs go through the proxy, which sends
+      # /runtime/<sandbox>/<port> to that port of the sandbox container over
+      # this network. The browser reaches every sandbox on the same origin as
+      # the app, so this follows WEB_URL.
+      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{sandbox_id}/{port}
+
+      # Automation runs connect to the agent server in their sandbox on this
+      # port. The SDK otherwise uses the remote runtime's port, 60000.
+      OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
+
       # Automation service wiring. AUTOMATIONS_SERVICE_KEY lets the
       # automation service mint per-user API keys through /api/service/*, and
       # must match AUTOMATION_SERVICE_KEY on the `automation-server` service. The
-      # default is only acceptable because the proxy does not expose
-      # /api/service/*; set a real value if you publish `app` some other way.
+      # proxy does not expose /api/service/*, but sandboxes are on this
+      # network and can call http://app:3000 directly, so set a real value.
       # AUTOMATION_SERVICE_URL includes the /api/automation base path (the
       # app appends /v1 to it).
       AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
@@ -253,32 +278,40 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.0}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.2}
     # The image is only published for linux/amd64. Pinning the platform makes
     # Docker Desktop on Apple Silicon run it under emulation instead of
     # failing with "no matching manifest for linux/arm64"; it's a no-op on
     # amd64 hosts. Drop this once the image is published multi-arch.
     platform: linux/amd64
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
-    # here.
-    command: ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
+    # here. It starts as root only so it can hand the (root-owned, since the
+    # image has no /data) volume to the service user, then drops to that user.
+    user: '0:0'
+    command:
+      - sh
+      - -c
+      - |
+        chown 42420:999 /data
+        exec setpriv --reuid 42420 --regid 999 --clear-groups uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
     depends_on:
       db:
         condition: service_healthy
     expose:
       - '8000'
     # The image runs as uid 42420 with no home directory, so tarball storage
-    # needs an explicitly writable path. tmpfs keeps this stack ephemeral.
-    tmpfs:
-      - /data:uid=42420,gid=42420
+    # needs an explicitly writable path.
+    volumes:
+      - automation-data:/data
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-      # The app reports each sandbox's URL as http://localhost:<published
-      # port> (the browser needs that), and the automation service uses it
-      # as-is to reach the sandbox, unlike the app, which rewrites localhost
-      # to host.docker.internal. Resolving localhost to the Docker host as
-      # well makes the connection fall through from this container's own
-      # loopback (nothing listens there) to the sandbox's published port.
+      # With the default WEB_URL, the app reports each sandbox's URL as
+      # http://localhost:<APP_PORT>/runtime/<sandbox>/<port> (the browser
+      # needs that), and the automation service uses it as-is to reach the
+      # sandbox, unlike the app, which rewrites localhost to
+      # host.docker.internal. Resolving localhost to the Docker host as well
+      # makes the connection fall through from this container's own loopback
+      # (nothing listens there) to the proxy's published port.
       - 'localhost:host-gateway'
     environment:
       # The automation service needs its own database: it and the app both run
@@ -298,17 +331,17 @@ services:
       LOCAL_STORAGE_PATH: /data
 
       # Cloud mode (AUTOMATION_AGENT_SERVER_URL unset): every run gets its own
-      # Docker sandbox, created through the app. Server-to-server calls use
-      # the internal service name.
+      # Docker sandbox, created through the app. The service and the run's
+      # sandbox, which is on this network too, both use the service name.
       AUTOMATION_OPENHANDS_API_BASE_URL: http://app:3000
       AUTOMATION_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
 
       # Callback URL handed to sandbox containers, so it must be reachable
-      # from them (not from the browser): the proxy's published port on the
-      # Docker host, like SANDBOX_HOST_PORT on the app.
-      AUTOMATION_BASE_URL: http://host.docker.internal:${APP_PORT:-3100}
+      # from them (not from the browser): the proxy, like OH_SANDBOX_WEB_URL
+      # on the app.
+      AUTOMATION_BASE_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
@@ -332,7 +365,7 @@ services:
   # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
   # Telemetry is disabled at runtime: the released bundle has a PostHog key.
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.29.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.30.1}
     init: true
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
     # The static server only accepts `--flag value`, not `--flag=value`.
@@ -396,11 +429,10 @@ services:
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
-# `db-data` / `app-filestore` are declared but currently unused (see the
-# commented-out mounts above) while this stack is kept completely ephemeral.
-# volumes:
-#   db-data:
-#   app-filestore:
+volumes:
+  db-data:
+  app-filestore:
+  automation-data:
 
 configs:
   caddyfile:
@@ -415,6 +447,15 @@ configs:
         @internal path /api/service /api/service/*
         handle @internal {
           respond 404
+        }
+
+        # Sandboxes: /runtime/<sandbox>/<port>/... goes to that port of the
+        # sandbox container, without the prefix. Only sandbox container names
+        # match, so this route cannot reach the other services.
+        @runtime path_regexp runtime ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/(\d+)(/.*)?$$
+        handle @runtime {
+          uri strip_prefix /runtime/{re.runtime.1}/{re.runtime.2}
+          reverse_proxy {re.runtime.1}:{re.runtime.2}
         }
 
         # The automation service already serves under /api/automation, so the
