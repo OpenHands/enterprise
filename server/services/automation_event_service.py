@@ -32,6 +32,9 @@ import aiohttp
 import jmespath
 from jmespath import exceptions as jmespath_exceptions
 
+from integrations.azure_devops.azure_devops_payload import (
+    extract_org as extract_azure_devops_org,
+)
 from integrations.resolver_org_router import resolve_org_for_repo
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -245,6 +248,12 @@ class AutomationEventService:
         self, provider: ProviderType, payload: dict[str, Any], event_type: str | None
     ) -> bool:
         """Return whether this provider event should be forwarded."""
+        if provider == ProviderType.AZURE_DEVOPS:
+            # The automation service has no Azure DevOps detection rules, so
+            # asking which event types it wants would cost a signed request per
+            # event and then forward anyway.
+            return True
+
         source = provider.value
         metadata = await self._get_requested_event_metadata(source)
         if metadata is None:
@@ -543,6 +552,10 @@ class AutomationEventService:
             repo = self._extract_bitbucket_data_center_repository(payload)
             project = repo.get('project') or {}
             return project.get('key'), 'Project', None
+        if provider == ProviderType.AZURE_DEVOPS:
+            # Azure DevOps org claims hold the organization name. There is no
+            # user owner to fall back to.
+            return extract_azure_devops_org(payload) or None, 'Organization', None
 
         logger.warning(f'Unsupported provider ({provider.value})')
         return None, None, None

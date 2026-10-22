@@ -65,7 +65,7 @@
 #     Kubernetes-style scheduling here.
 
 # enterprise-server tag must match the release this file ships with.
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.75.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.77.0} # x-release-please-version
 
 services:
   db:
@@ -278,7 +278,7 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.0}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.2}
     # The image is only published for linux/amd64. Pinning the platform makes
     # Docker Desktop on Apple Silicon run it under emulation instead of
     # failing with "no matching manifest for linux/arm64"; it's a no-op on
@@ -365,7 +365,7 @@ services:
   # hostname, a reverse proxy, etc.), override AGENT_CANVAS_LOCK_TO_CLOUD.
   # Telemetry is disabled at runtime: the released bundle has a PostHog key.
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.29.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.30.1}
     init: true
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
     # The static server only accepts `--flag value`, not `--flag=value`.

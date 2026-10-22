@@ -76,6 +76,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthentication,
     MCPServer,
 )
+from openhands.sdk.mcp.oauth import MCPOAuth
 
 _logger = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ async def _job_deliver_callback(
 # ---------------------------------------------------------------------------
 
 
-class _CloudCoordinatedOAuth(OAuth):
+class _CloudCoordinatedOAuth(MCPOAuth):
     """FastMCP OAuth client whose callback is the app server's public route."""
 
     def __init__(
@@ -302,7 +303,7 @@ def _oauth_client_kwargs(
         'client_name': (
             authentication.client_name
             if authentication is not None and authentication.client_name
-            else 'FastMCP Client'
+            else 'OpenHands'
         ),
         'token_storage': oauth_token_storage,
         'additional_client_metadata': additional_client_metadata or None,

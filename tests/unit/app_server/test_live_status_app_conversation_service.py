@@ -44,6 +44,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     LiveStatusAppConversationServiceInjector,
     _exception_detail,
     _resolve_title_llm_profile,
+    azure_devops_context,
     effective_disabled_skills,
     get_sandbox_web_url,
 )
@@ -70,6 +71,7 @@ from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
     Settings,
     _load_persisted_agent_settings,
+    grouped_workspace_dir,
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
@@ -193,6 +195,46 @@ class _TestUserInfo(SimpleNamespace):
 
     def to_agent_settings(self) -> OpenHandsAgentSettings:
         return self.agent_settings
+
+
+def _azure_devops_provider_handler(organizations: list[str]) -> SimpleNamespace:
+    """A provider handler whose Azure DevOps token reaches ``organizations``."""
+    return SimpleNamespace(
+        provider_tokens={ProviderType.AZURE_DEVOPS: 'provider-token-value'},
+        get_azure_devops_organizations=AsyncMock(return_value=organizations),
+    )
+
+
+class TestAzureDevOpsContext:
+    """azure_devops_context() describes the provider, host and organizations."""
+
+    def test_encodes_selected_repository_url(self):
+        block = azure_devops_context(
+            'contoso/My Project/My Repo', ['contoso'], git_credentials_configured=True
+        )
+
+        assert block.startswith('<AZURE_DEVOPS_CONTEXT>\n')
+        assert block.endswith('\n</AZURE_DEVOPS_CONTEXT>')
+        assert (
+            'organization `contoso`, project `My Project`, repository `My Repo` '
+            '(https://dev.azure.com/contoso/My%20Project/_git/My%20Repo)'
+        ) in block
+
+    def test_omits_repository_line_without_org_project_repo(self):
+        block = azure_devops_context(None, ['contoso'], git_credentials_configured=True)
+
+        assert 'Azure DevOps, hosted at dev.azure.com' in block
+        assert 'Selected repository' not in block
+        assert 'organizations: `contoso`' in block
+
+    def test_plain_git_line_requires_organizations(self):
+        block = azure_devops_context(
+            'contoso/web/app', [], git_credentials_configured=True
+        )
+
+        assert "The user's Azure DevOps organizations" not in block
+        assert 'Git credentials are configured' not in block
+        assert 'https://dev.azure.com/ORG/PROJECT/_git/REPO' in block
 
 
 class TestEffectiveDisabledSkills:
@@ -2676,6 +2718,115 @@ class TestLiveStatusAppConversationService:
         assert '<GIT_WORKSPACE_CONTEXT>' not in suffix
 
     @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_appends_azure_devops_context(self, _mock_tools):
+        """An Azure DevOps conversation tells the agent its provider, host and orgs."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso', 'fabrikam'])
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix='Existing integration instructions.',
+            git_provider=ProviderType.AZURE_DEVOPS,
+            working_dir='/test/dir',
+            selected_repository='contoso/web/app',
+            azure_devops_access_token='header.payload.signature',
+        )
+
+        suffix = result.agent.agent_context.system_message_suffix
+        assert 'Existing integration instructions.' in suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'Azure DevOps, hosted at dev.azure.com' in suffix
+        assert 'organization `contoso`, project `web`, repository `app`' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'organizations: `contoso`, `fabrikam`' in suffix
+        assert 'use plain `git clone`' in suffix
+        assert 'azure-devops skill' in suffix
+        assert 'header.payload.signature' not in suffix
+        assert 'provider-token-value' not in suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_azure_devops_context_without_git_credentials(
+        self, _mock_tools
+    ):
+        """Without a minted credential the agent is not told plain git works."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso'])
+        )
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=ProviderType.AZURE_DEVOPS,
+            working_dir='/test/dir',
+            selected_repository='contoso/web/app',
+        )
+
+        suffix = result.agent.agent_context.system_message_suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'Git credentials are configured' not in suffix
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_omits_azure_devops_context_for_other_providers(
+        self, _mock_tools
+    ):
+        """GitHub and GitLab conversations get no Azure DevOps context."""
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso'])
+        )
+        self.mock_user_context.get_provider_handler = get_provider_handler
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        for git_provider in (ProviderType.GITHUB, ProviderType.GITLAB):
+            result = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix='Existing integration instructions.',
+                git_provider=git_provider,
+                working_dir='/test/dir',
+                selected_repository='contoso/app',
+                azure_devops_access_token='header.payload.signature',
+            )
+
+            suffix = result.agent.agent_context.system_message_suffix
+            assert 'Existing integration instructions.' in suffix
+            assert '<AZURE_DEVOPS_CONTEXT>' not in suffix
+            assert 'dev.azure.com' not in suffix
+        get_provider_handler.assert_not_called()
+
+    @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_registered_agent_definitions'
     )
     @patch(
@@ -3549,6 +3700,159 @@ class TestLiveStatusAppConversationService:
             == current_key
         )
         assert rotated
+
+    async def test_start_app_conversation_in_sandbox_whose_image_is_no_longer_advertised(
+        self,
+    ):
+        """A sandbox created before an image bump has no spec once runtime-api
+        advertises only the new image; the start must use the default spec."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.55.1-python'
+        conversation_id = uuid4()
+        with (
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+            ) as mock_remote_workspace_class,
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+            ) as mock_conversation_info_class,
+        ):
+            self._arrange_start_app_conversation(
+                conversation_id,
+                mock_conversation_info_class,
+                mock_remote_workspace_class,
+            )
+            self.mock_sandbox.sandbox_spec_id = old_image
+            self.service._process_pending_messages = AsyncMock()
+            profile_listing = Mock(raise_for_status=Mock())
+            profile_listing.json.return_value = {'profiles': []}
+            self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
+            self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+                return_value=None
+            )
+            default_spec = Mock(spec=SandboxSpecInfo)
+            default_spec.id = current_image
+            default_spec.working_dir = '/workspace/project'
+            self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+                return_value=default_spec
+            )
+
+            tasks = [
+                task
+                async for task in self.service._start_app_conversation(
+                    AppConversationStartRequest(
+                        title='Old sandbox', conversation_id=conversation_id
+                    )
+                )
+            ]
+
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
+            old_image
+        )
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        assert mock_remote_workspace_class.call_args.kwargs[
+            'working_dir'
+        ] == grouped_workspace_dir(
+            '/workspace/project',
+            SandboxGroupingStrategy.ADD_TO_ANY,
+            conversation_id.hex,
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_error_when_no_spec_is_available(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """With neither the sandbox's spec nor a default, the start task must
+        fail with a message, not the empty detail a bare assert produced."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+            side_effect=SandboxError('No sandbox specs available!')
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='No spec')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert tasks[-1].detail == 'No sandbox specs available!'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_failed_repository_clone(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A selected repository that cannot be cloned fails the start task with
+        a clear message instead of starting a conversation on an empty
+        workspace."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        # Run the real repository setup so the failure comes from the actual
+        # clone; the later setup steps are not under test.
+        del self.service.run_setup_scripts
+        self.service._configure_azure_devops_git_credentials = AsyncMock()
+        self.service.maybe_run_setup_script = AsyncMock()
+        self.service.maybe_setup_git_hooks = AsyncMock()
+        self.service.maybe_inject_memory_context = AsyncMock()
+        self.service.load_and_merge_all_skills = AsyncMock()
+        token = 'ghp_cloneSecretValue123'
+        self.mock_user.git_user_name = None
+        self.mock_user.git_user_email = None
+        self.mock_user_context.get_secrets = AsyncMock(return_value={})
+        self.mock_user_context.get_authenticated_git_url = AsyncMock(
+            return_value=f'https://x-access-token:{token}@github.com/owner/repo.git'
+        )
+
+        async def execute_command(command, cwd=None, timeout=None):
+            if ' clone ' in command:
+                return Mock(
+                    exit_code=128,
+                    stdout='',
+                    stderr=f"fatal: unable to access 'https://x-access-token:{token}@github.com/'",
+                )
+            if command.startswith('test -d '):
+                # The repository is not already cloned in this sandbox.
+                return Mock(exit_code=1, stdout='', stderr='')
+            return Mock(exit_code=0, stdout='', stderr='')
+
+        workspace = mock_remote_workspace_class.return_value
+        workspace.working_dir = '/test/workspace'
+        workspace.execute_command = AsyncMock(side_effect=execute_command)
+
+        statuses = []
+        async for task in self.service._start_app_conversation(
+            AppConversationStartRequest(
+                selected_repository='owner/repo', git_provider=ProviderType.GITHUB
+            )
+        ):
+            statuses.append(task.status)
+
+        assert AppConversationStartTaskStatus.READY not in statuses
+        assert statuses[-1] == AppConversationStartTaskStatus.ERROR
+        assert task.detail == (
+            "Could not clone the selected repository 'owner/repo'. Check that the "
+            'repository and branch exist and that you have access to them, then '
+            'try again.'
+        )
+        assert token not in task.detail
+        self.service.maybe_run_setup_script.assert_not_called()
+        self.service._build_start_conversation_request_for_user.assert_not_called()
+        self.mock_httpx_client.post.assert_not_called()
 
     def _arrange_start_app_conversation(
         self,
@@ -6229,6 +6533,7 @@ class TestBuildAcpStartConversationRequestSecrets:
         request_observability_metadata=None,
         request_observability_tags=None,
         request_observability_span_name=None,
+        azure_devops_access_token=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
@@ -6251,7 +6556,32 @@ class TestBuildAcpStartConversationRequestSecrets:
             request_observability_metadata=request_observability_metadata,
             request_observability_tags=request_observability_tags,
             request_observability_span_name=request_observability_span_name,
+            azure_devops_access_token=azure_devops_access_token,
         )
+
+    @pytest.mark.asyncio
+    async def test_acp_request_appends_azure_devops_context(self, service, tmp_path):
+        """ACP agents get the same Azure DevOps context as the regular agent."""
+        service.user_context.get_provider_handler = AsyncMock(
+            return_value=_azure_devops_provider_handler(['contoso', 'fabrikam'])
+        )
+        user = self._make_acp_user()
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            git_provider=ProviderType.AZURE_DEVOPS,
+            selected_repository='contoso/web/app',
+            azure_devops_access_token='header.payload.signature',
+        )
+
+        suffix = request.agent.agent_context.system_message_suffix
+        assert '<AZURE_DEVOPS_CONTEXT>' in suffix
+        assert 'https://dev.azure.com/contoso/web/_git/app' in suffix
+        assert 'organizations: `contoso`, `fabrikam`' in suffix
+        assert 'use plain `git clone`' in suffix
+        assert 'header.payload.signature' not in suffix
 
     @pytest.mark.asyncio
     async def test_secrets_passed_via_request_secrets(self, service, tmp_path):
@@ -6668,3 +6998,105 @@ class TestACPProviderAllowlistAtServiceStart:
         assert exc_info.value.status_code == 400
         assert acp_server in exc_info.value.detail
         service._wait_for_sandbox_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: the per-conversation Azure DevOps credential-helper token —
+# minted fresh per conversation, delivered via a file, and masked in output.
+# ---------------------------------------------------------------------------
+
+
+def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(return_value='signed.jwt.token')
+    service.user_context = Mock()
+    service.user_context.get_latest_token = AsyncMock(return_value=latest_token)
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._mint_azure_devops_access_token = MethodType(
+        LiveStatusAppConversationService._mint_azure_devops_access_token, service
+    )
+    return service
+
+
+def _task_for_mint():
+    return types.SimpleNamespace(_azure_devops_access_token=None)
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_for_entra_user():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    # A fresh JWT is minted per conversation and stashed on the task so the
+    # setup flow writes it and the request builder registers it for masking.
+    assert task._azure_devops_access_token == 'signed.jwt.token'
+    kwargs = service.jwt_service.create_jws_token.call_args.kwargs
+    assert kwargs['payload'] == {
+        'user_id': 'user-1',
+        'provider_type': ProviderType.AZURE_DEVOPS.value,
+    }
+    # Session-length, not the multi-day resume window nor the provider ceiling.
+    assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_for_pat_user():
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='plain-pat-token'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.jwt_service.create_jws_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_without_web_url():
+    service = _azure_devops_mint_service(
+        web_url=None, latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.user_context.get_latest_token.assert_not_called()
+
+
+def test_register_azure_devops_access_token_secret_masks_the_jwt():
+    # The per-conversation JWT must be registered as a conversation secret (same
+    # string) so SecretRegistry.mask_secrets_in_output hides it.
+    from pydantic import SecretStr
+
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, 'signed.jwt.token'
+    )
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in secrets
+    value = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'].value
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    assert value == 'signed.jwt.token'
+
+
+def test_register_azure_devops_access_token_secret_noop_without_token():
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, None
+    )
+    assert secrets == {}

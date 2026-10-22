@@ -614,6 +614,31 @@ async def azure_devops_marketplace_orgs(
     return orgs
 
 
+async def azure_devops_user_orgs(
+    user_context: UserContext,
+    selected_repository: str | None = None,
+) -> list[str]:
+    """Return every Azure DevOps organization the user can reach.
+
+    Covers the organizations the user's Azure DevOps token is installed on, plus
+    the selected repository's organization when one is given, so the git
+    credential helper is installed for all of the user's Azure DevOps repos (not
+    only the selected one). Failures degrade to the orgs already collected.
+    """
+    orgs: list[str] = []
+    if selected_repository and len(selected_repository.split('/')) >= 2:
+        orgs.append(selected_repository.split('/')[0])
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        if ProviderType.AZURE_DEVOPS in provider_handler.provider_tokens:
+            for org in await provider_handler.get_azure_devops_organizations():
+                if org and org not in orgs:
+                    orgs.append(org)
+    except Exception as exc:
+        _logger.debug(f'Failed to enumerate Azure DevOps organizations: {exc}')
+    return orgs
+
+
 async def authenticate_marketplace_sources(
     registered_marketplaces: list[MarketplaceRegistration] | None,
     user_context: UserContext,

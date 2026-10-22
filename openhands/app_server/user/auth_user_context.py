@@ -146,11 +146,16 @@ class AuthUserContext(UserContext):
         return provider_handler
 
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
         provider_handler = await self.get_provider_handler()
         url = await provider_handler.get_authenticated_git_url(
-            repository, is_optional=is_optional
+            repository,
+            is_optional=is_optional,
+            specified_provider=specified_provider,
         )
         return url
 

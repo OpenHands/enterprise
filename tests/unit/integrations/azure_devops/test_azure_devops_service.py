@@ -255,6 +255,50 @@ async def test_create_pr_comment_service_hook_posts_expected_payload():
 
 
 @pytest.mark.asyncio
+async def test_create_automation_service_hook_names_the_kind_of_update():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'id': 'subscription-id'}, {})
+    )
+
+    await service.create_automation_service_hook(
+        event_type='git.pullrequest.updated',
+        notification_type='ReviewerVoteNotification',
+        webhook_url='https://app.example.com/integration/azure-devops/events',
+        webhook_secret='secret',
+    )
+
+    params = service._make_request.await_args.kwargs['params']
+    assert params['eventType'] == 'git.pullrequest.updated'
+    assert params['resourceVersion'] == '1.0'
+    assert params['publisherInputs'] == {'notificationType': 'ReviewerVoteNotification'}
+    assert params['consumerInputs']['httpHeaders'] == (
+        'X-OpenHands-Notification-Type:ReviewerVoteNotification'
+    )
+    assert params['consumerInputs']['basicAuthPassword'] == 'secret'
+
+
+@pytest.mark.asyncio
+async def test_create_automation_service_hook_for_created_pull_requests():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'id': 'subscription-id'}, {})
+    )
+
+    await service.create_automation_service_hook(
+        event_type='git.pullrequest.created',
+        webhook_url='https://app.example.com/integration/azure-devops/events',
+        webhook_secret='secret',
+    )
+
+    params = service._make_request.await_args.kwargs['params']
+    assert params['eventType'] == 'git.pullrequest.created'
+    assert params['resourceVersion'] == '1.0'
+    assert params['publisherInputs'] == {}
+    assert 'httpHeaders' not in params['consumerInputs']
+
+
+@pytest.mark.asyncio
 async def test_has_contribute_access_posts_repo_token_and_returns_evaluation():
     service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
     service._make_request = AsyncMock(  # type: ignore[method-assign]
