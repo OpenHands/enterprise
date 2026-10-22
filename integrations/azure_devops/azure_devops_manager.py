@@ -158,15 +158,8 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     f'in {azure_view.full_repo_name}#{azure_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token,
-                    ProviderType.AZURE_DEVOPS,
+                user_token = await self.token_manager.get_idp_token_for_user(
+                    user_info.keycloak_user_id, ProviderType.AZURE_DEVOPS
                 )
                 if not user_token:
                     raise MissingSettingsError('Missing settings')

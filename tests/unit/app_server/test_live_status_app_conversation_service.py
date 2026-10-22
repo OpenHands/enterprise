@@ -1730,6 +1730,34 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_uses_app_user_id_and_email_metadata(self, _mock_tools):
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_user_email = AsyncMock(
+            return_value='alice@example.com'
+        )
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+        )
+
+        assert result.user_id == 'test_user_123'
+        assert result.observability_metadata['user_email'] == 'alice@example.com'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_passes_title_llm_profile(self, _mock_tools):
         profiles = LLMProfiles()
         profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
@@ -3930,6 +3958,41 @@ class TestLiveStatusAppConversationService:
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
         self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_posts_app_user_id_when_email_exists(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_user_context.get_user_email = AsyncMock(
+            return_value='alice@example.com'
+        )
+        self.service._process_pending_messages = AsyncMock()
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posts = {
+            call.args[0]: call.kwargs['json']
+            for call in self.mock_httpx_client.post.await_args_list
+        }
+        assert posts['http://agent-server:8000/api/conversations']['user_id'] == (
+            'test_user_123'
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -6533,11 +6596,12 @@ class TestBuildAcpStartConversationRequestSecrets:
         request_observability_metadata=None,
         request_observability_tags=None,
         request_observability_span_name=None,
+        user_email=None,
         azure_devops_access_token=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
-        service.user_context.get_user_email = AsyncMock(return_value=None)
+        service.user_context.get_user_email = AsyncMock(return_value=user_email)
         service.user_context.get_secrets = AsyncMock(return_value=secrets or {})
         service.user_context.get_provider_tokens = AsyncMock(return_value=None)
         sandbox = Mock(spec=SandboxInfo)
@@ -6647,6 +6711,22 @@ class TestBuildAcpStartConversationRequestSecrets:
         assert request.agent.agent_context.registered_marketplaces[0].source == (
             'github:owner/plugins'
         )
+
+    @pytest.mark.asyncio
+    async def test_acp_request_uses_app_user_id_and_email_metadata(
+        self, service, tmp_path
+    ):
+        user = self._make_acp_user()
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            user_email='alice@example.com',
+        )
+
+        assert request.user_id == 'user1'
+        assert request.observability_metadata['user_email'] == 'alice@example.com'
 
     @pytest.mark.asyncio
     async def test_lookup_secret_forwarded_as_source(self, service, tmp_path):
