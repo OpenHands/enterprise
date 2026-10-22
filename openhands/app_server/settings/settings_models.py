@@ -11,6 +11,7 @@ This module contains:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Mapping
 from copy import deepcopy
@@ -728,6 +729,36 @@ class SandboxGroupingStrategy(str, Enum):
     ADD_TO_ANY = 'ADD_TO_ANY'  # Add to any available sandbox (first found)
 
 
+def _get_default_sandbox_grouping_strategy() -> SandboxGroupingStrategy:
+    """Get the default sandbox grouping strategy from environment or fall back.
+
+    Falls back to ``SandboxGroupingStrategy.NO_GROUPING`` (each conversation
+    gets its own sandbox) when unset. Tunable via the
+    ``DEFAULT_SANDBOX_GROUPING_STRATEGY`` environment variable, which must
+    match one of the ``SandboxGroupingStrategy`` enum values (case-insensitive).
+    """
+    env_value = os.getenv('DEFAULT_SANDBOX_GROUPING_STRATEGY')
+    if env_value is None or env_value.strip() == '':
+        return SandboxGroupingStrategy.NO_GROUPING
+    try:
+        return SandboxGroupingStrategy(env_value.strip().upper())
+    except ValueError:
+        logger.warning(
+            'DEFAULT_SANDBOX_GROUPING_STRATEGY must be one of %s; got %r. '
+            'Falling back to NO_GROUPING.',
+            [strategy.value for strategy in SandboxGroupingStrategy],
+            env_value,
+        )
+        return SandboxGroupingStrategy.NO_GROUPING
+
+
+# Configured default sandbox grouping strategy, read once at import time.
+# Override via the DEFAULT_SANDBOX_GROUPING_STRATEGY environment variable.
+DEFAULT_SANDBOX_GROUPING_STRATEGY: SandboxGroupingStrategy = (
+    _get_default_sandbox_grouping_strategy()
+)
+
+
 def grouped_workspace_dir(
     base_working_dir: str,
     grouping_strategy: SandboxGroupingStrategy,
@@ -810,7 +841,7 @@ class Settings(BaseModel):
         default_factory=ConversationSettings
     )
     sandbox_grouping_strategy: SandboxGroupingStrategy = (
-        SandboxGroupingStrategy.NO_GROUPING
+        DEFAULT_SANDBOX_GROUPING_STRATEGY
     )
     default_sandbox_spec_id: str | None = None
     llm_profiles: LLMProfiles = Field(

@@ -2007,3 +2007,51 @@ class TestMarketplaceSourceWithoutScheme:
         assert settings.registered_marketplaces[0].source == (
             'https://github.com/owner/repo'
         )
+
+
+class TestDefaultSandboxGroupingStrategyEnvVar:
+    """DEFAULT_SANDBOX_GROUPING_STRATEGY env var controls the Settings default."""
+
+    def teardown_method(self):
+        # Reloading with no override restores the NO_GROUPING default so
+        # later tests in this file see the un-overridden module state.
+        importlib.reload(settings_module)
+
+    def test_defaults_to_no_grouping_when_unset(self, monkeypatch):
+        monkeypatch.delenv('DEFAULT_SANDBOX_GROUPING_STRATEGY', raising=False)
+        importlib.reload(settings_module)
+
+        assert (
+            settings_module.DEFAULT_SANDBOX_GROUPING_STRATEGY
+            == settings_module.SandboxGroupingStrategy.NO_GROUPING
+        )
+        assert (
+            settings_module.Settings().sandbox_grouping_strategy
+            == settings_module.SandboxGroupingStrategy.NO_GROUPING
+        )
+
+    def test_reads_valid_value_from_env_var(self, monkeypatch):
+        monkeypatch.setenv('DEFAULT_SANDBOX_GROUPING_STRATEGY', 'group_by_newest')
+        importlib.reload(settings_module)
+
+        assert (
+            settings_module.DEFAULT_SANDBOX_GROUPING_STRATEGY
+            == settings_module.SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+        assert (
+            settings_module.Settings().sandbox_grouping_strategy
+            == settings_module.SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+    def test_falls_back_to_no_grouping_on_invalid_value(self, monkeypatch):
+        monkeypatch.setenv('DEFAULT_SANDBOX_GROUPING_STRATEGY', 'not-a-real-strategy')
+        importlib.reload(settings_module)
+
+        assert (
+            settings_module.DEFAULT_SANDBOX_GROUPING_STRATEGY
+            == settings_module.SandboxGroupingStrategy.NO_GROUPING
+        )
+        assert (
+            settings_module.Settings().sandbox_grouping_strategy
+            == settings_module.SandboxGroupingStrategy.NO_GROUPING
+        )
