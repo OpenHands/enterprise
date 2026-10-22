@@ -197,6 +197,13 @@ class AppConversationInfo(BaseModel):
     sub_conversation_ids: list[OpenHandsUUID] = Field(default_factory=list)
 
     public: bool | None = None
+    pinned_at: datetime | None = Field(
+        default=None,
+        description=(
+            'When the owner pinned the conversation; null if it is not pinned. '
+            'Change it with the `pinned` field of the update request.'
+        ),
+    )
 
     # Tags for conversation metadata (e.g., automation context, skills used)
     tags: dict[str, str] = Field(default_factory=dict)
@@ -443,6 +450,13 @@ class AppConversationUpdateRequest(BaseModel):
 
     title: str | None = None
     public: bool | None = None
+    pinned: bool | None = Field(
+        default=None,
+        description=(
+            'Pin or unpin the conversation. Pinning an already pinned conversation '
+            'keeps its original pinned_at. Null is treated as not provided.'
+        ),
+    )
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None

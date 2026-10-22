@@ -834,6 +834,25 @@ class TestSearchAppConversations:
             'team': 'platform',
         }
 
+    async def test_search_with_pinned_filter(self):
+        """Test that pinned__eq is passed to the service by search and count."""
+        # Arrange
+        mock_service = _make_mock_service()
+
+        # Act
+        await search_app_conversations(
+            pinned__eq=True, app_conversation_service=mock_service
+        )
+        await count_app_conversations(
+            pinned__eq=True, app_conversation_service=mock_service
+        )
+
+        # Assert
+        search_kwargs = mock_service.search_app_conversations.call_args[1]
+        count_kwargs = mock_service.count_app_conversations.call_args[1]
+        assert search_kwargs.get('pinned__eq') is True
+        assert count_kwargs.get('pinned__eq') is True
+
     @pytest.mark.parametrize('item', ['environmenturl', '=value'])
     async def test_search_with_malformed_tags_filter(self, item):
         """Test that a tags__contains item without a key=value shape is rejected.

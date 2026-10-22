@@ -1575,3 +1575,75 @@ class TestTagsContainsFilterSaas:
 
         # Assert
         assert count == 2
+
+
+class TestPinnedSaas:
+    """Test suite for pinning in the SAAS service."""
+
+    @staticmethod
+    def _conversation(user_id) -> AppConversationInfo:
+        return AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=str(user_id),
+            sandbox_id='sandbox_pinned',
+            title='Pinned Conversation',
+        )
+
+    @pytest.mark.asyncio
+    async def test_pins_and_filter_respect_user_isolation(
+        self,
+        async_session_with_users: AsyncSession,
+    ):
+        """Each user pins and filters only their own conversations."""
+        # Arrange
+        user1_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        user2_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER2_ID)),
+        )
+        user1_pinned = self._conversation(USER1_ID)
+        user1_plain = self._conversation(USER1_ID)
+        user2_pinned = self._conversation(USER2_ID)
+        await user1_service.save_app_conversation_info(user1_pinned)
+        await user1_service.save_app_conversation_info(user1_plain)
+        await user2_service.save_app_conversation_info(user2_pinned)
+        await user1_service.set_app_conversation_pinned(user1_pinned.id, True)
+        await user2_service.set_app_conversation_pinned(user2_pinned.id, True)
+
+        # Act
+        page = await user1_service.search_app_conversation_info(pinned__eq=True)
+        count = await user1_service.count_app_conversation_info(pinned__eq=True)
+
+        # Assert
+        assert [item.id for item in page.items] == [user1_pinned.id]
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_user_cannot_pin_another_users_conversation(
+        self,
+        async_session_with_users: AsyncSession,
+    ):
+        """Pinning someone else's conversation fails and leaves it unpinned."""
+        # Arrange
+        user1_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        user2_service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER2_ID)),
+        )
+        owned = self._conversation(USER1_ID)
+        await user1_service.save_app_conversation_info(owned)
+
+        # Act
+        with pytest.raises(LookupError):
+            await user2_service.set_app_conversation_pinned(owned.id, True)
+
+        # Assert
+        loaded = await user1_service.get_app_conversation_info(owned.id)
+        assert loaded is not None
+        assert loaded.pinned_at is None

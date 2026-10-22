@@ -27,6 +27,7 @@ class AppConversationInfoService(ABC):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -44,6 +45,7 @@ class AppConversationInfoService(ABC):
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
         tags__contains: dict[str, str] | None = None,
+        pinned__eq: bool | None = None,
     ) -> int:
         """Count sandboxed conversations."""
 
@@ -63,6 +65,16 @@ class AppConversationInfoService(ABC):
                 for conversation_id in conversation_ids
             ]
         )
+
+    @abstractmethod
+    async def set_app_conversation_pinned(
+        self, conversation_id: UUID, pinned: bool
+    ) -> datetime | None:
+        """Pin or unpin a conversation and return its new ``pinned_at``.
+
+        Pinning an already pinned conversation keeps its original timestamp.
+        Raises ``LookupError`` if the conversation is missing or not accessible.
+        """
 
     @abstractmethod
     async def delete_app_conversation_info(self, conversation_id: UUID) -> bool:
