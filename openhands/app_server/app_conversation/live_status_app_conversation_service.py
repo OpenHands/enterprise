@@ -176,14 +176,6 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # provider, so a slow git provider cannot hold up the conversation start.
 _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
-# Lifetime of the Azure DevOps access-token JWT injected into a sandbox's
-# environment for the git credential helper. Kept well below the 14-day
-# git-provider default: this value reaches the agent's sandbox, so it is capped
-# to limit the window if it ever leaks (it is also masked in output). Long
-# enough for a normal agent session; the helper re-exchanges it each git op, so
-# a longer-lived sandbox simply re-authenticates.
-_AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT = timedelta(hours=8)
-
 
 def _resolve_title_llm_profile(user: UserInfo) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
@@ -548,6 +540,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 host=agent_server_url,
                 api_key=sandbox.session_api_key,
                 working_dir=working_dir,
+            )
+            # A reused sandbox already carries the Azure DevOps credential-helper
+            # token from the conversation that created it; recover it so this
+            # conversation masks it in output too.
+            await self._recover_azure_devops_sandbox_token_for_masking(
+                task, remote_workspace
             )
             async for updated_task in self.run_setup_scripts(
                 task, sandbox, remote_workspace, agent_server_url, conversation_id
@@ -1138,19 +1136,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         user_id = await self.user_context.get_user_id()
         if not user_id:
             return {}
-        expires_in = (
-            _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
-            if self.access_token_hard_timeout is None
-            else min(
-                self.access_token_hard_timeout, _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
-            )
-        )
+        # The JWT is baked into the sandbox environment at creation and cannot be
+        # refreshed (resume cannot change the environment), so it must stay valid
+        # for as long as the sandbox can be used — a session can run for hours and
+        # a paused sandbox can be resumed days later. Use the same hard timeout
+        # that bounds the git-provider access token; it is the configured ceiling
+        # on how long a sandboxed conversation may retrieve git tokens. A long
+        # lifetime is acceptable because the value is registered as a masked
+        # conversation secret (see the request builder), so it is hidden in output.
         access_token = self.jwt_service.create_jws_token(
             payload={
                 'user_id': user_id,
                 'provider_type': ProviderType.AZURE_DEVOPS.value,
             },
-            expires_in=expires_in,
+            expires_in=self.access_token_hard_timeout,
         )
         # Mint once; the request builder registers this exact string as a masked
         # conversation secret (minting twice would mask a different iat/exp token).
@@ -1175,6 +1174,40 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             value=SecretStr(azure_devops_sandbox_token),
             description='Azure DevOps git credential-helper access token',
         )
+
+    async def _recover_azure_devops_sandbox_token_for_masking(
+        self, task: AppConversationStartTask, remote_workspace: AsyncRemoteWorkspace
+    ) -> None:
+        """Recover a reused sandbox's Azure DevOps JWT so this conversation masks it.
+
+        On a fresh sandbox the token was minted and stashed in
+        ``_azure_devops_sandbox_env``. A conversation that REUSES a running
+        sandbox (a grouping strategy, or an explicit ``sandbox_id``) inherits the
+        env var baked in by the first conversation but never minted it, so without
+        this its events would print the JWT unmasked. Read the value back and
+        stash it so the request builder registers it as a masked secret here too.
+        No new exposure: the value already lives in the sandbox this conversation
+        controls, and only Entra (JWT) users ever have it.
+        """
+        if task._azure_devops_sandbox_token is not None:
+            return
+        if not self.web_url:
+            return
+        # Best-effort masking recovery must never break conversation start.
+        try:
+            if not await get_azure_devops_bearer_token(self.user_context):
+                return
+            result = await remote_workspace.execute_command(
+                f'printf %s "${{{AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE}:-}}"',
+                remote_workspace.working_dir,
+            )
+            value = (getattr(result, 'stdout', '') or '').strip()
+            if value:
+                task._azure_devops_sandbox_token = value
+        except Exception as exc:
+            _logger.debug(
+                f'Could not read Azure DevOps sandbox token to mask it: {exc}'
+            )
 
     async def _seed_sandbox_profiles(
         self, agent_server_url: str, session_api_key: str | None

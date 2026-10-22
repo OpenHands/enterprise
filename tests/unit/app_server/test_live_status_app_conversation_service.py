@@ -6708,13 +6708,12 @@ def _task_for_env():
 async def test_azure_devops_sandbox_env_mints_scoped_jwt_for_entra_user():
     from datetime import timedelta
 
-    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
-        _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT,
-    )
     from openhands.app_server.integrations.service_types import ProviderType
 
     service = _azure_devops_env_service(
-        web_url='https://app.example.com', latest_token='header.payload.signature'
+        web_url='https://app.example.com',
+        latest_token='header.payload.signature',
+        hard_timeout=timedelta(days=14),
     )
     task = _task_for_env()
 
@@ -6729,29 +6728,11 @@ async def test_azure_devops_sandbox_env_mints_scoped_jwt_for_entra_user():
         'user_id': 'user-1',
         'provider_type': ProviderType.AZURE_DEVOPS.value,
     }
-    # Short-lived, well below the 14-day git-provider default.
-    assert kwargs['expires_in'] == _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
-    assert kwargs['expires_in'] <= timedelta(hours=24)
-
-
-@pytest.mark.asyncio
-async def test_azure_devops_sandbox_env_caps_expiry_at_short_timeout():
-    from datetime import timedelta
-
-    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
-        _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT,
-    )
-
-    # A 14-day hard timeout must be capped to the short sandbox timeout.
-    service = _azure_devops_env_service(
-        web_url='https://app.example.com',
-        latest_token='header.payload.signature',
-        hard_timeout=timedelta(days=14),
-    )
-    await service._azure_devops_sandbox_env(_task_for_env())
+    # The JWT is baked into the sandbox env and cannot be refreshed, so it must
+    # live as long as the sandbox can be used: the git-provider hard timeout.
+    # Safe because the value is registered as a masked conversation secret.
     assert (
-        service.jwt_service.create_jws_token.call_args.kwargs['expires_in']
-        == _AZURE_DEVOPS_SANDBOX_TOKEN_TIMEOUT
+        kwargs['expires_in'] == service.access_token_hard_timeout == timedelta(days=14)
     )
 
 
@@ -6808,3 +6789,62 @@ def test_register_azure_devops_sandbox_secret_noop_without_token():
         secrets, None
     )
     assert secrets == {}
+
+
+def _recover_service(*, entra_token='header.payload.signature', web_url='https://x'):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.user_context = Mock()
+    service.user_context.get_latest_token = AsyncMock(return_value=entra_token)
+    service._recover_azure_devops_sandbox_token_for_masking = MethodType(
+        LiveStatusAppConversationService._recover_azure_devops_sandbox_token_for_masking,
+        service,
+    )
+    return service
+
+
+def _workspace_with_env(value):
+    ws = Mock(working_dir='/workspace/project')
+    ws.execute_command = AsyncMock(return_value=Mock(stdout=value, exit_code=0))
+    return ws
+
+
+@pytest.mark.asyncio
+async def test_recover_reused_sandbox_token_reads_back_for_masking():
+    # A reused sandbox already holds the env var; recover it so this
+    # conversation registers it for masking.
+    service = _recover_service()
+    task = _task_for_env()
+    ws = _workspace_with_env('existing.jwt.token\n')
+
+    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
+
+    assert task._azure_devops_sandbox_token == 'existing.jwt.token'
+    ws.execute_command.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recover_skips_when_token_already_minted():
+    # Fresh sandbox already stashed the minted token; do not read back.
+    service = _recover_service()
+    task = types.SimpleNamespace(_azure_devops_sandbox_token='minted.jwt.token')
+    ws = _workspace_with_env('other.jwt.token')
+
+    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
+
+    assert task._azure_devops_sandbox_token == 'minted.jwt.token'
+    ws.execute_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recover_skips_for_non_entra_user():
+    service = _recover_service(entra_token='plain-pat-token')
+    task = _task_for_env()
+    ws = _workspace_with_env('existing.jwt.token')
+
+    await service._recover_azure_devops_sandbox_token_for_masking(task, ws)
+
+    assert task._azure_devops_sandbox_token is None
+    ws.execute_command.assert_not_awaited()
