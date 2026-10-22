@@ -423,27 +423,41 @@ describe("Super Admin Auth Providers page", () => {
     ).toBeInTheDocument();
   });
 
-  it("does not offer the password type when an integrated password provider already exists", async () => {
+  it("offers the password type even when one already exists, leaving the backend's conflict to explain why it can't be created", async () => {
     vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
       GITHUB_PROVIDER,
       PASSWORD_PROVIDER,
     ]);
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockRejectedValue(
+        new Error(
+          "An integrated/password IDP provider already exists (id=2); only one is allowed",
+        ),
+      );
     const user = userEvent.setup();
     renderAuthProvidersPage();
     const dialog = await openCreateModal(user);
 
-    await user.click(
-      within(dialog).getByTestId("super-admin-auth-provider-type"),
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     );
-    await screen.findAllByRole("option");
-    expect(
-      screen.queryByRole("option", {
-        name: "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
-      }),
-    ).not.toBeInTheDocument();
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+      ).not.toBeDisabled(),
+    );
+    expect(screen.queryByTestId("location")).not.toBeInTheDocument();
   });
 
-  it("creates the integrated password provider when none exists", async () => {
+  it("creates the integrated password provider", async () => {
     const user = userEvent.setup();
     const createAuthProvider = vi
       .spyOn(authProvidersService, "createAuthProvider")

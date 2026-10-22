@@ -23,7 +23,7 @@ import {
   SuperAdminRowMenu,
   SuperAdminTable,
 } from "./super-admin-chrome";
-import { KIND_OAUTH, KIND_PASSWORD, kindLabel } from "./auth-provider-form";
+import { KIND_OAUTH, kindLabel } from "./auth-provider-form";
 import {
   AUTH_PROVIDER_PRESETS,
   type AuthProviderPresetKey,
@@ -40,14 +40,7 @@ function navCopy(path: string) {
  * to its edit page: the external IdP usually needs this row's callback/
  * metadata URL (which needs a row id) before it will hand over the details
  * needed to finish configuring it here. */
-function CreateAuthProviderModal({
-  hasPasswordProvider,
-  onClose,
-}: {
-  /** Only one integrated/password provider may exist (the backend 409s). */
-  hasPasswordProvider: boolean;
-  onClose: () => void;
-}) {
+function CreateAuthProviderModal({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const createProvider = useCreateAuthProvider();
@@ -55,16 +48,15 @@ function CreateAuthProviderModal({
     null,
   );
 
-  const presets = AUTH_PROVIDER_PRESETS.filter(
-    (preset) => !(hasPasswordProvider && preset.key === "password"),
-  );
-  const items = presets.map((preset) => ({
+  const items = AUTH_PROVIDER_PRESETS.map((preset) => ({
     key: preset.key,
     label: t(preset.label),
   }));
 
   const handleCreate = () => {
-    const preset = presets.find((candidate) => candidate.key === presetKey);
+    const preset = AUTH_PROVIDER_PRESETS.find(
+      (candidate) => candidate.key === presetKey,
+    );
     if (!preset) {
       return;
     }
@@ -119,9 +111,6 @@ export function SuperAdminAuthProviders() {
   );
 
   const providers = useMemo(() => data ?? [], [data]);
-  const hasPasswordProvider = providers.some(
-    (provider) => provider.kind === KIND_PASSWORD,
-  );
 
   const openEdit = (provider: AuthProvider) =>
     navigate(`${SUPER_ADMIN_PATHS.authProviders}/${provider.id}`);
@@ -253,10 +242,7 @@ export function SuperAdminAuthProviders() {
         ]}
       />
       {isCreateOpen ? (
-        <CreateAuthProviderModal
-          hasPasswordProvider={hasPasswordProvider}
-          onClose={() => setIsCreateOpen(false)}
-        />
+        <CreateAuthProviderModal onClose={() => setIsCreateOpen(false)} />
       ) : null}
       {providerToDelete ? (
         <OrgModal
