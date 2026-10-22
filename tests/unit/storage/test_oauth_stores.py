@@ -15,11 +15,12 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
@@ -422,6 +423,148 @@ class TestAuthProviderUserStore:
         assert row is not None
         assert row.external_subject_id == 'ext-1'
 
+    @pytest.mark.asyncio
+    async def test_get_by_id_found(self, patched_session, make_provider, create_user):
+        provider = await make_provider()
+        user_id = create_user().id
+        link = await AuthProviderUserStore().link(
+            provider.id, user_id, 'ext-1', 'a@b.com'
+        )
+        fetched = await AuthProviderUserStore().get_by_id(link.id)
+        assert fetched is not None
+        assert fetched.user_id == user_id
+
+    @pytest.mark.asyncio
+    async def test_get_by_id_missing(self, patched_session):
+        assert await AuthProviderUserStore().get_by_id(99999) is None
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_scopes_to_provider(
+        self, patched_session, make_provider, create_user
+    ):
+        provider_a = await make_provider(category=ProviderType.GITHUB)
+        provider_b = await make_provider(category=ProviderType.GITLAB)
+        user = create_user(email='a@example.com')
+        await AuthProviderUserStore().link(provider_a.id, user.id, 'ext-a', 'a@b.com')
+        await AuthProviderUserStore().link(provider_b.id, user.id, 'ext-b', 'c@d.com')
+
+        rows = await AuthProviderUserStore().list_by_provider(provider_a.id)
+        assert [link.external_subject_id for link, _user in rows] == ['ext-a']
+        assert await AuthProviderUserStore().count_by_provider(provider_a.id) == 1
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_joins_user_email(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        user = create_user(email='owner@example.com')
+        await AuthProviderUserStore().link(
+            provider.id, user.id, 'ext-1', 'ext@example.com'
+        )
+
+        rows = await AuthProviderUserStore().list_by_provider(provider.id)
+        assert len(rows) == 1
+        link, joined_user = rows[0]
+        assert joined_user.email == 'owner@example.com'
+        assert link.external_email == 'ext@example.com'
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_pagination(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        for i in range(3):
+            await AuthProviderUserStore().link(
+                provider.id, create_user().id, f'ext-{i}', f'{i}@example.com'
+            )
+
+        page1 = await AuthProviderUserStore().list_by_provider(
+            provider.id, offset=0, limit=2
+        )
+        page2 = await AuthProviderUserStore().list_by_provider(
+            provider.id, offset=2, limit=2
+        )
+        assert len(page1) == 2
+        assert len(page2) == 1
+        assert await AuthProviderUserStore().count_by_provider(provider.id) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_filters_on_user_email(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        matching = create_user(email='findme@example.com')
+        create_user(email='other@example.com')
+        await AuthProviderUserStore().link(
+            provider.id, matching.id, 'ext-1', 'a@example.com'
+        )
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-2', 'b@example.com'
+        )
+
+        rows = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='findme'
+        )
+        assert len(rows) == 1
+        assert rows[0][1].email == 'findme@example.com'
+        assert (
+            await AuthProviderUserStore().count_by_provider(
+                provider.id, filter_text='findme'
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_by_provider_filters_on_external_email_and_subject(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-subject-xyz', 'findme@git.example.com'
+        )
+        await AuthProviderUserStore().link(
+            provider.id, create_user().id, 'ext-2', 'other@git.example.com'
+        )
+
+        by_email = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='findme'
+        )
+        assert [link.external_subject_id for link, _ in by_email] == ['ext-subject-xyz']
+
+        by_subject = await AuthProviderUserStore().list_by_provider(
+            provider.id, filter_text='subject-xyz'
+        )
+        assert [link.external_subject_id for link, _ in by_subject] == [
+            'ext-subject-xyz'
+        ]
+
+    @pytest.mark.asyncio
+    async def test_update_user_sets_only_user_id(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        old_user = create_user()
+        new_user = create_user()
+        link = await AuthProviderUserStore().link(
+            provider.id, old_user.id, 'ext-1', 'ext@example.com'
+        )
+
+        updated = await AuthProviderUserStore().update_user(link.id, new_user.id)
+        assert updated is not None
+        assert updated.user_id == new_user.id
+        # external_email must be preserved -- unlike link(), which would
+        # overwrite it with None when the argument is omitted.
+        assert updated.external_email == 'ext@example.com'
+        assert updated.external_subject_id == 'ext-1'
+
+    @pytest.mark.asyncio
+    async def test_update_user_missing_link_returns_none(
+        self, patched_session, create_user
+    ):
+        assert (
+            await AuthProviderUserStore().update_user(99999, create_user().id) is None
+        )
+
 
 # ── drift math ──────────────────────────────────────────────────────────
 
@@ -636,9 +779,7 @@ class TestOAuthTokenStoreLocking:
     async def test_lock_timeout_raises_token_refresh_error(
         self, patched_session, make_provider, create_user
     ):
-        """A lock timeout (simulated) surfaces as ``TokenRefreshError``."""
-        from sqlalchemy.exc import OperationalError
-
+        """A row lock held past ``lock_timeout`` surfaces as ``TokenRefreshError``."""
         from server.auth.auth_error import TokenRefreshError
 
         provider = await make_provider()
@@ -651,46 +792,48 @@ class TestOAuthTokenStoreLocking:
             access_token_expires_at=past,
             refresh_token_expires_at=None,
         )
+        refresh = AsyncMock()
 
-        async def refresh(rt, at_exp, rt_exp):
-            return {
-                'access_token': 'new',
-                'refresh_token': 'new',
-                'access_token_expires_at': datetime.now(timezone.utc)
-                + timedelta(hours=1),
-                'refresh_token_expires_at': None,
-            }
-
-        # The fast path must succeed (read the expired token); only the slow
-        # path's session entry raises to mimic ``lock_timeout`` aborting
-        # ``SELECT FOR UPDATE``. Delegate the first invocation to the real
-        # (already-patched) session maker; raise on the second.
-        real_maker = patched_session
-        call_count = {'n': 0}
-
-        class _FakeSessionMaker:
-            async def __aenter__(self_inner):
-                call_count['n'] += 1
-                if call_count['n'] == 1:
-                    # Fast path: delegate to the real session maker.
-                    self_inner._real = real_maker()
-                    return await self_inner._real.__aenter__()
-
-                raise OperationalError(
-                    'SELECT FOR UPDATE', {}, Exception('lock timeout')
-                )
-
-            async def __aexit__(self_inner, *exc):
-                real = getattr(self_inner, '_real', None)
-                if real is not None:
-                    return await real.__aexit__(*exc)
-                return False
-
-            def __call__(self_inner, **kwargs):
-                return self_inner
-
-        with patch('storage.oauth_token_store.a_session_maker', _FakeSessionMaker()):
-            with pytest.raises(TokenRefreshError):
+        async with patched_session() as other_worker, other_worker.begin():
+            await other_worker.execute(
+                select(OAuthToken)
+                .where(OAuthToken.oauth_provider_id == provider.id)
+                .with_for_update()
+            )
+            with (
+                patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 1),
+                pytest.raises(TokenRefreshError),
+            ):
                 await store.get_valid_access_token(
                     permitted_drift_seconds=60, refresh=refresh
                 )
+
+        refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_database_error_that_is_not_a_lock_timeout_propagates(
+        self, patched_session, make_provider, create_user
+    ):
+        from server.auth.auth_error import TokenRefreshError
+
+        provider = await make_provider()
+        user = create_user()
+        store = OAuthTokenStore(user_id=user.id, oauth_provider_id=provider.id)
+        await store.store_tokens(
+            access_token='old-at',
+            refresh_token='rt',
+            access_token_expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+            refresh_token_expires_at=None,
+        )
+
+        # An invalid lock_timeout makes the slow path's SET LOCAL fail with
+        # SQLSTATE 22023 instead of 55P03.
+        with (
+            patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 'not-a-number'),
+            pytest.raises(DBAPIError) as raised,
+        ):
+            await store.get_valid_access_token(
+                permitted_drift_seconds=60, refresh=AsyncMock()
+            )
+
+        assert not isinstance(raised.value, TokenRefreshError)

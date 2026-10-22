@@ -1,7 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import { AxiosError, AxiosHeaders } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { idpService } from "#/api/idp-service/idp-service.api";
+import { queryClient as appQueryClient } from "#/query-client-config";
 import UserSettingsScreen from "#/routes/user-settings";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 const {
   useConfigMock,
@@ -63,17 +73,16 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-const renderScreen = () => {
-  const queryClient = new QueryClient({
+const renderScreen = (
+  queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
-  });
-
-  return render(
+  }),
+) =>
+  render(
     <QueryClientProvider client={queryClient}>
       <UserSettingsScreen />
     </QueryClientProvider>,
   );
-};
 
 describe("UserSettingsScreen email editing", () => {
   beforeEach(() => {
@@ -139,6 +148,8 @@ describe("UserSettingsScreen set password section", () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+    appQueryClient.clear();
   });
 
   it("is hidden when enable_integrated_idp is off", () => {
@@ -303,6 +314,50 @@ describe("UserSettingsScreen set password section", () => {
         onSuccess: expect.any(Function),
         onError: expect.any(Function),
       }),
+    );
+  });
+
+  it("shows a single error toast when the current password is wrong", async () => {
+    const { useSetPassword } = await vi.importActual<
+      typeof import("#/hooks/mutation/use-set-password")
+    >("#/hooks/mutation/use-set-password");
+    useSetPasswordMock.mockImplementation(useSetPassword);
+    vi.spyOn(idpService, "setPassword").mockRejectedValue(
+      new AxiosError("Request failed", "400", undefined, undefined, {
+        status: 400,
+        statusText: "Bad Request",
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+        data: { detail: "Current password is incorrect" },
+      }),
+    );
+    const displayErrorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+    useConfigMock.mockReturnValue({
+      data: { feature_flags: { enable_integrated_idp: true } },
+    });
+    useHasPasswordMock.mockReturnValue({
+      data: { has_password: true },
+      isLoading: false,
+    });
+
+    // The app's client carries the global mutation error toast.
+    renderScreen(appQueryClient);
+
+    fireEvent.change(await screen.findByTestId("current-password-input"), {
+      target: { value: "wrong-password" },
+    });
+    fireEvent.change(screen.getByTestId("new-password-input"), {
+      target: { value: "new-password123" },
+    });
+    fireEvent.change(screen.getByTestId("confirm-new-password-input"), {
+      target: { value: "new-password123" },
+    });
+    fireEvent.click(screen.getByTestId("set-password-button"));
+
+    await waitFor(() =>
+      expect(displayErrorToastSpy).toHaveBeenCalledExactlyOnceWith(
+        "Current password is incorrect",
+      ),
     );
   });
 });

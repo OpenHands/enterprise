@@ -3,7 +3,12 @@ from __future__ import annotations
 from openhands.app_server.integrations.forgejo.service.base import ForgejoMixinBase
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
+)
+from openhands.app_server.utils.paging_utils import (
+    decode_page_number,
+    next_page_number_id,
 )
 
 
@@ -68,10 +73,19 @@ class ForgejoBranchesMixin(ForgejoMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:  # type: ignore[override]
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:  # type: ignore[override]
         all_branches = await self.get_branches(repository)
         lowered = query.lower()
-        return [branch for branch in all_branches if lowered in branch.name.lower()][
-            :per_page
-        ]
+        matches = [branch for branch in all_branches if lowered in branch.name.lower()]
+        page = decode_page_number(page_id)
+        start = (page - 1) * per_page
+        branches = matches[start : start + per_page]
+        return BranchSearchPage(
+            branches=branches,
+            next_page_id=next_page_number_id(page, len(branches), per_page),
+        )

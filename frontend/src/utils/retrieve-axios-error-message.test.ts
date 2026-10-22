@@ -15,7 +15,7 @@ describe("retrieveAxiosErrorMessage", () => {
   it("extracts a message from structured FastAPI detail", () => {
     const error = axiosError({
       detail: {
-        code: "daily_conversation_limit_reached",
+        code: "daily_sandbox_limit_reached",
         message: "Daily limit reached. Request more at /settings/quota.",
       },
     });

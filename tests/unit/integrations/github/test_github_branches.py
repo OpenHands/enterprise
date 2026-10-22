@@ -6,6 +6,7 @@ from pydantic import SecretStr
 from openhands.app_server.integrations.github.github_service import GitHubService
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
 )
 
@@ -120,7 +121,8 @@ async def test_search_branches_github_success_and_variables():
 
     exec_mock = AsyncMock(return_value=graphql_result)
     with patch.object(service, 'execute_graphql_query', exec_mock) as mock_exec:
-        branches = await service.search_branches('foo/bar', query='fe', per_page=999)
+        result = await service.search_branches('foo/bar', query='fe', per_page=999)
+        branches = result.branches
 
         # per_page should be clamped to <= 100 when passed to GraphQL variables
         args, kwargs = mock_exec.call_args
@@ -130,6 +132,7 @@ async def test_search_branches_github_success_and_variables():
         assert variables['name'] == 'bar'
         assert variables['query'] == 'fe'
         assert 1 <= variables['perPage'] <= 100
+        assert variables['after'] is None
 
         assert len(branches) == 2
         b0, b1 = branches
@@ -149,15 +152,15 @@ async def test_search_branches_github_success_and_variables():
 async def test_search_branches_github_edge_cases():
     service = GitHubService(token=SecretStr('t'))
 
-    # Empty query should return [] without issuing a GraphQL call
-    branches = await service.search_branches('foo/bar', query='')
-    assert branches == []
+    # Empty query should return an empty page without issuing a GraphQL call
+    result = await service.search_branches('foo/bar', query='')
+    assert result == BranchSearchPage(branches=[])
 
-    # Invalid repository string should return [] without calling GraphQL
+    # Invalid repository string should return an empty page without calling GraphQL
     exec_mock = AsyncMock()
     with patch.object(service, 'execute_graphql_query', exec_mock):
-        branches = await service.search_branches('invalidrepo', query='q')
-        assert branches == []
+        result = await service.search_branches('invalidrepo', query='q')
+        assert result == BranchSearchPage(branches=[])
         exec_mock.assert_not_called()
 
 
@@ -167,5 +170,52 @@ async def test_search_branches_github_graphql_error_returns_empty():
 
     exec_mock = AsyncMock(side_effect=Exception('Boom'))
     with patch.object(service, 'execute_graphql_query', exec_mock):
-        branches = await service.search_branches('foo/bar', query='q')
-        assert branches == []
+        result = await service.search_branches('foo/bar', query='q')
+        assert result == BranchSearchPage(branches=[])
+
+
+def _graphql_refs_page(names, has_next, end_cursor):
+    return {
+        'data': {
+            'repository': {
+                'refs': {
+                    'pageInfo': {'hasNextPage': has_next, 'endCursor': end_cursor},
+                    'nodes': [
+                        {'name': n, 'target': {'__typename': 'Commit', 'oid': n}}
+                        for n in names
+                    ],
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_branches_github_page_id_is_graphql_cursor():
+    """A later page costs one GraphQL call: page_id is the endCursor."""
+    service = GitHubService(token=SecretStr('t'))
+
+    exec_mock = AsyncMock(
+        return_value=_graphql_refs_page(['feat-3', 'feat-4'], True, 'CURSOR2')
+    )
+    with patch.object(service, 'execute_graphql_query', exec_mock):
+        result = await service.search_branches(
+            'foo/bar', query='feat', per_page=2, page_id='CURSOR1'
+        )
+
+    assert [b.name for b in result.branches] == ['feat-3', 'feat-4']
+    assert result.next_page_id == 'CURSOR2'
+    exec_mock.assert_called_once()
+    assert exec_mock.call_args.args[1]['after'] == 'CURSOR1'
+
+
+@pytest.mark.asyncio
+async def test_search_branches_github_last_page_has_no_next_page_id():
+    service = GitHubService(token=SecretStr('t'))
+
+    exec_mock = AsyncMock(return_value=_graphql_refs_page(['feat-1'], False, 'CURSOR1'))
+    with patch.object(service, 'execute_graphql_query', exec_mock):
+        result = await service.search_branches('foo/bar', query='feat', per_page=2)
+
+    assert [b.name for b in result.branches] == ['feat-1']
+    assert result.next_page_id is None

@@ -17,8 +17,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError, KeycloakError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import (
+    KeycloakAuthenticationError,
+    KeycloakConnectionError,
+    KeycloakError,
+)
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -865,6 +869,47 @@ async def github_dummy_callback(request: Request):
     """Callback for GitHub that just forwards the user to the app base URL."""
     web_url = get_web_url(request)
     return RedirectResponse(web_url, status_code=302)
+
+
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return an authenticated routing hint, never credentials or authorization.
+
+    Keycloak still verifies account ownership and authorizes the Git connection.
+    Stored account attributes are not session provenance. Only suggest corporate
+    SSO when browser login history is absent; never suggest a Git provider.
+    """
+    user_auth = await get_user_auth(request)
+    if (
+        not isinstance(user_auth, SaasUserAuth)
+        or user_auth.oauth_v2_cookie
+        or user_auth.auth_type != AuthType.COOKIE
+    ):
+        # Native IdP and API-key credentials must not be sent to Keycloak.
+        return KeycloakLinkContext()
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakError as exc:
+        if exc.response_code in (401, 403):
+            raise HTTPException(401, 'Keycloak authentication required') from exc
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    return KeycloakLinkContext(
+        provider=ProviderType.ENTERPRISE_SSO.value
+        if provider == ProviderType.ENTERPRISE_SSO.value
+        else None
+    )
 
 
 @api_router.post('/authenticate')

@@ -1,4 +1,24 @@
-"""Read-only daily conversation quota status and enforcement for SaaS."""
+"""Daily sandbox quota status and enforcement for SaaS.
+
+This replaces the former daily *conversation* quota: the metered unit is now a
+sandbox creation, because a sandbox is what allocates infrastructure (a runtime
+pod / node). Conversations are no longer counted at all.
+
+Limit resolution, exemptions, and persistence deliberately mirror the old
+conversation quota so the settings page, admin tooling, and operator intuition
+carry over:
+
+1. User-level override (``user.daily_sandbox_limit``)
+2. Org-level override (``org.daily_sandbox_limit``)
+3. Deployment default (``OH_DAILY_SANDBOX_LIMIT`` env var)
+
+NULL at any level means "inherit from the next level down." ``-1``
+(``EXEMPT_LIMIT``) means explicitly exempt (unlimited).
+
+Only sandbox *creation* on the remote backend is metered (see
+``RemoteSandboxService._reserve_daily_sandbox_quota`` for the full scope
+note). Resuming a paused sandbox is not metered.
+"""
 
 from __future__ import annotations
 
@@ -13,18 +33,26 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from storage.daily_conversation_usage import DailyConversationUsage
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.org import Org
 from storage.user import User
 
-DEFAULT_ENV_VAR = 'OH_DAILY_CONVERSATION_LIMIT'
+DEFAULT_ENV_VAR = 'OH_DAILY_SANDBOX_LIMIT'
+LEGACY_ENV_VAR = 'OH_DAILY_CONVERSATION_LIMIT'
 EXEMPT_LIMIT = -1
 QUOTA_INCREASE_REQUEST_URL = 'https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw'
 
 
 def configured_daily_limit() -> int | None:
-    """Read the deployment default; unset and blank mean unlimited."""
+    """Read the deployment default; unset and blank mean unlimited.
+
+    Falls back to the legacy conversation-limit variable so existing
+    deployments keep their configured value (20 in prod) without a chart
+    change at rollout.
+    """
     raw = os.getenv(DEFAULT_ENV_VAR)
+    if raw is None or not raw.strip():
+        raw = os.getenv(LEGACY_ENV_VAR)
     if raw is None or not raw.strip():
         return None
     return int(raw)
@@ -40,7 +68,7 @@ class QuotaStatus(BaseModel):
 
 
 @dataclass
-class DailyConversationQuotaService:
+class DailySandboxQuotaService:
     """Quota status and enforcement. Enforcement is gated by a configured limit."""
 
     db_session: AsyncSession
@@ -58,25 +86,23 @@ class DailyConversationQuotaService:
         )
 
     async def get_limit(self, user_id: str, org_id: UUID | None = None) -> int | None:
-        """Resolve the effective daily conversation limit.
+        """Resolve the effective daily sandbox limit.
 
         Precedence (first non-None wins):
-        1. User-level override (``user.daily_conversation_limit``)
-        2. Org-level override (``org.daily_conversation_limit``)
-        3. Deployment default (``OH_DAILY_CONVERSATION_LIMIT`` env var)
+        1. User-level override (``user.daily_sandbox_limit``)
+        2. Org-level override (``org.daily_sandbox_limit``)
+        3. Deployment default (``OH_DAILY_SANDBOX_LIMIT`` env var)
 
         NULL at any level means "inherit from the next level down."
-        A NULL org override means the org is exempt (unlimited) — paying
-        SaaS orgs can have this set to NULL to bypass quota enforcement.
         """
         user = await self.db_session.scalar(
             select(User).where(User.id == UUID(user_id))
         )
-        if user is not None and user.daily_conversation_limit is not None:
+        if user is not None and user.daily_sandbox_limit is not None:
             return (
                 None
-                if user.daily_conversation_limit == EXEMPT_LIMIT
-                else user.daily_conversation_limit
+                if user.daily_sandbox_limit == EXEMPT_LIMIT
+                else user.daily_sandbox_limit
             )
 
         return await self.get_default_limit(
@@ -87,11 +113,11 @@ class DailyConversationQuotaService:
         """Resolve the org-level limit and deployment default."""
         if org_id is not None:
             org = await self.db_session.scalar(select(Org).where(Org.id == org_id))
-            if org is not None and org.daily_conversation_limit is not None:
+            if org is not None and org.daily_sandbox_limit is not None:
                 return (
                     None
-                    if org.daily_conversation_limit == EXEMPT_LIMIT
-                    else org.daily_conversation_limit
+                    if org.daily_sandbox_limit == EXEMPT_LIMIT
+                    else org.daily_sandbox_limit
                 )
         return configured_daily_limit()
 
@@ -105,23 +131,25 @@ class DailyConversationQuotaService:
             raise self._limit_reached(limit, await self._used(user_id, today), today)
         now = datetime.now(UTC)
         statement = (
-            insert(DailyConversationUsage)
+            insert(DailySandboxUsage)
             .values(
                 user_id=UUID(user_id),
                 usage_date=today,
-                conversation_count=1,
+                sandbox_count=1,
                 created_at=now,
                 updated_at=now,
             )
             .on_conflict_do_update(
                 index_elements=['user_id', 'usage_date'],
                 set_={
-                    'conversation_count': DailyConversationUsage.conversation_count + 1,
+                    DailySandboxUsage.sandbox_count: (
+                        DailySandboxUsage.sandbox_count + 1
+                    ),
                     'updated_at': now,
                 },
-                where=DailyConversationUsage.conversation_count < limit,
+                where=DailySandboxUsage.sandbox_count < limit,
             )
-            .returning(DailyConversationUsage.conversation_count)
+            .returning(DailySandboxUsage.sandbox_count)
         )
         count = (await self.db_session.execute(statement)).scalar_one_or_none()
         if count is None:
@@ -131,7 +159,7 @@ class DailyConversationQuotaService:
         return True
 
     async def release(self, user_id: str) -> None:
-        """Release a reservation when conversation startup fails."""
+        """Release a reservation when sandbox startup fails."""
         today = datetime.now(UTC).date()
         await self.db_session.execute(
             text(
@@ -149,8 +177,9 @@ class DailyConversationQuotaService:
         return HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
-                'code': 'daily_conversation_limit_reached',
-                'message': f'Daily conversation limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}',
+                'code': 'daily_sandbox_limit_reached',
+                'error': 'DAILY_SANDBOX_LIMIT_REACHED',
+                'message': f'Daily sandbox limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}',
                 'limit': limit,
                 'used': used,
                 'reset_at': reset_at.isoformat(),
@@ -168,9 +197,9 @@ class DailyConversationQuotaService:
 
     async def _used(self, user_id: str, usage_date: date) -> int:
         usage = await self.db_session.scalar(
-            select(DailyConversationUsage).where(
-                DailyConversationUsage.user_id == UUID(user_id),
-                DailyConversationUsage.usage_date == usage_date,
+            select(DailySandboxUsage).where(
+                DailySandboxUsage.user_id == UUID(user_id),
+                DailySandboxUsage.usage_date == usage_date,
             )
         )
-        return usage.conversation_count if usage else 0
+        return usage.sandbox_count if usage else 0

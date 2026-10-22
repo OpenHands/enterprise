@@ -44,7 +44,7 @@ export function isRateLimitError(error: unknown): boolean {
   const detail = axiosError?.response?.data?.detail;
   return (
     (axiosError?.response?.status === 429 || axiosError?.status === 429) &&
-    detail?.code !== "daily_conversation_limit_reached"
+    detail?.code !== "daily_sandbox_limit_reached"
   );
 }
 

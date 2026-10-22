@@ -147,14 +147,14 @@ async def resume_sandbox(
 
     try:
         user_info = await user_context.get_user_info()
-        if user_info.git_user_name or user_info.git_user_email:
-            asyncio.create_task(
-                _restore_git_user_settings_after_resume(
-                    sandbox_id,
-                    user_info.git_user_name,
-                    user_info.git_user_email,
-                )
+        # Restore even without a saved identity: the default one is applied.
+        asyncio.create_task(
+            _restore_git_user_settings_after_resume(
+                sandbox_id,
+                user_info.git_user_name,
+                user_info.git_user_email,
             )
+        )
     except Exception:
         _logger.warning(
             'Failed to load Git identity after resuming sandbox %s',
@@ -209,7 +209,7 @@ async def _restore_git_user_settings_after_resume(
         )
 
 
-@router.delete('/{id}', responses={404: {'description': 'Item not found'}})
+@router.delete('/{sandbox_id}', responses={404: {'description': 'Item not found'}})
 async def delete_sandbox(
     sandbox_id: str,
     sandbox_service: SandboxService = sandbox_service_dependency,

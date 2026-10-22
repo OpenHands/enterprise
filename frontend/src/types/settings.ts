@@ -171,6 +171,8 @@ export type MarketplaceRegistration = {
 export interface SkillWithState extends SkillInfo {
   id: string;
   repository: string;
+  // Registration name of the marketplace the skill comes from, if any.
+  marketplaceName?: string;
   scope: "instance" | "org" | "personal";
   isEnabled: boolean;
   isAutoLoad: boolean;

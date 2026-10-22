@@ -39,6 +39,8 @@ from server.auth.authorization import (
 from server.auth.constants import (
     BITBUCKET_DATA_CENTER_HOST,
     ENABLE_SUPER_ADMIN,
+    GITLAB_HOST,
+    is_oauth_v2_login_enabled,
 )
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
@@ -68,6 +70,24 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
             return False
         exc = retry_exc
     return isinstance(exc, KeycloakConnectionError)
+
+
+def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
+    """The host an IdP-sourced git token belongs to.
+
+    A host the user stored with their own token wins. Otherwise the install's
+    deployment-wide host is used, so the frontend addresses repositories on it.
+    GitLab always gets one (``gitlab.com`` included): the same provider name
+    covers the hosted service and self-managed instances, so a missing host
+    would read as the hosted service.
+    """
+    if host:
+        return host
+    if idp_type == ProviderType.BITBUCKET_DATA_CENTER:
+        return BITBUCKET_DATA_CENTER_HOST or None
+    if idp_type == ProviderType.GITLAB:
+        return GITLAB_HOST or None
+    return None
 
 
 @dataclass
@@ -841,8 +861,7 @@ class SaasUserAuth(UserAuth):
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
+                    host = _idp_token_host(idp_type, host)
 
                     token = await store.get_valid_access_token(
                         permitted_drift_seconds=get_permitted_drift_seconds(provider),
@@ -853,6 +872,17 @@ class SaasUserAuth(UserAuth):
                     provider_tokens[idp_type] = ProviderToken(
                         token=SecretStr(token), user_id=None, host=host
                     )
+                except TokenRefreshError:
+                    # Lock timeout: another request or a background job is
+                    # refreshing this row. Deleting it would discard their result.
+                    logger.warning(
+                        'v2 provider token refresh lock timeout',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.details.provider_type.value,
+                        },
+                    )
+                    raise
                 except Exception:
                     logger.exception(
                         'Error refreshing v2 provider token',
@@ -872,6 +902,45 @@ class SaasUserAuth(UserAuth):
         except Exception as e:
             raise AuthError() from e
 
+    async def _oauth_v2_git_tokens(
+        self, user_secrets: Secrets | None
+    ) -> dict[ProviderType, ProviderToken]:
+        """Git tokens the user linked through OAuth v2, read from ``oauth_tokens``
+        only. A provider whose read fails is left to the ``auth_tokens`` loop, so
+        this path never needs the Keycloak offline session.
+        """
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return {}
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
+        for provider in await AuthProviderStore().get_git_providers():
+            if not isinstance(provider.details, OAuthProviderDetails):
+                continue
+            idp_type = provider.details.provider_type
+            if idp_type in provider_tokens:
+                continue
+            store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
+            if await store.get_raw() is None:
+                continue
+            token = await token_manager._get_oauth_v2_git_token(
+                self.user_id, idp_type, None
+            )
+            if not token:
+                continue
+            host = None
+            if user_secrets and idp_type in user_secrets.provider_tokens:
+                host = user_secrets.provider_tokens[idp_type].host
+            host = _idp_token_host(idp_type, host)
+            provider_tokens[idp_type] = ProviderToken(
+                token=SecretStr(token), user_id=None, host=host
+            )
+        return provider_tokens
+
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
@@ -883,6 +952,11 @@ class SaasUserAuth(UserAuth):
         user_secrets = await self.get_secrets()
 
         try:
+            # Background jobs and Keycloak sessions: with the flag on, an OAuth v2
+            # git token wins, and auth_tokens covers the providers it doesn't.
+            if is_oauth_v2_login_enabled():
+                provider_tokens.update(await self._oauth_v2_git_tokens(user_secrets))
+
             # TODO: I think we can do this in a single request if we refactor
             async with a_session_maker() as session:
                 result = await session.execute(
@@ -894,6 +968,8 @@ class SaasUserAuth(UserAuth):
 
             for token in tokens:
                 idp_type = ProviderType(token.identity_provider)
+                if idp_type in provider_tokens:
+                    continue
                 if idp_type == ProviderType.ENTERPRISE_SSO:
                     # enterprise_sso is a login-only IdP, not a git provider:
                     # ProviderHandler has no service for it and its tokens
@@ -905,8 +981,7 @@ class SaasUserAuth(UserAuth):
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
 
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
+                    host = _idp_token_host(idp_type, host)
 
                     # Resolve the provider token by user_id directly. This reads
                     # the encrypted token from the auth_tokens table and refreshes

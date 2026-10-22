@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import AsyncIterator
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
 from storage.database import a_session_maker
+from storage.oauth_token import OAuthToken
 
 
 @dataclass
@@ -116,6 +118,27 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
+    async def get_linked_git_provider(
+        self, user_id: UUID, provider_type: str
+    ) -> AuthProvider | None:
+        """The git provider of ``provider_type`` the user holds an ``oauth_tokens`` row for.
+
+        If the user linked several, the highest ``id`` wins.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .join(OAuthToken, OAuthToken.oauth_provider_id == AuthProvider.id)
+                .where(
+                    OAuthToken.user_id == user_id,
+                    AuthProvider.is_idp.is_(False),
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+                .order_by(AuthProvider.id.desc())
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
             result = await session.execute(select(AuthProvider))
@@ -176,6 +199,7 @@ class AuthProviderStore:
                     'icon',
                     'color',
                     'allow_registration',
+                    'allow_match_by_email',
                     'details',
                 ):
                     setattr(existing, col, getattr(provider, col))

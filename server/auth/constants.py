@@ -47,6 +47,21 @@ ENABLE_SUPER_ADMIN = os.environ.get('ENABLE_SUPER_ADMIN', 'false').lower() in (
     'true',
     '1',
 )
+# Super-admin escape hatch: a comma-separated list of email addresses that
+# should always hold the instance-level super-admin role, independent of the
+# normal "first user in an empty database" designation
+# (``UserStore.create_user``). Lets an operator recover or guarantee admin
+# access -- e.g. after the first-user heuristic has already been consumed by
+# someone else, or for installations whose user-provisioning path never hits
+# that code at all -- without a database console. Matched case-insensitively
+# and granted (if not already held) on every successful OAuth v2 login; see
+# ``server.routes.oauth_v2.oauth_v2_callback``. Empty by default: unset, this
+# is a no-op and changes no existing behavior.
+SUPER_ADMIN_EMAILS = frozenset(
+    email.strip().lower()
+    for email in os.environ.get('SUPER_ADMIN_EMAILS', '').split(',')
+    if email.strip()
+)
 JIRA_CLIENT_ID = os.getenv('JIRA_CLIENT_ID', '').strip()
 JIRA_CLIENT_SECRET = os.getenv('JIRA_CLIENT_SECRET', '').strip()
 JIRA_ENABLE_OAUTH = os.getenv('JIRA_ENABLE_OAUTH', '1') in ('1', 'true')
@@ -130,3 +145,12 @@ SUSPICIOUS_LABELS = {
     'SUSPICIOUS_ACCOUNT_CREATION',
     'RELATED_ACCOUNTS_NUMBER_HIGH',
 }
+
+
+def is_oauth_v2_login_enabled() -> bool:
+    """``ENABLE_OAUTH_V2_LOGIN``, parsed as the web client parses it.
+
+    Read on each call, not at import, so the server and its tests see the
+    current value.
+    """
+    return os.getenv('ENABLE_OAUTH_V2_LOGIN', 'false').lower() in ('true', '1')

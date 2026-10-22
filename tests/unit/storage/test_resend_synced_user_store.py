@@ -71,76 +71,6 @@ class TestResendSyncedUserStore:
         # Verify the query was called (we can't easily check the exact SQL)
         mock_session.execute.assert_called_once()
 
-    def test_mark_user_synced_creates_new_record(self, store, mock_session):
-        """Test that mark_user_synced creates a new record."""
-        email = 'test@example.com'
-        audience_id = 'test-audience-123'
-        keycloak_user_id = 'kc-user-123'
-
-        mock_synced_user = MagicMock(spec=ResendSyncedUser)
-        mock_result = MagicMock()
-        mock_result.first.return_value = (mock_synced_user,)
-        mock_session.execute.return_value = mock_result
-
-        result = store.mark_user_synced(email, audience_id, keycloak_user_id)
-
-        assert result == mock_synced_user
-        mock_session.execute.assert_called_once()
-        mock_session.commit.assert_called_once()
-
-    def test_mark_user_synced_handles_existing_record(self, store, mock_session):
-        """Test that mark_user_synced handles conflict (existing record)."""
-        email = 'test@example.com'
-        audience_id = 'test-audience-123'
-
-        # First execute (insert) returns None (conflict occurred)
-        # Second execute (select existing) returns the record
-        mock_existing_user = MagicMock(spec=ResendSyncedUser)
-        mock_result_insert = MagicMock()
-        mock_result_insert.first.return_value = None
-
-        mock_result_select = MagicMock()
-        mock_result_select.first.return_value = (mock_existing_user,)
-
-        mock_session.execute.side_effect = [mock_result_insert, mock_result_select]
-
-        result = store.mark_user_synced(email, audience_id)
-
-        assert result == mock_existing_user
-        assert mock_session.execute.call_count == 2
-        mock_session.commit.assert_called_once()
-
-    def test_mark_user_synced_normalizes_email_to_lowercase(self, store, mock_session):
-        """Test that mark_user_synced normalizes email to lowercase."""
-        email = 'TEST@EXAMPLE.COM'
-        audience_id = 'test-audience-123'
-
-        mock_synced_user = MagicMock(spec=ResendSyncedUser)
-        mock_result = MagicMock()
-        mock_result.first.return_value = (mock_synced_user,)
-        mock_session.execute.return_value = mock_result
-
-        store.mark_user_synced(email, audience_id)
-
-        # Verify execute was called (the email normalization happens in the SQL)
-        mock_session.execute.assert_called_once()
-        mock_session.commit.assert_called_once()
-
-    def test_mark_user_synced_without_keycloak_user_id(self, store, mock_session):
-        """Test that mark_user_synced works without keycloak_user_id."""
-        email = 'test@example.com'
-        audience_id = 'test-audience-123'
-
-        mock_synced_user = MagicMock(spec=ResendSyncedUser)
-        mock_result = MagicMock()
-        mock_result.first.return_value = (mock_synced_user,)
-        mock_session.execute.return_value = mock_result
-
-        result = store.mark_user_synced(email, audience_id)
-
-        assert result == mock_synced_user
-        mock_session.execute.assert_called_once()
-
 
 class TestResendSyncedUser:
     """Test cases for ResendSyncedUser model."""
@@ -156,3 +86,25 @@ class TestResendSyncedUser:
     def test_model_table_name(self):
         """Test the model's table name."""
         assert ResendSyncedUser.__tablename__ == 'resend_synced_users'
+
+
+class TestMarkUserSynced:
+    """mark_user_synced against the database, where its conflict handling runs."""
+
+    @pytest.fixture
+    def db_store(self, session_maker):
+        return ResendSyncedUserStore(session_maker=session_maker)
+
+    def test_only_the_first_mark_reports_an_insert(self, db_store, session_maker):
+        assert db_store.mark_user_synced('Ada@Example.com', 'audience', 'user-1')
+        assert not db_store.mark_user_synced('ada@example.com', 'audience', 'user-2')
+
+        with session_maker() as session:
+            rows = session.query(ResendSyncedUser).all()
+        assert [(r.email, r.audience_id, r.keycloak_user_id) for r in rows] == [
+            ('ada@example.com', 'audience', 'user-1')
+        ]
+
+    def test_the_same_email_in_another_audience_is_a_new_mark(self, db_store):
+        assert db_store.mark_user_synced('ada@example.com', 'audience-1')
+        assert db_store.mark_user_synced('ada@example.com', 'audience-2')

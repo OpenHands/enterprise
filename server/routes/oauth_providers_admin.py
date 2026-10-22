@@ -34,13 +34,15 @@ exists only to turn a would-be ``IntegrityError`` into a clean
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.services.saml_metadata import (
     SamlIdpMetadata,
     SamlMetadataFetchError,
@@ -55,7 +57,11 @@ from storage.auth_provider_details import (
     generate_sp_keypair,
 )
 from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user import AuthProviderUser
 from storage.auth_provider_user_store import AuthProviderUserStore
+from storage.database import a_session_maker
+from storage.oauth_token_store import OAuthTokenStore
+from storage.user import User
 
 oauth_provider_admin_router = APIRouter(
     prefix='/api/admin/oauth-providers', tags=['Admin']
@@ -72,6 +78,7 @@ class AuthProviderResponse(BaseModel):
     icon: str | None
     color: str
     allow_registration: bool
+    allow_match_by_email: bool
     details: AuthProviderDetails
     created_at: datetime
     updated_at: datetime
@@ -107,7 +114,43 @@ class CreateAuthProviderRequest(BaseModel):
             'account may sign in through it.'
         ),
     )
+    allow_match_by_email: bool = Field(
+        default=True,
+        description=(
+            'Initial value of User.allow_match_by_email for a brand-new user '
+            'created by a login through this provider -- see '
+            'server.auth.provider_identity.resolve_or_create_user.'
+        ),
+    )
     details: AuthProviderDetails
+
+
+class AuthProviderUserResponse(BaseModel):
+    """One ``auth_provider_users`` row, joined with the linked ``User.email``.
+
+    Backs the admin "User Links" table (``GET /{provider_id}/users``).
+    """
+
+    id: int
+    user_id: str
+    email: str | None
+    external_subject_id: str
+    external_email: str | None
+
+
+class AuthProviderUserPage(BaseModel):
+    """Paginated response for ``GET /{provider_id}/users``."""
+
+    items: list[AuthProviderUserResponse]
+    total: int
+    current_page: int = 1
+    per_page: int = 20
+
+
+class UpdateAuthProviderUserRequest(BaseModel):
+    """Re-point a link row to a different, already-existing user."""
+
+    user_id: UUID
 
 
 class UpdateAuthProviderRequest(BaseModel):
@@ -125,6 +168,7 @@ class UpdateAuthProviderRequest(BaseModel):
     icon: str | None = None
     color: str | None = None
     allow_registration: bool | None = None
+    allow_match_by_email: bool | None = None
     details: AuthProviderDetails | None = None
 
 
@@ -298,6 +342,7 @@ async def create_oauth_provider(
         icon=body.icon,
         color=body.color,
         allow_registration=body.allow_registration,
+        allow_match_by_email=body.allow_match_by_email,
         details=body.details,
     )
     created = await store.create(provider)
@@ -400,3 +445,164 @@ async def delete_oauth_provider(
             'kind': provider.kind,
         },
     )
+
+
+def _to_auth_provider_user_response(
+    link: AuthProviderUser, email: str | None
+) -> AuthProviderUserResponse:
+    return AuthProviderUserResponse(
+        id=link.id,
+        user_id=str(link.user_id),
+        email=email,
+        external_subject_id=link.external_subject_id,
+        external_email=link.external_email,
+    )
+
+
+@oauth_provider_admin_router.get(
+    '/{provider_id}/users', response_model=AuthProviderUserPage
+)
+async def list_auth_provider_users(
+    provider_id: int,
+    page_id: Annotated[
+        str | None,
+        Query(title='Optional offset (as a string) from a previous page'),
+    ] = None,
+    limit: Annotated[
+        int, Query(title='The max number of results in the page', gt=0, le=100)
+    ] = 20,
+    q: Annotated[
+        str | None,
+        Query(
+            title=(
+                'Filter by partial, case-insensitive match on the linked '
+                "user's email, external email, or external subject id"
+            ),
+            min_length=1,
+            max_length=255,
+        ),
+    ] = None,
+    _: str = Depends(require_permission(Permission.MANAGE_OAUTH_PROVIDERS)),
+) -> AuthProviderUserPage:
+    """List the "User Links" (``auth_provider_users``) for one provider.
+
+    Powers ``/super-admin/auth-providers/{provider_id}/users``: the table a
+    super admin uses to re-point an identity bound to the wrong account --
+    see ``update_auth_provider_user`` for the re-pointing itself.
+    """
+    if await AuthProviderStore().get_by_id(provider_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
+        )
+
+    offset = 0
+    if page_id is not None:
+        try:
+            offset = int(page_id)
+            if offset < 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Invalid page_id format',
+            )
+
+    store = AuthProviderUserStore()
+    rows = await store.list_by_provider(
+        provider_id, offset=offset, limit=limit, filter_text=q
+    )
+    total = await store.count_by_provider(provider_id, filter_text=q)
+    return AuthProviderUserPage(
+        items=[
+            _to_auth_provider_user_response(link, user.email) for link, user in rows
+        ],
+        total=total,
+        current_page=(offset // limit) + 1,
+        per_page=limit,
+    )
+
+
+@oauth_provider_admin_router.patch(
+    '/{provider_id}/users/{link_id}', response_model=AuthProviderUserResponse
+)
+async def update_auth_provider_user(
+    provider_id: int,
+    link_id: int,
+    body: UpdateAuthProviderUserRequest,
+    caller_user_id: str = Depends(
+        require_permission(Permission.MANAGE_OAUTH_PROVIDERS)
+    ),
+) -> AuthProviderUserResponse:
+    """Re-point a "User Link" to a different, already-existing user.
+
+    Changes only ``user_id`` on the ``auth_provider_users`` row -- not
+    ``external_email`` -- so the identity (``external_subject_id``) keeps
+    describing the same external account while it resolves to a different
+    internal ``User``. Takes effect on that identity's next login;
+    ``resolve_or_create_user`` (``server.auth.provider_identity``) looks the
+    link up by ``(provider, sub)`` and never touches it otherwise. Existing
+    sessions for either user are not revoked.
+
+    Also deletes the *previous* user's ``oauth_tokens`` row for this
+    provider -- same cleanup ``oauth_v2_unlink`` does -- so they don't keep
+    a token for an identity they no longer own.
+    """
+    provider = await AuthProviderStore().get_by_id(provider_id)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
+        )
+
+    link_store = AuthProviderUserStore()
+    link = await link_store.get_by_id(link_id)
+    if link is None or link.oauth_provider_id != provider_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='User link not found'
+        )
+
+    async with a_session_maker() as session:
+        target_user = await session.get(User, body.user_id)
+    if target_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='Target user not found'
+        )
+
+    # ``AuthProviderUserStore.get_by_user()`` uses ``.one_or_none()`` and
+    # would raise ``MultipleResultsFound`` the next time it's called for
+    # this user+provider (e.g. from the unlink route or the provider-delete
+    # guard) if a second link were allowed to point at them -- the DB itself
+    # permits it (the only unique constraint is on
+    # ``(oauth_provider_id, external_subject_id)``).
+    existing_link_for_target = await link_store.get_by_user(body.user_id, provider_id)
+    if existing_link_for_target is not None and existing_link_for_target.id != link_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='The target user already has a link on this provider',
+        )
+
+    old_user_id = link.user_id
+    updated = await link_store.update_user(link_id, body.user_id)
+    if updated is None:
+        # Deleted between the fetch above and this update -- safety net.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='User link not found'
+        )
+
+    token_store = OAuthTokenStore(user_id=old_user_id, oauth_provider_id=provider_id)
+    await token_store.delete_tokens()
+    if isinstance(provider.details, OAuthProviderDetails):
+        await invalidate_user_id_cache(
+            provider.details.provider_type, updated.external_subject_id
+        )
+
+    logger.info(
+        'oauth_providers_admin:update_user_link',
+        extra={
+            'caller_user_id': caller_user_id,
+            'provider_id': provider_id,
+            'link_id': link_id,
+            'old_user_id': str(old_user_id),
+            'new_user_id': str(body.user_id),
+        },
+    )
+    return _to_auth_provider_user_response(updated, target_user.email)
