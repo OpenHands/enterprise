@@ -197,6 +197,15 @@ class AppServerConfig(OpenHandsModel):
             'handles server-launched children. OH_ENABLE_CHILD_CONVERSATION_LAUNCHER.'
         ),
     )
+    sandbox_web_url: str | None = Field(
+        default=None,
+        description=(
+            'The URL sandboxes use to reach OpenHands, when it differs from '
+            'web_url (e.g., http://host.docker.internal:3000 when web_url is '
+            'localhost). It must serve the same routes as web_url, including '
+            '/api/automation. Defaults to web_url.'
+        ),
+    )
     permitted_cors_origins: list[str] = Field(
         default_factory=get_default_permitted_cors_origins,
         description=(

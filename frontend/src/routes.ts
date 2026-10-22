@@ -66,6 +66,10 @@ export default [
       route("instance", "routes/super-admin-instance.tsx"),
       route("auth-providers", "routes/super-admin-auth-providers.tsx"),
       route(
+        "auth-providers/:providerId",
+        "routes/super-admin-auth-provider-edit.tsx",
+      ),
+      route(
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
       ),

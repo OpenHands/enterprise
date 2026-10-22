@@ -45,6 +45,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     _exception_detail,
     _resolve_title_llm_profile,
     effective_disabled_skills,
+    get_sandbox_web_url,
 )
 from openhands.app_server.errors import ACPProviderNotAvailableError, SandboxError
 from openhands.app_server.event_callback.memory_change_callback_processor import (
@@ -55,6 +56,7 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
+from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -68,6 +70,7 @@ from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
     Settings,
     _load_persisted_agent_settings,
+    grouped_workspace_dir,
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
@@ -287,6 +290,30 @@ def test_title_profile_resolution_omits_unseedable_profiles():
     user.llm_profiles = profiles
 
     assert _resolve_title_llm_profile(user) is None
+
+
+@pytest.mark.parametrize(
+    'sandbox_web_url,web_url,docker,expected',
+    [
+        (
+            'http://host.docker.internal:3100',
+            'http://localhost:3100',
+            True,
+            'http://host.docker.internal:3100',
+        ),
+        (None, 'https://openhands.example.com', True, 'https://openhands.example.com'),
+        (None, None, True, 'http://host.docker.internal:3000'),
+        (None, None, False, None),
+    ],
+)
+def test_get_sandbox_web_url(sandbox_web_url, web_url, docker, expected):
+    config = SimpleNamespace(sandbox_web_url=sandbox_web_url, web_url=web_url)
+    if docker:
+        sandbox_service = Mock(spec=DockerSandboxService, host_port=3000)
+    else:
+        sandbox_service = Mock()
+
+    assert get_sandbox_web_url(config, sandbox_service) == expected
 
 
 class TestLiveStatusAppConversationService:
@@ -3524,6 +3551,92 @@ class TestLiveStatusAppConversationService:
         )
         assert rotated
 
+    async def test_start_app_conversation_in_sandbox_whose_image_is_no_longer_advertised(
+        self,
+    ):
+        """A sandbox created before an image bump has no spec once runtime-api
+        advertises only the new image; the start must use the default spec."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.55.1-python'
+        conversation_id = uuid4()
+        with (
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+            ) as mock_remote_workspace_class,
+            patch(
+                'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+            ) as mock_conversation_info_class,
+        ):
+            self._arrange_start_app_conversation(
+                conversation_id,
+                mock_conversation_info_class,
+                mock_remote_workspace_class,
+            )
+            self.mock_sandbox.sandbox_spec_id = old_image
+            self.service._process_pending_messages = AsyncMock()
+            profile_listing = Mock(raise_for_status=Mock())
+            profile_listing.json.return_value = {'profiles': []}
+            self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
+            self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+                return_value=None
+            )
+            default_spec = Mock(spec=SandboxSpecInfo)
+            default_spec.id = current_image
+            default_spec.working_dir = '/workspace/project'
+            self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+                return_value=default_spec
+            )
+
+            tasks = [
+                task
+                async for task in self.service._start_app_conversation(
+                    AppConversationStartRequest(
+                        title='Old sandbox', conversation_id=conversation_id
+                    )
+                )
+            ]
+
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
+            old_image
+        )
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        assert mock_remote_workspace_class.call_args.kwargs[
+            'working_dir'
+        ] == grouped_workspace_dir(
+            '/workspace/project',
+            SandboxGroupingStrategy.ADD_TO_ANY,
+            conversation_id.hex,
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_error_when_no_spec_is_available(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """With neither the sandbox's spec nor a default, the start task must
+        fail with a message, not the empty detail a bare assert produced."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+            side_effect=SandboxError('No sandbox specs available!')
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='No spec')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert tasks[-1].detail == 'No sandbox specs available!'
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,
@@ -6642,3 +6755,105 @@ class TestACPProviderAllowlistAtServiceStart:
         assert exc_info.value.status_code == 400
         assert acp_server in exc_info.value.detail
         service._wait_for_sandbox_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: the per-conversation Azure DevOps credential-helper token —
+# minted fresh per conversation, delivered via a file, and masked in output.
+# ---------------------------------------------------------------------------
+
+
+def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(return_value='signed.jwt.token')
+    service.user_context = Mock()
+    service.user_context.get_latest_token = AsyncMock(return_value=latest_token)
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._mint_azure_devops_access_token = MethodType(
+        LiveStatusAppConversationService._mint_azure_devops_access_token, service
+    )
+    return service
+
+
+def _task_for_mint():
+    return types.SimpleNamespace(_azure_devops_access_token=None)
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_for_entra_user():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    # A fresh JWT is minted per conversation and stashed on the task so the
+    # setup flow writes it and the request builder registers it for masking.
+    assert task._azure_devops_access_token == 'signed.jwt.token'
+    kwargs = service.jwt_service.create_jws_token.call_args.kwargs
+    assert kwargs['payload'] == {
+        'user_id': 'user-1',
+        'provider_type': ProviderType.AZURE_DEVOPS.value,
+    }
+    # Session-length, not the multi-day resume window nor the provider ceiling.
+    assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_for_pat_user():
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='plain-pat-token'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.jwt_service.create_jws_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_without_web_url():
+    service = _azure_devops_mint_service(
+        web_url=None, latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.user_context.get_latest_token.assert_not_called()
+
+
+def test_register_azure_devops_access_token_secret_masks_the_jwt():
+    # The per-conversation JWT must be registered as a conversation secret (same
+    # string) so SecretRegistry.mask_secrets_in_output hides it.
+    from pydantic import SecretStr
+
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, 'signed.jwt.token'
+    )
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in secrets
+    value = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'].value
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    assert value == 'signed.jwt.token'
+
+
+def test_register_azure_devops_access_token_secret_noop_without_token():
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, None
+    )
+    assert secrets == {}
