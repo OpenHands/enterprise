@@ -282,6 +282,7 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           onToggle={(value) =>
             setForm((prev) => ({ ...prev, allowRegistration: value }))
           }
+          hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION_HINT)}
         >
           {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
         </SettingsSwitch>
@@ -291,6 +292,7 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           onToggle={(value) =>
             setForm((prev) => ({ ...prev, allowMatchByEmail: value }))
           }
+          hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL_HINT)}
         >
           {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL)}
         </SettingsSwitch>
@@ -302,6 +304,7 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               onToggle={(value) =>
                 setForm((prev) => ({ ...prev, isIdp: value }))
               }
+              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT)}
             >
               {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP)}
             </SettingsSwitch>

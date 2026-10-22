@@ -36107,6 +36107,23 @@
     "uk": "Accept new registrations",
     "ca": "Accept new registrations"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION_HINT": {
+    "en": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "ja": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "zh-CN": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "zh-TW": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "ko-KR": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "no": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "it": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "pt": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "es": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "ar": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "fr": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "tr": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "de": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "uk": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user.",
+    "ca": "When off, only people who already have an account linked to this provider can sign in through it; a first-time identity is refused instead of creating a new user."
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL": {
     "en": "Match new users by email",
     "ja": "Match new users by email",
@@ -36123,6 +36140,23 @@
     "de": "Match new users by email",
     "uk": "Match new users by email",
     "ca": "Match new users by email"
+  },
+  "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL_HINT": {
+    "en": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "ja": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "zh-CN": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "zh-TW": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "ko-KR": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "no": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "it": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "pt": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "es": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "ar": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "fr": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "tr": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "de": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "uk": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match.",
+    "ca": "Seeds a one-time email-match flag on accounts this provider creates. If such a user later signs in through a different provider with the same verified email, their existing account is linked instead of a duplicate being created. The flag clears after that first match."
   },
   "SUPER_ADMIN$AUTH_PROVIDER_BRAND": {
     "en": "Provider",
@@ -36157,6 +36191,23 @@
     "de": "Use as OpenHands Authentication Provider",
     "uk": "Use as OpenHands Authentication Provider",
     "ca": "Use as OpenHands Authentication Provider"
+  },
+  "SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT": {
+    "en": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "ja": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "zh-CN": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "zh-TW": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "ko-KR": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "no": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "it": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "pt": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "es": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "ar": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "fr": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "tr": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "de": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "uk": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead.",
+    "ca": "Show this provider as a sign-in button on the OpenHands login screen. Turn this off for git providers that users link from their settings instead."
   },
   "SUPER_ADMIN$AUTH_PROVIDER_CLIENT_ID": {
     "en": "Client ID",

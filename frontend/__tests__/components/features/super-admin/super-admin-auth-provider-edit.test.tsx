@@ -727,6 +727,32 @@ describe("Super Admin Auth Provider edit page", () => {
     );
   });
 
+  it.each([
+    [
+      "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION_HINT",
+      "super-admin-auth-provider-allow-registration",
+    ],
+    [
+      "SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL_HINT",
+      "super-admin-auth-provider-allow-match-by-email",
+    ],
+    [
+      "SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT",
+      "super-admin-auth-provider-is-idp",
+    ],
+  ])("explains the %s toggle without toggling it", async (copy, toggleTestId) => {
+    const user = userEvent.setup();
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const toggle = within(form).getByTestId(toggleTestId) as HTMLInputElement;
+    const checkedBefore = toggle.checked;
+    const hintIcon = within(toggle.closest("label")!).getByLabelText(copy);
+    expect(hintIcon).toBeInTheDocument();
+
+    await user.click(hintIcon);
+    expect(toggle.checked).toBe(checkedBefore);
+  });
+
   it("sends details wholesale when a SAML field is changed", async () => {
     const user = userEvent.setup();
     const updateAuthProvider = vi

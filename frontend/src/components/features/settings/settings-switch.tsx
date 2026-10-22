@@ -1,5 +1,6 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import { ToggleSwitchVisual } from "#/ui/toggle-switch";
@@ -14,6 +15,9 @@ interface SettingsSwitchProps {
   isDisabled?: boolean;
   /** Whether the toggle sits before or after the label. Defaults to "left". */
   togglePosition?: "left" | "right";
+  /** Explanatory text revealed by an info icon next to the label. Use this
+   * instead of a separate hint paragraph when the label alone is ambiguous. */
+  hint?: string;
 }
 
 export function SettingsSwitch({
@@ -26,6 +30,7 @@ export function SettingsSwitch({
   isBeta,
   isDisabled,
   togglePosition = "left",
+  hint,
 }: React.PropsWithChildren<SettingsSwitchProps>) {
   const { t } = useTranslation();
   const [isToggled, setIsToggled] = React.useState(defaultIsToggled ?? false);
@@ -61,6 +66,18 @@ export function SettingsSwitch({
             {t(I18nKey.BADGE$BETA)}
           </span>
         )}
+        {hint ? (
+          // The switch lives inside a <label>, so a click anywhere in here
+          // would otherwise toggle it -- the hint must not.
+          <span
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <InfoTooltip content={hint} />
+          </span>
+        ) : null}
       </div>
     ) : null;
 
