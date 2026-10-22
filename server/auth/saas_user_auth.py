@@ -72,7 +72,6 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
     return isinstance(exc, KeycloakConnectionError)
 
 
-@dataclass
 def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
     """The host an IdP-sourced git token belongs to.
 
@@ -89,6 +88,7 @@ def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
     return None
 
 
+@dataclass
 class SaasUserAuth(UserAuth):
     refresh_token: SecretStr
     user_id: str
