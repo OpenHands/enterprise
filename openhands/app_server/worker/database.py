@@ -9,6 +9,7 @@ is a Cloud SQL Auth Proxy running next to the worker.
 from procrastinate import PsycopgConnector
 
 from openhands.app_server.services.db_session_injector import DbSessionInjector
+from openhands.db.session_timezone import build_libpq_timezone_args
 from openhands.db.ssl import build_psycopg_connect_args
 
 
@@ -27,6 +28,7 @@ def build_connector(db: DbSessionInjector, pool_size: int) -> PsycopgConnector:
             'password': password,
             'dbname': db.name,
             **build_psycopg_connect_args(db.ssl_mode),
+            **build_libpq_timezone_args(),
         },
         min_size=1,
         max_size=pool_size,

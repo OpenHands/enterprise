@@ -4,11 +4,11 @@ import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 import { useConfig } from "#/hooks/query/use-config";
 import { useDisconnectGitProvider } from "#/hooks/mutation/use-disconnect-git-provider";
+import { useConnectGitProvider } from "#/hooks/mutation/use-connect-git-provider";
 import {
   useLinkOAuthV2GitProvider,
   useUnlinkOAuthV2GitProvider,
 } from "#/hooks/mutation/use-oauth-v2-git-provider-mutations";
-import { generateIdpLinkUrl } from "#/utils/generate-idp-link-url";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -47,6 +47,8 @@ export function GitProviderConnection({
   const { data: config } = useConfig();
   const { mutate: disconnectGitProvider, isPending: isDisconnecting } =
     useDisconnectGitProvider();
+  const { mutate: connectGitProvider, isPending: isConnecting } =
+    useConnectGitProvider();
   const { mutate: linkOAuthV2, isPending: isLinking } =
     useLinkOAuthV2GitProvider();
   const { mutate: unlinkOAuthV2, isPending: isUnlinking } =
@@ -64,10 +66,18 @@ export function GitProviderConnection({
       linkOAuthV2(oauthProviderId, { onError: handleError });
       return;
     }
-    window.location.href = generateIdpLinkUrl(
-      provider,
-      new URL(window.location.href),
-      config?.auth_url,
+    connectGitProvider(
+      {
+        provider,
+        requestUrl: new URL(window.location.href),
+        authUrl: config?.auth_url,
+      },
+      {
+        onSuccess: (url) => {
+          window.location.href = url;
+        },
+        onError: handleError,
+      },
     );
   };
 
@@ -110,7 +120,7 @@ export function GitProviderConnection({
             type="button"
             variant="primary"
             className={settingsListRowActionButtonClassName}
-            isDisabled={isLinking}
+            isDisabled={isConnecting || isLinking}
             onClick={handleConnect}
           >
             {t(I18nKey.BUTTON$CONNECT)}
