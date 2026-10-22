@@ -807,15 +807,16 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
         helper_script = _azure_devops_credential_helper_script(web_url)
-        token_file = shlex.quote(_AZURE_DEVOPS_ACCESS_TOKEN_FILE)
         commands = [
             'mkdir -p "$HOME/.openhands"',
             'helper="$HOME/.openhands/azure-devops-credential-helper"',
+            # Double-quoted so $HOME expands, matching the helper script's reader.
+            f'token_file="{_AZURE_DEVOPS_ACCESS_TOKEN_FILE}"',
             f'printf %s {shlex.quote(helper_script)} > "$helper"',
             'chmod 700 "$helper"',
             # The token value is passed quoted and never echoed to stdout.
-            f'printf %s {shlex.quote(access_token)} > {token_file}',
-            f'chmod 600 {token_file}',
+            f'printf %s {shlex.quote(access_token)} > "$token_file"',
+            'chmod 600 "$token_file"',
             'git config --global credential.https://dev.azure.com.useHttpPath true',
         ]
         for org in orgs:

@@ -5,6 +5,9 @@ and the recent bug fixes for git checkout operations.
 """
 
 import inspect
+import os
+import shutil
+import stat
 import subprocess
 from pathlib import Path
 from types import MappingProxyType, MethodType
@@ -957,6 +960,71 @@ async def test_configure_azure_devops_git_credentials_writes_token_file_and_help
     assert 'credential.https://dev.azure.com/org.helper' in command
     assert 'credential.https://dev.azure.com/org2.helper' in command
     assert 'git config --local' not in command
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_configure_azure_devops_git_credentials_command_runs(
+    mock_workspace, tmp_path
+):
+    """Execute the produced command for real and assert it takes effect.
+
+    The substring assertions above mock the executor, so they cannot catch a
+    command that assembles correctly but fails at runtime (e.g. a quoted
+    ``$HOME`` that never expands and aborts the ``&&`` chain before any
+    ``git config``). This runs the exact command in a scratch ``HOME`` and
+    checks the token file and per-org git config actually land.
+    """
+    user_info = MockUserInfo()
+    service, mock_user_context = _create_service_with_mock_user_context(
+        user_info,
+        bind_methods=('_configure_azure_devops_git_credentials',),
+    )
+    service.web_url = 'https://app.example.com'
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_azure_devops_provider_handler(['org', 'org2'])
+    )
+
+    await service._configure_azure_devops_git_credentials(
+        mock_workspace, 'header.payload.signature', 'org/project/repo'
+    )
+
+    commands = [call.args[0] for call in mock_workspace.execute_command.call_args_list]
+    command = next(c for c in commands if 'azure-devops-credential-helper' in c)
+
+    env = os.environ.copy()
+    env['HOME'] = str(tmp_path)
+    # Mirror the sandbox: the helper setup runs from '/'.
+    result = subprocess.run(
+        ['sh', '-c', command],
+        cwd='/',
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    token_file = tmp_path / '.openhands' / 'azure-devops-access-token'
+    assert token_file.read_text() == 'header.payload.signature'
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    assert (tmp_path / '.openhands' / 'azure-devops-credential-helper').exists()
+
+    # The && chain reached the git config steps for every org.
+    for org in ('org', 'org2'):
+        helper = subprocess.run(
+            [
+                'git',
+                'config',
+                '--global',
+                '--get-all',
+                f'credential.https://dev.azure.com/{org}.helper',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert helper.returncode == 0
+        assert 'azure-devops-credential-helper' in helper.stdout
 
 
 @pytest.mark.asyncio
