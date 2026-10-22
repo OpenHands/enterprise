@@ -302,7 +302,7 @@ def _oauth_client_kwargs(
         'client_name': (
             authentication.client_name
             if authentication is not None and authentication.client_name
-            else 'FastMCP Client'
+            else 'OpenHands'
         ),
         'token_storage': oauth_token_storage,
         'additional_client_metadata': additional_client_metadata or None,
