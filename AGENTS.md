@@ -172,7 +172,7 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 **Running Tests:**
 ```bash
 # Full unit test suite (app server + SaaS modules)
-uv run pytest -n auto -s ./tests/unit --cov --cov-branch
+uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
 
 # Test specific modules (faster for development)
 uv run pytest tests/unit/server/routes/

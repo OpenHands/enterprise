@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
     StoredAppConversationStartTask,  # noqa: F401
@@ -129,8 +129,19 @@ def test_database(
 
 @pytest.fixture
 def engine(test_database: postgres_testdb.TestDatabase) -> Iterator[Engine]:
-    """Sync engine on this test's database, on the driver production uses."""
-    engine = create_engine(test_database.sync_url, poolclass=NullPool)
+    """Sync engine on this test's database, on the driver production uses.
+
+    A small ``QueuePool`` (rather than ``NullPool``) lets the handful of
+    ``session_maker()`` calls a single test makes -- e.g. ``create_org``,
+    ``create_user``, then the test body -- reuse one connection instead of
+    opening a fresh one each time. The database is already test-scoped and
+    dropped in ``test_database``'s teardown, which runs after ``dispose()``
+    below closes out this pool, so there's no idle-connection risk to the
+    ``DROP DATABASE ... WITH (FORCE)`` that follows.
+    """
+    engine = create_engine(
+        test_database.sync_url, poolclass=QueuePool, pool_size=2, max_overflow=0
+    )
     try:
         yield engine
     finally:
