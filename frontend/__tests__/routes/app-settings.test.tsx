@@ -1,3 +1,4 @@
+import { SandboxService } from "#/api/sandbox-service/sandbox-service.api";
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -433,4 +434,46 @@ describe("Status toasts", () => {
     expect(saveSettingsSpy).toHaveBeenCalled();
     expect(displayErrorToastSpy).toHaveBeenCalled();
   });
+});
+
+
+describe("Sandbox template labels", () => {
+  it("shows friendly names and falls back to the stable id", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS, default_sandbox_spec_id: "v1_large",
+    });
+    vi.spyOn(SandboxService, "searchSandboxSpecs").mockResolvedValue({
+      items: [
+        { id: "v1_large", display_name: "Large (8 GB)", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+        { id: "legacy", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+      ], next_page_id: null,
+    });
+    renderAppSettingsScreen();
+    const picker = await screen.findByTestId("default-sandbox-spec-input");
+    await waitFor(() => expect(picker).toHaveValue("Large (8 GB)"));
+    await userEvent.click(picker);
+    expect(await screen.findByRole("option", { name: "legacy" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Large (8 GB)" })).toBeInTheDocument();
+  });
+  it("keeps a legacy saved image ID visible without guessing a shared template", async () => {
+    const image = "registry.example.test/shared:1";
+    const save = vi.spyOn(SettingsService, "saveSettings");
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS, default_sandbox_spec_id: image,
+    });
+    vi.spyOn(SandboxService, "searchSandboxSpecs").mockResolvedValue({
+      items: [
+        { id: "standard", display_name: "Standard", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+        { id: "large", display_name: "Large (8 GB)", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+      ], next_page_id: null,
+    });
+    renderAppSettingsScreen();
+    const picker = await screen.findByTestId("default-sandbox-spec-input");
+    await waitFor(() => expect(picker).toHaveValue(image));
+    expect(save).not.toHaveBeenCalled();
+    await userEvent.click(picker);
+    await userEvent.click(await screen.findByRole("option", { name: "Large (8 GB)" }));
+    expect(picker).toHaveValue("Large (8 GB)");
+  });
+
 });

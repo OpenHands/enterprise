@@ -6,6 +6,7 @@ from openhands.app_server.integrations.provider import (
     ProviderType,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.sandbox.sandbox_template_policy import SandboxTemplatePolicy
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.user.user_models import (
     UserInfo,
@@ -103,6 +104,10 @@ class UserContext(ABC):
     @abstractmethod
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
+
+    async def get_sandbox_template_policy(self) -> SandboxTemplatePolicy | None:
+        """Optional organization restriction for new sandbox choices."""
+        return None
 
     async def get_provider_handler(self) -> ProviderHandler:
         """Get a ProviderHandler bound to this user's provider tokens.

@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from openhands.app_server.config import depends_sandbox_spec_service
 from openhands.app_server.sandbox.sandbox_spec_models import (
@@ -22,6 +23,37 @@ router = APIRouter(
     prefix='/sandbox-specs', tags=['Sandbox'], dependencies=get_dependencies()
 )
 sandbox_spec_service_dependency = depends_sandbox_spec_service()
+
+
+class SandboxTemplateOption(BaseModel):
+    id: str
+    display_name: str
+
+
+class SandboxSelectionOptions(BaseModel):
+    enabled: bool
+    items: list[SandboxTemplateOption]
+
+
+@router.get('/selection')
+async def get_sandbox_selection_options(
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+) -> SandboxSelectionOptions:
+    """Organization-scoped launch choices, without runtime environment values."""
+    if not sandbox_spec_service.selection_enabled:
+        return SandboxSelectionOptions(enabled=False, items=[])
+    items: list[SandboxTemplateOption] = []
+    page_id = None
+    while True:
+        page = await sandbox_spec_service.search_sandbox_specs(page_id=page_id)
+        items.extend(
+            SandboxTemplateOption(id=spec.id, display_name=spec.display_name or spec.id)
+            for spec in page.items
+        )
+        page_id = page.next_page_id
+        if page_id is None:
+            break
+    return SandboxSelectionOptions(enabled=True, items=items)
 
 
 # Read methods

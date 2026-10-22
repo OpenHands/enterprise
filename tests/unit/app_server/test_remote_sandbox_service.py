@@ -65,6 +65,8 @@ def mock_sandbox_spec_service():
     )
     mock_service.get_default_sandbox_spec.return_value = mock_spec
     mock_service.get_sandbox_spec.return_value = mock_spec
+    # The unrestricted service delegates start resolution to normal lookup.
+    mock_service.get_start_sandbox_spec = mock_service.get_sandbox_spec
     return mock_service
 
 
@@ -3385,3 +3387,48 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
             max_num_sandboxes=7,
         )
         assert injector.max_num_sandboxes == 7
+
+
+@pytest.mark.asyncio
+async def test_named_template_start_sends_image_and_name_without_resources(
+    remote_sandbox_service,
+):
+    from openhands.app_server.sandbox.sandbox_spec_models import RemoteSandboxSpecInfo
+
+    spec = RemoteSandboxSpecInfo(
+        id='v1_large',
+        image='shared-image',
+        warm_runtime_config_name='v1_large',
+        command=['server'],
+    )
+    request = await remote_sandbox_service.build_sandbox_start_request(
+        spec, 'sandbox', {}
+    )
+    assert request['image'] == 'shared-image'
+    assert request['warm_runtime_config_name'] == 'v1_large'
+    assert 'resources' not in request
+    assert 'resource_requirements' not in request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'image', ['shared-image', 'registry.example/custom-build:2026-10']
+)
+async def test_custom_template_preserves_both_image_and_spec_id(
+    remote_sandbox_service, image
+):
+    from openhands.app_server.sandbox.sandbox_spec_models import RemoteSandboxSpecInfo
+
+    spec = RemoteSandboxSpecInfo(
+        id='custom_large',
+        image=image,
+        warm_runtime_config_name='custom_large',
+        command=['custom-server'],
+    )
+    request = await remote_sandbox_service.build_sandbox_start_request(
+        spec, 'sandbox', {}
+    )
+    assert request['image'] == image
+    assert request['command'] == ['custom-server']
+    assert request['warm_runtime_config_name'] == 'custom_large'
+    assert 'resources' not in request

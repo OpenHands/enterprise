@@ -44,6 +44,20 @@ class SandboxSpecService(ABC):
     this up and down.
     """
 
+    @property
+    def selection_enabled(self) -> bool:
+        return False
+
+    @property
+    def allow_sandbox_reuse(self) -> bool:
+        return True
+
+    async def get_start_sandbox_spec(
+        self, sandbox_spec_id: str
+    ) -> SandboxSpecInfo | None:
+        """Resolve a template allowed for a new sandbox in this request context."""
+        return await self.get_sandbox_spec(sandbox_spec_id)
+
     @abstractmethod
     async def search_sandbox_specs(
         self, page_id: str | None = None, limit: int = 100
@@ -104,7 +118,7 @@ async def resolve_sandbox_spec(
     if effective_id is None:
         return await sandbox_spec_service.get_default_sandbox_spec()
 
-    spec = await sandbox_spec_service.get_sandbox_spec(effective_id)
+    spec = await sandbox_spec_service.get_start_sandbox_spec(effective_id)
     if spec is not None:
         return spec
 

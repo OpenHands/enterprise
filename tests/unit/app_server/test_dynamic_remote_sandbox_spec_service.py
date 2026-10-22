@@ -126,7 +126,7 @@ class TestFetchSpecs:
 
         assert len(specs) == 3
         first = specs[0]
-        assert first.id == 'ghcr.io/openhands/agent-server:1.0.0'
+        assert first.id == 'v1_current'
         assert first.command == ['--port', '8000']
         assert first.initial_env == {'FOO': 'bar'}
         assert first.working_dir == '/workspace'
@@ -152,17 +152,13 @@ class TestFetchSpecs:
             specs = await service._fetch_specs()
 
         # v1_legacy explicitly sets 5000 for all three security context fields.
-        legacy = next(
-            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:0.9.0'
-        )
+        legacy = next(s for s in specs if s.id == 'v1_legacy')
         assert legacy.run_as_user == 5000
         assert legacy.run_as_group == 5000
         assert legacy.fs_group == 5000
 
         # v1_current sets 10001 for all three.
-        current = next(
-            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:1.0.0'
-        )
+        current = next(s for s in specs if s.id == 'v1_current')
         assert current.run_as_user == 10001
         assert current.run_as_group == 10001
         assert current.fs_group == 10001
@@ -177,9 +173,7 @@ class TestFetchSpecs:
         with patch('httpx.AsyncClient', return_value=ctx):
             specs = await service._fetch_specs()
 
-        nightly = next(
-            s for s in specs if s.id == 'ghcr.io/openhands/agent-server:nightly'
-        )
+        nightly = next(s for s in specs if s.id == 'nightly')
         assert nightly.run_as_user == 10001
         assert nightly.run_as_group == 10001
         assert nightly.fs_group == 10001
@@ -227,10 +221,7 @@ class TestFetchSpecs:
             await service._fetch_specs()
 
         assert set(service._name_to_spec) == {'v1_current', 'v1_legacy', 'nightly'}
-        assert (
-            service._name_to_spec['nightly'].id
-            == 'ghcr.io/openhands/agent-server:nightly'
-        )
+        assert service._name_to_spec['nightly'].id == 'nightly'
 
     async def test_caches_results_within_ttl(self):
         """A second call within the TTL must not issue another HTTP request."""
@@ -379,8 +370,8 @@ class TestSearchSandboxSpecs:
             page = await service.search_sandbox_specs(limit=2)
 
         assert len(page.items) == 2
-        assert page.items[0].id == 'ghcr.io/openhands/agent-server:1.0.0'
-        assert page.items[1].id == 'ghcr.io/openhands/agent-server:0.9.0'
+        assert page.items[0].id == 'v1_current'
+        assert page.items[1].id == 'v1_legacy'
         assert page.next_page_id == '2'
 
     async def test_page_id_offsets_start_index(self):
@@ -392,7 +383,7 @@ class TestSearchSandboxSpecs:
             page = await service.search_sandbox_specs(page_id='2', limit=100)
 
         assert len(page.items) == 1
-        assert page.items[0].id == 'ghcr.io/openhands/agent-server:nightly'
+        assert page.items[0].id == 'nightly'
         assert page.next_page_id is None
 
     async def test_no_next_page_id_when_results_fit_exactly(self):
@@ -425,7 +416,7 @@ class TestGetSandboxSpec:
             )
 
         assert spec is not None
-        assert spec.id == 'ghcr.io/openhands/agent-server:0.9.0'
+        assert spec.id == 'v1_legacy'
         assert spec.working_dir == '/home/user'
 
     async def test_returns_none_for_unknown_id(self):
@@ -453,7 +444,7 @@ class TestGetDefaultSandboxSpec:
         with patch('httpx.AsyncClient', return_value=ctx):
             spec = await service.get_default_sandbox_spec()
 
-        assert spec.id == 'ghcr.io/openhands/agent-server:0.9.0'
+        assert spec.id == 'v1_legacy'
 
     async def test_falls_back_to_first_spec_when_name_not_found(self):
         """When default_spec_name is set but absent from results, use the first spec."""
@@ -463,7 +454,7 @@ class TestGetDefaultSandboxSpec:
         with patch('httpx.AsyncClient', return_value=ctx):
             spec = await service.get_default_sandbox_spec()
 
-        assert spec.id == 'ghcr.io/openhands/agent-server:1.0.0'
+        assert spec.id == 'v1_current'
 
     async def test_falls_back_to_first_spec_when_no_default_name(self):
         """When default_spec_name is empty, the first spec is returned."""
@@ -473,7 +464,7 @@ class TestGetDefaultSandboxSpec:
         with patch('httpx.AsyncClient', return_value=ctx):
             spec = await service.get_default_sandbox_spec()
 
-        assert spec.id == 'ghcr.io/openhands/agent-server:1.0.0'
+        assert spec.id == 'v1_current'
 
     async def test_falls_back_to_default_spec_when_no_warm_runtimes(self):
         """get_default_sandbox_spec must return a default spec (not raise) when
@@ -582,3 +573,27 @@ class TestDynamicRemoteSandboxSpecServiceInjector:
             second = svc
 
         assert first is second
+
+
+async def test_same_image_templates_have_distinct_ids_and_legacy_resolution():
+    from copy import deepcopy
+
+    standard = deepcopy(_CONFIGS_RESPONSE['configs'][0])
+    standard['display_name'] = 'Standard (2 GB)'
+    large = dict(standard, name='v1_large', display_name='Large (8 GB)')
+    ctx, _ = _make_async_client_mock(
+        _make_http_response({'configs': [standard, large]})
+    )
+    service = _make_service(default_spec_name='v1_current')
+    with patch('httpx.AsyncClient', return_value=ctx):
+        page = await service.search_sandbox_specs()
+        assert [s.id for s in page.items] == ['v1_current', 'v1_large']
+        assert [s.display_name for s in page.items] == [
+            'Standard (2 GB)',
+            'Large (8 GB)',
+        ]
+        assert page.items[0].image == page.items[1].image
+        assert (await service.get_sandbox_spec('v1_large')).id == 'v1_large'
+        assert (await service.get_sandbox_spec(standard['image'])).id == 'v1_current'
+        service.default_spec_name = 'v1_large'
+        assert (await service.get_sandbox_spec(standard['image'])).id == 'v1_large'

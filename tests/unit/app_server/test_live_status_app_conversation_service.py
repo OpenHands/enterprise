@@ -3627,6 +3627,47 @@ class TestLiveStatusAppConversationService:
 
         self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
 
+    @pytest.mark.parametrize('custom', [False, True])
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_uses_resolved_image(
+        self, mock_info, mock_workspace, custom
+    ):
+        import httpx
+
+        from openhands.app_server.sandbox.sandbox_spec_service import (
+            _bundled_default_image,
+        )
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        image = 'registry.example.test/custom:1' if custom else _bundled_default_image()
+        spec = self.mock_sandbox_spec_service.get_sandbox_spec.return_value
+        spec.image = image
+        self.mock_sandbox.sandbox_spec_id = 'named_template'
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        if custom:
+            assert f'custom sandbox image {image}' in detail
+            assert 'custom sandbox image named_template' not in detail
+        else:
+            assert 'custom sandbox image' not in detail
+            assert '500' in detail
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
