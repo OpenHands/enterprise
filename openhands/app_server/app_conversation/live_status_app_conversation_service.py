@@ -192,7 +192,9 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 
 
-def _resolve_title_llm_profile(user: UserInfo) -> str | None:
+def _resolve_title_llm_profile(
+    user: UserInfo, conversation_model: str | None = None
+) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
     if (
         preference
@@ -203,6 +205,14 @@ def _resolve_title_llm_profile(user: UserInfo) -> str | None:
 
     active = user.llm_profiles.active
     if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        # A conversation started on another model (a picked profile, a model
+        # override or an agent profile) is titled with that model: without a
+        # title profile the agent-server falls back to the agent's LLM.
+        if (
+            conversation_model
+            and user.llm_profiles.require(active).model != conversation_model
+        ):
+            return None
         return active
     return None
 
@@ -2643,7 +2653,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': user.id}
         if client_tools:
             create_kwargs['client_tools'] = client_tools
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = _resolve_title_llm_profile(user, llm.model)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:

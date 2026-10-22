@@ -333,6 +333,28 @@ def test_title_profile_resolution_omits_unseedable_profiles():
     assert _resolve_title_llm_profile(user) is None
 
 
+def test_title_profile_resolution_follows_a_conversation_on_another_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile=None)
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o') == 'Default'
+    assert _resolve_title_llm_profile(user, 'anthropic/claude-haiku-3-5') is None
+
+
+def test_title_profile_resolution_prefers_explicit_profile_over_conversation_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile='Titles')
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o-mini') == 'Titles'
+
+
 @pytest.mark.parametrize(
     'sandbox_web_url,web_url,docker,expected',
     [
@@ -1786,6 +1808,38 @@ class TestLiveStatusAppConversationService:
         )
 
         assert request.title_llm_profile == 'Titles'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_titles_with_the_conversation_model(self, _mock_tools):
+        """A conversation started on another model than the active profile's is
+        titled with its own model, so the active profile is not passed."""
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        self.mock_user.llm_profiles = profiles
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+
+        async def title_profile_for(model: str) -> str | None:
+            llm = LLM(model=model, api_key=SecretStr('test-key'))
+            self.service._configure_llm_and_mcp = AsyncMock(return_value=(llm, {}))
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+            )
+            return request.title_llm_profile
+
+        assert await title_profile_for('openai/gpt-4o') == 'Default'
+        assert await title_profile_for('anthropic/claude-haiku-3-5') is None
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
@@ -6677,6 +6731,22 @@ class TestBuildAcpStartConversationRequestSecrets:
         request = await self._call_build(service, user, tmp_path)
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_acp_request_falls_back_to_active_title_profile(
+        self, service, tmp_path
+    ):
+        """ACP agents have no OpenHands LLM to title with, so the active profile
+        stays the fallback."""
+        user = self._make_acp_user()
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        user.llm_profiles = profiles
+
+        request = await self._call_build(service, user, tmp_path)
+
+        assert request.title_llm_profile == 'Default'
 
     @pytest.mark.asyncio
     async def test_acp_request_includes_registered_marketplaces(
