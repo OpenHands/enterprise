@@ -119,6 +119,81 @@ with patch('storage.database.a_session_maker'):
     from storage.user_settings import UserSettings
 
 
+@pytest.mark.asyncio
+async def test_document_patch_preserves_sparse_member_hierarchy(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from sqlalchemy import select
+
+    from storage.org_member import OrgMember
+    from storage.user import User
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    member_user_id = fixture['member1_user_id']
+    org_id = fixture['org_id']
+
+    with session_maker() as session:
+        admin_member = session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == admin_user_id,
+            )
+        ).scalar_one()
+        admin_member.conversation_settings_diff = {
+            **admin_member.conversation_settings_diff,
+            'max_iterations': 33,
+            'confirmation_mode': True,
+        }
+        other_before = dict(
+            session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == member_user_id,
+                )
+            )
+            .scalar_one()
+            .conversation_settings_diff
+        )
+        session.commit()
+
+    effective = Settings(language='fr')
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await SaasSettingsStore(str(admin_user_id)).store_document_patch(
+            {
+                'conversation_settings_diff': {
+                    'max_iterations': None,
+                    'security_analyzer': 'llm',
+                },
+                'language': 'fr',
+            },
+            effective,
+        )
+
+    with session_maker() as session:
+        admin_after = session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == admin_user_id,
+            )
+        ).scalar_one()
+        other_after = session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == member_user_id,
+            )
+        ).scalar_one()
+        user = session.execute(
+            select(User).where(User.id == admin_user_id)
+        ).scalar_one()
+
+    assert 'max_iterations' not in admin_after.conversation_settings_diff
+    assert admin_after.conversation_settings_diff['confirmation_mode'] is True
+    assert admin_after.conversation_settings_diff['security_analyzer'] == 'llm'
+    assert other_after.conversation_settings_diff == other_before
+    assert user.language == 'fr'
+
+
 def test_member_settings_persist_full_effective_agent_settings():
     settings = Settings()
     settings.update(
