@@ -192,6 +192,7 @@ services:
 
       # Setting GITLAB_APP_CLIENT_ID turns on the GitLab webhook routes and the
       # worker's webhook installer. GITLAB_HOST defaults to gitlab.com.
+      # Webhooks need WEB_HOST set to a host GitLab can reach over HTTPS.
       GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
       GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
       GITLAB_HOST: ${GITLAB_HOST:-}
