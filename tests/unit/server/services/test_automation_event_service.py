@@ -123,6 +123,30 @@ def bitbucket_dc_repo_payload():
     }
 
 
+@pytest.fixture
+def azure_devops_pr_payload():
+    """Create a sample Azure DevOps pull request Service Hook payload."""
+    return {
+        'id': 'evt-1',
+        'subscriptionId': 'sub-1',
+        'eventType': 'git.pullrequest.created',
+        'resource': {
+            'pullRequestId': 42,
+            'repository': {
+                'name': 'fabrikam-web',
+                'project': {'name': 'Fabrikam Fiber'},
+            },
+            'url': (
+                'https://dev.azure.com/Fabrikam/proj-id/_apis/git/repositories/'
+                'repo-id/pullRequests/42'
+            ),
+        },
+        'resourceContainers': {
+            'account': {'baseUrl': 'https://dev.azure.com/Fabrikam/'},
+        },
+    }
+
+
 def create_service(mock_token_manager):
     """Helper to create a service with mocked constants."""
     with patch.dict('os.environ', {}, clear=False):
@@ -777,6 +801,65 @@ class TestForwardEvent:
             assert payload['organization']['git_org'] == 'PROJ'
             assert payload['payload'] == bitbucket_dc_pr_payload
 
+    @pytest.mark.asyncio
+    async def test_forward_azure_devops_event_success(
+        self, mock_token_manager, azure_devops_pr_payload, mock_org_git_claim
+    ):
+        """
+        GIVEN: An Azure DevOps event from a claimed organization
+        WHEN: forward_event is called
+        THEN: It is sent under the organization name without asking which
+              event types the automation service wants
+        """
+        from server.services.automation_event_service import AutomationEventService
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch.object(
+                AutomationEventService,
+                '_get_requested_event_metadata',
+                new_callable=AsyncMock,
+            ) as mock_requested_types,
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=mock_org_git_claim.org_id,
+            ) as mock_resolver,
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch.object(
+                AutomationEventService,
+                '_send_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = AutomationEventService(mock_token_manager)
+            await service.forward_event(
+                provider=ProviderType.AZURE_DEVOPS,
+                payload=azure_devops_pr_payload,
+                installation_id='sub-1',
+                event_type='git.pullrequest.created',
+            )
+
+            mock_requested_types.assert_not_awaited()
+            mock_resolver.assert_awaited_once_with(
+                provider='azure_devops',
+                full_repo_name='fabrikam/',
+            )
+            mock_send.assert_called_once_with(
+                ProviderType.AZURE_DEVOPS,
+                mock_org_git_claim.org_id,
+                {
+                    'organization': {
+                        'git_org': 'Fabrikam',
+                        'openhands_org_id': str(mock_org_git_claim.org_id),
+                    },
+                    'payload': azure_devops_pr_payload,
+                },
+            )
+
 
 class TestExtractOwnerInfo:
     """Tests for _extract_owner_info method."""
@@ -846,6 +929,59 @@ class TestExtractOwnerInfo:
         assert git_org == 'PROJ'
         assert owner_type == 'Project'
         assert owner_id is None
+
+    def test_extract_azure_devops_owner_info(
+        self, mock_token_manager, azure_devops_pr_payload
+    ):
+        """
+        GIVEN: An Azure DevOps Service Hook payload
+        WHEN: _extract_owner_info is called
+        THEN: The Azure DevOps organization is used as the org
+        """
+        service = create_service(mock_token_manager)
+        git_org, owner_type, owner_id = service._extract_owner_info(
+            ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+        )
+
+        assert git_org == 'Fabrikam'
+        assert owner_type == 'Organization'
+        assert owner_id is None
+
+    def test_extract_azure_devops_owner_info_from_visualstudio_url(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: An Azure DevOps payload from an organization on visualstudio.com
+        WHEN: _extract_owner_info is called
+        THEN: The organization comes from the host name
+        """
+        service = create_service(mock_token_manager)
+        git_org, _, _ = service._extract_owner_info(
+            ProviderType.AZURE_DEVOPS,
+            {
+                'eventType': 'workitem.commented',
+                'resourceContainers': {
+                    'collection': {'baseUrl': 'https://fabrikam.visualstudio.com/'}
+                },
+            },
+        )
+
+        assert git_org == 'fabrikam'
+
+    def test_extract_azure_devops_owner_info_without_organization(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: An Azure DevOps payload with no organization URL
+        WHEN: _extract_owner_info is called
+        THEN: No org is returned, so the event is skipped
+        """
+        service = create_service(mock_token_manager)
+        git_org, _, _ = service._extract_owner_info(
+            ProviderType.AZURE_DEVOPS, {'eventType': 'git.pullrequest.created'}
+        )
+
+        assert git_org is None
 
 
 class TestBuildEventPayload:
@@ -1572,3 +1708,40 @@ class TestResolveDefaultOrgFallback:
             assert context is not None
             assert context.org_id == org.id
             assert context.git_org == 'PROJ'
+
+    @pytest.mark.asyncio
+    async def test_unclaimed_azure_devops_event_routes_to_default_org(
+        self, mock_token_manager, azure_devops_pr_payload, monkeypatch
+    ):
+        """
+        GIVEN: An unclaimed Azure DevOps organization on a single-org install
+        WHEN: _resolve_org_context is called
+        THEN: The event resolves to the default org instead of being dropped
+        """
+        monkeypatch.setenv('OPENHANDS_DEFAULT_ORG_ENABLED', 'true')
+        org = self._team_org()
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,  # No claim
+            ),
+            patch(
+                'server.services.automation_event_service.OrgStore'
+            ) as mock_org_store,
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            mock_org_store.get_default_org = AsyncMock(return_value=org)
+            mock_org_store.count_team_orgs = AsyncMock(return_value=1)
+            service = create_service(mock_token_manager)
+            context = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+
+            assert context is not None
+            assert context.org_id == org.id
+            assert context.git_org == 'Fabrikam'

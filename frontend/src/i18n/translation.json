@@ -5813,6 +5813,23 @@
     "uk": "Only an organization owner or Project Collection Administrator can change this webhook. It covers the whole organization.",
     "ca": "Only an organization owner or Project Collection Administrator can change this webhook. It covers the whole organization."
   },
+  "AZURE_DEVOPS$WEBHOOK_AUTOMATION_HOOKS_MISSING": {
+    "en": "Reinstall to send pull request events to automations.",
+    "ja": "Reinstall to send pull request events to automations.",
+    "zh-CN": "Reinstall to send pull request events to automations.",
+    "zh-TW": "Reinstall to send pull request events to automations.",
+    "ko-KR": "Reinstall to send pull request events to automations.",
+    "no": "Reinstall to send pull request events to automations.",
+    "it": "Reinstall to send pull request events to automations.",
+    "pt": "Reinstall to send pull request events to automations.",
+    "es": "Reinstall to send pull request events to automations.",
+    "ar": "Reinstall to send pull request events to automations.",
+    "fr": "Reinstall to send pull request events to automations.",
+    "tr": "Reinstall to send pull request events to automations.",
+    "de": "Reinstall to send pull request events to automations.",
+    "uk": "Reinstall to send pull request events to automations.",
+    "ca": "Reinstall to send pull request events to automations."
+  },
   "AZURE_DEVOPS$WEBHOOK_INSTALL": {
     "en": "Install",
     "ja": "Install",

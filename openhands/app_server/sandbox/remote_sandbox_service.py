@@ -523,7 +523,10 @@ class RemoteSandboxService(SandboxService):
         return info
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
@@ -557,6 +560,8 @@ class RemoteSandboxService(SandboxService):
 
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
+            if extra_env:
+                environment.update(extra_env)
 
             # Prepare start request
             start_request = await self.build_sandbox_start_request(

@@ -6755,3 +6755,105 @@ class TestACPProviderAllowlistAtServiceStart:
         assert exc_info.value.status_code == 400
         assert acp_server in exc_info.value.detail
         service._wait_for_sandbox_start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Workstream A: the per-conversation Azure DevOps credential-helper token —
+# minted fresh per conversation, delivered via a file, and masked in output.
+# ---------------------------------------------------------------------------
+
+
+def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(return_value='signed.jwt.token')
+    service.user_context = Mock()
+    service.user_context.get_latest_token = AsyncMock(return_value=latest_token)
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._mint_azure_devops_access_token = MethodType(
+        LiveStatusAppConversationService._mint_azure_devops_access_token, service
+    )
+    return service
+
+
+def _task_for_mint():
+    return types.SimpleNamespace(_azure_devops_access_token=None)
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_for_entra_user():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    # A fresh JWT is minted per conversation and stashed on the task so the
+    # setup flow writes it and the request builder registers it for masking.
+    assert task._azure_devops_access_token == 'signed.jwt.token'
+    kwargs = service.jwt_service.create_jws_token.call_args.kwargs
+    assert kwargs['payload'] == {
+        'user_id': 'user-1',
+        'provider_type': ProviderType.AZURE_DEVOPS.value,
+    }
+    # Session-length, not the multi-day resume window nor the provider ceiling.
+    assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_for_pat_user():
+    service = _azure_devops_mint_service(
+        web_url='https://app.example.com', latest_token='plain-pat-token'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.jwt_service.create_jws_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mint_azure_devops_access_token_skips_without_web_url():
+    service = _azure_devops_mint_service(
+        web_url=None, latest_token='header.payload.signature'
+    )
+    task = _task_for_mint()
+
+    await service._mint_azure_devops_access_token(task)
+
+    assert task._azure_devops_access_token is None
+    service.user_context.get_latest_token.assert_not_called()
+
+
+def test_register_azure_devops_access_token_secret_masks_the_jwt():
+    # The per-conversation JWT must be registered as a conversation secret (same
+    # string) so SecretRegistry.mask_secrets_in_output hides it.
+    from pydantic import SecretStr
+
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, 'signed.jwt.token'
+    )
+    assert 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN' in secrets
+    value = secrets['OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'].value
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    assert value == 'signed.jwt.token'
+
+
+def test_register_azure_devops_access_token_secret_noop_without_token():
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_azure_devops_access_token_secret(
+        secrets, None
+    )
+    assert secrets == {}

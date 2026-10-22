@@ -7,6 +7,7 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     Field,
+    PrivateAttr,
     SecretStr,
     computed_field,
     field_validator,
@@ -499,6 +500,13 @@ class AppConversationStartTask(OpenHandsModel):
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    # Per-conversation, in-memory only (never serialized/persisted): the
+    # short-lived Azure DevOps exchange JWT minted for this conversation. Shared
+    # between the credential-helper delivery (written to a file in the sandbox)
+    # and the masked-secret registration so both use the exact same value. Unset
+    # when the user has no Entra Azure DevOps token.
+    _azure_devops_access_token: str | None = PrivateAttr(default=None)
 
 
 class AppConversationStartTaskPage(OpenHandsModel):
