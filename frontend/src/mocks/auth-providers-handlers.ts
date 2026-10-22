@@ -63,11 +63,14 @@ let authProviders = [...MOCK_AUTH_PROVIDERS];
 let nextId = authProviders.length + 1;
 
 /** ``auth_provider_users`` rows, keyed by ``oauth_provider_id`` -- mirrors
- * ``storage.auth_provider_user.AuthProviderUser``. ``email`` is resolved
- * from ``MOCK_ADMIN_USERS`` (via ``findMockAdminUser``) at response time,
- * the same way the real endpoint joins against ``User``, so re-pointing a
- * link picks up the new user's email immediately. */
-type MockAuthProviderUserLink = Omit<AuthProviderUserLink, "email">;
+ * ``storage.auth_provider_user.AuthProviderUser``. ``email``/``user_name``
+ * are resolved from ``MOCK_ADMIN_USERS`` (via ``findMockAdminUser``) at
+ * response time, the same way the real endpoint joins against ``User``, so
+ * re-pointing a link picks up the new user's email immediately. */
+type MockAuthProviderUserLink = Omit<
+  AuthProviderUserLink,
+  "email" | "user_name"
+>;
 
 const MOCK_AUTH_PROVIDER_USER_LINKS: Record<
   number,
@@ -100,10 +103,14 @@ export const resetAuthProvidersMockState = () => {
 
 const toAuthProviderUserLink = (
   link: MockAuthProviderUserLink,
-): AuthProviderUserLink => ({
-  ...link,
-  email: findMockAdminUser(link.user_id)?.email ?? null,
-});
+): AuthProviderUserLink => {
+  const user = findMockAdminUser(link.user_id);
+  return {
+    ...link,
+    email: user?.email ?? null,
+    user_name: user?.name ?? null,
+  };
+};
 
 export const AUTH_PROVIDERS_HANDLERS = [
   http.get("/api/admin/oauth-providers", () =>
@@ -212,9 +219,12 @@ export const AUTH_PROVIDERS_HANDLERS = [
     );
     const filtered = q
       ? allLinks.filter((link) =>
-          [link.email, link.external_email, link.external_subject_id].some(
-            (value) => value?.toLowerCase().includes(q),
-          ),
+          [
+            link.email,
+            link.user_name,
+            link.external_email,
+            link.external_subject_id,
+          ].some((value) => value?.toLowerCase().includes(q)),
         )
       : allLinks;
 

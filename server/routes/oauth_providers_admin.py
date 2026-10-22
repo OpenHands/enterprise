@@ -62,6 +62,7 @@ from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.database import a_session_maker
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user import User
+from utils.identity import display_name_for_user
 
 oauth_provider_admin_router = APIRouter(
     prefix='/api/admin/oauth-providers', tags=['Admin']
@@ -126,14 +127,18 @@ class CreateAuthProviderRequest(BaseModel):
 
 
 class AuthProviderUserResponse(BaseModel):
-    """One ``auth_provider_users`` row, joined with the linked ``User.email``.
+    """One ``auth_provider_users`` row, joined with the linked ``User``.
 
     Backs the admin "User Links" table (``GET /{provider_id}/users``).
+    ``user_name`` is the linked account's display name, so a super admin
+    picking the right account to re-point at sees a name rather than only a
+    UUID.
     """
 
     id: int
     user_id: str
     email: str | None
+    user_name: str | None = None
     external_subject_id: str
     external_email: str | None
 
@@ -448,12 +453,13 @@ async def delete_oauth_provider(
 
 
 def _to_auth_provider_user_response(
-    link: AuthProviderUser, email: str | None
+    link: AuthProviderUser, user: User
 ) -> AuthProviderUserResponse:
     return AuthProviderUserResponse(
         id=link.id,
         user_id=str(link.user_id),
-        email=email,
+        email=user.email,
+        user_name=display_name_for_user(user.git_user_name, user.email),
         external_subject_id=link.external_subject_id,
         external_email=link.external_email,
     )
@@ -476,7 +482,8 @@ async def list_auth_provider_users(
         Query(
             title=(
                 'Filter by partial, case-insensitive match on the linked '
-                "user's email, external email, or external subject id"
+                "user's name or email, the external email, or the external "
+                'subject id'
             ),
             min_length=1,
             max_length=255,
@@ -513,9 +520,7 @@ async def list_auth_provider_users(
     )
     total = await store.count_by_provider(provider_id, filter_text=q)
     return AuthProviderUserPage(
-        items=[
-            _to_auth_provider_user_response(link, user.email) for link, user in rows
-        ],
+        items=[_to_auth_provider_user_response(link, user) for link, user in rows],
         total=total,
         current_page=(offset // limit) + 1,
         per_page=limit,
@@ -605,4 +610,4 @@ async def update_auth_provider_user(
             'new_user_id': str(body.user_id),
         },
     )
-    return _to_auth_provider_user_response(updated, target_user.email)
+    return _to_auth_provider_user_response(updated, target_user)

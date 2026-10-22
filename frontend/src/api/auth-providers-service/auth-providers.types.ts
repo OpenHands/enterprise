@@ -157,7 +157,7 @@ export interface PublicIdpProvider {
 }
 
 /** A single ``auth_provider_users`` row for one provider, joined with the
- * linked ``User.email`` -- mirrors
+ * linked ``User`` -- mirrors
  * ``server.routes.oauth_providers_admin.AuthProviderUserResponse``. Backs
  * the admin "User Links" table
  * (``/super-admin/auth-providers/{provider_id}/users``). */
@@ -165,6 +165,9 @@ export interface AuthProviderUserLink {
   id: number;
   user_id: string;
   email: string | null;
+  /** The linked account's display name (git profile name, else the local
+   * part of its email) -- what the admin recognizes the account by. */
+  user_name: string | null;
   external_subject_id: string;
   external_email: string | null;
 }

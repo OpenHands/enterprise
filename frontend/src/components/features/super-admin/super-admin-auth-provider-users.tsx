@@ -25,6 +25,21 @@ import {
 
 const LIMIT = 10;
 
+/** ``Name <email>`` -- the form used everywhere on this page, because a
+ * super admin re-pointing a link has to tell apart accounts that may share a
+ * name or an email domain. Falls back through whichever parts exist. */
+function formatAccount(
+  name: string | null | undefined,
+  email: string | null | undefined,
+  fallbackId: string,
+): string {
+  const label = name?.trim();
+  if (label && email) {
+    return `${label} <${email}>`;
+  }
+  return label || email || fallbackId;
+}
+
 /**
  * Super Admin "User Links" table for one auth provider -- lets a super
  * admin re-point an ``auth_provider_users`` row to a different, already
@@ -69,16 +84,16 @@ export function SuperAdminAuthProviderUsers() {
   // a password, another auto-created the first time they signed in through
   // this provider because the two emails didn't match), and merging the
   // identity onto whichever row they're currently signed in as is exactly
-  // the drift this page exists to fix.
+  // the drift this page exists to fix. The label carries both name and email
+  // because two accounts created for the same person typically differ in
+  // exactly one of those.
   const userOptions = useMemo(
     () =>
       (directoryUsers ?? [])
         .filter((user) => user.user_id)
         .map((user) => ({
           value: user.user_id as string,
-          label: user.email
-            ? `${user.email} (${user.user_id})`
-            : (user.user_id as string),
+          label: formatAccount(user.name, user.email, user.user_id as string),
         })),
     [directoryUsers],
   );
@@ -170,18 +185,36 @@ export function SuperAdminAuthProviderUsers() {
           {
             key: "user",
             header: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_COL_USER),
-            render: (row) =>
-              row.email ? `${row.email} (${row.user_id})` : row.user_id,
+            render: (row) => (
+              <div className="flex min-w-0 flex-col">
+                <span className="block truncate text-white">
+                  {formatAccount(row.user_name, row.email, row.user_id)}
+                </span>
+                <span className="block truncate text-xs text-[var(--oh-muted)]">
+                  {row.user_id}
+                </span>
+              </div>
+            ),
           },
           {
             key: "external",
             header: t(
               I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_COL_EXTERNAL,
             ),
-            render: (row) =>
-              row.external_email
-                ? `${row.external_email} (${row.external_subject_id})`
-                : row.external_subject_id,
+            render: (row) => (
+              <div className="flex min-w-0 flex-col">
+                <span className="block truncate text-white">
+                  {row.external_email || row.external_subject_id}
+                </span>
+                <span className="block truncate text-xs text-[var(--oh-muted)]">
+                  {row.external_email
+                    ? row.external_subject_id
+                    : t(
+                        I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_NO_EXTERNAL_EMAIL,
+                      )}
+                </span>
+              </div>
+            ),
           },
           {
             key: "actions",
@@ -226,6 +259,36 @@ export function SuperAdminAuthProviderUsers() {
           onPrimaryClick={confirmEdit}
           onClose={closeEdit}
         >
+          {/* Restate what is being moved and where it points today: the admin
+              picks from a list of every account on the instance, so the
+              dialog has to keep the identity and the current target visible. */}
+          <div className="flex flex-col gap-2 rounded-md border border-[var(--oh-border)] p-3 text-xs">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[var(--oh-muted)]">
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_EXTERNAL_LABEL)}
+              </span>
+              <span className="break-all text-white">
+                {editingLink.external_email || editingLink.external_subject_id}
+              </span>
+              {editingLink.external_email ? (
+                <span className="break-all text-[var(--oh-muted)]">
+                  {editingLink.external_subject_id}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[var(--oh-muted)]">
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_CURRENT_LABEL)}
+              </span>
+              <span className="break-all text-white">
+                {formatAccount(
+                  editingLink.user_name,
+                  editingLink.email,
+                  editingLink.user_id,
+                )}
+              </span>
+            </div>
+          </div>
           <Dropdown
             testId="super-admin-auth-provider-user-edit-select"
             options={userOptions}

@@ -1172,6 +1172,66 @@ async def test_list_auth_provider_users_filter(
 
 
 @pytest.mark.asyncio
+async def test_list_auth_provider_users_includes_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    named = create_user(email='ada@example.com', git_user_name='Ada Lovelace')
+    unnamed = create_user(email='grace@example.com')
+    await make_link(provider.id, named.id, 'sub-1')
+    await make_link(provider.id, unnamed.id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(f'/api/admin/oauth-providers/{provider.id}/users')
+
+    assert resp.status_code == 200
+    by_subject = {item['external_subject_id']: item for item in resp.json()['items']}
+    assert by_subject['sub-1']['user_name'] == 'Ada Lovelace'
+    # No git profile name: fall back to the email local part, matching the
+    # instance user directory, so the row is still recognizable.
+    assert by_subject['sub-2']['user_name'] == 'grace'
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_filter_matches_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    match = create_user(email='someone@example.com', git_user_name='Ada Lovelace')
+    await make_link(provider.id, match.id, 'sub-1')
+    await make_link(provider.id, create_user(email='other@example.com').id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'q': 'lovelace'},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 1
+    assert body['items'][0]['user_id'] == str(match.id)
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_returns_target_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    link = await make_link(provider.id, create_user().id, 'sub-1')
+    target = create_user(email='new@example.com', git_user_name='Ada Lovelace')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(target.id)},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()['user_name'] == 'Ada Lovelace'
+
+
+@pytest.mark.asyncio
 async def test_update_auth_provider_user_happy_path_preserves_external_email(
     mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
 ):
