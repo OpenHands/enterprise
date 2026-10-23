@@ -2824,90 +2824,10 @@ class TestInviteAcceptRole:
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
 
 
-# ── auth_provider_users links + allow_match_by_email ──────────────────────
+# ── auth_provider_users links ─────────────────────────────────────────────
 
 
 class TestIdpProviderLinks:
-    @pytest.mark.parametrize('flag', [True, False])
-    def test_signup_new_user_gets_provider_flag(self, client, flag):
-        user_id = derive_idp_user_id('dev@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with (
-            _available(has_password_super_admin=False) as provider,
-            patch(
-                'server.routes.idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.idp.UserStore.get_user_by_email',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.idp.UserStore.create_user',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ) as mock_create,
-            patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-            _patch_complete_login() as mock_complete,
-        ):
-            provider.allow_match_by_email = flag
-            mock_complete.return_value = RedirectResponse('/', status_code=302)
-            client.post(
-                f'/oauth/{IDP_SIGNUP_PATH}',
-                data={
-                    'email': 'dev@example.com',
-                    'password': 'password<secret-hidden>',
-                    'confirm_password': 'password<secret-hidden>',
-                },
-                follow_redirects=False,
-            )
-
-        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
-
-    @pytest.mark.parametrize('flag', [True, False])
-    def test_invite_new_user_gets_provider_flag(self, client, jwt_svc, flag):
-        user_id = derive_idp_user_id('invitee@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with _patch_jwt_service(jwt_svc):
-            token = idp._create_signup_link_token('invitee@example.com')
-            with (
-                _available() as provider,
-                patch(
-                    'server.routes.idp.UserStore.get_user_by_id',
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    'server.routes.idp.UserStore.get_user_by_email',
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    'server.routes.idp.UserStore.create_user',
-                    new_callable=AsyncMock,
-                    return_value=mock_user,
-                ) as mock_create,
-                patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-                _patch_complete_login() as mock_complete,
-            ):
-                provider.allow_match_by_email = flag
-                mock_complete.return_value = RedirectResponse('/', status_code=302)
-                client.post(
-                    f'/oauth/{IDP_INVITE_PATH}',
-                    data={
-                        'token': token,
-                        'password': 'password<secret-hidden>',
-                        'confirm_password': 'password<secret-hidden>',
-                    },
-                    follow_redirects=False,
-                )
-
-        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
-
     def test_login_resolves_user_through_link(self, client, link_store):
         # The linked user's id is not the id derived from the email -- only
         # the link can find it.

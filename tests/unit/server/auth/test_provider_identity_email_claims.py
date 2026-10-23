@@ -1,9 +1,9 @@
 """Email matching on the OAuth v2 / SAML login path (OHE-3723).
 
 A login through a second IdP should land on the account created by the first
-one when both assert the same email and the account has opted in via
-``allow_match_by_email``. The IdP is trusted: ``email_verified`` does not gate
-the match, it is only recorded on newly created users.
+one when both assert the same email and the second IdP has
+``allow_match_by_email`` set. The IdP is trusted: ``email_verified`` does not
+gate the match, it is only recorded on newly created users.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from openhands.app_server.integrations.service_types import ProviderType
@@ -64,7 +65,7 @@ def test_is_true_claim(value, expected):
     [{}, {'email_verified': False}, {'email_verified': 'false'}],
     ids=['absent', 'false', 'string-false'],
 )
-async def test_unverified_email_matches_opted_in_user(
+async def test_unverified_email_matches_existing_user(
     idps, async_session_maker, claims
 ):
     first, second = idps
@@ -111,11 +112,11 @@ async def test_string_true_email_verified_is_stored_as_boolean(
 
 
 @pytest.mark.asyncio
-async def test_user_without_allow_match_by_email_is_not_matched(
+async def test_provider_without_allow_match_by_email_creates_a_new_user(
     idps, async_session_maker
 ):
     first, second = idps
-    first.allow_match_by_email = False
+    second.allow_match_by_email = False
     owner_id = await resolve_or_create_user(
         first, {'sub': 'a-1', 'email': 'dave@example.com', 'email_verified': True}
     )
@@ -125,3 +126,41 @@ async def test_user_without_allow_match_by_email_is_not_matched(
     )
 
     assert other_id != owner_id
+    assert await _user_count(async_session_maker) == 2
+
+
+@pytest.mark.asyncio
+async def test_every_matching_provider_links_to_the_same_user(
+    create_git_provider, idps, async_session_maker
+):
+    """Matching is not one-shot: each new provider with the flag links."""
+    first, second = idps
+    third = await create_git_provider(ProviderType.ENTERPRISE_SSO, is_idp=True)
+    owner_id = await resolve_or_create_user(
+        first, {'sub': 'a-1', 'email': 'erin@example.com'}
+    )
+
+    assert (
+        await resolve_or_create_user(
+            second, {'sub': 'b-1', 'email': 'erin@example.com'}
+        )
+        == owner_id
+    )
+    assert (
+        await resolve_or_create_user(third, {'sub': 'c-1', 'email': 'erin@example.com'})
+        == owner_id
+    )
+    assert await _user_count(async_session_maker) == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_email_refuses_to_link(idps, async_session_maker):
+    first, second = idps
+    first.allow_match_by_email = False
+    await resolve_or_create_user(first, {'sub': 'a-1', 'email': 'fay@example.com'})
+    await resolve_or_create_user(first, {'sub': 'a-2', 'email': 'fay@example.com'})
+
+    with pytest.raises(HTTPException) as exc:
+        await resolve_or_create_user(second, {'sub': 'b-1', 'email': 'fay@example.com'})
+
+    assert exc.value.status_code == 409

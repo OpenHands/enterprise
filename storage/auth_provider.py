@@ -84,8 +84,8 @@ class AuthProvider(Base):
     allow_registration: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
-    # Initial ``User.allow_match_by_email`` for users created by a login
-    # through this row -- see
+    # Whether a login through this row whose subject isn't linked yet may be
+    # linked to the existing user with the same email -- see
     # ``server.auth.provider_identity.resolve_or_create_user``.
     allow_match_by_email: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True

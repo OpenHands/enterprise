@@ -119,26 +119,21 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     ``auth_provider_users.external_subject_id``, which is what every
     subsequent login looks up by.
 
-    IDP swap-over seeding (ALL-5978): when the sub lookup misses and the
-    new IDP asserts an email, attempt an opted-in email match via
-    ``UserStore.get_user_by_email_opted_in``. ``email_verified`` is not
-    consulted: a login IDP is the source of truth for who the user is, and
-    ``allow_match_by_email`` is the admin's opt-in to trusting it. On a unique hit,
-    link the new IDP's ``sub`` to the existing ``User`` and self-clear the
-    ``allow_match_by_email`` flag so the window is exactly one login wide.
-    Duplicate emails (>1 opted-in user) never auto-link -- the caller gets a
-    409 so an operator can resolve manually.
+    Email matching: when the sub lookup misses, the new IDP asserts an
+    email, and ``provider.allow_match_by_email`` is set, the identity is
+    linked to the existing ``User`` with that email. The provider flag is the
+    admin's statement that this IDP's emails are trustworthy -- the IDP is
+    the source of truth for who the user is, so ``email_verified`` is not
+    consulted. Duplicate emails (>1 user) never auto-link -- the caller gets
+    a 409 so an operator can resolve manually.
 
     ``AuthProvider.allow_registration`` gates only the final "mint a
     brand-new user" fallback below -- a ``403`` there means this *specific*
     provider does not accept new sign-ups, not that the account can never be
     created (an admin-issued sign-up link, or a different provider with
     ``allow_registration=True``, still can). The subject-link and
-    opted-in-email-match lookups above always run regardless of this flag,
-    since they resolve to an *existing* user rather than registering one.
-
-    A newly created user's ``allow_match_by_email`` is initialised from
-    ``AuthProvider.allow_match_by_email``.
+    email-match lookups above always run regardless of this flag, since they
+    resolve to an *existing* user rather than registering one.
     """
     subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
     if not subject:
@@ -156,8 +151,8 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     # ``email.lower()``, so a mixed-case row could never be matched later.
     email = (userinfo.get('email') or '').strip().lower() or None
     email_verified = is_true_claim(userinfo.get('email_verified'))
-    if email:
-        dup_count = await UserStore.count_opted_in_users_with_email(email)
+    if email and provider.allow_match_by_email:
+        dup_count = await UserStore.count_users_with_email(email)
         if dup_count > 1:
             logger.warning(
                 'provider_identity:email_match_skipped_duplicate email=%s count=%d',
@@ -166,12 +161,9 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
             )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    'Multiple users share this email and have '
-                    'allow_match_by_email enabled; manual resolution required.'
-                ),
+                detail=('Multiple users share this email; manual resolution required.'),
             )
-        matched = await UserStore.get_user_by_email_opted_in(email)
+        matched = await UserStore.get_user_by_email(email)
         if matched is not None:
             await link_store.link(
                 oauth_provider_id=provider.id,
@@ -179,7 +171,6 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
                 external_subject_id=subject,
                 external_email=email,
             )
-            await UserStore.clear_allow_match_by_email(str(matched.id))
             logger.info(
                 'provider_identity:email_match_linked user_id=%s provider=%s subject=%s',
                 matched.id,
@@ -202,11 +193,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
         'email_verified': email_verified,
     }
     new_user_id = str(uuid.uuid4())
-    user = await UserStore.create_user(
-        new_user_id,
-        user_info_dict,
-        allow_match_by_email=provider.allow_match_by_email,
-    )
+    user = await UserStore.create_user(new_user_id, user_info_dict)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

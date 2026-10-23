@@ -1,7 +1,8 @@
 """Tests for migration 192 (enable ``allow_match_by_email`` for unlinked users).
 
-Runs the migration's ``upgrade()`` against a real Postgres database (already
-migrated to head) seeded with users in each state the migration distinguishes.
+Runs the migration's ``upgrade()`` against a real Postgres database seeded with
+users in each state the migration distinguishes. The database is first
+downgraded to 196, since migration 197 drops the column again.
 """
 
 import json
@@ -13,6 +14,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from tests import postgres_testdb
+
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
@@ -23,6 +26,13 @@ spec = spec_from_file_location('migration_192', MIGRATION_PATH)
 assert spec is not None and spec.loader is not None
 migration_192 = module_from_spec(spec)
 spec.loader.exec_module(migration_192)
+
+
+@pytest.fixture(autouse=True)
+def _before_column_dropped(test_database: postgres_testdb.TestDatabase):
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'downgrade', '196'
+    )
 
 
 def _flag(engine: Engine, user_id) -> bool:

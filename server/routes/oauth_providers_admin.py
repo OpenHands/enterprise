@@ -128,9 +128,9 @@ class CreateAuthProviderRequest(BaseModel):
     allow_match_by_email: bool = Field(
         default=True,
         description=(
-            'Initial value of User.allow_match_by_email for a brand-new user '
-            'created by a login through this provider -- see '
-            'server.auth.provider_identity.resolve_or_create_user.'
+            'Whether a login through this provider whose subject is not '
+            'linked yet may be linked to the existing user with the same '
+            'email, trusting the email this provider asserts.'
         ),
     )
     details: AuthProviderDetails

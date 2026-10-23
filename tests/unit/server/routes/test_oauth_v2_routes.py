@@ -64,16 +64,16 @@ def client(app):
 
 
 @pytest.fixture(autouse=True)
-def no_opted_in_email_match():
-    """Login callbacks that assert an email find no opted-in user to link to."""
+def no_email_match():
+    """Login callbacks that assert an email find no existing user to link to."""
     with patch.object(
         oauth_v2.UserStore,
-        'count_opted_in_users_with_email',
+        'count_users_with_email',
         new=AsyncMock(return_value=0),
     ):
         with patch.object(
             oauth_v2.UserStore,
-            'get_user_by_email_opted_in',
+            'get_user_by_email',
             new=AsyncMock(return_value=None),
         ):
             yield
