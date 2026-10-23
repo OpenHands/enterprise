@@ -29,6 +29,7 @@ from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_MEMBER, ROLE_OWNER
+from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
     OrgDatabaseError,
@@ -481,11 +482,9 @@ async def update_admin_user_status(
         )
 
     disabled = body.status == 'inactive'
-    if not await UserStore.set_user_disabled(user_id, disabled):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='Cannot disable the last Super Admin',
-        )
+    await _operate(
+        user_id, 'disable_user' if disabled else 'enable_user', caller_user_id
+    )
     user.is_disabled = disabled
 
     logger.info(

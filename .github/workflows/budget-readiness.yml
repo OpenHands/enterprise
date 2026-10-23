@@ -23,7 +23,7 @@ jobs:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: '0.11.32'
+          version: '0.13.5'
           enable-cache: true
       - run: uv sync --locked --all-groups --python 3.13
       - name: Record candidate

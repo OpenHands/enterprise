@@ -217,4 +217,4 @@ omit = [ "tests/*", "**/test_*" ]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" }
+exclude-newer-package = { certifi = false, openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" } # certifi: eMudhra CA distrust fix must not wait out the cooldown (GHSA-6q48-6c7w-9gw2)

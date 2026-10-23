@@ -278,29 +278,18 @@ services:
   # can be captured by the host's DNS search domains (e.g. a Kubernetes
   # namespace that has a service called `automation`) before Docker's own DNS.
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.23.2}
-    # The image is only published for linux/amd64. Pinning the platform makes
-    # Docker Desktop on Apple Silicon run it under emulation instead of
-    # failing with "no matching manifest for linux/arm64"; it's a no-op on
-    # amd64 hosts. Drop this once the image is published multi-arch.
-    platform: linux/amd64
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.24.0}
     # The image's default CMD wraps uvicorn in ddtrace-run, which is pointless
-    # here. It starts as root only so it can hand the (root-owned, since the
-    # image has no /data) volume to the service user, then drops to that user.
-    user: '0:0'
+    # here.
     command:
-      - sh
-      - -c
-      - |
-        chown 42420:999 /data
-        exec setpriv --reuid 42420 --regid 999 --clear-groups uvicorn openhands.automation.app:app --host 0.0.0.0 --port 8000
+      ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
       db:
         condition: service_healthy
     expose:
       - '8000'
-    # The image runs as uid 42420 with no home directory, so tarball storage
-    # needs an explicitly writable path.
+    # Tarball storage. The image's /data is owned by its service user, and
+    # Docker gives a new volume there the same owner.
     volumes:
       - automation-data:/data
     extra_hosts:

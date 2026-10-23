@@ -144,6 +144,26 @@ describe("SuperAdminGroupSetupModal", () => {
     ]);
   });
 
+  it("filters the providers by what the admin types", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    const providerInput = await screen.findByRole("combobox", {
+      name: "LLM$PROVIDER",
+    });
+    await user.click(providerInput);
+    await screen.findByRole("option", { name: "OpenHands" });
+
+    // Act
+    await user.keyboard("anth");
+
+    // Assert
+    expect(providerInput).toHaveValue("anth");
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["Anthropic"]);
+  });
+
   it("keeps Get started disabled until a model is chosen", async () => {
     // Arrange
     renderModal();
