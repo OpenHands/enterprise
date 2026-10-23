@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from uuid import UUID
 
 from openhands.app_server.integrations.provider import (
@@ -55,12 +56,14 @@ class ResolverUserContext(UserContext):
 
         return UserInfo(id=user_id)
 
-    async def _get_provider_handler(self) -> ProviderHandler:
+    async def get_provider_handler(self) -> ProviderHandler:
         """Get or create a ProviderHandler for git operations."""
         if self._provider_handler is None:
             provider_tokens = await self.saas_user_auth.get_provider_tokens()
             if provider_tokens is None:
                 raise ValueError('No provider tokens available')
+            if not isinstance(provider_tokens, MappingProxyType):
+                provider_tokens = MappingProxyType(provider_tokens)
             user_id = await self.saas_user_auth.get_user_id()
             self._provider_handler = ProviderHandler(
                 provider_tokens=provider_tokens, external_auth_id=user_id
@@ -73,7 +76,7 @@ class ResolverUserContext(UserContext):
         is_optional: bool = False,
         specified_provider: ProviderType | None = None,
     ) -> str:
-        provider_handler = await self._get_provider_handler()
+        provider_handler = await self.get_provider_handler()
         url = await provider_handler.get_authenticated_git_url(
             repository,
             is_optional=is_optional,

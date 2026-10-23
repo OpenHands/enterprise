@@ -82,6 +82,46 @@ describe("useGitUser", () => {
     });
   });
 
+  it.each([
+    { enableOAuthV2Login: true, shouldLogout: false },
+    { enableOAuthV2Login: false, shouldLogout: true },
+  ])(
+    "on a 401 with enable_oauth_v2_login=$enableOAuthV2Login, logout called: $shouldLogout",
+    async ({ enableOAuthV2Login, shouldLogout }) => {
+      vi.mocked(useConfigModule.useConfig).mockReturnValue({
+        data: {
+          app_mode: "saas",
+          feature_flags: { enable_oauth_v2_login: enableOAuthV2Login },
+        },
+        isLoading: false,
+        error: null,
+      } as any);
+
+      const mockError = new AxiosError("Unauthorized", "401", undefined, undefined, {
+        status: 401,
+        data: { message: "Unauthorized" },
+      } as any);
+
+      vi.mocked(UserService.getUser).mockRejectedValue(mockError);
+
+      const { result } = renderHook(() => useGitUser(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe("error");
+      });
+
+      if (shouldLogout) {
+        await waitFor(() => {
+          expect(mockLogout.mutate).toHaveBeenCalled();
+        });
+      } else {
+        expect(mockLogout.mutate).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("should not call logout for non-401 errors", async () => {
     // Mock the user service to throw a 500 error
     const mockError = new AxiosError("Server Error", "500", undefined, undefined, {

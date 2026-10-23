@@ -103,6 +103,8 @@ const renderGitSettingsScreen = () => {
             "Installing GitLab webhook, please wait a few minutes.",
           SETTINGS$SAVING: "Saving...",
           ERROR$GENERIC: "An error occurred",
+          SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER:
+            "To offer a Git provider here, add it under <a>Auth Providers</a> with Login IDP turned off.",
         },
       },
     },
@@ -954,6 +956,7 @@ describe("OAuth v2 provider cards", () => {
     feature_flags: {
       ...VALID_SAAS_CONFIG.feature_flags,
       enable_oauth_v2_login: true,
+      enable_super_admin: true,
     },
     // Env-driven config must be ignored when v2 is on.
     providers_configured: ["bitbucket"],
@@ -967,6 +970,7 @@ describe("OAuth v2 provider cards", () => {
       provider_type: string;
       connected: boolean;
     }[],
+    permissions: string[] = [],
   ) => {
     useSelectedOrganizationStore.setState({ organizationId: "org-1" });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(V2_CONFIG);
@@ -979,6 +983,9 @@ describe("OAuth v2 provider cards", () => {
         return {
           data: rows.map((row) => ({ icon: null, color: "#000", ...row })),
         };
+      }
+      if (url === "/api/organizations/org-1/me") {
+        return { data: { permissions } };
       }
       return { data: {} };
     });
@@ -1029,6 +1036,83 @@ describe("OAuth v2 provider cards", () => {
         screen.queryByTestId("bitbucket-status-text"),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("points a super admin to Auth Providers when no git provider is defined", async () => {
+    // Arrange
+    mockV2([], ["manage_super_admins"]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    const emptyState = await screen.findByTestId("integrations-empty-state");
+    expect(emptyState).toHaveTextContent("SETTINGS$INTEGRATIONS_EMPTY");
+    expect(
+      await screen.findByRole("link", { name: "Auth Providers" }),
+    ).toHaveAttribute("href", "/super-admin/auth-providers");
+  });
+
+  it("asks other users to contact an administrator when no git provider is defined", async () => {
+    // Arrange
+    mockV2([]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByTestId("integrations-empty-state")).toHaveTextContent(
+        "SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN",
+      ),
+    );
+    expect(
+      screen.queryByRole("link", { name: "Auth Providers" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the empty state when a git provider is defined", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: false },
+    ]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await screen.findByTestId("github-status-text");
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("waits for the git providers to load before showing the empty state", async () => {
+    // Arrange
+    let resolveProviders: (response: { data: unknown[] }) => void = () => {};
+    const getSpy = mockV2([]);
+    getSpy.mockImplementation(async (url) =>
+      url === "/oauth/git-providers"
+        ? new Promise((resolve) => {
+            resolveProviders = resolve;
+          })
+        : { data: {} },
+    );
+    renderGitSettingsScreen();
+    await waitFor(() =>
+      expect(getSpy).toHaveBeenCalledWith("/oauth/git-providers"),
+    );
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+
+    // Act
+    resolveProviders({ data: [] });
+
+    // Assert
+    expect(
+      await screen.findByTestId("integrations-empty-state"),
+    ).toBeInTheDocument();
   });
 
   it("starts the v2 link flow with the auth_providers id on Connect", async () => {

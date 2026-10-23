@@ -4,6 +4,9 @@ import pytest
 from fastapi import HTTPException
 
 from openhands.app_server.errors import SandboxError
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -174,7 +177,7 @@ async def test_restore_git_identity_uses_resumed_sandbox():
         return_value='https://agent.example'
     )
     sandbox_spec_service = AsyncMock()
-    sandbox_spec_service.get_sandbox_spec.return_value = SandboxSpecInfo(
+    sandbox_spec_service.resolve_existing_sandbox_spec.return_value = SandboxSpecInfo(
         id='spec-1',
         command=None,
         working_dir='/workspace/project',
@@ -227,6 +230,79 @@ async def test_restore_git_identity_uses_resumed_sandbox():
         api_key='new-session-key',
         working_dir='/workspace/project',
     )
+    configure.assert_awaited_once_with(
+        workspace,
+        'Resume Test User',
+        'resume-test@example.com',
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_git_identity_in_sandbox_whose_image_is_no_longer_advertised():
+    """A sandbox created before an agent-server image bump has no spec of its
+    own; the identity must still be restored, in the default spec's working
+    directory, instead of being skipped."""
+    sandbox = SandboxInfo(
+        id='sandbox-1',
+        created_by_user_id='user-1',
+        sandbox_spec_id='ghcr.io/openhands/agent-server:1.50.1-python',
+        status=SandboxStatus.RUNNING,
+        session_api_key='new-session-key',
+        exposed_urls=[
+            ExposedUrl(name=AGENT_SERVER, url='https://agent.example', port=60000)
+        ],
+    )
+    sandbox_service = AsyncMock()
+    sandbox_service.wait_for_sandbox_running.return_value = sandbox
+    sandbox_service._get_agent_server_url = MagicMock(
+        return_value='https://agent.example'
+    )
+    sandbox_spec_service = PresetSandboxSpecService(
+        specs=[
+            SandboxSpecInfo(
+                id='ghcr.io/openhands/agent-server:1.57.0-python',
+                command=None,
+                working_dir='/workspace/project',
+            )
+        ]
+    )
+    workspace = MagicMock()
+    sandbox_service_context = AsyncMock()
+    sandbox_service_context.__aenter__.return_value = sandbox_service
+    sandbox_spec_service_context = AsyncMock()
+    sandbox_spec_service_context.__aenter__.return_value = sandbox_spec_service
+    httpx_client_context = AsyncMock()
+    httpx_client_context.__aenter__.return_value = AsyncMock()
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_sandbox_service',
+            return_value=sandbox_service_context,
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_sandbox_spec_service',
+            return_value=sandbox_spec_service_context,
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_httpx_client',
+            return_value=httpx_client_context,
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.AsyncRemoteWorkspace',
+            return_value=workspace,
+        ) as workspace_type,
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.configure_git_user_settings',
+            new=AsyncMock(),
+        ) as configure,
+    ):
+        await _restore_git_user_settings_after_resume(
+            'sandbox-1',
+            'Resume Test User',
+            'resume-test@example.com',
+        )
+
+    assert workspace_type.call_args.kwargs['working_dir'] == '/workspace/project'
     configure.assert_awaited_once_with(
         workspace,
         'Resume Test User',

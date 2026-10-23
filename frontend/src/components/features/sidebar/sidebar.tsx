@@ -9,6 +9,7 @@ import { ConversationPanelButton } from "#/components/shared/buttons/conversatio
 import { AutomationsButton } from "#/components/shared/buttons/automations-button";
 import { SettingsModal } from "#/components/shared/modals/settings/settings-modal";
 import { useSettings } from "#/hooks/query/use-settings";
+import { useIsEmailVerificationBlocking } from "#/hooks/use-is-email-verification-blocking";
 import { ConversationPanel } from "../conversation-panel/conversation-panel";
 import { ConversationPanelWrapper } from "../conversation-panel/conversation-panel-wrapper";
 import { useConfig } from "#/hooks/query/use-config";
@@ -27,6 +28,7 @@ export function Sidebar() {
     isError: settingsIsError,
     isFetching: isFetchingSettings,
   } = useSettings();
+  const isEmailVerificationBlocking = useIsEmailVerificationBlocking();
 
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
@@ -77,21 +79,19 @@ export function Sidebar() {
               <OpenHandsLogoButton />
             </div>
             <div className="flex items-center justify-center">
-              <NewProjectButton disabled={settings?.email_verified === false} />
+              <NewProjectButton disabled={isEmailVerificationBlocking} />
             </div>
             <ConversationPanelButton
               isOpen={conversationPanelIsOpen}
               onClick={() =>
-                settings?.email_verified === false
+                isEmailVerificationBlocking
                   ? null
                   : setConversationPanelIsOpen((prev) => !prev)
               }
-              disabled={settings?.email_verified === false}
+              disabled={isEmailVerificationBlocking}
             />
             {config?.feature_flags?.enable_automations && (
-              <AutomationsButton
-                disabled={settings?.email_verified === false}
-              />
+              <AutomationsButton disabled={isEmailVerificationBlocking} />
             )}
           </div>
 

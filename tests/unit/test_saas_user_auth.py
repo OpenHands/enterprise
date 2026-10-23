@@ -66,6 +66,15 @@ def mock_request():
     return request
 
 
+@pytest.fixture
+def active_user_guard():
+    with patch(
+        'server.auth.saas_user_auth._require_active_user',
+        new=AsyncMock(return_value=MagicMock()),
+    ) as guard:
+        yield guard
+
+
 def create_mock_jwt_tokens(user_id='test_user_id', exp_offset=3600):
     """Helper to create valid JWT tokens for mocking."""
     payload = {
@@ -412,6 +421,77 @@ class TestGetProviderTokensBitbucketDCHost:
         mock_session.execute.assert_called_once()
 
 
+class TestGetProviderTokensGitLabHost:
+    """Tests for the self-hosted GitLab host fallback from GITLAB_HOST."""
+
+    def _make_user_auth(self, mock_session_maker):
+        mock_token = MagicMock()
+        mock_token.identity_provider = 'gitlab'
+        mock_token.id = 'token-id-1'
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_token]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session_maker.return_value = mock_session
+
+        access_payload = {'sub': 'test_user_id', 'exp': int(time.time()) + 3600}
+        access_token = jwt.encode(access_payload, 'secret', algorithm='HS256')
+
+        return SaasUserAuth(
+            user_id='test_user_id',
+            refresh_token=SecretStr('refresh_token'),
+            access_token=SecretStr(access_token),
+        )
+
+    async def _provider_tokens(self, gitlab_host, user_secrets=None):
+        with (
+            patch('server.auth.saas_user_auth.token_manager') as mock_tm,
+            patch('server.auth.saas_user_auth.a_session_maker') as mock_session_maker,
+            patch('server.auth.saas_user_auth.GITLAB_HOST', gitlab_host),
+        ):
+            mock_tm.get_idp_token_by_user_id = AsyncMock(
+                return_value='gitlab_access_token'
+            )
+            user_auth = self._make_user_auth(mock_session_maker)
+            user_auth.get_secrets = AsyncMock(return_value=user_secrets)
+            return await user_auth.get_provider_tokens()
+
+    @pytest.mark.asyncio
+    async def test_self_hosted_gitlab_host_is_reported(self):
+        """An IdP token on a self-hosted install carries the configured GITLAB_HOST."""
+        result = await self._provider_tokens('gitlab.company.com')
+
+        assert ProviderType.GITLAB in result
+        assert result[ProviderType.GITLAB].host == 'gitlab.company.com'
+        assert result[ProviderType.GITLAB].token.get_secret_value() == (
+            'gitlab_access_token'
+        )
+
+    @pytest.mark.asyncio
+    async def test_host_from_user_secrets_takes_priority(self):
+        """A host the user stored with their own token wins over GITLAB_HOST."""
+        user_secrets = Secrets(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(
+                    token=SecretStr('existing_token'), host='custom.gitlab.host'
+                )
+            }
+        )
+        result = await self._provider_tokens('gitlab.company.com', user_secrets)
+
+        assert result[ProviderType.GITLAB].host == 'custom.gitlab.host'
+
+    @pytest.mark.asyncio
+    async def test_hosted_gitlab_reports_its_host_too(self):
+        """gitlab.com is reported as well, so a missing host means an older server."""
+        result = await self._provider_tokens('gitlab.com')
+
+        assert ProviderType.GITLAB in result
+        assert result[ProviderType.GITLAB].host == 'gitlab.com'
+
+
 @pytest.mark.asyncio
 async def test_get_provider_tokens_skips_enterprise_sso_rows():
     """enterprise_sso auth_tokens rows are a login IdP, not a git provider."""
@@ -595,7 +675,9 @@ async def test_get_provider_tokens_succeeds_without_offline_session():
     ],
     ids=['get_for_user', 'get_user_auth_from_keycloak_id'],
 )
-async def test_background_user_auth_does_not_require_offline_session(build):
+async def test_background_user_auth_does_not_require_offline_session(
+    build, active_user_guard
+):
     """Background/integration entry points build BEARER auth with no offline token."""
     # Act
     built = await build()
@@ -651,12 +733,13 @@ async def test_get_user_settings_store_cached():
 
 
 @pytest.mark.asyncio
-async def test_get_instance_from_bearer(mock_request):
+async def test_get_instance_from_bearer(mock_request, active_user_guard):
     """Test that get_instance returns auth from bearer token."""
     with patch(
         'server.auth.saas_user_auth.saas_user_auth_from_bearer'
     ) as mock_from_bearer:
         mock_auth = MagicMock()
+        mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
         mock_from_bearer.return_value = mock_auth
 
         result = await SaasUserAuth.get_instance(mock_request)
@@ -666,7 +749,7 @@ async def test_get_instance_from_bearer(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_without_rate_limiter(mock_request):
+async def test_get_instance_without_rate_limiter(mock_request, active_user_guard):
     """Authentication succeeds without hitting a disabled rate limiter."""
     mock_request.state.user_rate_limit_processed = False
     mock_auth = MagicMock()
@@ -686,7 +769,7 @@ async def test_get_instance_without_rate_limiter(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_from_cookie(mock_request):
+async def test_get_instance_from_cookie(mock_request, active_user_guard):
     """Test that get_instance returns auth from cookie if bearer fails."""
     with (
         patch(
@@ -698,6 +781,7 @@ async def test_get_instance_from_cookie(mock_request):
     ):
         mock_from_bearer.return_value = None
         mock_auth = MagicMock()
+        mock_auth.get_user_id = AsyncMock(return_value='test_user_id')
         mock_from_cookie.return_value = mock_auth
 
         result = await SaasUserAuth.get_instance(mock_request)
@@ -729,61 +813,7 @@ async def test_get_instance_no_auth(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_get_instance_rejects_a_disabled_user(mock_request):
-    """A disabled user's API key or session no longer authenticates."""
-    # Arrange
-    mock_auth = MagicMock()
-    mock_auth.user_id = 'disabled_user_id'
-
-    with (
-        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', True),
-        patch(
-            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
-            return_value=mock_auth,
-        ),
-        patch(
-            'storage.user_store.UserStore.is_user_disabled',
-            AsyncMock(return_value=True),
-        ) as is_user_disabled,
-    ):
-        # Act / Assert
-        with pytest.raises(AuthError, match='disabled'):
-            await SaasUserAuth.get_instance(mock_request)
-
-    is_user_disabled.assert_awaited_once_with('disabled_user_id')
-
-
-@pytest.mark.asyncio
-async def test_get_instance_skips_the_disabled_check_while_super_admin_is_off(
-    mock_request,
-):
-    """Only the Super Admin directory disables users, so with it off no
-    request pays for the lookup."""
-    # Arrange
-    mock_auth = MagicMock()
-    mock_auth.user_id = 'user_id'
-
-    with (
-        patch('server.auth.saas_user_auth.ENABLE_SUPER_ADMIN', False),
-        patch(
-            'server.auth.saas_user_auth.saas_user_auth_from_bearer',
-            return_value=mock_auth,
-        ),
-        patch(
-            'storage.user_store.UserStore.is_user_disabled',
-            AsyncMock(return_value=True),
-        ) as is_user_disabled,
-    ):
-        # Act
-        instance = await SaasUserAuth.get_instance(mock_request)
-
-    # Assert
-    assert instance is mock_auth
-    is_user_disabled.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_success():
+async def test_saas_user_auth_from_bearer_success(active_user_guard):
     """A valid API key authenticates with no Keycloak round-trip.
 
     Bearer auth must not load an offline token or call refresh(): the key
@@ -936,7 +966,7 @@ async def test_saas_user_auth_from_cookie_exception():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token(mock_config):
+async def test_saas_user_auth_from_signed_token(mock_config, active_user_guard):
     """Test successful creation of SaasUserAuth from signed token."""
     # Create a JWT access token
     access_payload = {
@@ -1228,7 +1258,7 @@ def test_get_api_key_from_header_with_unrelated_cookies():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_bearer_via_api_key_cookie():
+async def test_saas_user_auth_from_bearer_via_api_key_cookie(active_user_guard):
     """A valid api_key cookie should authenticate the same as an X-Access-Token header."""
     mock_request = MagicMock()
     mock_request.headers = {}
@@ -1281,7 +1311,9 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie_invalid():
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
+async def test_saas_user_auth_from_signed_token_blocked_domain(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token raises AuthError when email domain is blocked."""
     # Arrange
     access_payload = {
@@ -1316,7 +1348,9 @@ async def test_saas_user_auth_from_signed_token_blocked_domain(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_allowed_domain(mock_config):
+async def test_saas_user_auth_from_signed_token_allowed_domain(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token succeeds when email domain is not blocked."""
     # Arrange
     access_payload = {
@@ -1351,7 +1385,9 @@ async def test_saas_user_auth_from_signed_token_allowed_domain(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_saas_user_auth_from_signed_token_domain_blocking_inactive(mock_config):
+async def test_saas_user_auth_from_signed_token_domain_blocking_inactive(
+    mock_config, active_user_guard
+):
     """Test that saas_user_auth_from_signed_token succeeds when email domain is not blocked."""
     # Arrange
     access_payload = {

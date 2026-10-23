@@ -8,11 +8,12 @@ refreshed, and failing a call that would need the user's consent.
 
 import asyncio
 from ipaddress import ip_address
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server.mcp_router import (
     MCPOAuthStateResponse,
@@ -20,11 +21,13 @@ from openhands.agent_server.mcp_router import (
     MCPTestSuccess,
     MCPToolCallResult,
 )
+from openhands.app_server.mcp.mcp_test_router import user_context_dependency
 from openhands.app_server.mcp.mcp_tool_call_router import router
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user_auth import get_user_settings_store
 from openhands.app_server.utils.dependencies import check_session_api_key
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.secret import StaticSecret
 
 SERVER_NAME = 'atlassian-rovo'
 CALL_TOOL_URL = f'/api/v1/mcp/servers/{SERVER_NAME}/call-tool'
@@ -78,11 +81,38 @@ def _store(enabled: bool = True) -> _FakeSettingsStore:
     return _FakeSettingsStore(settings)
 
 
-def _client(store: _FakeSettingsStore) -> TestClient:
+def _token_store(authorization: str) -> _FakeSettingsStore:
+    settings = Settings()
+    settings.agent_settings.mcp_config = {
+        SERVER_NAME: MCPServer(
+            url='https://mcp.sonar.example/mcp',
+            headers={'Authorization': SecretStr(authorization)},
+        )
+    }
+    return _FakeSettingsStore(settings)
+
+
+def _user_context(secrets: dict[str, str] | None = None) -> MagicMock:
+    user_context = MagicMock()
+    user_context.get_secrets = AsyncMock(
+        return_value={
+            name: StaticSecret(value=SecretStr(value))
+            for name, value in (secrets or {}).items()
+        }
+    )
+    user_context.get_provider_tokens = AsyncMock(return_value={})
+    return user_context
+
+
+def _client(
+    store: _FakeSettingsStore, user_context: MagicMock | None = None
+) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     app.dependency_overrides[check_session_api_key] = lambda: None
     app.dependency_overrides[get_user_settings_store] = lambda: store
+    context = user_context or _user_context()
+    app.dependency_overrides[user_context_dependency.dependency] = lambda: context
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -219,3 +249,75 @@ def test_fails_a_call_that_needs_the_users_consent_instead_of_waiting_for_it(pro
     # Assert
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert 'authorized again' in response.json()['detail']
+
+
+def test_expands_secret_references_in_the_stored_credentials(probe):
+    # Arrange
+    probe.return_value = MCPTestSuccess(
+        tools=[TOOL_CALL['name']], tool_result=TOOL_RESULT
+    )
+    store = _token_store('Bearer ${SONAR_TOKEN}')
+    user_context = _user_context({'SONAR_TOKEN': 'sonar-secret'})
+
+    # Act
+    response = _client(store, user_context).post(CALL_TOOL_URL, json=TOOL_CALL)
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    headers = probe.call_args.args[0].resolved_server.headers
+    assert headers['Authorization'].get_secret_value() == 'Bearer sonar-secret'
+    assert store.stored == []
+
+
+def test_reports_an_unset_secret_reference_by_name(probe):
+    # Act
+    response = _client(_token_store('Bearer ${SONAR_TOKN}')).post(
+        CALL_TOOL_URL, json=TOOL_CALL
+    )
+
+    # Assert
+    assert response.status_code == status.HTTP_502_BAD_GATEWAY
+    assert 'SONAR_TOKN' in response.json()['detail']
+    probe.assert_not_called()
+
+
+def test_scrubs_an_expanded_secret_from_the_error(probe):
+    # Arrange: the upstream error echoes the expanded credential.
+    probe.return_value = MCPTestFailure(
+        error='401 Unauthorized for Bearer sonar-secret', error_kind='connection'
+    )
+    user_context = _user_context({'SONAR_TOKEN': 'sonar-secret'})
+
+    # Act
+    response = _client(_token_store('Bearer ${SONAR_TOKEN}'), user_context).post(
+        CALL_TOOL_URL, json=TOOL_CALL
+    )
+
+    # Assert
+    assert response.status_code == status.HTTP_502_BAD_GATEWAY
+    assert 'sonar-secret' not in response.text
+
+
+def test_leaves_references_on_an_oauth_server_unexpanded(probe):
+    # Arrange: a refresh writes the OAuth state back, and the OAuth client
+    # copies a configured client secret into it.
+    store = _store()
+    oauth_server = store.settings.agent_settings.mcp_config[SERVER_NAME]
+    store.settings.agent_settings.mcp_config[SERVER_NAME] = MCPServer.model_validate(
+        {
+            **oauth_server.model_dump(
+                mode='json', context={'expose_secrets': 'plaintext'}
+            ),
+            'headers': {'X-Team': '${ROVO_TEAM}'},
+        }
+    )
+    user_context = _user_context({'ROVO_TEAM': 'platform'})
+
+    # Act
+    response = _client(store, user_context).post(CALL_TOOL_URL, json=TOOL_CALL)
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    headers = probe.call_args.args[0].resolved_server.headers
+    assert headers['X-Team'].get_secret_value() == '${ROVO_TEAM}'
+    user_context.get_secrets.assert_not_called()

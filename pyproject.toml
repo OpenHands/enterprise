@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.77.0"
+version = "1.79.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -21,6 +21,7 @@ dependencies = [
   "binaryornot==0.6.0",
   "boto3",
   "browsergym-core==0.13.3",                        # integrate browsergym-core as the browsing interface
+  "certifi>=2026.10.19",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
   "coredis==4.24.0",
   "cryptography==50.0.0",                           # SAML SP key pair generation (storage.auth_provider_details)
@@ -60,9 +61,9 @@ dependencies = [
   "memory-profiler==0.61.0",
   "numpy==2.4.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.57.0",
-  "openhands-sdk==1.57.0",
-  "openhands-tools==1.57.0",
+  "openhands-agent-server==1.58.1",
+  "openhands-sdk==1.58.1",
+  "openhands-tools==1.58.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.11.8",                                 # Pinned to fix CVE-2025-67221
@@ -217,4 +218,4 @@ omit = [ "tests/*", "**/test_*" ]
 [tool.uv]
 package = false
 exclude-newer = "7 days"
-exclude-newer-package = { openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" }
+exclude-newer-package = { certifi = false, openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" } # certifi: eMudhra CA distrust fix must not wait out the cooldown (GHSA-6q48-6c7w-9gw2)
