@@ -63,6 +63,22 @@ def client(app):
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def no_opted_in_email_match():
+    """Login callbacks that assert an email find no opted-in user to link to."""
+    with patch.object(
+        oauth_v2.UserStore,
+        'count_opted_in_users_with_email',
+        new=AsyncMock(return_value=0),
+    ):
+        with patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_email_opted_in',
+            new=AsyncMock(return_value=None),
+        ):
+            yield
+
+
 def _override_user_context(app, user_id):
     """Override ``get_user_id`` so the route sees ``user_id`` (or ``None``)."""
     app.dependency_overrides[get_user_id] = lambda: (str(user_id) if user_id else None)

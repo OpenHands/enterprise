@@ -1,8 +1,8 @@
 """DB-backed tests for the ``allow_match_by_email`` IDP swap-over seeding flow.
 
 Covers the ``UserStore`` methods added in ALL-5978:
-- ``get_user_by_email_opted_in`` (filters on the flag + verified email)
-- ``count_opted_in_users_with_email`` (duplicate-email guard, verified emails only)
+- ``get_user_by_email_opted_in`` (filters on the flag; ``email_verified`` ignored)
+- ``count_opted_in_users_with_email`` (duplicate-email guard)
 - ``clear_allow_match_by_email`` (self-clear after a successful link)
 - ``bulk_set_allow_match_by_email`` (operator swap-over toggle + duplicate report)
 
@@ -55,15 +55,17 @@ class TestGetUserByEmailOptedIn:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('email_verified', [False, None])
-    async def test_skips_user_without_verified_email(
+    async def test_matches_user_without_verified_email(
         self, patched_user_session, create_user, email_verified
     ):
-        create_user(
+        user = create_user(
             email='frank@example.com',
             allow_match_by_email=True,
             email_verified=email_verified,
         )
-        assert await UserStore.get_user_by_email_opted_in('frank@example.com') is None
+        got = await UserStore.get_user_by_email_opted_in('frank@example.com')
+        assert got is not None
+        assert got.id == user.id
 
     @pytest.mark.asyncio
     async def test_empty_email_returns_none(self, patched_user_session):
@@ -84,11 +86,11 @@ class TestCountOptedInUsersWithEmail:
         assert await UserStore.count_opted_in_users_with_email('erin@example.com') == 1
 
     @pytest.mark.asyncio
-    async def test_unverified_not_counted(self, patched_user_session, create_user):
+    async def test_unverified_counted(self, patched_user_session, create_user):
         create_user(
             email='hank@example.com', allow_match_by_email=True, email_verified=False
         )
-        assert await UserStore.count_opted_in_users_with_email('hank@example.com') == 0
+        assert await UserStore.count_opted_in_users_with_email('hank@example.com') == 1
 
     @pytest.mark.asyncio
     async def test_duplicate_count(self, patched_user_session, create_user):
@@ -105,20 +107,17 @@ class TestCountOptedInUsersWithEmail:
 
 class TestUnverifiedDuplicates:
     @pytest.mark.asyncio
-    async def test_unverified_duplicate_neither_blocks_nor_matches(
+    async def test_unverified_duplicate_counts_toward_duplicate_guard(
         self, patched_user_session, create_user
     ):
-        verified = create_user(
+        create_user(
             email='gina@example.com', allow_match_by_email=True, email_verified=True
         )
         create_user(
             email='gina@example.com', allow_match_by_email=True, email_verified=False
         )
 
-        assert await UserStore.count_opted_in_users_with_email('gina@example.com') == 1
-        got = await UserStore.get_user_by_email_opted_in('gina@example.com')
-        assert got is not None
-        assert got.id == verified.id
+        assert await UserStore.count_opted_in_users_with_email('gina@example.com') == 2
 
 
 class TestClearAllowMatchByEmail:

@@ -74,8 +74,8 @@ def is_true_claim(value: object) -> bool:
     """Whether a boolean-ish claim such as ``email_verified`` asserts true.
 
     OIDC specifies a JSON boolean, but some IdPs send the string ``"true"``
-    (Google's own ID token docs show it that way) -- and a plain truthiness
-    check would read the string ``"false"`` as verified.
+    (Google's own ID token docs show it that way), which the boolean
+    ``User.email_verified`` column would reject.
     """
     if isinstance(value, str):
         return value.strip().lower() == 'true'
@@ -104,9 +104,11 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     ``auth_provider_users.external_subject_id``, which is what every
     subsequent login looks up by.
 
-    IDP swap-over seeding (ALL-5978): when the sub lookup misses, and the
-    new IDP reports ``email_verified`` is true, attempt an opted-in email
-    match via ``UserStore.get_user_by_email_opted_in``. On a unique hit,
+    IDP swap-over seeding (ALL-5978): when the sub lookup misses and the
+    new IDP asserts an email, attempt an opted-in email match via
+    ``UserStore.get_user_by_email_opted_in``. ``email_verified`` is not
+    consulted: a login IDP is the source of truth for who the user is, and
+    ``allow_match_by_email`` is the admin's opt-in to trusting it. On a unique hit,
     link the new IDP's ``sub`` to the existing ``User`` and self-clear the
     ``allow_match_by_email`` flag so the window is exactly one login wide.
     Duplicate emails (>1 opted-in user) never auto-link -- the caller gets a
@@ -139,7 +141,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     # ``email.lower()``, so a mixed-case row could never be matched later.
     email = (userinfo.get('email') or '').strip().lower() or None
     email_verified = is_true_claim(userinfo.get('email_verified'))
-    if email and email_verified:
+    if email:
         dup_count = await UserStore.count_opted_in_users_with_email(email)
         if dup_count > 1:
             logger.warning(

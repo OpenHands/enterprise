@@ -3,7 +3,7 @@
 Covers:
 - ``_resolve_or_create_user`` email-match branch: opted-in unique hit links
   to the existing user and self-clears the flag.
-- ``email_verified`` is required from the new IDP before honoring the match.
+- ``email_verified`` from the new IDP does not gate the match.
 - Duplicate opted-in emails produce a 409 (no auto-link).
 - ``AuthProvider.allow_registration=False`` gates only the final "mint a
   brand-new user" fallback -- see the dedicated
@@ -109,9 +109,10 @@ async def test_email_match_links_to_existing_user_and_clears_flag():
 
 
 @pytest.mark.asyncio
-async def test_email_match_skipped_when_email_not_verified():
+@pytest.mark.parametrize('claims', [{}, {'email_verified': False}])
+async def test_email_match_ignores_email_verified(claims):
     provider = _fake_provider()
-    new_user = _fake_user(uuid.uuid4(), email='alice@example.com')
+    existing_user = _fake_user(uuid.uuid4(), email='alice@example.com')
 
     with (
         patch.object(
@@ -122,33 +123,24 @@ async def test_email_match_skipped_when_email_not_verified():
         patch.object(
             oauth_v2.UserStore,
             'count_opted_in_users_with_email',
-            new=AsyncMock(return_value=0),
-        ) as count,
+            new=AsyncMock(return_value=1),
+        ),
         patch.object(
             oauth_v2.UserStore,
             'get_user_by_email_opted_in',
-            new=AsyncMock(),
-        ) as opted_in,
-        patch.object(
-            oauth_v2.UserStore,
-            'create_user',
-            new=AsyncMock(return_value=new_user),
+            new=AsyncMock(return_value=existing_user),
         ),
         patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(oauth_v2.UserStore, 'clear_allow_match_by_email', new=AsyncMock()),
+        patch.object(oauth_v2.UserStore, 'create_user', new=AsyncMock()) as create,
     ):
         result = await _resolve_or_create_user(
             provider,
-            {
-                'sub': 'new-idp-sub',
-                'email': 'alice@example.com',
-                'email_verified': False,
-            },
+            {'sub': 'new-idp-sub', 'email': 'alice@example.com', **claims},
         )
 
-    # Falls through to create_user; email-match never attempted.
-    count.assert_not_awaited()
-    opted_in.assert_not_awaited()
-    assert result == str(new_user.id)
+    assert result == str(existing_user.id)
+    create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
