@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -159,7 +159,11 @@ class AuthProviderStore:
 
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
-            result = await session.execute(select(AuthProvider))
+            result = await session.execute(
+                select(AuthProvider).order_by(
+                    func.lower(AuthProvider.title), AuthProvider.id
+                )
+            )
             return list(result.scalars().all())
 
     async def create(self, provider: AuthProvider) -> AuthProvider:

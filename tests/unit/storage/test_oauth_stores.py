@@ -87,10 +87,11 @@ def make_provider(async_session_maker, jwt_svc):
         enabled: bool = True,
         client_secret: str | None = 'secret',
         token_url: str | None = 'https://example.com/token',
+        title: str | None = None,
     ) -> AuthProvider:
         if category == INTEGRATED_IDP_KIND:
             details = PasswordProviderDetails()
-            title = 'Integrated IDP'
+            default_title = 'Integrated IDP'
         else:
             category_value = (
                 category.value if isinstance(category, ProviderType) else category
@@ -105,9 +106,12 @@ def make_provider(async_session_maker, jwt_svc):
                 scopes=['repo'],
                 permitted_drift_seconds=60,
             )
-            title = category_value.title()
+            default_title = category_value.title()
         provider = AuthProvider(
-            title=title, is_idp=is_idp, enabled=enabled, details=details
+            title=title if title is not None else default_title,
+            is_idp=is_idp,
+            enabled=enabled,
+            details=details,
         )
         async with async_session_maker() as session:
             session.add(provider)
@@ -133,6 +137,24 @@ class TestAuthProviderStore:
     @pytest.mark.asyncio
     async def test_get_by_id_missing(self, patched_session):
         assert await AuthProviderStore().get_by_id(99999) is None
+
+    @pytest.mark.asyncio
+    async def test_list_all_orders_by_title_case_insensitively(
+        self, patched_session, make_provider
+    ):
+        zeta = await make_provider(title='Zeta')
+        beta_upper = await make_provider(title='Beta')
+        alpha = await make_provider(title='alpha')
+        beta_lower = await make_provider(title='beta')
+
+        providers = await AuthProviderStore().list_all()
+
+        assert [p.id for p in providers] == [
+            alpha.id,
+            beta_upper.id,
+            beta_lower.id,
+            zeta.id,
+        ]
 
     @pytest.mark.asyncio
     async def test_idp_and_git_split(self, patched_session, make_provider):
