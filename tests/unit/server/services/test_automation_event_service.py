@@ -387,6 +387,90 @@ class TestResolvePersonalOrg:
             assert 'github' in github_cache_key
 
 
+class _DictRedis:
+    """In-memory stand-in for the async Redis client; unit tests have no Redis."""
+
+    def __init__(self):
+        self.data: dict[str, str] = {}
+
+    async def get(self, key):
+        return self.data.get(key)
+
+    async def setex(self, key, ttl, value):
+        self.data[key] = value
+
+    async def delete(self, key):
+        self.data.pop(key, None)
+
+
+class TestUserIdCacheInvalidation:
+    """A link or unlink must not leave a stale provider→user mapping cached."""
+
+    @pytest.mark.asyncio
+    async def test_a_cached_miss_is_dropped_when_the_account_is_linked(
+        self, mock_token_manager
+    ):
+        from server.services.automation_event_service import (
+            invalidate_user_id_cache,
+        )
+
+        user_id = '87654321-4321-8765-4321-876543218765'
+        mock_token_manager.get_user_id_from_idp_user_id = AsyncMock(
+            side_effect=[None, user_id]
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            assert (
+                await service._resolve_personal_org(ProviderType.GITHUB, 12345) is None
+            )
+
+            # Webhooks pass the id as an int; the link stores it as text.
+            await invalidate_user_id_cache(ProviderType.GITHUB, '12345')
+
+            result = await service._resolve_personal_org(ProviderType.GITHUB, 12345)
+
+        assert result == uuid.UUID(user_id)
+
+    @pytest.mark.asyncio
+    async def test_a_cached_user_is_dropped_when_the_account_is_unlinked(
+        self, mock_token_manager
+    ):
+        from server.services.automation_event_service import (
+            invalidate_user_id_cache,
+        )
+
+        mock_token_manager.get_user_id_from_idp_user_id = AsyncMock(
+            side_effect=['87654321-4321-8765-4321-876543218765', None]
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            assert await service._resolve_personal_org(ProviderType.GITHUB, 12345)
+
+            await invalidate_user_id_cache(ProviderType.GITHUB, '12345')
+
+            result = await service._resolve_personal_org(ProviderType.GITHUB, 12345)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_invalidation_does_not_raise_when_redis_is_unavailable(self):
+        from server.services.automation_event_service import (
+            invalidate_user_id_cache,
+        )
+
+        redis = AsyncMock()
+        redis.delete = AsyncMock(side_effect=ConnectionError('redis down'))
+
+        with patch(REDIS_PATCH, return_value=redis):
+            await invalidate_user_id_cache(ProviderType.GITHUB, '12345')
+
+        redis.delete.assert_awaited_once()
+
+
 class TestForwardEvent:
     """Tests for forward_event method (minimal payload, no access control)."""
 

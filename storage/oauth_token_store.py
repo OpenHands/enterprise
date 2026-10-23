@@ -22,7 +22,7 @@ from typing import Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -32,6 +32,9 @@ from storage.oauth_token import OAuthToken
 
 # Database lock timeout to prevent indefinite blocking during refresh.
 LOCK_TIMEOUT_SECONDS = 5
+# SQLSTATE lock_not_available. asyncpg raises it as a plain ``DBAPIError``,
+# not ``OperationalError``.
+LOCK_NOT_AVAILABLE = '55P03'
 
 
 # ── token wrapping helpers ────────────────────────────────────────────────
@@ -246,7 +249,9 @@ class OAuthTokenStore:
                         'refresh_token_expires_at'
                     )
                     return str(refreshed['access_token'])
-        except OperationalError as exc:
+        except DBAPIError as exc:
+            if getattr(exc.orig, 'pgcode', None) != LOCK_NOT_AVAILABLE:
+                raise
             logger.warning(
                 'oauth_token refresh lock timeout for user %s provider %s: %s',
                 self.user_id,

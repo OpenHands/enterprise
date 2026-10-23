@@ -193,7 +193,9 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 
 
-def _resolve_title_llm_profile(user: UserInfo) -> str | None:
+def _resolve_title_llm_profile(
+    user: UserInfo, conversation_model: str | None = None
+) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
     if (
         preference
@@ -204,6 +206,14 @@ def _resolve_title_llm_profile(user: UserInfo) -> str | None:
 
     active = user.llm_profiles.active
     if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        # A conversation started on another model (a picked profile, a model
+        # override or an agent profile) is titled with that model: without a
+        # title profile the agent-server falls back to the agent's LLM.
+        if (
+            conversation_model
+            and user.llm_profiles.require(active).model != conversation_model
+        ):
+            return None
         return active
     return None
 
@@ -521,11 +531,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         # Create and yield the start task
         user_id = await self.user_context.get_user_id()
-        # Prefer the user's email as the Laminar trace user id so traces are
-        # immediately attributable in the Laminar UI instead of showing only
-        # a pseudo-anonymous internal id. Falls back to ``user_id`` when no
-        # email is available (e.g. OSS mode).
-        laminar_user_id = await self.user_context.get_user_email() or user_id
 
         # Validate and inherit from parent conversation if provided
         if request.parent_conversation_id:
@@ -701,19 +706,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             body_json = start_conversation_request.model_dump(
                 mode='json', context={'expose_secrets': True}
             )
-            # Inject ``user_id`` into the start-conversation body so the
-            # agent-server can call ``Laminar.set_trace_user_id()`` and tag
-            # traces with the authenticated user. The currently pinned
-            # ``openhands-sdk`` release does not yet expose ``user_id`` on
-            # ``StartConversationRequest`` (added in software-agent-sdk#3242),
-            # so passing it to ``create_request(...)`` is silently dropped by
-            # pydantic. The agent-server reads the field directly from the
-            # request body, so injecting it here works regardless of whether
-            # the local SDK model knows about it. Remove this once OpenHands
-            # pins to an SDK release that exposes ``user_id`` on
-            # ``StartConversationRequest``.
-            if laminar_user_id:
-                body_json['user_id'] = laminar_user_id
+            # Keep the agent-server ``user_id`` aligned with app-server and
+            # frontend PostHog identity. The agent-server uses it both for
+            # product analytics distinct_id and Laminar trace_user_id; user
+            # email is added to observability metadata by the request builder
+            # so Laminar traces remain searchable without splitting PostHog
+            # persons.
+            if user.id:
+                body_json['user_id'] = user.id
             headers = (
                 {'X-Session-API-Key': sandbox.session_api_key}
                 if sandbox.session_api_key
@@ -1076,6 +1076,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
+        # Prefer sandboxes whose image runtime-api still advertises, so a new
+        # conversation is not routed into an old-image sandbox when a current
+        # one exists. Keep the full list when none is current or the lookup
+        # fails, rather than starting a new sandbox.
+        current_sandboxes = await self._filter_sandboxes_with_known_spec(
+            available_sandboxes
+        )
+        if current_sandboxes:
+            available_sandboxes = current_sandboxes
+
         if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
             # Return the first available sandbox
             return available_sandboxes[0]
@@ -1126,6 +1136,32 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             # Return empty counts on error - will default to first sandbox
             return {}
+
+    async def _filter_sandboxes_with_known_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Return the sandboxes whose spec the spec service still resolves.
+
+        After an agent-server image bump runtime-api advertises only the
+        current image, so sandboxes on the previous image resolve to no spec.
+        Returns an empty list when none resolve or the lookup fails; the
+        caller then keeps its full list.
+        """
+        try:
+            # One lookup per distinct spec id; the dynamic spec service caches
+            # the runtime-api listing, so this is at most one request.
+            known: dict[str, bool] = {}
+            for sandbox in sandboxes:
+                spec_id = sandbox.sandbox_spec_id
+                if spec_id not in known:
+                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
+                    known[spec_id] = spec is not None
+            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+        except Exception as e:
+            _logger.warning(
+                f'Error checking sandbox specs for grouping: {e}', exc_info=True
+            )
+            return []
 
     async def _wait_for_sandbox_start(
         self, task: AppConversationStartTask
@@ -2612,15 +2648,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # Pass agent explicitly — it has server-only overrides (system
         # prompts, LLM metadata, skills) applied after create_agent().
-        # ``user_id`` is forwarded so the agent-server can attach it to
-        # observability spans (see software-agent-sdk#3242). We prefer the
-        # user's email so Laminar traces are immediately attributable, and
-        # fall back to the internal user id when no email is available.
-        # The kwarg is dropped silently by pydantic on SDK versions that
-        # don't yet expose the field; the start-conversation POST also
-        # injects it directly into the JSON body as a forward-compatible
-        # fallback.
-        laminar_user_id = await self.user_context.get_user_email() or user.id
+        # ``user_id`` must be the stable app user id because the agent-server
+        # reuses it as both Laminar trace_user_id and PostHog distinct_id.
+        # Keep email as trace metadata only so Laminar remains searchable
+        # without splitting product analytics identity.
+        user_email = await self.user_context.get_user_email()
         resolved_observability_metadata = await self._build_observability_metadata(
             remote_workspace,
             project_dir,
@@ -2639,10 +2671,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
-        create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
+        create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': user.id}
         if client_tools:
             create_kwargs['client_tools'] = client_tools
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = _resolve_title_llm_profile(user, llm.model)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -2900,11 +2936,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'plugins': sdk_plugins,
             }
         )
-        # ``user_id`` is forwarded for observability; see the LLM path above
-        # for behavior on SDK versions that don't yet expose the field. We
-        # prefer email over the internal id so Laminar traces are immediately
-        # attributable, falling back to ``user.id`` when no email is available.
-        laminar_user_id = await self.user_context.get_user_email() or user.id
+        # ``user_id`` must be the stable app user id; see the LLM path above
+        # for why email stays in trace metadata instead of the identity field.
+        user_email = await self.user_context.get_user_email()
         resolved_observability_metadata = await self._build_observability_metadata(
             remote_workspace,
             project_dir,
@@ -2923,9 +2957,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
         create_kwargs: dict[str, Any] = {
             'agent': acp_agent,
-            'user_id': laminar_user_id,
+            'user_id': user.id,
             'secrets': secrets,
         }
         title_llm_profile = _resolve_title_llm_profile(user)

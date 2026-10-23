@@ -333,6 +333,28 @@ def test_title_profile_resolution_omits_unseedable_profiles():
     assert _resolve_title_llm_profile(user) is None
 
 
+def test_title_profile_resolution_follows_a_conversation_on_another_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile=None)
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o') == 'Default'
+    assert _resolve_title_llm_profile(user, 'anthropic/claude-haiku-3-5') is None
+
+
+def test_title_profile_resolution_prefers_explicit_profile_over_conversation_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile='Titles')
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o-mini') == 'Titles'
+
+
 @pytest.mark.parametrize(
     'sandbox_web_url,web_url,docker,expected',
     [
@@ -1730,6 +1752,34 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_uses_app_user_id_and_email_metadata(self, _mock_tools):
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.mock_user_context.get_user_email = AsyncMock(
+            return_value='alice@example.com'
+        )
+
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+
+        result = await self.service._build_start_conversation_request_for_user(
+            user=self.mock_user,
+            sandbox=self.mock_sandbox,
+            conversation_id=uuid4(),
+            initial_message=None,
+            system_message_suffix=None,
+            git_provider=None,
+            working_dir='/test/dir',
+        )
+
+        assert result.user_id == 'test_user_123'
+        assert result.observability_metadata['user_email'] == 'alice@example.com'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_passes_title_llm_profile(self, _mock_tools):
         profiles = LLMProfiles()
         profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
@@ -1758,6 +1808,38 @@ class TestLiveStatusAppConversationService:
         )
 
         assert request.title_llm_profile == 'Titles'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
+    async def test_build_request_titles_with_the_conversation_model(self, _mock_tools):
+        """A conversation started on another model than the active profile's is
+        titled with its own model, so the active profile is not passed."""
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        self.mock_user.llm_profiles = profiles
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+
+        async def title_profile_for(model: str) -> str | None:
+            llm = LLM(model=model, api_key=SecretStr('test-key'))
+            self.service._configure_llm_and_mcp = AsyncMock(return_value=(llm, {}))
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+            )
+            return request.title_llm_profile
+
+        assert await title_profile_for('openai/gpt-4o') == 'Default'
+        assert await title_profile_for('anthropic/claude-haiku-3-5') is None
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
@@ -3180,6 +3262,113 @@ class TestLiveStatusAppConversationService:
             in mock_logger.warning.call_args[0][0]
         )
 
+    @staticmethod
+    def _running_sandbox(
+        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+    ) -> SandboxInfo:
+        return SandboxInfo(
+            id=sandbox_id,
+            created_by_user_id='test_user_123',
+            sandbox_spec_id=sandbox_spec_id,
+            status=SandboxStatus.RUNNING,
+            session_api_key=None,
+            created_at=created_at,
+        )
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_prefers_advertised_image(self):
+        """After an agent-server image bump, a new conversation goes to a
+        sandbox on the current image even when the strategy would otherwise
+        pick the older sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        current_sandbox = self._running_sandbox(
+            'current', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox],
+            SandboxGroupingStrategy.LEAST_RECENTLY_USED,
+        )
+
+        assert result is current_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_old_image_when_none_current(
+        self,
+    ):
+        """With no sandbox on the current image, the old ones stay eligible so
+        the conversation is not forced into a new sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        first = self._running_sandbox('first', old_image, datetime(2026, 10, 1))
+        second = self._running_sandbox('second', old_image, datetime(2026, 10, 2))
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+
+        result = await self.service._select_sandbox_by_strategy(
+            [first, second], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is first
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_all_when_spec_lookup_fails(
+        self,
+    ):
+        """A failing spec lookup must not stop the conversation from landing in
+        an existing sandbox."""
+        old_sandbox = self._running_sandbox(
+            'old', 'ghcr.io/openhands/agent-server:1.50.1-python', datetime(2026, 10, 1)
+        )
+        current_sandbox = self._running_sandbox(
+            'current',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 2),
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=RuntimeError('runtime-api unavailable')
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_does_not_readmit_full_sandbox(self):
+        """Preferring the current image never overrides the per-sandbox
+        conversation cap."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        full_sandbox = self._running_sandbox(
+            'full', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            side_effect=lambda sandbox_id__eq: (
+                self.service.max_num_conversations_per_sandbox
+                if sandbox_id__eq == 'full'
+                else 0
+            )
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, full_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
     async def test_export_conversation_success(self):
         """Test successful download of conversation trajectory."""
         conversation_id = uuid4()
@@ -3930,6 +4119,41 @@ class TestLiveStatusAppConversationService:
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
         self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_posts_app_user_id_when_email_exists(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_user_context.get_user_email = AsyncMock(
+            return_value='alice@example.com'
+        )
+        self.service._process_pending_messages = AsyncMock()
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posts = {
+            call.args[0]: call.kwargs['json']
+            for call in self.mock_httpx_client.post.await_args_list
+        }
+        assert posts['http://agent-server:8000/api/conversations']['user_id'] == (
+            'test_user_123'
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -6533,11 +6757,12 @@ class TestBuildAcpStartConversationRequestSecrets:
         request_observability_metadata=None,
         request_observability_tags=None,
         request_observability_span_name=None,
+        user_email=None,
         azure_devops_access_token=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
-        service.user_context.get_user_email = AsyncMock(return_value=None)
+        service.user_context.get_user_email = AsyncMock(return_value=user_email)
         service.user_context.get_secrets = AsyncMock(return_value=secrets or {})
         service.user_context.get_provider_tokens = AsyncMock(return_value=None)
         sandbox = Mock(spec=SandboxInfo)
@@ -6615,6 +6840,22 @@ class TestBuildAcpStartConversationRequestSecrets:
         assert request.title_llm_profile == 'Titles'
 
     @pytest.mark.asyncio
+    async def test_acp_request_falls_back_to_active_title_profile(
+        self, service, tmp_path
+    ):
+        """ACP agents have no OpenHands LLM to title with, so the active profile
+        stays the fallback."""
+        user = self._make_acp_user()
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        user.llm_profiles = profiles
+
+        request = await self._call_build(service, user, tmp_path)
+
+        assert request.title_llm_profile == 'Default'
+
+    @pytest.mark.asyncio
     async def test_acp_request_includes_registered_marketplaces(
         self, service, tmp_path
     ):
@@ -6647,6 +6888,22 @@ class TestBuildAcpStartConversationRequestSecrets:
         assert request.agent.agent_context.registered_marketplaces[0].source == (
             'github:owner/plugins'
         )
+
+    @pytest.mark.asyncio
+    async def test_acp_request_uses_app_user_id_and_email_metadata(
+        self, service, tmp_path
+    ):
+        user = self._make_acp_user()
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            user_email='alice@example.com',
+        )
+
+        assert request.user_id == 'user1'
+        assert request.observability_metadata['user_email'] == 'alice@example.com'
 
     @pytest.mark.asyncio
     async def test_lookup_secret_forwarded_as_source(self, service, tmp_path):

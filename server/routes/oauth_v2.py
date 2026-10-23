@@ -46,7 +46,8 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.constants import SUPER_ADMIN_EMAILS
+from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -63,6 +64,7 @@ from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
 from server.auth.token_manager import TokenManager
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -503,6 +505,7 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             external_subject_id=subject,
         )
+        await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
@@ -537,6 +540,19 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             keycloak_access_token=access_token,
         )
+
+    # Password sessions never refresh a login token, so the middleware never
+    # starts this sync for them. Must run after the GitLab token is stored:
+    # the sync reads it from ``oauth_tokens``.
+    if (
+        is_oauth_v2_login_enabled()
+        and isinstance(details, OAuthProviderDetails)
+        and (
+            (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
+            or details.legacy_keycloak_type == ProviderType.GITLAB
+        )
+    ):
+        schedule_gitlab_repo_sync(user_id)
 
     redirect_url = state_data.redirect_url or '/'
 
@@ -688,6 +704,10 @@ async def oauth_v2_unlink(
     link = await link_store.get_by_user(user_uuid, provider.id)
     if link is not None:
         await link_store.unlink(provider.id, link.external_subject_id)
+        if isinstance(provider.details, OAuthProviderDetails):
+            await invalidate_user_id_cache(
+                provider.details.provider_type, link.external_subject_id
+            )
     token_store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
     await token_store.delete_tokens()
     return None
