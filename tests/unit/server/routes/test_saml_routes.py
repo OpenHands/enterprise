@@ -409,14 +409,14 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         stack.enter_context(
             patch.object(
                 provider_identity.UserStore,
-                'count_opted_in_users_with_email',
+                'count_users_with_email',
                 new=AsyncMock(return_value=0),
             )
         )
         stack.enter_context(
             patch.object(
                 provider_identity.UserStore,
-                'get_user_by_email_opted_in',
+                'get_user_by_email',
                 new=AsyncMock(return_value=None),
             )
         )
@@ -464,7 +464,6 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         userinfo = create_user_mock.await_args.args[1]
         assert userinfo['email'] == 'user@example.com'
         assert userinfo['email_verified'] is True
-        assert create_user_mock.await_args.kwargs['allow_match_by_email'] is False
         link_mock.assert_awaited_once_with(
             oauth_provider_id=provider.id,
             user_id=fake_user.id,

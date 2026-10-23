@@ -750,9 +750,7 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(
-            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
-        )
+        user = await UserStore.create_user(user_id, user_info)
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -904,9 +902,7 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(
-            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
-        )
+        user = await UserStore.create_user(user_id, user_info)
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
