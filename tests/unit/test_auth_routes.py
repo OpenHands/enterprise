@@ -17,6 +17,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
 from server.routes.auth import (
+    _parse_signup_attribution,
     accept_tos,
     authenticate,
     keycloak_callback,
@@ -2900,6 +2901,75 @@ async def test_keycloak_callback_calls_backfill_user_email_for_existing_user(
         mock_user_store.backfill_user_email.assert_called_once_with(
             'test_user_id', user_info.model_dump(exclude_none=True)
         )
+
+
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        (
+            {'signup_entry_source': 'docs', 'utm_campaign': 'launch'},
+            ('docs', {'utm_campaign': 'launch'}),
+        ),
+        (
+            {
+                'signup_entry_source': 'spoofed',
+                'utm_campaign': 'https://example.com/?token=private',
+                'utm_source': 'user@example.com',
+            },
+            ('direct_or_unknown', {}),
+        ),
+        ({'signup_entry_source': ['local_canvas']}, ('direct_or_unknown', {})),
+    ],
+)
+def test_parse_signup_attribution_allows_only_safe_values(body, expected):
+    assert _parse_signup_attribution(body) == expected
+
+
+@pytest.mark.asyncio
+async def test_accept_tos_tracks_only_first_signup_with_validated_entry(mock_request):
+    test_user_id = '12345678-1234-5678-1234-567812345678'
+    user = MagicMock()
+    user.accepted_tos = None
+    user.current_org_id = None
+    user.email = 'user@example.com'
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = user
+    session = AsyncMock()
+    session.execute.return_value = result
+    context = AsyncMock()
+    context.__aenter__.return_value = session
+    context.__aexit__.return_value = None
+    auth = MagicMock(spec=SaasUserAuth)
+    auth.oauth_v2_cookie = True
+    auth.get_user_id = AsyncMock(return_value=test_user_id)
+    auth.access_token_expires_at = None
+    auth.idp_provider_id = None
+    auth.idp_refresh_token_expires_at = None
+    mock_request.json = AsyncMock(
+        return_value={
+            'redirect_url': '/offline',
+            'signup_entry_source': 'local_canvas',
+            'utm_source': 'newsletter',
+        }
+    )
+
+    with (
+        patch('server.routes.auth.get_user_auth', AsyncMock(return_value=auth)),
+        patch('server.routes.auth.a_session_maker', return_value=context),
+        patch('server.routes.auth.get_analytics_service') as get_analytics,
+        patch('server.auth.provider_identity.set_oauth_v2_cookie'),
+    ):
+        first = await accept_tos(mock_request)
+        second = await accept_tos(mock_request)
+
+    assert first.status_code == second.status_code == status.HTTP_200_OK
+    get_analytics.return_value.track_user_signed_up.assert_called_once()
+    kwargs = get_analytics.return_value.track_user_signed_up.call_args.kwargs
+    assert kwargs['ctx'].user_id == test_user_id
+    assert kwargs['ctx'].consented is True
+    assert kwargs['email_domain'] == 'example.com'
+    assert kwargs['signup_entry_source'] == 'local_canvas'
+    assert kwargs['campaign'] == {'utm_source': 'newsletter'}
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import uuid
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -1201,6 +1202,19 @@ async def _get_post_auth_redirect(
     return _build_cross_app_redirect_url(default_url, web_url)
 
 
+def _parse_signup_attribution(body: dict) -> tuple[str, dict[str, str]]:
+    source = body.get('signup_entry_source')
+    if source not in ('marketing_website', 'docs', 'local_canvas'):
+        source = 'direct_or_unknown'
+    campaign = {
+        key: value
+        for key in ('utm_source', 'utm_medium', 'utm_campaign')
+        if isinstance((value := body.get(key)), str)
+        and re.fullmatch(r'[a-zA-Z0-9_:-]{1,80}', value)
+    }
+    return source, campaign
+
+
 @api_router.post('/accept_tos')
 async def accept_tos(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
@@ -1245,7 +1259,7 @@ async def accept_tos(request: Request):
     accepted_tos: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
     async with a_session_maker() as session:
         result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
+            select(User).where(User.id == uuid.UUID(user_id)).with_for_update()
         )
         user = result.scalar_one_or_none()
         if not user:
@@ -1255,6 +1269,7 @@ async def accept_tos(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={'error': 'User does not exist'},
             )
+        first_acceptance = user.accepted_tos is None
         user.accepted_tos = accepted_tos
         # SaaS users consent to analytics via Terms of Service acceptance
         user.user_consents_to_analytics = True
@@ -1262,33 +1277,39 @@ async def accept_tos(request: Request):
 
         logger.info(f'User {user_id} accepted TOS')
 
-        # Analytics: user signed up event (fires on first TOS acceptance)
-        try:
-            analytics = get_analytics_service()
-            if analytics:
-                from openhands.analytics.analytics_context import AnalyticsContext
+        if first_acceptance:
+            try:
+                analytics = get_analytics_service()
+                if analytics:
+                    from openhands.analytics.analytics_context import AnalyticsContext
 
-                org_id_str = str(user.current_org_id) if user.current_org_id else None
-                email = user.email
-
-                ctx = AnalyticsContext(
-                    user_id=user_id,
-                    consented=True,
-                    org_id=org_id_str,
-                    user=user,
-                )
-                analytics.track_user_signed_up(
-                    ctx=ctx,
-                    email_domain=email.split('@')[1]
-                    if email and '@' in email
-                    else None,
-                )
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'signed_up_at': datetime.now(timezone.utc).isoformat()},
-                )
-        except Exception:
-            logger.exception('analytics:user_signed_up:failed', stack_info=True)
+                    org_id_str = (
+                        str(user.current_org_id) if user.current_org_id else None
+                    )
+                    email = user.email
+                    signup_entry_source, campaign = _parse_signup_attribution(body)
+                    ctx = AnalyticsContext(
+                        user_id=user_id,
+                        consented=True,
+                        org_id=org_id_str,
+                        user=user,
+                    )
+                    analytics.track_user_signed_up(
+                        ctx=ctx,
+                        email_domain=email.split('@')[1]
+                        if email and '@' in email
+                        else None,
+                        signup_entry_source=signup_entry_source,
+                        campaign=campaign,
+                    )
+                    analytics.set_person_properties(
+                        ctx=ctx,
+                        properties={
+                            'signed_up_at': datetime.now(timezone.utc).isoformat()
+                        },
+                    )
+            except Exception:
+                logger.exception('analytics:user_signed_up:failed', stack_info=True)
 
     # Determine final redirect - but don't override if it's the offline token flow
     # (the offline callback will handle post-auth redirect after storing the token)

@@ -186,18 +186,30 @@ class AnalyticsService:
         *,
         email_domain: str | None = None,
         invitation_source: str = 'self_signup',
+        signup_entry_source: str = 'direct_or_unknown',
+        campaign: dict[str, str] | None = None,
         session_id: str | None = None,
     ) -> None:
         """Track 'user signed up' event.
 
         Fired when a new user completes registration.
         """
+        campaign = campaign or {}
         self.capture(
             ctx=ctx,
             event=USER_SIGNED_UP,
             properties={
                 'email_domain': email_domain,
                 'invitation_source': invitation_source,
+                'signup_entry_source': signup_entry_source
+                if signup_entry_source
+                in ('marketing_website', 'docs', 'local_canvas', 'direct_or_unknown')
+                else 'direct_or_unknown',
+                **{
+                    key: campaign[key]
+                    for key in ('utm_source', 'utm_medium', 'utm_campaign')
+                    if key in campaign
+                },
             },
             session_id=session_id,
         )
