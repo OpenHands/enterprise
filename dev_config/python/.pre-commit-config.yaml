@@ -59,8 +59,8 @@ repos:
             # with TypeForm, which this mypy cannot infer from list[...] expressions.
             "pydantic==2.13.5",
             lxml,
-            "openhands-sdk==1.58.0",
-            "openhands-tools==1.58.0",
+            "openhands-sdk==1.58.1",
+            "openhands-tools==1.58.1",
             "sqlalchemy==2.0.48",
             "stripe==11.6.0",
             "pygithub==2.6.1",
