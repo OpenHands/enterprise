@@ -210,10 +210,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    updateProvider.mutate({
-      id: providerId,
-      ...buildUpdatePayload(form, initial),
-    });
+    updateProvider.mutate(
+      {
+        id: providerId,
+        ...buildUpdatePayload(form, initial),
+      },
+      { onSuccess: () => navigate(SUPER_ADMIN_PATHS.authProviders) },
+    );
   };
 
   return (
@@ -625,24 +628,15 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           </>
         ) : null}
       </div>
-      <div className="flex gap-2">
-        <BrandButton
-          testId="super-admin-auth-provider-form-submit"
-          type="submit"
-          variant="primary"
-          isDisabled={!canSubmit || !isDirty || updateProvider.isPending}
-        >
-          {t(I18nKey.SETTINGS$SAVE_CHANGES)}
-        </BrandButton>
-        <BrandButton
-          testId="super-admin-auth-provider-form-cancel"
-          type="button"
-          variant="secondary"
-          onClick={() => navigate(SUPER_ADMIN_PATHS.authProviders)}
-        >
-          {t(I18nKey.BUTTON$CANCEL)}
-        </BrandButton>
-      </div>
+      <BrandButton
+        testId="super-admin-auth-provider-form-submit"
+        type="submit"
+        variant="primary"
+        className="self-start"
+        isDisabled={!canSubmit || !isDirty || updateProvider.isPending}
+      >
+        {t(I18nKey.SETTINGS$SAVE_CHANGES)}
+      </BrandButton>
     </form>
   );
 }
