@@ -121,6 +121,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # True when USER_PROVISIONING_ENABLED registers the admin provision-user
     # route; the Super Admin Users page hides "Provision User" otherwise.
     user_provisioning_enabled: bool = False
+    # Mirrors REQUIRE_VERIFIED_EMAILS: only then does the server block
+    # unverified users, so the UI should only restrict them in that case.
+    require_verified_emails: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

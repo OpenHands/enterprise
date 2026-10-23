@@ -161,6 +161,12 @@ def _get_user_provisioning_enabled() -> bool:
     return USER_PROVISIONING_ENABLED
 
 
+def _get_require_verified_emails() -> bool:
+    from server.constants import REQUIRE_VERIFIED_EMAILS
+
+    return REQUIRE_VERIFIED_EMAILS
+
+
 def _get_jira_dc_oauth_host() -> str | None:
     """Hostname of the Jira Data Center server when DC OAuth is configured.
 
@@ -344,6 +350,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     user_provisioning_enabled: bool = Field(
         default_factory=_get_user_provisioning_enabled
     )
+    require_verified_emails: bool = Field(default_factory=_get_require_verified_emails)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -421,6 +428,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
             user_provisioning_enabled=self.user_provisioning_enabled,
+            require_verified_emails=self.require_verified_emails,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,
