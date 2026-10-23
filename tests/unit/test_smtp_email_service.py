@@ -213,6 +213,16 @@ class TestSMTPEmailServiceHelpers:
             '?token=inv-token123'
         )
 
+    def test_build_invitation_url_prefers_oh_web_url(self, monkeypatch):
+        """OH_WEB_URL carries the scheme and port, so links use it as is."""
+        monkeypatch.delenv('WEB_HOST', raising=False)
+        monkeypatch.setenv('OH_WEB_URL', 'http://localhost:3100/')
+        from server.services.smtp_email_service import SMTPEmailService
+
+        url = SMTPEmailService.build_invitation_url('inv-token123')
+
+        assert url.startswith('http://localhost:3100/api/')
+
     def test_build_invitation_url_keeps_explicit_scheme(self, monkeypatch):
         monkeypatch.setenv('WEB_HOST', 'https://app.example.com/')
         from server.services.smtp_email_service import SMTPEmailService

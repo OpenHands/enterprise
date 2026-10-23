@@ -10,6 +10,7 @@ from sqlalchemy import select
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.web_host import get_web_url
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
 from server.services.daily_sandbox_quota_service import (
@@ -210,9 +211,9 @@ def _send_verification_email(email: str, token: str) -> None:
             )
             return
 
-        web_host = (
-            os.environ.get('WEB_HOST', 'https://app.all-hands.dev').strip().rstrip('/')
-        )
+        web_host = get_web_url() or os.environ.get(
+            'WEB_HOST', 'https://app.all-hands.dev'
+        ).strip().rstrip('/')
         if not web_host.startswith(('http://', 'https://')):
             web_host = f'https://{web_host}'
         verify_url = f'{web_host}/api/quota/verify?token={token}'

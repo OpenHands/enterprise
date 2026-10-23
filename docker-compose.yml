@@ -39,9 +39,8 @@ services:
       DB_PASS: ${DB_PASS:-openhands}
       OH_DEPLOYMENT_MODE: self_hosted
       OH_APP_MODE: saas
-      PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
-      # If you open the app on an address other than localhost, set WEB_HOST and WEB_URL to that address.
-      WEB_HOST: ${WEB_HOST:-localhost}
+      # If you open the app on an address other than localhost, set WEB_URL to that address.
+      # The app derives its hostname and CORS origin from it.
       OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
       # Sandboxes reach the app through the proxy.
       OH_SANDBOX_WEB_URL: http://proxy
@@ -112,7 +111,7 @@ services:
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
-      AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+      AUTOMATION_CORS_ORIGINS: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s
@@ -125,7 +124,7 @@ services:
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
-    # AGENT_CANVAS_LOCK_TO_CLOUD must exactly match the address in your browser, such as http://localhost:3100.
+    # The lock must exactly match the address in your browser, so it defaults to WEB_URL.
     command:
       - --port
       - '8000'
@@ -136,7 +135,7 @@ services:
       - --base-path
       - /canvas
       - --lock-to-cloud
-      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-${WEB_URL:-http://localhost:${APP_PORT:-3100}}}
       - --disable-telemetry
     expose:
       - '8000'

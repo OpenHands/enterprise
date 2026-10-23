@@ -3,9 +3,10 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from openhands.app_server.utils.web_host import get_web_host, get_web_url
 from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
-HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
+HOST = get_web_host() or 'app.all-hands.dev'
 
 # Feature environments have a host format like {some-text}.staging.all-hands.dev
 # or {some-text}.staging.openhands.dev (the domain the staging/feature stack is
@@ -161,12 +162,15 @@ SLACK_CLIENT_SECRET = os.environ.get('SLACK_CLIENT_SECRET', None)
 SLACK_SIGNING_SECRET = os.environ.get('SLACK_SIGNING_SECRET', None)
 SLACK_WEBHOOKS_ENABLED = os.environ.get('SLACK_WEBHOOKS_ENABLED', '0') in ('1', 'true')
 
-WEB_HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
+WEB_HOST = HOST
+WEB_URL = get_web_url() or f'https://{WEB_HOST}'
+_WEB_URL_PARTS = urlparse(WEB_URL)
 PERMITTED_CORS_ORIGINS = [
     host.strip()
-    for host in (os.getenv('PERMITTED_CORS_ORIGINS') or f'https://{WEB_HOST}').split(
-        ','
-    )
+    for host in (
+        os.getenv('PERMITTED_CORS_ORIGINS')
+        or f'{_WEB_URL_PARTS.scheme}://{_WEB_URL_PARTS.netloc}'
+    ).split(',')
 ]
 
 # Controls whether new orgs/users default to V1 API (env: DEFAULT_V1_ENABLED)

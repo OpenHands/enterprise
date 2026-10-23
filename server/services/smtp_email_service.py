@@ -7,6 +7,7 @@ from email.mime.text import MIMEText
 from typing import TypedDict
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.web_host import get_web_url
 
 DEFAULT_FROM_EMAIL = 'OpenHands <no-reply@openhands.dev>'
 DEFAULT_WEB_HOST = 'https://app.all-hands.dev'
@@ -116,10 +117,12 @@ class SMTPEmailService:
     def build_invitation_url(invitation_token: str) -> str:
         """Build the absolute acceptance URL for an invitation token.
 
-        WEB_HOST may be configured as a bare hostname (the OHE chart sets it
-        that way), so normalize to an https URL before composing the link.
+        OH_WEB_URL is used when set. Otherwise WEB_HOST may be a bare hostname
+        (the OHE chart sets it that way), so normalize it to an https URL.
         """
-        web_host = os.environ.get('WEB_HOST', DEFAULT_WEB_HOST).strip().rstrip('/')
+        web_host = get_web_url() or os.environ.get(
+            'WEB_HOST', DEFAULT_WEB_HOST
+        ).strip().rstrip('/')
         if not web_host:
             web_host = DEFAULT_WEB_HOST
         if not web_host.startswith(('http://', 'https://')):

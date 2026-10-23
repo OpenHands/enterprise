@@ -6,6 +6,7 @@ import re
 from jinja2 import Environment, FileSystemLoader
 
 from openhands.app_server.integrations.service_types import Repository
+from openhands.app_server.utils.web_host import get_web_url
 from server.constants import WEB_HOST
 
 # ---- DO NOT REMOVE ----
@@ -14,7 +15,9 @@ HOST = WEB_HOST
 # ---- DO NOT REMOVE ----
 
 IS_LOCAL_DEPLOYMENT = 'localhost' in HOST
-HOST_URL = f'https://{HOST}' if not IS_LOCAL_DEPLOYMENT else f'http://{HOST}'
+HOST_URL = get_web_url() or (
+    f'https://{HOST}' if not IS_LOCAL_DEPLOYMENT else f'http://{HOST}'
+)
 GITLAB_WEBHOOK_URL = f'{HOST_URL}/integration/gitlab/events'
 CONVERSATION_URL = f'{HOST_URL}/canvas/conversations/{{}}'
 

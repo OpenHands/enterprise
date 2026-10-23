@@ -57,6 +57,7 @@ def clear_csp_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for var in (
         'CONTENT_SECURITY_POLICY',
         'WEB_HOST',
+        'OH_WEB_URL',
     ):
         monkeypatch.delenv(var, raising=False)
     yield
@@ -354,6 +355,21 @@ class TestSecurityHeadersMiddleware:
         local = 'http://localhost:* http://127.0.0.1:*'
         assert local in csp.split('connect-src')[1].split(';')[0]
         assert local in csp.split('frame-src')[1].split(';')[0]
+
+    def test_localhost_web_url_allows_local_sandbox_ports(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without WEB_HOST, the hostname comes from OH_WEB_URL."""
+        monkeypatch.setenv('OH_WEB_URL', 'http://localhost:3100')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        local = 'http://localhost:* http://127.0.0.1:*'
+        assert local in csp.split('connect-src')[1].split(';')[0]
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

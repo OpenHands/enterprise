@@ -48,7 +48,7 @@ from server.auth.constants import (
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
-from server.constants import WEB_HOST
+from server.constants import WEB_URL
 from server.services.automation_event_service import AutomationEventService
 from storage.jira_dc_integration_store import workspace_visible_to_org
 from storage.redis import get_redis_client
@@ -58,7 +58,7 @@ JIRA_DC_WEBHOOKS_ENABLED = os.environ.get('JIRA_DC_WEBHOOKS_ENABLED', '0') in (
     '1',
     'true',
 )
-JIRA_DC_REDIRECT_URI = f'https://{WEB_HOST}/integration/jira-dc/callback'
+JIRA_DC_REDIRECT_URI = f'{WEB_URL}/integration/jira-dc/callback'
 JIRA_DC_SCOPES = 'WRITE'
 JIRA_DC_AUTH_URL = f'{JIRA_DC_BASE_URL}/rest/oauth2/latest/authorize'
 JIRA_DC_TOKEN_URL = f'{JIRA_DC_BASE_URL}/rest/oauth2/latest/token'
@@ -211,7 +211,7 @@ redis_client = get_redis_client()
 
 
 def _jira_dc_events_url(workspace_id: int) -> str:
-    return f'https://{WEB_HOST}/integration/jira-dc/connections/{workspace_id}/events'
+    return f'{WEB_URL}/integration/jira-dc/connections/{workspace_id}/events'
 
 
 def _configured_jira_dc_workspace_name() -> str | None:

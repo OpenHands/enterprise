@@ -1,10 +1,10 @@
 """Utility functions for LLM metadata in OpenHands V1 conversations."""
 
-import os
 from typing import Any
 from uuid import UUID
 
 import openhands
+from openhands.app_server.utils.web_host import get_web_host
 
 
 def should_set_litellm_extra_body(model_name: str) -> bool:
@@ -60,7 +60,7 @@ def get_llm_metadata(
             'app:openhands',
             f'model:{model_name}',
             f'type:{llm_type}',
-            f'web_host:{os.environ.get("WEB_HOST", "unspecified")}',
+            f'web_host:{get_web_host() or "unspecified"}',
             f'openhands_version:{openhands_version}',
             'conversation_version:V1',
         ],

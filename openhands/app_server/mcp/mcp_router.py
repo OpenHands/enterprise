@@ -1,4 +1,3 @@
-import os
 import re
 from typing import Annotated
 from uuid import UUID
@@ -39,10 +38,11 @@ from openhands.app_server.user_auth import (
     get_user_id,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.web_host import get_web_host, get_web_url
 
 mcp_server = FastMCP('mcp', mask_error_details=True)
 
-HOST = f'https://{os.getenv("WEB_HOST", "app.all-hands.dev").strip()}'
+HOST = get_web_url() or f'https://{get_web_host() or "app.all-hands.dev"}'
 CONVERSATION_URL = HOST + '/canvas/conversations/{}'
 
 

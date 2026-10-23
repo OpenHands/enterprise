@@ -64,7 +64,7 @@ For a local evaluation or development, `docker-compose.yml` starts the whole sta
 docker compose up -d
 ```
 
-Then open <http://localhost:3100/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:3100/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
+Then open <http://localhost:3100/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:3100/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you access it through another hostname or port, set `WEB_URL` to the address in your browser, such as `WEB_URL=http://192.168.1.20:3100` (see the comments in `docker-compose.yml`).
 
 To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
 

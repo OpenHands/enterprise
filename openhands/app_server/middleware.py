@@ -15,6 +15,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from openhands.app_server.config import get_global_config
+from openhands.app_server.utils.web_host import get_web_host
 
 _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
 
@@ -66,6 +67,7 @@ def _runtime_hosts_from_web_host() -> str:
 
     ``WEB_HOST`` is the deployment's bare hostname for the public app (see
     ``get_default_web_url`` and ``web_client_deployment_mode.get_deployment_mode``).
+    When it is unset, the hostname in ``OH_WEB_URL`` is used (``get_web_host``).
     In staging it's ``staging.all-hands.dev``; in prod it's
     ``app.all-hands.dev``; in self-hosted it's the customer apex such as
     ``openhands.example.com``.
@@ -91,11 +93,11 @@ def _runtime_hosts_from_web_host() -> str:
     ``localhost``: local sandboxes are published on random ports of the
     Docker host, and ``'self'`` only matches the app's own port.
 
-    Returns an empty string when ``WEB_HOST`` is unset or any other
+    Returns an empty string when no hostname is configured or for any other
     single-label host, where the wildcard would either be invalid or too
     broad.
     """
-    web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
+    web_host = (get_web_host() or '').rstrip('/')
     if not web_host:
         return ''
     # Tolerate schemes accidentally set in WEB_HOST (some operators set

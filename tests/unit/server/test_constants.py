@@ -558,3 +558,45 @@ class TestDefaultLlmSettings:
         with p[0], p[1], p[2], p[3], p[4], p[5]:
             assert constants.get_default_llm_model() == 'litellm_proxy/m'
             assert constants.get_default_llm_base_url() == 'http://litellm:4000'
+
+
+class TestWebHostFromWebUrl:
+    """HOST, WEB_URL and the CORS default fall back to OH_WEB_URL."""
+
+    @pytest.fixture(autouse=True)
+    def _reload_constants(self, monkeypatch):
+        import importlib
+
+        import server.constants as constants_module
+
+        monkeypatch.delenv('WEB_HOST', raising=False)
+        monkeypatch.delenv('OH_WEB_URL', raising=False)
+        monkeypatch.delenv('PERMITTED_CORS_ORIGINS', raising=False)
+        self.reload = lambda: importlib.reload(constants_module)
+        yield
+        monkeypatch.undo()
+        importlib.reload(constants_module)
+
+    def test_web_url_only(self, monkeypatch):
+        monkeypatch.setenv('OH_WEB_URL', 'http://localhost:3100')
+        constants = self.reload()
+
+        assert constants.HOST == 'localhost'
+        assert constants.IS_LOCAL_ENV is True
+        assert constants.WEB_URL == 'http://localhost:3100'
+        assert constants.PERMITTED_CORS_ORIGINS == ['http://localhost:3100']
+
+    def test_web_host_only(self, monkeypatch):
+        monkeypatch.setenv('WEB_HOST', 'openhands.acme.com')
+        constants = self.reload()
+
+        assert constants.HOST == 'openhands.acme.com'
+        assert constants.WEB_URL == 'https://openhands.acme.com'
+        assert constants.PERMITTED_CORS_ORIGINS == ['https://openhands.acme.com']
+
+    def test_neither_set_defaults_to_cloud_host(self):
+        constants = self.reload()
+
+        assert constants.HOST == 'app.all-hands.dev'
+        assert constants.WEB_URL == 'https://app.all-hands.dev'
+        assert constants.PERMITTED_CORS_ORIGINS == ['https://app.all-hands.dev']
