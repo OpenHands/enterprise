@@ -45,7 +45,6 @@ class DefaultUserAuthorizer(UserAuthorizer):
                 return UserAuthorizationResponse(
                     success=False, error_detail='account_disabled'
                 )
-
             if not email:
                 logger.warning(f'No email provided for user_id: {user_id}')
                 return UserAuthorizationResponse(

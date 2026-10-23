@@ -3262,6 +3262,113 @@ class TestLiveStatusAppConversationService:
             in mock_logger.warning.call_args[0][0]
         )
 
+    @staticmethod
+    def _running_sandbox(
+        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+    ) -> SandboxInfo:
+        return SandboxInfo(
+            id=sandbox_id,
+            created_by_user_id='test_user_123',
+            sandbox_spec_id=sandbox_spec_id,
+            status=SandboxStatus.RUNNING,
+            session_api_key=None,
+            created_at=created_at,
+        )
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_prefers_advertised_image(self):
+        """After an agent-server image bump, a new conversation goes to a
+        sandbox on the current image even when the strategy would otherwise
+        pick the older sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        current_sandbox = self._running_sandbox(
+            'current', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox],
+            SandboxGroupingStrategy.LEAST_RECENTLY_USED,
+        )
+
+        assert result is current_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_old_image_when_none_current(
+        self,
+    ):
+        """With no sandbox on the current image, the old ones stay eligible so
+        the conversation is not forced into a new sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        first = self._running_sandbox('first', old_image, datetime(2026, 10, 1))
+        second = self._running_sandbox('second', old_image, datetime(2026, 10, 2))
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+
+        result = await self.service._select_sandbox_by_strategy(
+            [first, second], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is first
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_all_when_spec_lookup_fails(
+        self,
+    ):
+        """A failing spec lookup must not stop the conversation from landing in
+        an existing sandbox."""
+        old_sandbox = self._running_sandbox(
+            'old', 'ghcr.io/openhands/agent-server:1.50.1-python', datetime(2026, 10, 1)
+        )
+        current_sandbox = self._running_sandbox(
+            'current',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 2),
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=RuntimeError('runtime-api unavailable')
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_does_not_readmit_full_sandbox(self):
+        """Preferring the current image never overrides the per-sandbox
+        conversation cap."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        full_sandbox = self._running_sandbox(
+            'full', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            side_effect=lambda sandbox_id__eq: (
+                self.service.max_num_conversations_per_sandbox
+                if sandbox_id__eq == 'full'
+                else 0
+            )
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, full_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
     async def test_export_conversation_success(self):
         """Test successful download of conversation trajectory."""
         conversation_id = uuid4()

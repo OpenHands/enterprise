@@ -143,6 +143,8 @@ def _mock_user(
     user.email = email
     user.accepted_tos = accepted_tos
     user.user_consents_to_analytics = False
+    user.is_disabled = False
+    user.deletion_pending = False
     user.password_hash = password_hash
     return user
 
@@ -2651,6 +2653,45 @@ class TestCreateSignupLink:
 
 
 class TestInviteAcceptRole:
+    @pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
+    def test_inactive_invitee_has_no_side_effects(self, client, jwt_svc, field):
+        existing = _mock_user(email='invitee@example.com')
+        setattr(existing, field, True)
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', role='superadmin'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    AsyncMock(return_value=existing),
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash', AsyncMock()
+                ) as set_password,
+                patch(
+                    'server.routes.idp.UserStore.grant_super_admin', AsyncMock()
+                ) as grant,
+                patch(
+                    'server.routes.idp._ensure_org_membership', AsyncMock()
+                ) as membership,
+                _patch_complete_login() as complete,
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+        assert response.status_code == 302
+        assert response.headers['location'].endswith('/login?account_disabled=true')
+        for operation in (set_password, grant, membership, complete):
+            operation.assert_not_awaited()
+
     def test_superadmin_role_grants_super_admin_instead_of_org_add(
         self, client, jwt_svc
     ):

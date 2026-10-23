@@ -705,6 +705,11 @@ async def idp_signup(
     user_id = derive_idp_user_id(email_str)
     existing = await _find_existing_user(provider, email_str)
 
+    if existing is not None and (existing.is_disabled or existing.deletion_pending):
+        return RedirectResponse(
+            url=f'{web_url}/login?account_disabled=true', status_code=302
+        )
+
     # If the user already has a password, the account is claimed — don't
     # allow overwriting it via sign-up (would be a password-reset bypass).
     # If the user exists but password_hash is NULL (e.g. created via OAuth
@@ -878,6 +883,11 @@ async def idp_invite_accept(
 
     user_id = derive_idp_user_id(email_str)
     existing = await _find_existing_user(provider, email_str)
+
+    if existing is not None and (existing.is_disabled or existing.deletion_pending):
+        return RedirectResponse(
+            url=f'{web_url}/login?account_disabled=true', status_code=302
+        )
 
     hashed = hash_password(password)
 
@@ -1123,6 +1133,10 @@ async def _complete_idp_login(
     Shared by ``idp_login`` (existing account) and ``idp_signup``
     (brand-new account) so both end up with identical post-auth behavior.
     """
+    if user.is_disabled or user.deletion_pending:
+        return RedirectResponse(
+            url=f'{get_web_url(request)}/login?account_disabled=true', status_code=302
+        )
     provider = await _get_integrated_idp_provider()
     if provider is None:
         # Should not happen -- every route reaching here already passed
