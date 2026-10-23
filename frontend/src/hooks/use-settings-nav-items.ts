@@ -223,7 +223,7 @@ export function getSettingsUserMenuItems(
   );
 }
 
-/** Drop menu-only rows and leftover dividers from the settings sidebar. */
+/** Drop menu-only rows and the headers and dividers they leave empty from the settings sidebar. */
 export function filterSettingsNavForSidebar(
   items: SettingsNavRenderedItem[],
 ): SettingsNavRenderedItem[] {
@@ -231,7 +231,13 @@ export function filterSettingsNavForSidebar(
     (item) => item.type !== "item" || !item.item.menuOnly,
   );
 
-  return withoutMenuOnly.filter((item, index, list) => {
+  // A header whose rows were all menu-only has nothing left to label.
+  const withoutEmptyHeaders = withoutMenuOnly.filter(
+    (item, index, list) =>
+      item.type !== "header" || list[index + 1]?.type === "item",
+  );
+
+  return withoutEmptyHeaders.filter((item, index, list) => {
     if (item.type !== "divider") {
       return true;
     }
