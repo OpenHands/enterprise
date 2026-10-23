@@ -10,6 +10,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from integrations.gitlab.hook_identity import hook_identity, hook_url, points_at
 from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -31,9 +32,9 @@ SCOPES: list[str] = [
     'pipeline_events',
 ]
 
-# A run refreshes a row's claim when it starts on the row and again just before
-# creating its hook, so the lease only has to outlast one row's GitLab calls,
-# not a whole run.
+# A run refreshes a row's claim when it starts on the row and again when it
+# opens the intent just before creating a hook, so the lease only has to
+# outlast one row's GitLab calls, not a whole run.
 CLAIM_LEASE = timedelta(minutes=10)
 
 
@@ -91,8 +92,8 @@ async def verify_webhook_conditions(
         webhook: Webhook object to verify
         claim_run_id: The installer run holding the row's claim; its writes
             apply only while it still holds the claim
-        check_existing: Adopt a hook already on the resource. A reinstall
-            replaces it instead.
+        check_existing: Count a hook carrying the row's current identity as
+            installed. A reinstall replaces it instead.
     """
     # Check if resource exists
     does_resource_exist, status = await gitlab_service.check_resource_exists(
@@ -142,37 +143,34 @@ async def verify_webhook_conditions(
     if not check_existing:
         return
 
-    # Check if webhook already exists
-    (
-        does_webhook_exist_on_resource,
-        status,
-    ) = await gitlab_service.check_webhook_exists_on_resource(
-        resource_type=resource_type,
-        resource_id=resource_id,
-        webhook_url=GITLAB_WEBHOOK_URL,
+    hooks, status = await gitlab_service.list_hooks(resource_type, resource_id)
+    if status is not None:
+        raise BreakLoopException()
+    # A legacy hook at the plain URL doesn't count: its credentials are unknown.
+    current_installed = webhook.webhook_uuid is not None and any(
+        points_at(hook.get('url'), GITLAB_WEBHOOK_URL)
+        and hook_identity(hook['url']) == webhook.webhook_uuid
+        for hook in hooks
     )
 
     logger.info(
         'Does webhook already exist',
         extra={
-            'does_webhook_exist_on_resource': does_webhook_exist_on_resource,
-            'status': status,
+            'current_installed': current_installed,
             'resource_id': resource_id,
             'resource_type': resource_type,
         },
     )
 
-    if status == WebhookStatus.RATE_LIMITED:
-        raise BreakLoopException()
-    if does_webhook_exist_on_resource != webhook.webhook_exists:
+    if current_installed != webhook.webhook_exists:
         await _update_row(
             webhook_store,
             webhook,
-            {'webhook_exists': does_webhook_exist_on_resource},
+            {'webhook_exists': current_installed},
             claim_run_id,
         )
 
-    if does_webhook_exist_on_resource:
+    if current_installed:
         raise BreakLoopException()
 
 
@@ -186,11 +184,13 @@ async def install_claimed_webhook(
 ) -> str | None:
     """Install or reinstall the row's hook while ``run_id`` holds its claim.
 
-    The row keeps one uuid and secret across attempts, written before any
-    create, so a hook whose create response was lost still authenticates and
-    the next run adopts it. A reinstall deletes every hook with our URL and
-    creates one, then records the request generation it served; it never
-    writes reinstall_requested_gen, so a newer request survives it.
+    Each attempt creates its hook under a new intent and identity, and the row
+    takes the new credentials only when the intent commits. An attempt that
+    can't commit (its claim or intent was lost, or its create failed) abandons
+    its intent, so its hook never authenticates and repair deletes it. A
+    reinstall deletes every hook with our URL first, then records the request
+    generation it served; it never writes reinstall_requested_gen, so a newer
+    request survives it.
 
     Raises BreakLoopException when the row is done for this run.
     """
@@ -213,11 +213,13 @@ async def install_claimed_webhook(
         check_existing=not reinstall,
     )
 
+    hook_uuid = str(uuid4())
     log_extra = {
         'webhook_row_id': webhook.id,
         'resource_id': resource_id,
         'resource_type': resource_type,
         'reinstall': reinstall,
+        'hook_uuid': hook_uuid,
     }
 
     if reinstall:
@@ -238,44 +240,51 @@ async def install_claimed_webhook(
         await _update_row(webhook_store, webhook, {'user_id': installer_id}, run_id)
         webhook.user_id = installer_id
 
-    if not (webhook.webhook_uuid and webhook.webhook_secret):
-        credentials = {
-            'webhook_secret': f'{webhook.user_id}-{uuid4()}',
-            'webhook_uuid': str(uuid4()),
-        }
-        await _update_row(webhook_store, webhook, credentials, run_id)
-        webhook.webhook_secret = credentials['webhook_secret']
-        webhook.webhook_uuid = credentials['webhook_uuid']
-
-    if not await webhook_store.refresh_claim(webhook.id, run_id):
+    if not await webhook_store.open_intent(webhook.id, run_id, hook_uuid):
         log_stale_write_rejected(webhook, run_id)
         raise BreakLoopException()
 
-    webhook_id, status = await gitlab_service.install_webhook(
-        resource_type=resource_type,
-        resource_id=resource_id,
-        webhook_name=WEBHOOK_NAME,
-        webhook_url=GITLAB_WEBHOOK_URL,
-        webhook_secret=webhook.webhook_secret,
-        webhook_uuid=webhook.webhook_uuid,
-        scopes=SCOPES,
-    )
+    webhook_secret = f'{webhook.user_id}-{uuid4()}'
+    try:
+        webhook_id, status = await gitlab_service.install_webhook(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            webhook_name=WEBHOOK_NAME,
+            webhook_url=hook_url(hook_uuid),
+            webhook_secret=webhook_secret,
+            webhook_uuid=hook_uuid,
+            scopes=SCOPES,
+        )
+    except Exception:
+        await webhook_store.abandon_intent(hook_uuid)
+        raise
     log_extra.update(webhook_id=webhook_id, status=status)
 
     if status == WebhookStatus.RATE_LIMITED:
+        await webhook_store.abandon_intent(hook_uuid)
         logger.warning('Rate limited while creating webhook', extra=log_extra)
         raise BreakLoopException()
     if not webhook_id:
+        # GitLab may still have created it; abandoned, it gets deleted by repair.
+        await webhook_store.abandon_intent(hook_uuid)
         logger.error('Failed to create webhook', extra=log_extra)
         return None
 
     fields: dict[str, Any] = {
+        'webhook_secret': webhook_secret,
         'webhook_exists': True,
         'webhook_url': GITLAB_WEBHOOK_URL,
         'scopes': SCOPES,
     }
     if reinstall:
         fields['reinstall_done_gen'] = served_gen
-    await _update_row(webhook_store, webhook, fields, run_id)
+    if not await webhook_store.commit_intent(
+        webhook.id, run_id, hook_uuid, webhook.webhook_uuid, **fields
+    ):
+        await webhook_store.abandon_intent(hook_uuid)
+        log_stale_write_rejected(webhook, run_id)
+        raise BreakLoopException()
+    webhook.webhook_uuid = hook_uuid
+    webhook.webhook_secret = webhook_secret
     logger.info('Created new webhook', extra=log_extra)
     return webhook_id

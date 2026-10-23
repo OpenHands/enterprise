@@ -5,6 +5,7 @@ resource ends up with and that a delivery signed with a hook's credentials
 authenticates.
 """
 
+from integrations.gitlab.hook_identity import points_at
 from integrations.utils import GITLAB_WEBHOOK_URL
 from storage.gitlab_webhook import WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
@@ -31,10 +32,17 @@ class FakeGitLab:
         self.external_auth_id = external_auth_id
         return self
 
-    def add_hook(self, resource_id, secret='old-secret', uuid='old-uuid', user=USER):
+    def add_hook(
+        self,
+        resource_id,
+        secret='old-secret',
+        uuid='old-uuid',
+        user=USER,
+        url=GITLAB_WEBHOOK_URL,
+    ):
         hook = {
             'id': self._next_id,
-            'url': GITLAB_WEBHOOK_URL,
+            'url': url,
             'secret': secret,
             'uuid': uuid,
             'user': user,
@@ -53,11 +61,8 @@ class FakeGitLab:
             await self.on_admin_check()
         return self.is_admin, None
 
-    async def check_webhook_exists_on_resource(
-        self, resource_type, resource_id, webhook_url
-    ):
-        exists = any(h['url'] == webhook_url for h in self.hooks.get(resource_id, []))
-        return exists, None
+    async def list_hooks(self, resource_type, resource_id):
+        return [dict(h) for h in self.hooks.get(resource_id, [])], None
 
     async def install_webhook(
         self,
@@ -75,7 +80,11 @@ class FakeGitLab:
         if self.fail_create:
             raise RuntimeError('pod stopped before the create')
         hook = self.add_hook(
-            resource_id, webhook_secret, webhook_uuid, self.external_auth_id
+            resource_id,
+            webhook_secret,
+            webhook_uuid,
+            self.external_auth_id,
+            webhook_url,
         )
         if self.lose_create_response:
             return None, WebhookStatus.INVALID
@@ -85,7 +94,7 @@ class FakeGitLab:
         if self.delete_status:
             return 0, self.delete_status
         hooks = self.hooks.get(resource_id, [])
-        keep = [h for h in hooks if h['url'] != webhook_url]
+        keep = [h for h in hooks if not points_at(h['url'], webhook_url)]
         self.hooks[resource_id] = keep
         return len(hooks) - len(keep), None
 

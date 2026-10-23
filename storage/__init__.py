@@ -6,6 +6,7 @@ from storage.conversation_work import ConversationWork
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.feedback import ConversationFeedback, Feedback
 from storage.github_app_installation import GithubAppInstallation
+from storage.gitlab_hook_intent import GitlabHookIntent, HookIntentState
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.jira_conversation import JiraConversation
 from storage.jira_dc_conversation import JiraDcConversation
@@ -58,7 +59,9 @@ __all__ = [
     'QuotaIncreaseRequest',
     'Feedback',
     'GithubAppInstallation',
+    'GitlabHookIntent',
     'GitlabWebhook',
+    'HookIntentState',
     'JiraConversation',
     'JiraDcConversation',
     'JiraDcUser',

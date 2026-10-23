@@ -238,10 +238,12 @@ async def test_failed_create_is_an_error_and_releases_the_claim(
 
     assert failed.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
     assert (await get_row(row_id)).claim_run_id is None
-    # GitLab made the hook even though the response was lost, so it must
-    # authenticate for the next run to adopt it.
-    [hook] = gitlab.hooks[PROJECT]
-    await assert_delivery_authenticates(store, hook)
+    # GitLab made the hook even though the response was lost. The attempt
+    # can't commit, so the orphan's intent is abandoned and it never
+    # authenticates; the next run creates a new hook.
+    [orphan] = gitlab.hooks[PROJECT]
+    assert await store.get_webhook_secret(orphan['uuid'], orphan['user']) is None
+    assert await store.get_intent_states(row_id) == {orphan['uuid']: 'abandoned'}
 
 
 async def test_unexpected_error_releases_the_claim_so_a_retry_is_not_refused(

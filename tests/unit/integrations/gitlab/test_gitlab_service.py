@@ -251,6 +251,23 @@ class TestDeleteWebhooksWithUrl:
             call.kwargs['method'] == RequestMethod.DELETE for call in delete_calls
         )
 
+    async def test_deletes_hooks_with_an_identity_on_the_url(self, gitlab_service):
+        hooks = [
+            {'id': 1, 'url': 'https://ours/hook?oh_hook=uuid-1'},
+            {'id': 2, 'url': 'https://ours/hook-other?oh_hook=uuid-2'},
+        ]
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = [(hooks, {}), (None, {})]
+
+            deleted, status = await gitlab_service.delete_webhooks_with_url(
+                GitLabResourceType.PROJECT, '7', 'https://ours/hook'
+            )
+
+        assert (deleted, status) == (1, None)
+        assert mock_request.call_args_list[1].args[0] == (
+            f'{gitlab_service.BASE_URL}/projects/7/hooks/1'
+        )
+
     async def test_deletes_matching_hooks_on_every_page(self, gitlab_service):
         next_page = {'Link': '<https://gitlab/next>; rel="next"'}
         with patch.object(gitlab_service, '_make_request') as mock_request:
@@ -293,3 +310,29 @@ class TestDeleteWebhooksWithUrl:
             )
 
         assert (deleted, status) == (1, WebhookStatus.RATE_LIMITED)
+
+
+class TestCheckWebhookExistsOnResource:
+    async def test_a_hook_with_an_identity_counts(self, gitlab_service):
+        next_page = {'Link': '<https://gitlab/next>; rel="next"'}
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = [
+                ([{'id': 1, 'url': 'https://someone-else/hook'}], next_page),
+                ([{'id': 2, 'url': 'https://ours/hook?oh_hook=uuid-1'}], {}),
+            ]
+
+            exists, status = await gitlab_service.check_webhook_exists_on_resource(
+                GitLabResourceType.GROUP, '42', 'https://ours/hook'
+            )
+
+        assert (exists, status) == (True, None)
+
+    async def test_rate_limit_is_reported(self, gitlab_service):
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = RateLimitError('slow down')
+
+            exists, status = await gitlab_service.check_webhook_exists_on_resource(
+                GitLabResourceType.GROUP, '42', 'https://ours/hook'
+            )
+
+        assert (exists, status) == (False, WebhookStatus.RATE_LIMITED)

@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from integrations.types import GitLabResourceType
 from storage.database import a_session_maker
+from storage.gitlab_hook_intent import GitlabHookIntent, HookIntentState
 from storage.gitlab_webhook import GitlabWebhook
 
 
@@ -178,6 +179,110 @@ class GitlabWebhookStore:
                     )
                 )
         return result.rowcount > 0
+
+    async def open_intent(self, webhook_id: int, run_id: UUID, hook_uuid: str) -> bool:
+        """Record an open intent for a hook about to be created.
+
+        Committed before the create, so a repair that lists the hook afterwards
+        always finds its intent. Refreshes the claim too; records nothing if
+        ``run_id`` no longer holds it.
+        """
+        async with a_session_maker() as session:
+            async with session.begin():
+                claimed = await session.execute(
+                    update(GitlabWebhook)
+                    .where(
+                        GitlabWebhook.id == webhook_id,
+                        GitlabWebhook.claim_run_id == run_id,
+                    )
+                    .values(claimed_at=func.now())
+                )
+                if not claimed.rowcount:
+                    return False
+                session.add(
+                    GitlabHookIntent(
+                        uuid=hook_uuid,
+                        webhook_id=webhook_id,
+                        run_id=run_id,
+                        state=HookIntentState.OPEN,
+                    )
+                )
+        return True
+
+    async def commit_intent(
+        self,
+        webhook_id: int,
+        run_id: UUID,
+        hook_uuid: str,
+        replaced_uuid: str | None,
+        **fields: Any,
+    ) -> bool:
+        """Make the intent's hook the row's current identity.
+
+        Applies only while ``run_id`` holds the claim, the intent is still open
+        and the row's uuid is still ``replaced_uuid``. The previous identity
+        becomes replaced in the same transaction.
+        """
+        async with a_session_maker() as session:
+            async with session.begin():
+                state = await session.scalar(
+                    select(GitlabHookIntent.state)
+                    .where(
+                        GitlabHookIntent.uuid == hook_uuid,
+                        GitlabHookIntent.webhook_id == webhook_id,
+                    )
+                    .with_for_update()
+                )
+                if state != HookIntentState.OPEN:
+                    return False
+                updated = await session.execute(
+                    update(GitlabWebhook)
+                    .where(
+                        GitlabWebhook.id == webhook_id,
+                        GitlabWebhook.claim_run_id == run_id,
+                        GitlabWebhook.webhook_uuid.is_not_distinct_from(replaced_uuid),
+                    )
+                    .values(webhook_uuid=hook_uuid, **fields)
+                )
+                if not updated.rowcount:
+                    return False
+                await session.execute(
+                    update(GitlabHookIntent)
+                    .where(
+                        GitlabHookIntent.webhook_id == webhook_id,
+                        GitlabHookIntent.state == HookIntentState.COMMITTED,
+                    )
+                    .values(state=HookIntentState.REPLACED)
+                )
+                await session.execute(
+                    update(GitlabHookIntent)
+                    .where(GitlabHookIntent.uuid == hook_uuid)
+                    .values(state=HookIntentState.COMMITTED)
+                )
+        return True
+
+    async def abandon_intent(self, hook_uuid: str) -> bool:
+        """Mark an open intent as never becoming current."""
+        async with a_session_maker() as session:
+            async with session.begin():
+                result = await session.execute(
+                    update(GitlabHookIntent)
+                    .where(
+                        GitlabHookIntent.uuid == hook_uuid,
+                        GitlabHookIntent.state == HookIntentState.OPEN,
+                    )
+                    .values(state=HookIntentState.ABANDONED)
+                )
+        return result.rowcount > 0
+
+    async def get_intent_states(self, webhook_id: int) -> dict[str, str]:
+        async with a_session_maker() as session:
+            rows = await session.execute(
+                select(GitlabHookIntent.uuid, GitlabHookIntent.state).where(
+                    GitlabHookIntent.webhook_id == webhook_id
+                )
+            )
+            return {uuid: state for uuid, state in rows}
 
     async def request_reinstall(
         self, resource_type: GitLabResourceType, resource_id: str

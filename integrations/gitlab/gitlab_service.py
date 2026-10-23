@@ -2,6 +2,7 @@ import asyncio
 
 from pydantic import SecretStr
 
+from integrations.gitlab.hook_identity import points_at
 from integrations.store_repo_utils import store_repositories_in_db
 from integrations.types import GitLabResourceType
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabService
@@ -367,81 +368,64 @@ class SaaSGitLabService(GitLabService):
             logger.warning('Resource existence check failed', exc_info=True)
             return False, WebhookStatus.INVALID
 
+    def _hooks_url(self, resource_type: GitLabResourceType, resource_id: str) -> str:
+        if resource_type == GitLabResourceType.GROUP:
+            return f'{self.BASE_URL}/groups/{resource_id}/hooks'
+        return f'{self.BASE_URL}/projects/{resource_id}/hooks'
+
+    async def list_hooks(
+        self, resource_type: GitLabResourceType, resource_id: str
+    ) -> tuple[list[dict], WebhookStatus | None]:
+        """Every hook on the resource, across all pages."""
+        url = self._hooks_url(resource_type, resource_id)
+        hooks: list[dict] = []
+        try:
+            page = 1
+            while True:
+                page_hooks, headers = await self._make_request(
+                    url, params={'per_page': 100, 'page': page}
+                )
+                hooks.extend(page_hooks or [])
+                if 'rel="next"' not in headers.get('Link', ''):
+                    return hooks, None
+                page += 1
+        except RateLimitError:
+            return [], WebhookStatus.RATE_LIMITED
+        except Exception:
+            logger.warning('Listing webhooks failed', exc_info=True)
+            return [], WebhookStatus.INVALID
+
     async def check_webhook_exists_on_resource(
         self, resource_type: GitLabResourceType, resource_id: str, webhook_url: str
     ) -> tuple[bool, WebhookStatus | None]:
+        """Whether any hook on the resource points at ``webhook_url``.
+
+        A hook with an ``oh_hook`` identity on that URL counts.
         """
-        Check if a webhook already exists for resource with a specific URL.
-
-        Args:
-            resource_type: The type of resource
-            resource_id: The ID of the resource to check
-            webhook_url: The URL of the webhook to check for
-
-        Returns:
-            tuple[bool, str]: A tuple containing:
-                - bool: True if the webhook exists, False otherwise
-                - str: A reason message explaining the result
-        """
-
-        # Construct the URL based on the resource type
-        if resource_type == GitLabResourceType.GROUP:
-            url = f'{self.BASE_URL}/groups/{resource_id}/hooks'
-        else:
-            url = f'{self.BASE_URL}/projects/{resource_id}/hooks'
-
-        try:
-            # Get all webhooks for the resource
-            response, _ = await self._make_request(url)
-
-            # Check if any webhook has the specified URL
-            exists = False
-            if response:
-                for webhook in response:
-                    if webhook.get('url') == webhook_url:
-                        exists = True
-
-            return exists, None
-
-        except RateLimitError:
-            return False, WebhookStatus.RATE_LIMITED
-        except Exception:
-            logger.warning('Webhook existence check failed', exc_info=True)
-            return False, WebhookStatus.INVALID
+        hooks, status = await self.list_hooks(resource_type, resource_id)
+        return any(points_at(hook.get('url'), webhook_url) for hook in hooks), status
 
     async def delete_webhooks_with_url(
         self, resource_type: GitLabResourceType, resource_id: str, webhook_url: str
     ) -> tuple[int, WebhookStatus | None]:
-        """Delete every hook on the resource whose URL is ``webhook_url``.
+        """Delete every hook on the resource that points at ``webhook_url``.
 
         Returns how many were deleted, and RATE_LIMITED or INVALID if listing
         or deleting failed part way.
         """
-        if resource_type == GitLabResourceType.GROUP:
-            url = f'{self.BASE_URL}/groups/{resource_id}/hooks'
-        else:
-            url = f'{self.BASE_URL}/projects/{resource_id}/hooks'
-
+        # List every page before deleting, since deleting shifts the pages.
+        hooks, status = await self.list_hooks(resource_type, resource_id)
+        if status is not None:
+            return 0, status
+        url = self._hooks_url(resource_type, resource_id)
         deleted = 0
         try:
-            # List every page before deleting, since deleting shifts the pages.
-            hook_ids: list[int] = []
-            page = 1
-            while True:
-                hooks, headers = await self._make_request(
-                    url, params={'per_page': 100, 'page': page}
-                )
-                hook_ids.extend(
-                    hook['id'] for hook in hooks or [] if hook.get('url') == webhook_url
-                )
-                if 'rel="next"' not in headers.get('Link', ''):
-                    break
-                page += 1
-            for hook_id in hook_ids:
-                await self._make_request(
-                    f'{url}/{hook_id}', method=RequestMethod.DELETE
-                )
-                deleted += 1
+            for hook in hooks:
+                if points_at(hook.get('url'), webhook_url):
+                    await self._make_request(
+                        f'{url}/{hook["id"]}', method=RequestMethod.DELETE
+                    )
+                    deleted += 1
             return deleted, None
         except RateLimitError:
             return deleted, WebhookStatus.RATE_LIMITED

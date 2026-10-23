@@ -9,14 +9,17 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 import storage.gitlab_webhook_store as store_module
 import sync.install_gitlab_webhooks as job_module
+from integrations.gitlab.hook_identity import hook_url
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     install_claimed_webhook,
 )
 from integrations.types import GitLabResourceType
+from storage.gitlab_hook_intent import GitlabHookIntent
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
 from sync.install_gitlab_webhooks import CLAIM_LEASE, VerifyWebhookStatus
@@ -46,6 +49,17 @@ def add_row(async_session_maker):
         async with async_session_maker() as session, session.begin():
             session.add(row)
         return row.id
+
+    return add
+
+
+@pytest.fixture
+def add_intent(async_session_maker):
+    async def add(row_id, hook_uuid, state):
+        async with async_session_maker() as session, session.begin():
+            session.add(
+                GitlabHookIntent(uuid=hook_uuid, webhook_id=row_id, state=state)
+            )
 
     return add
 
@@ -123,7 +137,7 @@ async def test_a_claim_is_taken_over_only_after_the_lease(
     assert row.webhook_exists is False
 
 
-async def test_lost_create_response_is_adopted_without_a_second_hook(
+async def test_lost_create_response_is_retried_under_a_new_identity(
     store, gitlab, add_row, get_row
 ):
     row_id = await add_row()
@@ -131,31 +145,158 @@ async def test_lost_create_response_is_adopted_without_a_second_hook(
     await run_job()
 
     row = await get_row(row_id)
-    assert row.webhook_exists is False
-    assert row.claim_run_id is None
-    [hook] = gitlab.hooks['project-1']
-    await assert_delivery_authenticates(store, hook)
+    assert (row.webhook_exists, row.webhook_uuid) == (False, None)
+    [lost] = gitlab.hooks['project-1']
+    assert await store.get_webhook_secret(lost['uuid'], USER) is None
+    assert await store.get_intent_states(row_id) == {lost['uuid']: 'abandoned'}
 
     gitlab.lose_create_response = False
     await run_job()
 
-    assert gitlab.hooks['project-1'] == [hook]
-    assert (await get_row(row_id)).webhook_exists is True
+    still_lost, hook = gitlab.hooks['project-1']
+    assert still_lost == lost
+    await assert_delivery_authenticates(store, hook)
+    assert await store.get_webhook_secret(lost['uuid'], USER) is None
+    assert await store.get_intent_states(row_id) == {
+        lost['uuid']: 'abandoned',
+        hook['uuid']: 'committed',
+    }
 
 
-async def test_credentials_are_kept_across_attempts(store, gitlab, add_row, get_row):
-    row_id = await add_row()
+async def test_a_failed_create_leaves_the_row_alone_and_abandons_its_intent(
+    store, gitlab, add_row, get_row
+):
+    row_id = await add_row(webhook_uuid='uuid-1', webhook_secret='secret-1')
     gitlab.fail_create = True
+
     with pytest.raises(RuntimeError):
         await run_job()
-    first = await get_row(row_id)
-    assert first.webhook_uuid and first.webhook_secret
 
-    gitlab.fail_create = False
+    row = await get_row(row_id)
+    assert (row.webhook_uuid, row.webhook_secret) == ('uuid-1', 'secret-1')
+    assert list((await store.get_intent_states(row_id)).values()) == ['abandoned']
+
+
+async def test_every_hook_carries_its_intent_uuid_in_its_url(
+    store, gitlab, add_row, get_row
+):
+    row_id = await add_row()
+
     await run_job()
 
     [hook] = gitlab.hooks['project-1']
-    assert (hook['uuid'], hook['secret']) == (first.webhook_uuid, first.webhook_secret)
+    assert hook['url'] == hook_url(hook['uuid'])
+    assert (await get_row(row_id)).webhook_uuid == hook['uuid']
+    assert await store.get_intent_states(row_id) == {hook['uuid']: 'committed'}
+
+
+async def test_a_reinstall_replaces_the_committed_identity(
+    store, gitlab, add_row, add_intent
+):
+    row_id = await add_row(
+        webhook_exists=True,
+        webhook_uuid='uuid-1',
+        webhook_secret='secret-1',
+        reinstall_requested_gen=1,
+    )
+    await add_intent(row_id, 'uuid-1', 'committed')
+    gitlab.add_hook('project-1', 'secret-1', 'uuid-1', url=hook_url('uuid-1'))
+
+    await run_job()
+
+    [hook] = gitlab.hooks['project-1']
+    await assert_delivery_authenticates(store, hook)
+    assert await store.get_intent_states(row_id) == {
+        'uuid-1': 'replaced',
+        hook['uuid']: 'committed',
+    }
+
+
+async def test_a_run_that_loses_its_claim_during_the_create_commits_nothing(
+    store, gitlab, add_row, get_row, take_over
+):
+    row_id = await add_row()
+    run_a = uuid4()
+    [webhook] = await store.claim_rows(run_a, CLAIM_LEASE)
+    gitlab.before_create = lambda: take_over(row_id)
+
+    with pytest.raises(BreakLoopException):
+        await install_claimed_webhook(
+            gitlab, GitLabResourceType.PROJECT, 'project-1', store, webhook, run_a
+        )
+
+    [orphan] = gitlab.hooks['project-1']
+    assert await store.get_webhook_secret(orphan['uuid'], USER) is None
+    assert (await get_row(row_id)).webhook_uuid is None
+    assert await store.get_intent_states(row_id) == {orphan['uuid']: 'abandoned'}
+
+
+async def test_a_stalled_run_that_resumes_after_another_installed_leaves_one_current_hook(
+    store, gitlab, add_row, get_row, take_over
+):
+    row_id = await add_row()
+    run_a = uuid4()
+    [webhook_a] = await store.claim_rows(run_a, CLAIM_LEASE)
+
+    async def run_b_installs_while_a_is_stalled():
+        gitlab.before_create = None
+        run_b = await take_over(row_id)
+        webhook_b = await get_row(row_id)
+        await install_claimed_webhook(
+            gitlab, GitLabResourceType.PROJECT, 'project-1', store, webhook_b, run_b
+        )
+
+    gitlab.before_create = run_b_installs_while_a_is_stalled
+
+    with pytest.raises(BreakLoopException):
+        await install_claimed_webhook(
+            gitlab, GitLabResourceType.PROJECT, 'project-1', store, webhook_a, run_a
+        )
+
+    hook_b, hook_a = gitlab.hooks['project-1']
+    await assert_delivery_authenticates(store, hook_b)
+    assert await store.get_webhook_secret(hook_a['uuid'], USER) is None
+    assert await store.get_intent_states(row_id) == {
+        hook_a['uuid']: 'abandoned',
+        hook_b['uuid']: 'committed',
+    }
+
+
+async def test_a_commit_names_the_uuid_it_replaces(
+    store, add_row, get_row, async_session_maker
+):
+    row_id = await add_row(webhook_uuid='uuid-1')
+    run_id = uuid4()
+    await store.claim_rows(run_id, CLAIM_LEASE)
+    assert await store.open_intent(row_id, run_id, 'uuid-new')
+    async with async_session_maker() as session, session.begin():
+        await session.execute(
+            update(GitlabWebhook)
+            .where(GitlabWebhook.id == row_id)
+            .values(webhook_uuid='uuid-2')
+        )
+
+    assert not await store.commit_intent(row_id, run_id, 'uuid-new', 'uuid-1')
+    assert (await get_row(row_id)).webhook_uuid == 'uuid-2'
+
+
+async def test_an_abandoned_intent_cannot_commit(store, add_row, get_row):
+    row_id = await add_row()
+    run_id = uuid4()
+    await store.claim_rows(run_id, CLAIM_LEASE)
+    assert await store.open_intent(row_id, run_id, 'uuid-new')
+    assert await store.abandon_intent('uuid-new')
+
+    assert not await store.commit_intent(row_id, run_id, 'uuid-new', None)
+    assert (await get_row(row_id)).webhook_uuid is None
+
+
+async def test_a_row_has_at_most_one_committed_intent(add_row, add_intent):
+    row_id = await add_row()
+    await add_intent(row_id, 'uuid-1', 'committed')
+
+    with pytest.raises(IntegrityError):
+        await add_intent(row_id, 'uuid-2', 'committed')
 
 
 async def test_run_that_lost_its_claim_creates_no_hook(

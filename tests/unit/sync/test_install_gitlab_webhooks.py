@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from integrations.gitlab.hook_identity import hook_url
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     verify_webhook_conditions,
@@ -24,7 +25,7 @@ def mock_gitlab_service():
     service.check_user_has_admin_access_to_resource = AsyncMock(
         return_value=(True, None)
     )
-    service.check_webhook_exists_on_resource = AsyncMock(return_value=(False, None))
+    service.list_hooks = AsyncMock(return_value=([], None))
     service.install_webhook = AsyncMock(return_value=('webhook-id-123', None))
     return service
 
@@ -79,10 +80,8 @@ class TestVerifyWebhookConditions:
         mock_gitlab_service.check_user_has_admin_access_to_resource.assert_called_once_with(
             resource_type, resource_id
         )
-        mock_gitlab_service.check_webhook_exists_on_resource.assert_called_once_with(
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_url=GITLAB_WEBHOOK_URL,
+        mock_gitlab_service.list_hooks.assert_called_once_with(
+            resource_type, resource_id
         )
         mock_webhook_store.delete_claimed.assert_not_called()
 
@@ -202,8 +201,9 @@ class TestVerifyWebhookConditions:
         # Arrange
         resource_type = GitLabResourceType.PROJECT
         resource_id = 'project-123'
-        mock_gitlab_service.check_webhook_exists_on_resource = AsyncMock(
-            return_value=(True, None)
+        sample_webhook.webhook_uuid = 'uuid-1'
+        mock_gitlab_service.list_hooks = AsyncMock(
+            return_value=([{'id': 1, 'url': hook_url('uuid-1')}], None)
         )
 
         # Act & Assert
@@ -225,8 +225,8 @@ class TestVerifyWebhookConditions:
         # Arrange
         resource_type = GitLabResourceType.PROJECT
         resource_id = 'project-123'
-        mock_gitlab_service.check_webhook_exists_on_resource = AsyncMock(
-            return_value=(False, WebhookStatus.RATE_LIMITED)
+        mock_gitlab_service.list_hooks = AsyncMock(
+            return_value=([], WebhookStatus.RATE_LIMITED)
         )
 
         # Act & Assert
@@ -249,8 +249,8 @@ class TestVerifyWebhookConditions:
         resource_type = GitLabResourceType.PROJECT
         resource_id = 'project-123'
         sample_webhook.webhook_exists = True  # DB says exists
-        mock_gitlab_service.check_webhook_exists_on_resource = AsyncMock(
-            return_value=(False, None)  # API says doesn't exist
+        mock_gitlab_service.list_hooks = AsyncMock(
+            return_value=([], None)  # API says doesn't exist
         )
 
         # Act
@@ -268,3 +268,24 @@ class TestVerifyWebhookConditions:
         mock_webhook_store.update_claimed.assert_called_once_with(
             sample_webhook.id, RUN_ID, webhook_exists=False
         )
+
+    @pytest.mark.asyncio
+    async def test_verify_conditions_does_not_count_a_legacy_hook(
+        self, mock_gitlab_service, mock_webhook_store, sample_webhook
+    ):
+        """A hook at the plain URL has unknown credentials, so it isn't adopted."""
+        sample_webhook.webhook_uuid = 'uuid-1'
+        mock_gitlab_service.list_hooks = AsyncMock(
+            return_value=([{'id': 1, 'url': GITLAB_WEBHOOK_URL}], None)
+        )
+
+        await verify_webhook_conditions(
+            gitlab_service=mock_gitlab_service,
+            resource_type=GitLabResourceType.PROJECT,
+            resource_id='project-1',
+            webhook_store=mock_webhook_store,
+            webhook=sample_webhook,
+            claim_run_id=RUN_ID,
+        )
+
+        mock_webhook_store.update_claimed.assert_not_called()
