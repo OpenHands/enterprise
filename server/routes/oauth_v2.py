@@ -38,6 +38,7 @@ from typing import Literal
 from urllib.parse import quote, urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
@@ -236,6 +237,36 @@ async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
                 detail='Userinfo lookup failed at the provider',
             )
         return response.json()
+
+
+def _merge_id_token_claims(
+    provider: AuthProvider, userinfo: dict, token_data: dict
+) -> dict:
+    """Fill ``email`` / ``email_verified`` the userinfo response left out
+    from the ID token in the token response.
+
+    Google, for one, only guarantees these claims in the ID token; userinfo
+    fields may be withheld. The signature is not checked: the token came
+    straight from the token endpoint over TLS, which OIDC Core 3.1.3.7 allows
+    in place of signature validation. ``aud`` and ``sub`` still must match.
+    """
+    id_token = token_data.get('id_token')
+    missing = [c for c in ('email', 'email_verified') if c not in userinfo]
+    if not id_token or not missing:
+        return userinfo
+    try:
+        claims = jwt.decode(id_token, options={'verify_signature': False})
+    except jwt.PyJWTError:
+        logger.warning('oauth_v2 unparseable id_token provider=%s', provider.id)
+        return userinfo
+    audience = claims.get('aud')
+    audiences = [audience] if isinstance(audience, str) else audience or []
+    if _oauth_details(provider).client_id not in audiences or str(
+        claims.get('sub')
+    ) != str(userinfo.get('sub')):
+        logger.warning('oauth_v2 id_token aud/sub mismatch provider=%s', provider.id)
+        return userinfo
+    return {**userinfo, **{c: claims[c] for c in missing if c in claims}}
 
 
 def _epoch_to_datetime(expires_at: int | str | None) -> datetime | None:
@@ -507,7 +538,9 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _fetch_userinfo(provider, access_token)
+        userinfo = _merge_id_token_claims(
+            provider, await _fetch_userinfo(provider, access_token), token_data
+        )
         user_id = await _resolve_or_create_user(provider, userinfo)
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(

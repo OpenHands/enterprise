@@ -70,6 +70,18 @@ def decrypt_state(state: str) -> dict:
 # ── identity resolution ──────────────────────────────────────────────────
 
 
+def is_true_claim(value: object) -> bool:
+    """Whether a boolean-ish claim such as ``email_verified`` asserts true.
+
+    OIDC specifies a JSON boolean, but some IdPs send the string ``"true"``
+    (Google's own ID token docs show it that way) -- and a plain truthiness
+    check would read the string ``"false"`` as verified.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() == 'true'
+    return value is True
+
+
 async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     """Resolve the internal user for a provider's asserted identity.
 
@@ -123,8 +135,10 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     if existing is not None:
         return str(existing.user_id)
 
-    email = userinfo.get('email')
-    email_verified = userinfo.get('email_verified')
+    # Stored lowercased: every email lookup in ``UserStore`` compares against
+    # ``email.lower()``, so a mixed-case row could never be matched later.
+    email = (userinfo.get('email') or '').strip().lower() or None
+    email_verified = is_true_claim(userinfo.get('email_verified'))
     if email and email_verified:
         dup_count = await UserStore.count_opted_in_users_with_email(email)
         if dup_count > 1:
@@ -185,7 +199,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
         oauth_provider_id=provider.id,
         user_id=user.id,
         external_subject_id=subject,
-        external_email=userinfo.get('email'),
+        external_email=email,
     )
     return str(user.id)
 
