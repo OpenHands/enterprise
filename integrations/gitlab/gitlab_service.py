@@ -433,6 +433,19 @@ class SaaSGitLabService(GitLabService):
             logger.warning('Webhook deletion failed', exc_info=True)
             return deleted, WebhookStatus.INVALID
 
+    async def delete_hook(
+        self, resource_type: GitLabResourceType, resource_id: str, hook_id: int
+    ) -> WebhookStatus | None:
+        url = f'{self._hooks_url(resource_type, resource_id)}/{hook_id}'
+        try:
+            await self._make_request(url, method=RequestMethod.DELETE)
+            return None
+        except RateLimitError:
+            return WebhookStatus.RATE_LIMITED
+        except Exception:
+            logger.warning('Webhook deletion failed', exc_info=True)
+            return WebhookStatus.INVALID
+
     async def check_user_has_admin_access_to_resource(
         self, resource_type: GitLabResourceType, resource_id: str
     ) -> tuple[bool, WebhookStatus | None]:

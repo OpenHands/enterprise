@@ -90,6 +90,13 @@ class FakeGitLab:
             return None, WebhookStatus.INVALID
         return str(hook['id']), None
 
+    async def delete_hook(self, resource_type, resource_id, hook_id):
+        if self.delete_status:
+            return self.delete_status
+        hooks = self.hooks.get(resource_id, [])
+        self.hooks[resource_id] = [h for h in hooks if h['id'] != hook_id]
+        return None
+
     async def delete_webhooks_with_url(self, resource_type, resource_id, webhook_url):
         if self.delete_status:
             return 0, self.delete_status

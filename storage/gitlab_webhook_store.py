@@ -110,8 +110,39 @@ class GitlabWebhookStore:
         )
         return rows[0] if rows else None
 
+    async def claim_rows_for_repair(
+        self, run_id: UUID, lease: timedelta, interval: timedelta, limit: int
+    ) -> list[GitlabWebhook]:
+        """Claim installed rows not swept within ``interval``, oldest sweep first.
+
+        Stamps last_repaired_at as it claims, so a row whose sweep fails waits
+        out the interval instead of being retried every run.
+        """
+        due = and_(
+            GitlabWebhook.webhook_exists.is_(True),
+            GitlabWebhook.reinstall_requested_gen <= GitlabWebhook.reinstall_done_gen,
+            or_(
+                GitlabWebhook.last_repaired_at.is_(None),
+                GitlabWebhook.last_repaired_at < func.now() - interval,
+            ),
+        )
+        return await self._claim(
+            due,
+            run_id,
+            lease,
+            limit,
+            order_by=GitlabWebhook.last_repaired_at.asc().nulls_first(),
+            last_repaired_at=func.now(),
+        )
+
     async def _claim(
-        self, where: Any, run_id: UUID, lease: timedelta, limit: int
+        self,
+        where: Any,
+        run_id: UUID,
+        lease: timedelta,
+        limit: int,
+        order_by: Any = None,
+        **values: Any,
     ) -> list[GitlabWebhook]:
         claimable = or_(
             GitlabWebhook.claimed_at.is_(None),
@@ -124,7 +155,11 @@ class GitlabWebhookStore:
                         await session.execute(
                             select(GitlabWebhook)
                             .where(where, claimable)
-                            .order_by(asc(GitlabWebhook.last_synced))
+                            .order_by(
+                                asc(GitlabWebhook.last_synced)
+                                if order_by is None
+                                else order_by
+                            )
                             .limit(limit)
                             .with_for_update(skip_locked=True)
                         )
@@ -135,6 +170,8 @@ class GitlabWebhookStore:
                 for row in rows:
                     row.claim_run_id = run_id
                     row.claimed_at = func.now()
+                    for column, value in values.items():
+                        setattr(row, column, value)
                 await session.flush()
                 for row in rows:
                     await session.refresh(row)
@@ -274,6 +311,33 @@ class GitlabWebhookStore:
                     .values(state=HookIntentState.ABANDONED)
                 )
         return result.rowcount > 0
+
+    async def abandon_open_intents(self, webhook_id: int, run_id: UUID) -> int:
+        """Abandon other runs' open intents on a row ``run_id`` holds.
+
+        Committing needs the claim, so no other run's open intent can commit.
+        """
+        holds_claim = (
+            select(GitlabWebhook.id)
+            .where(
+                GitlabWebhook.id == webhook_id,
+                GitlabWebhook.claim_run_id == run_id,
+            )
+            .exists()
+        )
+        async with a_session_maker() as session:
+            async with session.begin():
+                result = await session.execute(
+                    update(GitlabHookIntent)
+                    .where(
+                        GitlabHookIntent.webhook_id == webhook_id,
+                        GitlabHookIntent.state == HookIntentState.OPEN,
+                        GitlabHookIntent.run_id.is_distinct_from(run_id),
+                        holds_claim,
+                    )
+                    .values(state=HookIntentState.ABANDONED)
+                )
+        return result.rowcount
 
     async def get_intent_states(self, webhook_id: int) -> dict[str, str]:
         async with a_session_maker() as session:

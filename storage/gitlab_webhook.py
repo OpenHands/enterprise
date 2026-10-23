@@ -59,6 +59,11 @@ class GitlabWebhook(Base):
     reinstall_done_gen: Mapped[int] = mapped_column(
         default=0, server_default='0', nullable=False
     )
+    # When the installer last swept the resource for hooks that can't
+    # authenticate; NULL rows are swept first.
+    last_repaired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     def __repr__(self) -> str:
         return (

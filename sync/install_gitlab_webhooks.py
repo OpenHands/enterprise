@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
@@ -11,12 +13,18 @@ from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     install_claimed_webhook,
 )
+from integrations.gitlab.webhook_repair import repair_claimed_hooks
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.database import a_session_maker
+from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 CHUNK_SIZE = 100
+# A run sweeps this many installed rows for hooks that can't authenticate, each
+# at most once per interval. At one run a minute that covers 14,400 rows a day.
+REPAIR_BATCH = 10
+REPAIR_INTERVAL = timedelta(days=1)
 
 
 class VerifyWebhookStatus:
@@ -32,6 +40,9 @@ class VerifyWebhookStatus:
             3. Webhook exists (skipped for a reinstall, which replaces it)
                 - user could have removed webhook from resource
                 - resource was never setup with webhook
+
+        Then sweeps a few installed rows for hooks with our URL that can never
+        authenticate, deleting them and converting legacy hooks.
 
         Every write is conditional on this run's claim, so a run that lost its
         claim to another (after a stall past the lease) changes nothing.
@@ -61,7 +72,6 @@ class VerifyWebhookStatus:
         webhooks_to_process = await webhook_store.claim_rows(
             run_id, CLAIM_LEASE, limit=CHUNK_SIZE
         )
-
         logger.info(
             'Processing webhook chunks',
             extra={
@@ -69,43 +79,56 @@ class VerifyWebhookStatus:
                 'webhook_ids': [webhook.id for webhook in webhooks_to_process],
             },
         )
+        await _process(
+            webhook_store, webhooks_to_process, run_id, install_claimed_webhook
+        )
 
-        for webhook in webhooks_to_process:
+        webhooks_to_repair = await webhook_store.claim_rows_for_repair(
+            run_id, CLAIM_LEASE, REPAIR_INTERVAL, limit=REPAIR_BATCH
+        )
+        await _process(webhook_store, webhooks_to_repair, run_id, repair_claimed_hooks)
+
+
+async def _process(
+    webhook_store: GitlabWebhookStore,
+    webhooks: list[GitlabWebhook],
+    run_id: UUID,
+    handle: Callable[..., Awaitable[object]],
+) -> None:
+    # GitLabServiceImpl returns SaaSGitLabService in enterprise context
+    from integrations.gitlab.gitlab_service import SaaSGitLabService
+
+    for webhook in webhooks:
+        try:
+            resource_type, resource_id = GitlabWebhookStore.determine_resource_type(
+                webhook
+            )
+            gitlab_service = cast(
+                SaaSGitLabService,
+                GitLabServiceImpl(external_auth_id=webhook.user_id),
+            )
+            await handle(
+                gitlab_service=gitlab_service,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                webhook_store=webhook_store,
+                webhook=webhook,
+                run_id=run_id,
+            )
+        except BreakLoopException:
+            pass
+        finally:
+            # Release the claim and bump last_synced, success or failure, so
+            # the row goes to the back of the queue. A row deleted above, or
+            # one another run took over, matches nothing.
             try:
-                resource_type, resource_id = GitlabWebhookStore.determine_resource_type(
-                    webhook
+                await webhook_store.release_claim(webhook.id, run_id)
+            except Exception:
+                logger.warning(
+                    'Failed to release claim for webhook',
+                    extra={'webhook_id': webhook.id},
+                    exc_info=True,
                 )
-
-                # GitLabServiceImpl returns SaaSGitLabService in enterprise context
-                from integrations.gitlab.gitlab_service import SaaSGitLabService
-
-                gitlab_service = cast(
-                    SaaSGitLabService,
-                    GitLabServiceImpl(external_auth_id=webhook.user_id),
-                )
-
-                await install_claimed_webhook(
-                    gitlab_service=gitlab_service,
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                    webhook_store=webhook_store,
-                    webhook=webhook,
-                    run_id=run_id,
-                )
-            except BreakLoopException:
-                pass
-            finally:
-                # Release the claim and bump last_synced, success or failure, so
-                # the row goes to the back of the queue. A row deleted above, or
-                # one another run took over, matches nothing.
-                try:
-                    await webhook_store.release_claim(webhook.id, run_id)
-                except Exception:
-                    logger.warning(
-                        'Failed to release claim for webhook',
-                        extra={'webhook_id': webhook.id},
-                        exc_info=True,
-                    )
 
 
 if __name__ == '__main__':

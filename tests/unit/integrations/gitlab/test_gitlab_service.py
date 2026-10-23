@@ -336,3 +336,26 @@ class TestCheckWebhookExistsOnResource:
             )
 
         assert (exists, status) == (False, WebhookStatus.RATE_LIMITED)
+
+
+class TestDeleteHook:
+    async def test_deletes_the_hook_by_id(self, gitlab_service):
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.return_value = (None, {})
+
+            status = await gitlab_service.delete_hook(GitLabResourceType.GROUP, '42', 9)
+
+        assert status is None
+        mock_request.assert_called_once_with(
+            f'{gitlab_service.BASE_URL}/groups/42/hooks/9', method=RequestMethod.DELETE
+        )
+
+    async def test_rate_limit_is_reported(self, gitlab_service):
+        with patch.object(gitlab_service, '_make_request') as mock_request:
+            mock_request.side_effect = RateLimitError('slow down')
+
+            status = await gitlab_service.delete_hook(
+                GitLabResourceType.PROJECT, '7', 9
+            )
+
+        assert status == WebhookStatus.RATE_LIMITED

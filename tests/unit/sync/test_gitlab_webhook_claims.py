@@ -4,92 +4,24 @@ GitLab is the one fake (``tests.unit.gitlab_fakes``).
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-import storage.gitlab_webhook_store as store_module
-import sync.install_gitlab_webhooks as job_module
 from integrations.gitlab.hook_identity import hook_url
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     install_claimed_webhook,
 )
 from integrations.types import GitLabResourceType
-from storage.gitlab_hook_intent import GitlabHookIntent
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
-from storage.gitlab_webhook_store import GitlabWebhookStore
 from sync.install_gitlab_webhooks import CLAIM_LEASE, VerifyWebhookStatus
 from sync.repair_gitlab_hooks import main as repair_main
 from sync.repair_gitlab_hooks import request_repair
-from tests.unit.gitlab_fakes import USER, FakeGitLab, assert_delivery_authenticates
-
-
-@pytest.fixture
-def gitlab():
-    return FakeGitLab()
-
-
-@pytest.fixture
-def store(async_session_maker, gitlab, monkeypatch):
-    monkeypatch.setattr(store_module, 'a_session_maker', async_session_maker)
-    monkeypatch.setattr(job_module, 'a_session_maker', async_session_maker)
-    monkeypatch.setattr(job_module, 'GitLabServiceImpl', gitlab.for_user)
-    return GitlabWebhookStore()
-
-
-@pytest.fixture
-def add_row(async_session_maker):
-    async def add(project_id='project-1', **fields):
-        fields.setdefault('webhook_exists', False)
-        row = GitlabWebhook(user_id=USER, project_id=project_id, **fields)
-        async with async_session_maker() as session, session.begin():
-            session.add(row)
-        return row.id
-
-    return add
-
-
-@pytest.fixture
-def add_intent(async_session_maker):
-    async def add(row_id, hook_uuid, state):
-        async with async_session_maker() as session, session.begin():
-            session.add(
-                GitlabHookIntent(uuid=hook_uuid, webhook_id=row_id, state=state)
-            )
-
-    return add
-
-
-@pytest.fixture
-def get_row(async_session_maker):
-    async def get(row_id):
-        async with async_session_maker() as session:
-            return await session.get(GitlabWebhook, row_id)
-
-    return get
-
-
-@pytest.fixture
-def take_over(async_session_maker, store):
-    """Age a row's claim past the lease and claim it for a new run."""
-
-    async def steal(row_id):
-        async with async_session_maker() as session, session.begin():
-            await session.execute(
-                update(GitlabWebhook)
-                .where(GitlabWebhook.id == row_id)
-                .values(claimed_at=func.now() - CLAIM_LEASE - timedelta(minutes=1))
-            )
-        run_b = uuid4()
-        claimed = await store.claim_rows(run_b, CLAIM_LEASE)
-        assert [row.id for row in claimed] == [row_id]
-        return run_b
-
-    return steal
+from tests.unit.gitlab_fakes import USER, assert_delivery_authenticates
 
 
 async def run_job():
@@ -153,10 +85,10 @@ async def test_lost_create_response_is_retried_under_a_new_identity(
     gitlab.lose_create_response = False
     await run_job()
 
-    still_lost, hook = gitlab.hooks['project-1']
-    assert still_lost == lost
+    # The same run's repair sweep deletes the hook whose response was lost.
+    [hook] = gitlab.hooks['project-1']
+    assert hook['uuid'] != lost['uuid']
     await assert_delivery_authenticates(store, hook)
-    assert await store.get_webhook_secret(lost['uuid'], USER) is None
     assert await store.get_intent_states(row_id) == {
         lost['uuid']: 'abandoned',
         hook['uuid']: 'committed',
