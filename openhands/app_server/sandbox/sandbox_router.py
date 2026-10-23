@@ -33,9 +33,6 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
 )
-from openhands.app_server.sandbox.sandbox_spec_service import (
-    resolve_existing_sandbox_spec,
-)
 from openhands.app_server.sandbox.session_auth import validate_session_key
 from openhands.app_server.services.db_session import depends_db_session
 from openhands.app_server.services.injector import InjectorState
@@ -186,8 +183,8 @@ async def _restore_git_user_settings_after_resume(
             sandbox = await sandbox_service.wait_for_sandbox_running(
                 sandbox_id, httpx_client=httpx_client
             )
-            sandbox_spec = await resolve_existing_sandbox_spec(
-                sandbox.sandbox_spec_id, sandbox_id, sandbox_spec_service, _logger
+            sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+                sandbox.sandbox_spec_id, sandbox_id
             )
             if sandbox.session_api_key is None:
                 raise ValueError(f'Sandbox session key unavailable: {sandbox_id}')

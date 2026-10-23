@@ -75,10 +75,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
-from openhands.app_server.sandbox.sandbox_spec_service import (
-    SandboxSpecService,
-    resolve_existing_sandbox_spec,
-)
+from openhands.app_server.sandbox.sandbox_spec_service import SandboxSpecService
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.db_session_injector import set_db_session_keep_open
@@ -266,8 +263,8 @@ async def _get_agent_server_context(
         )
 
     # Get the sandbox spec to find the working directory
-    sandbox_spec = await resolve_existing_sandbox_spec(
-        sandbox.sandbox_spec_id, sandbox.id, sandbox_spec_service, logger
+    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+        sandbox.sandbox_spec_id, sandbox.id
     )
 
     # Get the agent server URL
@@ -1277,8 +1274,8 @@ async def read_conversation_file(
         return ''
 
     # Get the sandbox spec to find the working directory
-    sandbox_spec = await resolve_existing_sandbox_spec(
-        sandbox.sandbox_spec_id, sandbox.id, sandbox_spec_service, logger
+    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+        sandbox.sandbox_spec_id, sandbox.id
     )
 
     # Get the agent server URL

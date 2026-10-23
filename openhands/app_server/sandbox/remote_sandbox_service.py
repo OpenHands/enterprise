@@ -52,7 +52,6 @@ from openhands.app_server.sandbox.sandbox_spec_models import (
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
-    resolve_existing_sandbox_spec,
     resolve_sandbox_spec,
 )
 from openhands.app_server.sandbox.sandbox_store import (
@@ -913,11 +912,8 @@ class RemoteSandboxService(SandboxService):
             return workspace_path
         # For cloud conversations the sandbox id is the conversation_id.hex.
         conversation_key = conversation_id or stored_sandbox.id
-        sandbox_spec = await resolve_existing_sandbox_spec(
-            stored_sandbox.sandbox_spec_id,
-            stored_sandbox.id,
-            self.sandbox_spec_service,
-            _logger,
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
         )
         grouping = (await self.user_context.get_user_info()).sandbox_grouping_strategy
         return grouped_workspace_dir(

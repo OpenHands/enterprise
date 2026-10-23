@@ -4,6 +4,9 @@ import pytest
 from fastapi import HTTPException
 
 from openhands.app_server.errors import SandboxError
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -174,7 +177,7 @@ async def test_restore_git_identity_uses_resumed_sandbox():
         return_value='https://agent.example'
     )
     sandbox_spec_service = AsyncMock()
-    sandbox_spec_service.get_sandbox_spec.return_value = SandboxSpecInfo(
+    sandbox_spec_service.resolve_existing_sandbox_spec.return_value = SandboxSpecInfo(
         id='spec-1',
         command=None,
         working_dir='/workspace/project',
@@ -254,12 +257,14 @@ async def test_restore_git_identity_in_sandbox_whose_image_is_no_longer_advertis
     sandbox_service._get_agent_server_url = MagicMock(
         return_value='https://agent.example'
     )
-    sandbox_spec_service = AsyncMock()
-    sandbox_spec_service.get_sandbox_spec.return_value = None
-    sandbox_spec_service.get_default_sandbox_spec.return_value = SandboxSpecInfo(
-        id='ghcr.io/openhands/agent-server:1.57.0-python',
-        command=None,
-        working_dir='/workspace/project',
+    sandbox_spec_service = PresetSandboxSpecService(
+        specs=[
+            SandboxSpecInfo(
+                id='ghcr.io/openhands/agent-server:1.57.0-python',
+                command=None,
+                working_dir='/workspace/project',
+            )
+        ]
     )
     workspace = MagicMock()
     sandbox_service_context = AsyncMock()

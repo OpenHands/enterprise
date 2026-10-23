@@ -4,21 +4,24 @@ Covers ``get_agent_server_image`` (derived from the installed
 ``openhands-agent-server`` package, with auto-correction of stale canonical
 tags for self-hosted installs), ``is_custom_sandbox_spec`` (which compares
 a sandbox spec id against the bundled default) and
-``resolve_existing_sandbox_spec`` (the spec of a sandbox that already exists,
-with the default as the fallback once its image is no longer advertised).
+``SandboxSpecService.resolve_existing_sandbox_spec`` (the spec of a sandbox that
+already exists, with the default as the fallback once its image is no longer
+advertised).
 """
 
 import importlib.metadata
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
     _bundled_agent_server_version,
     get_agent_server_image,
     is_custom_sandbox_spec,
-    resolve_existing_sandbox_spec,
 )
 
 
@@ -187,20 +190,18 @@ def test_get_agent_server_image_propagates_package_not_found():
 
 async def test_resolve_existing_sandbox_spec_returns_the_sandbox_spec():
     """A sandbox whose image runtime-api still advertises keeps its own spec."""
-    spec = SandboxSpecInfo(
+    default = SandboxSpecInfo(
         id='ghcr.io/openhands/agent-server:1.57.0-python', command=None
     )
-    spec_service = Mock()
-    spec_service.get_sandbox_spec = AsyncMock(return_value=spec)
-    spec_service.get_default_sandbox_spec = AsyncMock()
-    logger = Mock()
+    spec = SandboxSpecInfo(id='ghcr.io/some/custom:0.0.1', command=None)
+    spec_service = PresetSandboxSpecService(specs=[default, spec])
 
-    resolved = await resolve_existing_sandbox_spec(
-        spec.id, 'sandbox-1', spec_service, logger
-    )
+    with patch('openhands.app_server.sandbox.sandbox_spec_service._logger') as logger:
+        resolved = await spec_service.resolve_existing_sandbox_spec(
+            spec.id, 'sandbox-1'
+        )
 
     assert resolved is spec
-    spec_service.get_default_sandbox_spec.assert_not_awaited()
     logger.warning.assert_not_called()
 
 
@@ -213,17 +214,14 @@ async def test_resolve_existing_sandbox_spec_falls_back_to_the_default():
         command=None,
         working_dir='/workspace/project',
     )
-    spec_service = Mock()
-    spec_service.get_sandbox_spec = AsyncMock(return_value=None)
-    spec_service.get_default_sandbox_spec = AsyncMock(return_value=default)
-    logger = Mock()
+    spec_service = PresetSandboxSpecService(specs=[default])
 
-    resolved = await resolve_existing_sandbox_spec(
-        old_image, 'sandbox-1', spec_service, logger
-    )
+    with patch('openhands.app_server.sandbox.sandbox_spec_service._logger') as logger:
+        resolved = await spec_service.resolve_existing_sandbox_spec(
+            old_image, 'sandbox-1'
+        )
 
     assert resolved is default
-    spec_service.get_sandbox_spec.assert_awaited_once_with(old_image)
     logged = logger.warning.call_args.args
     assert old_image in logged
     assert 'sandbox-1' in logged

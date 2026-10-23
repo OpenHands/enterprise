@@ -57,7 +57,11 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.file_store import get_file_store
 from openhands.app_server.integrations.provider import CustomSecret
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -1974,7 +1978,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         download_result = self._make_download_result(success=True)
         workspace = AsyncMock()
@@ -2026,7 +2032,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         download_result = self._make_download_result(success=True)
         workspace = AsyncMock()
@@ -2075,7 +2083,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         workspace = AsyncMock()
         workspace.file_download = AsyncMock(
@@ -2151,16 +2161,20 @@ class TestReadConversationFile:
         conv_id = uuid4()
         conv = self._make_conversation(conv_id)
         sandbox, _ = self._make_sandbox()
-        default_spec = MagicMock()
-        default_spec.working_dir = '/workspace/project'
 
         app_service = MagicMock()
         app_service.get_app_conversation = AsyncMock(return_value=conv)
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
-        spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=None)
-        spec_service.get_default_sandbox_spec = AsyncMock(return_value=default_spec)
+        spec_service = PresetSandboxSpecService(
+            specs=[
+                SandboxSpecInfo(
+                    id='ghcr.io/openhands/agent-server:1.57.0-python',
+                    command=None,
+                    working_dir='/workspace/project',
+                )
+            ]
+        )
 
         download_file = tmp_path / 'PLAN.md'
         download_file.write_bytes(b'# Plan')
