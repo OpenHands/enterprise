@@ -107,6 +107,8 @@ export interface WebClientConfig {
   email_change_enabled?: boolean;
   /** True when the admin provision-user route is registered on the server. */
   user_provisioning_enabled?: boolean;
+  /** Mirrors REQUIRE_VERIFIED_EMAILS: unverified users are restricted only when true. */
+  require_verified_emails?: boolean;
   acp_providers?: ACPProviderConfig[];
   /** Jira DC host when DC OAuth is configured; used to pre-fill + lock the
    *  configure form's host field. Null/absent in email-match mode. */

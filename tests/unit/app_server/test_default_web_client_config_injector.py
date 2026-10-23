@@ -1052,6 +1052,49 @@ class TestUserProvisioningEnabled:
         assert config.user_provisioning_enabled is route_registered
 
 
+class TestRequireVerifiedEmails:
+    """Tests for require_verified_emails in the web client config."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('required', [True, False])
+    async def test_mirrors_require_verified_emails_switch(self, required):
+        """The UI only restricts unverified users when the server does."""
+        # Arrange
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeFeatureFlagService:
+            async def resolve(self, key):
+                return False
+
+            async def get_global_flags(self):
+                return {}
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        with (
+            patch(
+                'server.services.feature_flag_service.feature_flag_service',
+                _FakeFeatureFlagService(),
+            ),
+            patch('server.constants.REQUIRE_VERIFIED_EMAILS', required),
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+        ):
+            injector = mod.DefaultWebClientConfigInjector()
+
+            # Act
+            config = await injector.get_web_client_config()
+
+        # Assert
+        assert config.require_verified_emails is required
+
+
 class TestGetJiraOauthEnabled:
     """Tests for _get_jira_oauth_enabled."""
 
