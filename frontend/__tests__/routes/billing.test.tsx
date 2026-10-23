@@ -67,23 +67,23 @@ vi.mock("#/hooks/mutation/stripe/use-create-stripe-checkout-session", () => ({
   }),
 }));
 
+const { mockQueryClient } = vi.hoisted(() => ({
+  mockQueryClient: (() => {
+    const { QueryClient } = require("@tanstack/react-query");
+    return new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+  })(),
+}));
+
+// Mock queryClient to use our test instance
+vi.mock("#/query-client-config", () => ({
+  queryClient: mockQueryClient,
+}));
+
 describe("Billing Route", () => {
-  const { mockQueryClient } = vi.hoisted(() => ({
-    mockQueryClient: (() => {
-      const { QueryClient } = require("@tanstack/react-query");
-      return new QueryClient({
-        defaultOptions: {
-          queries: { retry: false },
-        },
-      });
-    })(),
-  }));
-
-  // Mock queryClient to use our test instance
-  vi.mock("#/query-client-config", () => ({
-    queryClient: mockQueryClient,
-  }));
-
   const createMockUser = (
     overrides: Partial<OrganizationMember> = {},
   ): OrganizationMember => ({

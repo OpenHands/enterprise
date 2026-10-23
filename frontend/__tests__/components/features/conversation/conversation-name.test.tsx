@@ -56,6 +56,12 @@ vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: mockDisplaySuccessToast,
 }));
 
+vi.mock("#/hooks/mutation/use-update-conversation-public-flag", () => ({
+  useUpdateConversationPublicFlag: () => ({
+    mutate: vi.fn(),
+  }),
+}));
+
 // Mock react-i18next
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
@@ -704,12 +710,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
     onCopyShareLink: mockOnCopyShareLink,
     shareUrl: "https://example.com/shared/conversations/test-id",
   };
-
-  vi.mock("#/hooks/mutation/use-update-conversation-public-flag", () => ({
-    useUpdateConversationPublicFlag: () => ({
-      mutate: vi.fn(),
-    }),
-  }));
 
   beforeAll(() => {
     // Mock navigator.clipboard

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoutesStub } from "react-router";
 import { screen, waitFor, within } from "@testing-library/react";
 import {
@@ -13,67 +13,63 @@ import * as CaptureConsent from "#/utils/handle-capture-consent";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
+const { DEFAULT_FEATURE_FLAGS, useIsAuthedMock, useConfigMock } = vi.hoisted(
+  () => {
+    const defaultFeatureFlags = {
+      enable_billing: false,
+      hide_llm_settings: false,
+      enable_jira: false,
+      enable_jira_dc: false,
+      enable_linear: false,
+      hide_users_page: false,
+      hide_billing_page: false,
+      hide_integrations_page: false,
+      enable_onboarding: false,
+    };
+
+    return {
+      DEFAULT_FEATURE_FLAGS: defaultFeatureFlags,
+      useIsAuthedMock: vi.fn().mockReturnValue({
+        data: true,
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+      }),
+      useConfigMock: vi.fn().mockReturnValue({
+        data: { app_mode: "oss", feature_flags: defaultFeatureFlags },
+        isLoading: false,
+      }),
+    };
+  },
+);
+
+vi.mock("#/hooks/query/use-is-authed", () => ({
+  useIsAuthed: () => useIsAuthedMock(),
+}));
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => useConfigMock(),
+}));
+
+const { userIsAuthenticatedMock, settingsAreUpToDateMock } = vi.hoisted(() => ({
+  userIsAuthenticatedMock: vi.fn(),
+  settingsAreUpToDateMock: vi.fn(),
+}));
+
+vi.mock("#/utils/user-is-authenticated", () => ({
+  userIsAuthenticated: userIsAuthenticatedMock.mockReturnValue(true),
+}));
+
+vi.mock("#/services/settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#/services/settings")>()),
+  settingsAreUpToDate: settingsAreUpToDateMock,
+}));
+
 describe("frontend/routes/_oh", () => {
-  const { DEFAULT_FEATURE_FLAGS, useIsAuthedMock, useConfigMock } = vi.hoisted(
-    () => {
-      const defaultFeatureFlags = {
-        enable_billing: false,
-        hide_llm_settings: false,
-        enable_jira: false,
-        enable_jira_dc: false,
-        enable_linear: false,
-        hide_users_page: false,
-        hide_billing_page: false,
-        hide_integrations_page: false,
-        enable_onboarding: false,
-      };
-
-      return {
-        DEFAULT_FEATURE_FLAGS: defaultFeatureFlags,
-        useIsAuthedMock: vi.fn().mockReturnValue({
-          data: true,
-          isLoading: false,
-          isFetching: false,
-          isError: false,
-        }),
-        useConfigMock: vi.fn().mockReturnValue({
-          data: { app_mode: "oss", feature_flags: defaultFeatureFlags },
-          isLoading: false,
-        }),
-      };
-    },
-  );
-
-  vi.mock("#/hooks/query/use-is-authed", () => ({
-    useIsAuthed: () => useIsAuthedMock(),
-  }));
-
-  vi.mock("#/hooks/query/use-config", () => ({
-    useConfig: () => useConfigMock(),
-  }));
-
   const RouteStub = createRoutesStub([
     { Component: MainApp, path: "/" },
     { Component: () => <div data-testid="login-page" />, path: "/login" },
   ]);
-
-  const { userIsAuthenticatedMock, settingsAreUpToDateMock } = vi.hoisted(
-    () => ({
-      userIsAuthenticatedMock: vi.fn(),
-      settingsAreUpToDateMock: vi.fn(),
-    }),
-  );
-
-  beforeAll(() => {
-    vi.mock("#/utils/user-is-authenticated", () => ({
-      userIsAuthenticated: userIsAuthenticatedMock.mockReturnValue(true),
-    }));
-
-    vi.mock("#/services/settings", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("#/services/settings")>()),
-      settingsAreUpToDate: settingsAreUpToDateMock,
-    }));
-  });
 
   afterEach(() => {
     vi.clearAllMocks();

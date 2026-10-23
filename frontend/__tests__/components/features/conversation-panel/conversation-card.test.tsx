@@ -1,14 +1,5 @@
 import { screen, within } from "@testing-library/react";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  test,
-  vi,
-} from "vitest";
+import { afterEach, describe, expect, it, test, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "test-utils";
 import { formatTimeDelta } from "#/utils/format-time-delta";
@@ -45,20 +36,8 @@ describe("ConversationCard", () => {
   const onDelete = vi.fn();
   const onChangeTitle = vi.fn();
 
-  beforeAll(() => {
-    vi.stubGlobal("window", {
-      open: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-  });
-
   afterEach(() => {
     vi.clearAllMocks();
-  });
-
-  afterAll(() => {
-    vi.unstubAllGlobals();
   });
 
   it("should render the conversation card", () => {

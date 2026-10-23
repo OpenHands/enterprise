@@ -174,20 +174,20 @@ describe("ChatInterface - Chat Suggestions", () => {
   });
 });
 
+const { send: sendMock } = vi.hoisted(() => ({
+  send: vi.fn(),
+}));
+
+const { useWsClient: useWsClientMock } = vi.hoisted(() => ({
+  useWsClient: vi.fn(() => ({
+    send: sendMock,
+    status: "CONNECTED",
+    isLoadingMessages: false,
+    parsedEvents: [],
+  })),
+}));
+
 describe("ChatInterface - Empty state", () => {
-  const { send: sendMock } = vi.hoisted(() => ({
-    send: vi.fn(),
-  }));
-
-  const { useWsClient: useWsClientMock } = vi.hoisted(() => ({
-    useWsClient: vi.fn(() => ({
-      send: sendMock,
-      status: "CONNECTED",
-      isLoadingMessages: false,
-      parsedEvents: [],
-    })),
-  }));
-
   afterEach(() => {
     vi.clearAllMocks();
   });
@@ -297,7 +297,7 @@ describe('ChatInterface - Status Indicator', () => {
 describe.skip("ChatInterface - General functionality", () => {
   beforeAll(() => {
     // mock useScrollToBottom hook
-    vi.mock("#/hooks/useScrollToBottom", () => ({
+    vi.doMock("#/hooks/useScrollToBottom", () => ({
       useScrollToBottom: vi.fn(() => ({
         scrollDomToBottom: vi.fn(),
         onChatBodyScroll: vi.fn(),

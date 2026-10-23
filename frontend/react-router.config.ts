@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Config } from "@react-router/dev/config";
 
 /**
@@ -9,23 +12,17 @@ import type { Config } from "@react-router/dev/config";
  * This script is used in the buildEnd function of the Vite config.
  */
 const unpackClientDirectory = async () => {
-  const fs = await import("fs");
-  const path = await import("path");
-
-  const buildDir = path.resolve(__dirname, "build");
+  const buildDir = fileURLToPath(new URL("./build", import.meta.url));
   const clientDir = path.resolve(buildDir, "client");
 
-  const files = await fs.promises.readdir(clientDir);
+  const files = await fs.readdir(clientDir);
   await Promise.all(
     files.map((file) =>
-      fs.promises.rename(
-        path.resolve(clientDir, file),
-        path.resolve(buildDir, file),
-      ),
+      fs.rename(path.resolve(clientDir, file), path.resolve(buildDir, file)),
     ),
   );
 
-  await fs.promises.rmdir(clientDir);
+  await fs.rmdir(clientDir);
 };
 
 export default {

@@ -25,7 +25,7 @@ describe.skip("Terminal", () => {
     loadAddon: vi.fn(),
   };
 
-  vi.mock("@xterm/xterm", async (importOriginal) => ({
+  vi.doMock("@xterm/xterm", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@xterm/xterm")>()),
     Terminal: vi.fn().mockImplementation(() => mockTerminal),
   }));
