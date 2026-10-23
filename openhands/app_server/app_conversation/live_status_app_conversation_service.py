@@ -405,6 +405,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
     enable_child_conversation_launcher: bool = False
+    # Deployment-configured default grouping strategy, used when a user/org
+    # has not set ``sandbox_grouping_strategy`` on their own settings. See
+    # ``_get_sandbox_grouping_strategy``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -441,9 +445,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         )
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
-        """Get the sandbox grouping strategy from user settings."""
+        """Get the effective sandbox grouping strategy.
+
+        Precedence: the user/org-configured value from settings, else this
+        service's deployment-configured default (``self.sandbox_grouping_strategy``,
+        set via ``LiveStatusAppConversationServiceInjector``), else
+        ``NO_GROUPING``.
+        """
         user_info = await self.user_context.get_user_info()
-        return user_info.sandbox_grouping_strategy
+        return (
+            user_info.sandbox_grouping_strategy
+            or self.sandbox_grouping_strategy
+            or SandboxGroupingStrategy.NO_GROUPING
+        )
 
     async def search_app_conversations(
         self,
@@ -3589,6 +3603,14 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             'SAAS mode and best-effort elsewhere.'
         ),
     )
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = Field(
+        default=None,
+        description=(
+            'Deployment-wide default sandbox grouping strategy, used when a '
+            'user/org has not explicitly configured one. Falls back to '
+            'NO_GROUPING when unset.'
+        ),
+    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -3673,6 +3695,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,
                 app_mode=app_mode,
+                sandbox_grouping_strategy=self.sandbox_grouping_strategy,
                 export_max_events=self.export_max_events,
                 export_lock_ttl_seconds=self.export_lock_ttl_seconds,
                 export_lock_refresh_interval_seconds=(

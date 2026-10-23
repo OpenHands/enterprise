@@ -2686,6 +2686,21 @@ class TestArchiveConversationWorkspace:
 
         assert path == '/workspace/project/deadbeef'
 
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_null_strategy(
+        self, remote_sandbox_service
+    ):
+        """A null sandbox_grouping_strategy (no org/user override) falls back to
+        NO_GROUPING, keeping the bare spec working_dir."""
+        stored = create_stored_sandbox()
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(sandbox_grouping_strategy=None)
+        )
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+        assert path == '/workspace/project'
+
 
 class TestArchiveWorkspaceHelper:
     """Unit tests for the workspace_archive helper."""

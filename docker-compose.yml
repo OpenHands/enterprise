@@ -244,6 +244,16 @@ services:
       # the app, so this follows WEB_URL.
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{sandbox_id}/{port}
 
+      # Deployment-wide default for how new conversations are assigned to
+      # sandboxes, used whenever a user/org has not set their own override
+      # (see LiveStatusAppConversationService._get_sandbox_grouping_strategy).
+      # FEWEST_CONVERSATIONS packs conversations onto the sandbox with the
+      # most spare capacity instead of giving each its own sandbox
+      # (NO_GROUPING, the app's own default), which keeps this
+      # single-evaluator stack from piling up one sandbox container per
+      # conversation.
+      OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
+
       # Automation runs connect to the agent server in their sandbox on this
       # port. The SDK otherwise uses the remote runtime's port, 60000.
       OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
