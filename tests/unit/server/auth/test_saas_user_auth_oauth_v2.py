@@ -48,6 +48,14 @@ def jwt_svc():
     return _make_jwt_service()
 
 
+def _active_user() -> MagicMock:
+    user = MagicMock()
+    user.is_disabled = False
+    user.deletion_pending = False
+    user.credentials_revoked_at = None
+    return user
+
+
 def _make_v2_cookie(
     jwt_svc: JwtService,
     *,
@@ -89,14 +97,14 @@ async def test_v2_cookie_decode_builds_auth(jwt_svc):
     cookie = _make_v2_cookie(
         jwt_svc, user_id=user_id, accepted_tos=True, idp_provider_id=7
     )
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -124,14 +132,14 @@ async def test_v2_cookie_decode_marks_legacy_cookie_without_idp_provider_id(jwt_
     behavior instead of assuming "no IDP token to refresh"."""
     user_id = str(uuid4())
     cookie = _make_v2_cookie(jwt_svc, user_id=user_id, omit_idp_provider_id_claim=True)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -159,14 +167,14 @@ async def test_v2_cookie_missing_user_id_raises(jwt_svc):
 async def test_v2_cookie_blacklisted_email_raises(jwt_svc):
     user_id = str(uuid4())
     cookie = _make_v2_cookie(jwt_svc, user_id=user_id)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'bad@evil.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -185,14 +193,14 @@ async def test_v2_cookie_access_token_expires_at_parsed(jwt_svc):
     cookie = _make_v2_cookie(
         jwt_svc, user_id=user_id, access_token_expires_at=ate, accepted_tos=False
     )
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = None
     mock_user.email_verified = False
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
     ):
@@ -212,7 +220,7 @@ async def test_from_cookie_prefers_v2(jwt_svc):
     """When both cookies are present, the v2 cookie wins."""
     user_id = str(uuid4())
     v2_cookie = _make_v2_cookie(jwt_svc, user_id=user_id)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
@@ -225,7 +233,7 @@ async def test_from_cookie_prefers_v2(jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
