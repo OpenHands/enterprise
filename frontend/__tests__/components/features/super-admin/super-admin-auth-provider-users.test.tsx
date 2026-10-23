@@ -80,7 +80,10 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     user_id: "user-1",
     email: "alice@example.com",
     name: "Alice",
-    memberships: [],
+    memberships: [
+      { org_id: "user-1", org_name: "user_user-1_org", role: "owner", status: "active" },
+      { org_id: "org-acme", org_name: "Acme Corp", role: "admin", status: "active" },
+    ],
     status: "active",
   },
   {
@@ -94,7 +97,9 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     user_id: "user-3",
     email: "carol@example.com",
     name: "Carol",
-    memberships: [],
+    memberships: [
+      { org_id: "org-globex", org_name: "Globex", role: "member", status: "active" },
+    ],
     status: "active",
   },
   {
@@ -313,6 +318,50 @@ describe("Super Admin Auth Provider User Links page", () => {
     expect(
       within(dialog).getByText("Alice <alice@example.com>"),
     ).toBeInTheDocument();
+  });
+
+  it("shows the selected account, its id and its organizations as the dropdown changes", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-user-edit-10"),
+    );
+    const dialog = screen.getByTestId(
+      "super-admin-auth-provider-user-edit-modal",
+    );
+    const target = within(dialog).getByTestId(
+      "super-admin-auth-provider-user-edit-target",
+    );
+
+    // Before anything is picked: the account the link points at today. The
+    // personal workspace shares the user's id, so it's labelled as such.
+    expect(within(target).getByText("Alice <alice@example.com>")).toBeInTheDocument();
+    expect(await within(target).findByText("Acme Corp")).toBeInTheDocument();
+    expect(within(target).getByText("org-acme")).toBeInTheDocument();
+    expect(within(target).getByText("ORG$PERSONAL_WORKSPACE")).toBeInTheDocument();
+    // The user id, plus the personal workspace's org id (which is the same).
+    expect(within(target).getAllByText("user-1")).toHaveLength(2);
+
+    await user.type(within(dialog).getByRole("combobox"), "carol");
+    await user.click(
+      screen.getByRole("option", { name: "Carol <carol@example.com>" }),
+    );
+
+    expect(within(target).getByText("Carol <carol@example.com>")).toBeInTheDocument();
+    expect(within(target).getByText("user-3")).toBeInTheDocument();
+    expect(within(target).getByText("Globex")).toBeInTheDocument();
+    expect(within(target).getByText("org-globex")).toBeInTheDocument();
+    expect(within(target).queryByText("Alice <alice@example.com>")).not.toBeInTheDocument();
+    expect(within(target).queryByText("Acme Corp")).not.toBeInTheDocument();
+
+    const combobox = within(dialog).getByRole("combobox");
+    await user.clear(combobox);
+    await user.type(combobox, "bob");
+    await user.click(screen.getByRole("option", { name: "Bob <bob@example.com>" }));
+
+    expect(within(target).getByText("Bob <bob@example.com>")).toBeInTheDocument();
+    expect(within(target).getByText("ORG$NO_ORGANIZATION")).toBeInTheDocument();
   });
 
   it("only fetches the user directory once the re-point dialog is opened", async () => {

@@ -16,6 +16,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { cn } from "#/utils/utils";
 import type { AuthProviderUserLink } from "#/api/auth-providers-service/auth-providers.types";
+import type { SuperAdminApiMembership } from "#/api/super-admin-service/super-admin-service.api";
 import {
   BrandButton,
   SuperAdminPageHeader,
@@ -38,6 +39,62 @@ function formatAccount(
     return `${label} <${email}>`;
   }
   return label || email || fallbackId;
+}
+
+interface LinkTargetAccount {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  /** ``undefined`` until the user directory has loaded. */
+  memberships?: SuperAdminApiMembership[];
+}
+
+function LinkTargetSummary({ account }: { account: LinkTargetAccount }) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-0.5"
+      data-testid="super-admin-auth-provider-user-edit-target"
+    >
+      <span className="text-[var(--oh-muted)]">
+        {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_CURRENT_LABEL)}
+      </span>
+      <span className="break-all text-white">
+        {formatAccount(account.name, account.email, account.userId)}
+      </span>
+      <span className="break-all text-[var(--oh-muted)]">{account.userId}</span>
+      {account.memberships ? (
+        <div className="mt-1.5 flex min-w-0 flex-col gap-0.5">
+          <span className="text-[var(--oh-muted)]">
+            {t(I18nKey.SUPER_ADMIN$COL_ORG)}
+          </span>
+          {account.memberships.length === 0 ? (
+            <span className="text-white">{t(I18nKey.ORG$NO_ORGANIZATION)}</span>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {account.memberships.map((membership) => (
+                <li
+                  key={membership.org_id}
+                  className="flex min-w-0 flex-wrap items-baseline gap-x-2"
+                >
+                  <span className="text-white">
+                    {/* A personal workspace shares its owner's id. */}
+                    {membership.org_id === account.userId
+                      ? t(I18nKey.ORG$PERSONAL_WORKSPACE)
+                      : membership.org_name}
+                  </span>
+                  <span className="break-all text-[var(--oh-muted)]">
+                    {membership.org_id}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -97,6 +154,31 @@ export function SuperAdminAuthProviderUsers() {
         })),
     [directoryUsers],
   );
+
+  // Follows the dropdown so the admin can check who they're about to pick
+  // before confirming; falls back to the link's current account.
+  const targetAccount = useMemo((): LinkTargetAccount | null => {
+    if (!editingLink) {
+      return null;
+    }
+    const targetId = selectedUserId ?? editingLink.user_id;
+    const directoryUser = directoryUsers?.find(
+      (user) => user.user_id === targetId,
+    );
+    if (directoryUser) {
+      return {
+        userId: targetId,
+        name: directoryUser.name,
+        email: directoryUser.email,
+        memberships: directoryUser.memberships,
+      };
+    }
+    return {
+      userId: editingLink.user_id,
+      name: editingLink.user_name,
+      email: editingLink.email,
+    };
+  }, [directoryUsers, editingLink, selectedUserId]);
 
   const items = data?.items ?? [];
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
@@ -241,7 +323,7 @@ export function SuperAdminAuthProviderUsers() {
           onPageChange={setPage}
         />
       ) : null}
-      {editingLink ? (
+      {editingLink && targetAccount ? (
         <OrgModal
           testId="super-admin-auth-provider-user-edit-modal"
           title={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_UPDATE_TITLE)}
@@ -259,9 +341,9 @@ export function SuperAdminAuthProviderUsers() {
           onPrimaryClick={confirmEdit}
           onClose={closeEdit}
         >
-          {/* Restate what is being moved and where it points today: the admin
-              picks from a list of every account on the instance, so the
-              dialog has to keep the identity and the current target visible. */}
+          {/* Restate what is being moved and the account it will point at: the
+              admin picks from a list of every account on the instance, so the
+              dialog has to keep the identity and the target visible. */}
           <div className="flex flex-col gap-2 rounded-md border border-[var(--oh-border)] p-3 text-xs">
             <div className="flex min-w-0 flex-col gap-0.5">
               <span className="text-[var(--oh-muted)]">
@@ -276,18 +358,7 @@ export function SuperAdminAuthProviderUsers() {
                 </span>
               ) : null}
             </div>
-            <div className="flex min-w-0 flex-col gap-0.5">
-              <span className="text-[var(--oh-muted)]">
-                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_CURRENT_LABEL)}
-              </span>
-              <span className="break-all text-white">
-                {formatAccount(
-                  editingLink.user_name,
-                  editingLink.email,
-                  editingLink.user_id,
-                )}
-              </span>
-            </div>
+            <LinkTargetSummary account={targetAccount} />
           </div>
           <Dropdown
             testId="super-admin-auth-provider-user-edit-select"
