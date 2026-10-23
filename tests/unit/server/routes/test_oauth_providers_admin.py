@@ -71,6 +71,7 @@ def _fake_provider(
     client_secret: str | None = None,
     icon: str | None = None,
     color: str = DEFAULT_AUTH_PROVIDER_COLOR,
+    enabled: bool = True,
     allow_registration: bool = True,
     allow_match_by_email: bool = True,
     legacy_keycloak_type: ProviderType | None = None,
@@ -81,6 +82,7 @@ def _fake_provider(
         is_idp=is_idp,
         icon=icon,
         color=color,
+        enabled=enabled,
         allow_registration=allow_registration,
         allow_match_by_email=allow_match_by_email,
         details=OAuthProviderDetails(
@@ -228,6 +230,7 @@ async def test_create_integrated_idp_provider(mock_app, grant_manage_oauth_provi
         title='Integrated IDP',
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
         allow_match_by_email=True,
         details=PasswordProviderDetails(),
@@ -306,6 +309,92 @@ async def test_update_provider_partial(mock_app, grant_manage_oauth_providers):
     assert resp.json()['title'] == 'New Name'
     # Only the explicitly-set field is forwarded to the store.
     update_mock.assert_awaited_once_with(1, title='New Name')
+
+
+@pytest.mark.asyncio
+async def test_update_provider_toggles_enabled(mock_app, grant_manage_oauth_providers):
+    """``enabled`` is a plain patchable column, so the list page's inline
+    toggle can switch a provider on/off without resending ``details`` (which
+    would need the secret carried forward)."""
+    updated = _fake_provider(enabled=False)
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=_fake_provider(1, 'github')),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=updated),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={'enabled': False},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()['enabled'] is False
+    update_mock.assert_awaited_once_with(1, enabled=False)
+
+
+@pytest.mark.asyncio
+async def test_create_provider_defaults_to_disabled(
+    mock_app, grant_manage_oauth_providers
+):
+    """New rows start switched off so a half-configured provider -- e.g. one
+    created from a preset with placeholder URLs -- never serves logins."""
+    created = _fake_provider(enabled=False)
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'GitHub',
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    assert resp.json()['enabled'] is False
+    (persisted,), _ = create_mock.call_args
+    assert persisted.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_create_provider_enabled_explicitly(
+    mock_app, grant_manage_oauth_providers
+):
+    created = _fake_provider(enabled=True)
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'GitHub',
+                    'enabled': True,
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    assert resp.json()['enabled'] is True
+    (persisted,), _ = create_mock.call_args
+    assert persisted.enabled is True
 
 
 @pytest.mark.asyncio
@@ -609,6 +698,7 @@ def _fake_password_provider(provider_id: int = 1, title: str = 'Password Login')
         title=title,
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
         allow_match_by_email=True,
         details=PasswordProviderDetails(),
@@ -815,6 +905,7 @@ def _fake_saml_provider(
         title=title,
         is_idp=is_idp,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
         allow_match_by_email=True,
         details=SamlProviderDetails(
@@ -1040,6 +1131,7 @@ def make_provider(db):
         provider = AuthProvider(
             title=category.title(),
             is_idp=False,
+            enabled=True,
             details=OAuthProviderDetails(
                 provider_type=ProviderType(category), client_id='cid'
             ),
@@ -1169,6 +1261,66 @@ async def test_list_auth_provider_users_filter(
     body = resp.json()
     assert body['total'] == 1
     assert body['items'][0]['user_id'] == str(match.id)
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_includes_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    named = create_user(email='ada@example.com', git_user_name='Ada Lovelace')
+    unnamed = create_user(email='grace@example.com')
+    await make_link(provider.id, named.id, 'sub-1')
+    await make_link(provider.id, unnamed.id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(f'/api/admin/oauth-providers/{provider.id}/users')
+
+    assert resp.status_code == 200
+    by_subject = {item['external_subject_id']: item for item in resp.json()['items']}
+    assert by_subject['sub-1']['user_name'] == 'Ada Lovelace'
+    # No git profile name: fall back to the email local part, matching the
+    # instance user directory, so the row is still recognizable.
+    assert by_subject['sub-2']['user_name'] == 'grace'
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_filter_matches_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    match = create_user(email='someone@example.com', git_user_name='Ada Lovelace')
+    await make_link(provider.id, match.id, 'sub-1')
+    await make_link(provider.id, create_user(email='other@example.com').id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'q': 'lovelace'},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 1
+    assert body['items'][0]['user_id'] == str(match.id)
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_returns_target_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    link = await make_link(provider.id, create_user().id, 'sub-1')
+    target = create_user(email='new@example.com', git_user_name='Ada Lovelace')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(target.id)},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()['user_name'] == 'Ada Lovelace'
 
 
 @pytest.mark.asyncio

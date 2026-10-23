@@ -65,6 +65,7 @@ def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
     provider.id = provider_id
     provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
+    provider.enabled = True
     provider.details = PasswordProviderDetails()
     provider.title = 'Password Login'
     return provider
@@ -142,6 +143,8 @@ def _mock_user(
     user.email = email
     user.accepted_tos = accepted_tos
     user.user_consents_to_analytics = False
+    user.is_disabled = False
+    user.deletion_pending = False
     user.password_hash = password_hash
     return user
 
@@ -314,6 +317,21 @@ class TestIsIdpAvailable:
 
             result = asyncio.run(is_idp_available())
         assert result is True
+
+    def test_disabled_when_row_is_disabled(self):
+        """An admin can switch the integrated IDP off; that must hide it from
+        the login screen and 404 its routes, exactly like a missing row."""
+        provider = _fake_integrated_idp_provider()
+        provider.enabled = False
+        with patch(
+            'server.routes.idp.AuthProviderStore.get_first_by_kind',
+            new_callable=AsyncMock,
+            return_value=provider,
+        ):
+            import asyncio
+
+            result = asyncio.run(is_idp_available())
+        assert result is False
 
     def test_queries_integrated_idp_category(self):
         """``is_idp_available`` looks up the row by
@@ -2635,6 +2653,45 @@ class TestCreateSignupLink:
 
 
 class TestInviteAcceptRole:
+    @pytest.mark.parametrize('field', ['is_disabled', 'deletion_pending'])
+    def test_inactive_invitee_has_no_side_effects(self, client, jwt_svc, field):
+        existing = _mock_user(email='invitee@example.com')
+        setattr(existing, field, True)
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', role='superadmin'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    AsyncMock(return_value=existing),
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash', AsyncMock()
+                ) as set_password,
+                patch(
+                    'server.routes.idp.UserStore.grant_super_admin', AsyncMock()
+                ) as grant,
+                patch(
+                    'server.routes.idp._ensure_org_membership', AsyncMock()
+                ) as membership,
+                _patch_complete_login() as complete,
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+        assert response.status_code == 302
+        assert response.headers['location'].endswith('/login?account_disabled=true')
+        for operation in (set_password, grant, membership, complete):
+            operation.assert_not_awaited()
+
     def test_superadmin_role_grants_super_admin_instead_of_org_add(
         self, client, jwt_svc
     ):
@@ -2767,90 +2824,10 @@ class TestInviteAcceptRole:
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
 
 
-# ── auth_provider_users links + allow_match_by_email ──────────────────────
+# ── auth_provider_users links ─────────────────────────────────────────────
 
 
 class TestIdpProviderLinks:
-    @pytest.mark.parametrize('flag', [True, False])
-    def test_signup_new_user_gets_provider_flag(self, client, flag):
-        user_id = derive_idp_user_id('dev@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with (
-            _available(has_password_super_admin=False) as provider,
-            patch(
-                'server.routes.idp.UserStore.get_user_by_id',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.idp.UserStore.get_user_by_email',
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                'server.routes.idp.UserStore.create_user',
-                new_callable=AsyncMock,
-                return_value=mock_user,
-            ) as mock_create,
-            patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-            _patch_complete_login() as mock_complete,
-        ):
-            provider.allow_match_by_email = flag
-            mock_complete.return_value = RedirectResponse('/', status_code=302)
-            client.post(
-                f'/oauth/{IDP_SIGNUP_PATH}',
-                data={
-                    'email': 'dev@example.com',
-                    'password': 'password<secret-hidden>',
-                    'confirm_password': 'password<secret-hidden>',
-                },
-                follow_redirects=False,
-            )
-
-        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
-
-    @pytest.mark.parametrize('flag', [True, False])
-    def test_invite_new_user_gets_provider_flag(self, client, jwt_svc, flag):
-        user_id = derive_idp_user_id('invitee@example.com')
-        mock_user = _mock_user(user_id=user_id, accepted_tos=None)
-
-        with _patch_jwt_service(jwt_svc):
-            token = idp._create_signup_link_token('invitee@example.com')
-            with (
-                _available() as provider,
-                patch(
-                    'server.routes.idp.UserStore.get_user_by_id',
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    'server.routes.idp.UserStore.get_user_by_email',
-                    new_callable=AsyncMock,
-                    return_value=None,
-                ),
-                patch(
-                    'server.routes.idp.UserStore.create_user',
-                    new_callable=AsyncMock,
-                    return_value=mock_user,
-                ) as mock_create,
-                patch('server.routes.idp._set_password_hash', new_callable=AsyncMock),
-                _patch_complete_login() as mock_complete,
-            ):
-                provider.allow_match_by_email = flag
-                mock_complete.return_value = RedirectResponse('/', status_code=302)
-                client.post(
-                    f'/oauth/{IDP_INVITE_PATH}',
-                    data={
-                        'token': token,
-                        'password': 'password<secret-hidden>',
-                        'confirm_password': 'password<secret-hidden>',
-                    },
-                    follow_redirects=False,
-                )
-
-        assert mock_create.call_args.kwargs['allow_match_by_email'] is flag
-
     def test_login_resolves_user_through_link(self, client, link_store):
         # The linked user's id is not the id derived from the email -- only
         # the link can find it.

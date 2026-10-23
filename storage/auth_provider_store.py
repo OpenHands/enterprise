@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -45,36 +45,45 @@ class AuthProviderStore:
             )
             return result.scalar_one_or_none() is not None
 
-    async def get_idp_providers(self) -> list[AuthProvider]:
+    async def get_idp_providers(
+        self, *, enabled_only: bool = True
+    ) -> list[AuthProvider]:
         """Return all IDP providers, including the integrated/password IDP.
 
         The integrated IDP (``server.routes.idp``) is a real row like any
         other (``kind='PasswordProviderDetails'``), so no special-casing is
         needed here.
+
+        ``enabled_only`` filters out rows an admin has switched off. Pass
+        ``False`` when resolving a session or token that was minted while the
+        row was still enabled -- disabling a provider must not sign existing
+        users out.
         """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider)
-                .where(AuthProvider.is_idp.is_(True))
-                .order_by(AuthProvider.id)
-            )
+            query = select(AuthProvider).where(AuthProvider.is_idp.is_(True))
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
+            result = await session.execute(query.order_by(AuthProvider.id))
             return list(result.scalars().all())
 
-    async def get_first_idp(self) -> AuthProvider | None:
+    async def get_first_idp(self, *, enabled_only: bool = True) -> AuthProvider | None:
         """Return the IDP that ``/oauth/idp-login`` should use.
 
         Priority is whichever ``is_idp`` row was created most recently
         (``created_at`` descending, ``id`` descending as a tiebreaker for
         same-timestamp inserts) -- there is no special-casing of the
         integrated/password IDP vs. a configured real IDP: whichever was
-        configured last wins. Returns ``None`` when no IDP is configured.
+        configured last wins. Returns ``None`` when no IDP is configured (or
+        only disabled ones are).
         """
         async with a_session_maker() as session:
+            query = select(AuthProvider).where(AuthProvider.is_idp.is_(True))
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
             result = await session.execute(
-                select(AuthProvider)
-                .where(AuthProvider.is_idp.is_(True))
-                .order_by(AuthProvider.created_at.desc(), AuthProvider.id.desc())
-                .limit(1)
+                query.order_by(
+                    AuthProvider.created_at.desc(), AuthProvider.id.desc()
+                ).limit(1)
             )
             return result.scalars().one_or_none()
 
@@ -95,11 +104,20 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
-    async def get_git_providers(self) -> list[AuthProvider]:
+    async def get_git_providers(
+        self, *, enabled_only: bool = True
+    ) -> list[AuthProvider]:
+        """Return git providers (``is_idp=False``).
+
+        ``enabled_only`` mirrors :meth:`get_idp_providers`: pass ``False``
+        when resolving tokens for a user who linked the provider while it was
+        still enabled.
+        """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider).where(AuthProvider.is_idp.is_(False))
-            )
+            query = select(AuthProvider).where(AuthProvider.is_idp.is_(False))
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
+            result = await session.execute(query)
             return list(result.scalars().all())
 
     async def get_provider_by_type(self, provider_type: str) -> AuthProvider | None:
@@ -141,7 +159,11 @@ class AuthProviderStore:
 
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
-            result = await session.execute(select(AuthProvider))
+            result = await session.execute(
+                select(AuthProvider).order_by(
+                    func.lower(AuthProvider.title), AuthProvider.id
+                )
+            )
             return list(result.scalars().all())
 
     async def create(self, provider: AuthProvider) -> AuthProvider:
@@ -198,6 +220,7 @@ class AuthProviderStore:
                     'is_idp',
                     'icon',
                     'color',
+                    'enabled',
                     'allow_registration',
                     'allow_match_by_email',
                     'details',

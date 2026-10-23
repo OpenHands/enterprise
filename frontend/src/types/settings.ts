@@ -213,7 +213,9 @@ export type Settings = {
   conversation_settings_schema?: SettingsSchema | null;
   conversation_settings?: Record<string, SettingsValue> | null;
   enable_memory_context?: boolean;
-  sandbox_grouping_strategy?: SandboxGroupingStrategy;
+  // null means no org/user override is set — the server falls back to its
+  // deployment-configured default, then NO_GROUPING.
+  sandbox_grouping_strategy?: SandboxGroupingStrategy | null;
   registered_marketplaces?: MarketplaceRegistration[];
   inherited_marketplaces?: MarketplaceRegistration[];
   updated_at?: string;

@@ -57,6 +57,7 @@ from server.auth.provider_identity import (
     decrypt_state,
     encrypt_state,
     get_provider_or_404,
+    require_enabled_provider,
     resolve_or_create_user,
     set_oauth_v2_cookie,
 )
@@ -224,6 +225,7 @@ def _extract_mapped_attribute(
 async def saml_login(request: Request, provider_id: int, redirect_url: str = ''):
     """SP-initiated login: redirect to the IdP with a signed AuthnRequest."""
     provider = await _get_saml_provider(provider_id)
+    require_enabled_provider(provider)
     details = _saml_details(provider)
     _require_configured(details, provider_id)
 
@@ -256,6 +258,7 @@ async def saml_login(request: Request, provider_id: int, redirect_url: str = '')
 async def saml_acs(request: Request, provider_id: int):
     """Assertion Consumer Service: the IdP's auto-submitting POST target."""
     provider = await _get_saml_provider(provider_id)
+    require_enabled_provider(provider)
     details = _saml_details(provider)
     _require_configured(details, provider_id)
 

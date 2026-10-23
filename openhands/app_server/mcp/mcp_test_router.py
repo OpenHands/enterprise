@@ -326,6 +326,15 @@ async def _expand_secret_references(
     )
 
 
+def _unset_secrets_error(names: list[str]) -> str:
+    # Bare names: settings UIs mask the typed credential, here the
+    # ``${NAME}`` reference itself, wherever it appears in the error.
+    return (
+        f'No secret named {", ".join(names)} is set. Add it on the Secrets '
+        'page or correct the reference.'
+    )
+
+
 def _restore_redacted_server(
     body: MCPTestRequestBody, settings: Settings | None
 ) -> dict[str, Any]:
@@ -410,15 +419,8 @@ async def test_mcp_server(
         _restore_redacted_server(body, settings), user_context
     )
     if expansion.missing:
-        # Bare names: settings UIs mask the typed credential, here the
-        # ``${NAME}`` reference itself, wherever it appears in the error.
-        names = ', '.join(expansion.missing)
         return MCPTestFailure(
-            error=(
-                f'No secret named {names} is set. Add it on the Secrets '
-                'page or correct the reference.'
-            ),
-            error_kind='unknown',
+            error=_unset_secrets_error(expansion.missing), error_kind='unknown'
         )
     request = await _validate_probe_request(body, expansion.server)
     resolved_server = request.resolved_server

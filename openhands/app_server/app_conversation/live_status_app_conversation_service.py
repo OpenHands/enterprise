@@ -192,7 +192,9 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 
 
-def _resolve_title_llm_profile(user: UserInfo) -> str | None:
+def _resolve_title_llm_profile(
+    user: UserInfo, conversation_model: str | None = None
+) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
     if (
         preference
@@ -203,6 +205,14 @@ def _resolve_title_llm_profile(user: UserInfo) -> str | None:
 
     active = user.llm_profiles.active
     if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        # A conversation started on another model (a picked profile, a model
+        # override or an agent profile) is titled with that model: without a
+        # title profile the agent-server falls back to the agent's LLM.
+        if (
+            conversation_model
+            and user.llm_profiles.require(active).model != conversation_model
+        ):
+            return None
         return active
     return None
 
@@ -395,6 +405,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
     enable_child_conversation_launcher: bool = False
+    # Deployment-configured default grouping strategy, used when a user/org
+    # has not set ``sandbox_grouping_strategy`` on their own settings. See
+    # ``_get_sandbox_grouping_strategy``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -431,9 +445,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         )
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
-        """Get the sandbox grouping strategy from user settings."""
+        """Get the effective sandbox grouping strategy.
+
+        Precedence: the user/org-configured value from settings, else this
+        service's deployment-configured default (``self.sandbox_grouping_strategy``,
+        set via ``LiveStatusAppConversationServiceInjector``), else
+        ``NO_GROUPING``.
+        """
         user_info = await self.user_context.get_user_info()
-        return user_info.sandbox_grouping_strategy
+        return (
+            user_info.sandbox_grouping_strategy
+            or self.sandbox_grouping_strategy
+            or SandboxGroupingStrategy.NO_GROUPING
+        )
 
     async def search_app_conversations(
         self,
@@ -598,24 +622,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_server_url = self._get_agent_server_url(sandbox)
 
             # Get the working dir
-            sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
+            sandbox_spec = (
+                await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+                    sandbox.sandbox_spec_id, sandbox_id
+                )
             )
-            if sandbox_spec is None:
-                # Runtime-api advertises only the current agent-server image, so a
-                # sandbox created before an image bump has no spec. Only
-                # ``working_dir`` is read from it, and the default shares it.
-                sandbox_spec = (
-                    await self.sandbox_spec_service.get_default_sandbox_spec()
-                )
-                _logger.warning(
-                    'Sandbox spec %s not found for sandbox %s; using default spec '
-                    '%s (working_dir=%s)',
-                    sandbox.sandbox_spec_id,
-                    sandbox_id,
-                    sandbox_spec.id,
-                    sandbox_spec.working_dir,
-                )
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
@@ -1077,6 +1088,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
+        # Prefer sandboxes whose image runtime-api still advertises, so a new
+        # conversation is not routed into an old-image sandbox when a current
+        # one exists. Keep the full list when none is current or the lookup
+        # fails, rather than starting a new sandbox.
+        current_sandboxes = await self._filter_sandboxes_with_known_spec(
+            available_sandboxes
+        )
+        if current_sandboxes:
+            available_sandboxes = current_sandboxes
+
         if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
             # Return the first available sandbox
             return available_sandboxes[0]
@@ -1127,6 +1148,32 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             # Return empty counts on error - will default to first sandbox
             return {}
+
+    async def _filter_sandboxes_with_known_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Return the sandboxes whose spec the spec service still resolves.
+
+        After an agent-server image bump runtime-api advertises only the
+        current image, so sandboxes on the previous image resolve to no spec.
+        Returns an empty list when none resolve or the lookup fails; the
+        caller then keeps its full list.
+        """
+        try:
+            # One lookup per distinct spec id; the dynamic spec service caches
+            # the runtime-api listing, so this is at most one request.
+            known: dict[str, bool] = {}
+            for sandbox in sandboxes:
+                spec_id = sandbox.sandbox_spec_id
+                if spec_id not in known:
+                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
+                    known[spec_id] = spec is not None
+            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+        except Exception as e:
+            _logger.warning(
+                f'Error checking sandbox specs for grouping: {e}', exc_info=True
+            )
+            return []
 
     async def _wait_for_sandbox_start(
         self, task: AppConversationStartTask
@@ -2643,7 +2690,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': user.id}
         if client_tools:
             create_kwargs['client_tools'] = client_tools
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = _resolve_title_llm_profile(user, llm.model)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -3556,6 +3603,14 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             'SAAS mode and best-effort elsewhere.'
         ),
     )
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = Field(
+        default=None,
+        description=(
+            'Deployment-wide default sandbox grouping strategy, used when a '
+            'user/org has not explicitly configured one. Falls back to '
+            'NO_GROUPING when unset.'
+        ),
+    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -3640,6 +3695,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,
                 app_mode=app_mode,
+                sandbox_grouping_strategy=self.sandbox_grouping_strategy,
                 export_max_events=self.export_max_events,
                 export_lock_ttl_seconds=self.export_lock_ttl_seconds,
                 export_lock_refresh_interval_seconds=(

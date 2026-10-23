@@ -16,6 +16,11 @@ import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
+import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
+import { FreeOpenHandsModelsNote } from "#/components/shared/free-models-note";
+
+const freeModelBadgeClassName =
+  "shrink-0 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] leading-none text-warning";
 
 interface ModelSelectorProps {
   isDisabled?: boolean;
@@ -77,6 +82,22 @@ export function ModelSelector({
     [dropdownModels],
   );
 
+  // DB-driven free model names for the selected provider (mirrors `verified`:
+  // the frontend does not hardcode which models are free). Only surfaced on
+  // OpenHands-hosted domains — self-hosted installs never show free-model UI.
+  const showFreeModelUI = isOpenHandsHostedDomain();
+  const freeModelNames = React.useMemo(
+    () =>
+      showFreeModelUI
+        ? dropdownModels.filter((m) => m.free).map((m) => m.name)
+        : [],
+    [dropdownModels, showFreeModelUI],
+  );
+  const freeModelNameSet = React.useMemo(
+    () => new Set(freeModelNames),
+    [freeModelNames],
+  );
+
   // Truthful-but-gentle signal that the displayed model no longer exists in
   // the provider's model list (e.g. an admin removed it from a managed
   // proxy). Only shown when the list actually loaded non-empty — a fetch
@@ -136,6 +157,20 @@ export function ModelSelector({
     setSelectedProvider(null);
     setLitellmId(null);
   };
+
+  const isSelectedModelFree = Boolean(
+    selectedModel && freeModelNameSet.has(selectedModel),
+  );
+  // Current text of the model search input. `null` means the user hasn't
+  // typed, so the selected-model badge stays anchored to the (unchanged)
+  // input text; once typing starts, the badge only shows while the typed
+  // text still matches the selected model.
+  const [modelInputValue, setModelInputValue] = React.useState<string | null>(
+    null,
+  );
+  const showSelectedFreeModelBadge =
+    isSelectedModelFree &&
+    (modelInputValue === null || modelInputValue === selectedModel);
 
   const { t } = useTranslation();
 
@@ -227,62 +262,101 @@ export function ModelSelector({
         <label className={cn("text-sm", labelClassName)}>
           {t(I18nKey.LLM$MODEL)}
         </label>
-        <Autocomplete
-          data-testid="llm-model-input"
-          isRequired
-          isVirtualized={false}
-          isLoading={isLoadingModels}
-          name="llm-model-input"
-          aria-label={t(I18nKey.LLM$MODEL)}
-          placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
-          isClearable={false}
-          onSelectionChange={(e) => {
-            if (e?.toString()) handleChangeModel(e.toString());
-          }}
-          isDisabled={isDisabled || !selectedProvider}
-          selectedKey={selectedModel}
-          defaultSelectedKey={selectedModel ?? undefined}
-          classNames={{
-            popoverContent: "bg-content1 rounded-xl",
-            selectorButton: heroUiAutocompleteSelectorButtonClassName,
-          }}
-          selectorButtonProps={{ disableRipple: true }}
-          inputProps={{
-            classNames: {
-              inputWrapper: formControlSettingsFieldClassName,
-            },
-          }}
-        >
-          <AutocompleteSection
-            title={
-              unverifiedModels.length > 0
-                ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
-                : undefined
-            }
+        <div className="relative">
+          <Autocomplete
+            data-testid="llm-model-input"
+            isRequired
+            isVirtualized={false}
+            isLoading={isLoadingModels}
+            name="llm-model-input"
+            aria-label={t(I18nKey.LLM$MODEL)}
+            placeholder={t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER)}
+            isClearable={false}
+            onSelectionChange={(e) => {
+              if (e?.toString()) handleChangeModel(e.toString());
+            }}
+            onInputChange={(value) => setModelInputValue(value)}
+            isDisabled={isDisabled || !selectedProvider}
+            selectedKey={selectedModel}
+            defaultSelectedKey={selectedModel ?? undefined}
+            classNames={{
+              popoverContent: "bg-content1 rounded-xl",
+              selectorButton: heroUiAutocompleteSelectorButtonClassName,
+            }}
+            selectorButtonProps={{ disableRipple: true }}
+            inputProps={{
+              classNames: {
+                inputWrapper: formControlSettingsFieldClassName,
+                // Make the input inherit the app font so the free-badge's
+                // invisible text copy (rendered in the app font) has the same
+                // metrics — otherwise the input falls back to the browser's
+                // form-control font and the copy mis-measures it.
+                input: "[font-family:inherit]",
+              },
+            }}
           >
-            {verifiedModels.map((model) => (
-              <AutocompleteItem key={model.name}>{model.name}</AutocompleteItem>
-            ))}
-          </AutocompleteSection>
-          {unverifiedModels.length > 0 ? (
             <AutocompleteSection
               title={
-                verifiedModels.length > 0
-                  ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                unverifiedModels.length > 0
+                  ? t(I18nKey.MODEL_SELECTOR$VERIFIED)
                   : undefined
               }
             >
-              {unverifiedModels.map((model) => (
-                <AutocompleteItem
-                  data-testid={`model-item-${model.name}`}
-                  key={model.name}
-                >
-                  {model.name}
+              {verifiedModels.map((model) => (
+                <AutocompleteItem key={model.name} textValue={model.name}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate">{model.name}</span>
+                    {showFreeModelUI && model.free ? (
+                      <span className={freeModelBadgeClassName}>
+                        {t(I18nKey.SETTINGS$FREE_MODEL_BADGE)}
+                      </span>
+                    ) : null}
+                  </span>
                 </AutocompleteItem>
               ))}
             </AutocompleteSection>
+            {unverifiedModels.length > 0 ? (
+              <AutocompleteSection
+                title={
+                  verifiedModels.length > 0
+                    ? t(I18nKey.MODEL_SELECTOR$OTHERS)
+                    : undefined
+                }
+              >
+                {unverifiedModels.map((model) => (
+                  <AutocompleteItem
+                    data-testid={`model-item-${model.name}`}
+                    key={model.name}
+                    textValue={model.name}
+                  >
+                    {model.name}
+                  </AutocompleteItem>
+                ))}
+              </AutocompleteSection>
+            ) : null}
+          </Autocomplete>
+          {showSelectedFreeModelBadge && selectedModel ? (
+            // Flow layout (invisible text copy + badge) instead of pixel
+            // measurement: the copy is laid out at the exact width of the
+            // input text (the input is forced to inherit the app font, so
+            // both render identically), placing the badge right after the
+            // name in any browser/font.
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 left-3 z-10 flex items-center gap-2"
+            >
+              <span className="invisible whitespace-pre text-sm">
+                {selectedModel}
+              </span>
+              <span
+                data-testid="selected-free-model-badge"
+                className={freeModelBadgeClassName}
+              >
+                {t(I18nKey.SETTINGS$FREE_MODEL_BADGE)}
+              </span>
+            </span>
           ) : null}
-        </Autocomplete>
+        </div>
         {modelsError && (
           <p data-testid="models-error" className="text-danger text-xs">
             {t(I18nKey.CONFIGURATION$ERROR_FETCH_MODELS)}
@@ -296,6 +370,15 @@ export function ModelSelector({
             {t(I18nKey.SETTINGS$MODEL_NO_LONGER_AVAILABLE)}
           </p>
         )}
+        {showFreeModelUI &&
+        selectedProvider === "openhands" &&
+        freeModelNames.length > 0 ? (
+          <FreeOpenHandsModelsNote
+            modelIds={freeModelNames.map(
+              (name) => `${selectedProvider}/${name}`,
+            )}
+          />
+        ) : null}
       </fieldset>
     </div>
   );

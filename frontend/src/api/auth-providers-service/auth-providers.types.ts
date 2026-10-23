@@ -111,6 +111,13 @@ export interface AuthProvider {
   icon: string | null;
   /** CSS color string for this provider's login button. */
   color: string;
+  /** Whether this provider may be used for a new login or link. New rows
+   * start disabled (the server defaults it to ``false``) so a
+   * half-configured provider -- e.g. a preset with placeholder URLs -- does
+   * not appear on the login screen before an admin finishes it. Disabling a
+   * provider only blocks new flows; sessions and tokens already minted
+   * through it keep working. */
+  enabled: boolean;
   /** Whether a brand-new user may be created the first time someone
    * authenticates through this provider, or whether only an already-linked
    * account may sign in through it. */
@@ -129,6 +136,9 @@ export interface CreateAuthProviderParams {
   is_idp?: boolean;
   icon?: string | null;
   color?: string;
+  /** Defaults to ``false`` server-side: enable a provider only once it is
+   * fully configured. */
+  enabled?: boolean;
   allow_registration?: boolean;
   allow_match_by_email?: boolean;
   details: AuthProviderDetails;
@@ -157,7 +167,7 @@ export interface PublicIdpProvider {
 }
 
 /** A single ``auth_provider_users`` row for one provider, joined with the
- * linked ``User.email`` -- mirrors
+ * linked ``User`` -- mirrors
  * ``server.routes.oauth_providers_admin.AuthProviderUserResponse``. Backs
  * the admin "User Links" table
  * (``/super-admin/auth-providers/{provider_id}/users``). */
@@ -165,6 +175,9 @@ export interface AuthProviderUserLink {
   id: number;
   user_id: string;
   email: string | null;
+  /** The linked account's display name (git profile name, else the local
+   * part of its email) -- what the admin recognizes the account by. */
+  user_name: string | null;
   external_subject_id: string;
   external_email: string | null;
 }

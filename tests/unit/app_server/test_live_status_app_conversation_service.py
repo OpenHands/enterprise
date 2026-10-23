@@ -58,6 +58,9 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -331,6 +334,28 @@ def test_title_profile_resolution_omits_unseedable_profiles():
     user.llm_profiles = profiles
 
     assert _resolve_title_llm_profile(user) is None
+
+
+def test_title_profile_resolution_follows_a_conversation_on_another_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile=None)
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o') == 'Default'
+    assert _resolve_title_llm_profile(user, 'anthropic/claude-haiku-3-5') is None
+
+
+def test_title_profile_resolution_prefers_explicit_profile_over_conversation_model():
+    profiles = LLMProfiles()
+    profiles.save('Default', LLM(model='openai/gpt-4o'))
+    profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
+    profiles.active = 'Default'
+    user = _TestUserInfo(title_llm_profile='Titles')
+    user.llm_profiles = profiles
+
+    assert _resolve_title_llm_profile(user, 'openai/gpt-4o-mini') == 'Titles'
 
 
 @pytest.mark.parametrize(
@@ -1792,6 +1817,38 @@ class TestLiveStatusAppConversationService:
         return_value=[],
     )
     @pytest.mark.asyncio
+    async def test_build_request_titles_with_the_conversation_model(self, _mock_tools):
+        """A conversation started on another model than the active profile's is
+        titled with its own model, so the active profile is not passed."""
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        self.mock_user.llm_profiles = profiles
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+
+        async def title_profile_for(model: str) -> str | None:
+            llm = LLM(model=model, api_key=SecretStr('test-key'))
+            self.service._configure_llm_and_mcp = AsyncMock(return_value=(llm, {}))
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+            )
+            return request.title_llm_profile
+
+        assert await title_profile_for('openai/gpt-4o') == 'Default'
+        assert await title_profile_for('anthropic/claude-haiku-3-5') is None
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.get_default_tools',
+        return_value=[],
+    )
+    @pytest.mark.asyncio
     async def test_build_request_passes_profile_and_member_disabled_skills(
         self, _mock_tools
     ):
@@ -3208,6 +3265,153 @@ class TestLiveStatusAppConversationService:
             in mock_logger.warning.call_args[0][0]
         )
 
+    @staticmethod
+    def _running_sandbox(
+        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+    ) -> SandboxInfo:
+        return SandboxInfo(
+            id=sandbox_id,
+            created_by_user_id='test_user_123',
+            sandbox_spec_id=sandbox_spec_id,
+            status=SandboxStatus.RUNNING,
+            session_api_key=None,
+            created_at=created_at,
+        )
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_prefers_advertised_image(self):
+        """After an agent-server image bump, a new conversation goes to a
+        sandbox on the current image even when the strategy would otherwise
+        pick the older sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        current_sandbox = self._running_sandbox(
+            'current', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox],
+            SandboxGroupingStrategy.LEAST_RECENTLY_USED,
+        )
+
+        assert result is current_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_old_image_when_none_current(
+        self,
+    ):
+        """With no sandbox on the current image, the old ones stay eligible so
+        the conversation is not forced into a new sandbox."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        first = self._running_sandbox('first', old_image, datetime(2026, 10, 1))
+        second = self._running_sandbox('second', old_image, datetime(2026, 10, 2))
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+
+        result = await self.service._select_sandbox_by_strategy(
+            [first, second], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is first
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_all_when_spec_lookup_fails(
+        self,
+    ):
+        """A failing spec lookup must not stop the conversation from landing in
+        an existing sandbox."""
+        old_sandbox = self._running_sandbox(
+            'old', 'ghcr.io/openhands/agent-server:1.50.1-python', datetime(2026, 10, 1)
+        )
+        current_sandbox = self._running_sandbox(
+            'current',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 2),
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=RuntimeError('runtime-api unavailable')
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_does_not_readmit_full_sandbox(self):
+        """Preferring the current image never overrides the per-sandbox
+        conversation cap."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox('old', old_image, datetime(2026, 10, 1))
+        full_sandbox = self._running_sandbox(
+            'full', current_image, datetime(2026, 10, 2)
+        )
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            side_effect=lambda sandbox_id__eq: (
+                self.service.max_num_conversations_per_sandbox
+                if sandbox_id__eq == 'full'
+                else 0
+            )
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            side_effect=lambda spec_id: (
+                Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, full_sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_prefers_user_setting(self):
+        """An explicit user/org setting wins over the deployment default."""
+        self.service.sandbox_grouping_strategy = SandboxGroupingStrategy.GROUP_BY_NEWEST
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(
+                sandbox_grouping_strategy=SandboxGroupingStrategy.ADD_TO_ANY
+            )
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.ADD_TO_ANY
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_falls_back_to_deployment_default(
+        self,
+    ):
+        """No user/org setting: the deployment-configured default is used."""
+        self.service.sandbox_grouping_strategy = SandboxGroupingStrategy.GROUP_BY_NEWEST
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(sandbox_grouping_strategy=None)
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.GROUP_BY_NEWEST
+
+    @pytest.mark.asyncio
+    async def test_get_sandbox_grouping_strategy_falls_back_to_no_grouping(self):
+        """Neither a user/org setting nor a deployment default: NO_GROUPING."""
+        self.service.sandbox_grouping_strategy = None
+        self.mock_user_context.get_user_info = AsyncMock(
+            return_value=_TestUserInfo(sandbox_grouping_strategy=None)
+        )
+
+        result = await self.service._get_sandbox_grouping_strategy()
+
+        assert result == SandboxGroupingStrategy.NO_GROUPING
+
     async def test_export_conversation_success(self):
         """Test successful download of conversation trajectory."""
         conversation_id = uuid4()
@@ -3644,6 +3848,39 @@ class TestLiveStatusAppConversationService:
         with pytest.raises(ValidationError):
             LiveStatusAppConversationServiceInjector(export_max_events=-1)
 
+    def test_injector_sandbox_grouping_strategy_defaults_to_none(self):
+        """No deployment default is configured unless explicitly set."""
+        injector = LiveStatusAppConversationServiceInjector()
+
+        assert injector.sandbox_grouping_strategy is None
+
+    def test_injector_sandbox_grouping_strategy_explicit_value(self):
+        """The injector accepts an explicit deployment default."""
+        injector = LiveStatusAppConversationServiceInjector(
+            sandbox_grouping_strategy=SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+        assert injector.sandbox_grouping_strategy == (
+            SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+    def test_injector_sandbox_grouping_strategy_from_env(self, monkeypatch):
+        """The deployment default is settable via the standard ``OH_*`` env-var
+        mechanism (``from_env``), consistent with the other injector fields."""
+        from openhands.agent_server.env_parser import from_env
+
+        monkeypatch.setenv(
+            'OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY', 'GROUP_BY_NEWEST'
+        )
+
+        injector = from_env(
+            LiveStatusAppConversationServiceInjector, 'OH_APP_CONVERSATION'
+        )
+
+        assert injector.sandbox_grouping_strategy == (
+            SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
@@ -3755,14 +3992,14 @@ class TestLiveStatusAppConversationService:
             profile_listing = Mock(raise_for_status=Mock())
             profile_listing.json.return_value = {'profiles': []}
             self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
-            self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
-                return_value=None
-            )
-            default_spec = Mock(spec=SandboxSpecInfo)
-            default_spec.id = current_image
-            default_spec.working_dir = '/workspace/project'
-            self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
-                return_value=default_spec
+            self.service.sandbox_spec_service = PresetSandboxSpecService(
+                specs=[
+                    SandboxSpecInfo(
+                        id=current_image,
+                        command=None,
+                        working_dir='/workspace/project',
+                    )
+                ]
             )
 
             tasks = [
@@ -3774,9 +4011,6 @@ class TestLiveStatusAppConversationService:
                 )
             ]
 
-        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
-            old_image
-        )
         assert tasks[-1].status == AppConversationStartTaskStatus.READY
         assert mock_remote_workspace_class.call_args.kwargs[
             'working_dir'
@@ -3800,8 +4034,7 @@ class TestLiveStatusAppConversationService:
         self._arrange_start_app_conversation(
             uuid4(), mock_conversation_info_class, mock_remote_workspace_class
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
-        self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             side_effect=SandboxError('No sandbox specs available!')
         )
 
@@ -3908,7 +4141,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -4157,7 +4390,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4374,7 +4607,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4451,7 +4684,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4607,7 +4840,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4791,7 +5024,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -6677,6 +6910,22 @@ class TestBuildAcpStartConversationRequestSecrets:
         request = await self._call_build(service, user, tmp_path)
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_acp_request_falls_back_to_active_title_profile(
+        self, service, tmp_path
+    ):
+        """ACP agents have no OpenHands LLM to title with, so the active profile
+        stays the fallback."""
+        user = self._make_acp_user()
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.active = 'Default'
+        user.llm_profiles = profiles
+
+        request = await self._call_build(service, user, tmp_path)
+
+        assert request.title_llm_profile == 'Default'
 
     @pytest.mark.asyncio
     async def test_acp_request_includes_registered_marketplaces(

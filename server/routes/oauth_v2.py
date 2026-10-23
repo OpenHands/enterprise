@@ -58,6 +58,9 @@ from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
 )
 from server.auth.provider_identity import (
+    require_enabled_provider as _require_enabled_provider,
+)
+from server.auth.provider_identity import (
     resolve_or_create_user as _resolve_or_create_user,
 )
 from server.auth.provider_identity import (
@@ -375,6 +378,7 @@ async def oauth_v2_login(
     the browser to the provider's authorization URL.
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
     # Integrated IDP is handled by its own routes (registered before this
     # router): intercept by kind and redirect to its dedicated email+password
@@ -456,6 +460,7 @@ async def oauth_v2_callback(
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
     # Password and SAML callbacks are handled by dedicated routes; checked
     # first, unconditionally, so this 404s on provider kind alone regardless
@@ -650,6 +655,7 @@ async def oauth_v2_link(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
         )
+    _require_enabled_provider(provider)
     _require_oauth_provider(provider)
     web_url = get_web_url(request)
     link_state = OAuthState(
@@ -715,7 +721,11 @@ async def oauth_v2_unlink(
 
 @oauth_v2_router.get('/providers')
 async def oauth_v2_list_providers():
-    """List configured OAuth providers (Phase 1 introspection/debug)."""
+    """List configured OAuth providers (Phase 1 introspection/debug).
+
+    Includes disabled rows -- this endpoint exists to show an operator what is
+    configured, which is exactly what ``enabled`` is part of.
+    """
     store = AuthProviderStore()
     providers = await store.list_all()
     return {
@@ -725,6 +735,7 @@ async def oauth_v2_list_providers():
                 'kind': p.kind,
                 'title': p.title,
                 'is_idp': p.is_idp,
+                'enabled': p.enabled,
             }
             for p in providers
         ]
@@ -761,12 +772,18 @@ async def oauth_v2_list_git_providers(
         )
     user_uuid = uuid.UUID(user_id)
     result: list[GitProviderStatus] = []
-    for provider in await AuthProviderStore().get_git_providers():
+    # Disabled rows are hidden from this list, *unless* the user already has
+    # a token for one: that connection still works (see
+    # ``SaasUserAuth._v2_get_provider_tokens``), so dropping the card would
+    # leave the user with no way to disconnect it.
+    for provider in await AuthProviderStore().get_git_providers(enabled_only=False):
         if not isinstance(provider.details, OAuthProviderDetails):
             continue
         token = await OAuthTokenStore(
             user_id=user_uuid, oauth_provider_id=provider.id
         ).get_raw()
+        if token is None and not provider.enabled:
+            continue
         result.append(
             GitProviderStatus(
                 id=provider.id,

@@ -24,6 +24,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.remote_sandbox_service import (
     ALLOW_CORS_ORIGINS_VARIABLE,
     STATUS_MAPPING,
@@ -65,6 +68,7 @@ def mock_sandbox_spec_service():
     )
     mock_service.get_default_sandbox_spec.return_value = mock_spec
     mock_service.get_sandbox_spec.return_value = mock_spec
+    mock_service.resolve_existing_sandbox_spec.return_value = mock_spec
     return mock_service
 
 
@@ -2606,7 +2610,7 @@ class TestArchiveConversationWorkspace:
         assert ok is True
         _, kwargs = mock_archive.call_args
         assert kwargs['archive_path'] == '/home/openhands/workspace/conv-1'
-        remote_sandbox_service.sandbox_spec_service.get_sandbox_spec.assert_not_called()
+        remote_sandbox_service.sandbox_spec_service.resolve_existing_sandbox_spec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolve_archive_path_uses_pinned(self, remote_sandbox_service):
@@ -2617,7 +2621,7 @@ class TestArchiveConversationWorkspace:
             stored, 'conv-1', '/home/openhands/workspace/conv-1'
         )
         assert path == '/home/openhands/workspace/conv-1'
-        remote_sandbox_service.sandbox_spec_service.get_sandbox_spec.assert_not_called()
+        remote_sandbox_service.sandbox_spec_service.resolve_existing_sandbox_spec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolve_archive_path_legacy_grouped(self, remote_sandbox_service):
@@ -2645,6 +2649,52 @@ class TestArchiveConversationWorkspace:
             return_value=MagicMock(
                 sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING
             )
+        )
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+        assert path == '/workspace/project'
+
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_unadvertised_image(
+        self, remote_sandbox_service
+    ):
+        """A pre-pinning conversation in a sandbox whose image runtime-api no
+        longer advertises resolves from the default spec's working_dir instead
+        of failing the archive."""
+        stored = create_stored_sandbox(
+            spec_id='ghcr.io/openhands/agent-server:1.50.1-python'
+        )
+        remote_sandbox_service.sandbox_spec_service = PresetSandboxSpecService(
+            specs=[
+                SandboxSpecInfo(
+                    id='ghcr.io/openhands/agent-server:1.57.0-python',
+                    command=None,
+                    working_dir='/workspace/project',
+                )
+            ]
+        )
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(
+                sandbox_grouping_strategy=SandboxGroupingStrategy.GROUP_BY_NEWEST
+            )
+        )
+
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+
+        assert path == '/workspace/project/deadbeef'
+
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_null_strategy(
+        self, remote_sandbox_service
+    ):
+        """A null sandbox_grouping_strategy (no org/user override) falls back to
+        NO_GROUPING, keeping the bare spec working_dir."""
+        stored = create_stored_sandbox()
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(sandbox_grouping_strategy=None)
         )
         path = await remote_sandbox_service._resolve_archive_path(
             stored, 'deadbeef', None

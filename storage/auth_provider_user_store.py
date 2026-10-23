@@ -21,8 +21,8 @@ from utils.sql import escape_ilike
 
 
 def _apply_filter(query, filter_text: str | None):
-    """OR-match ``filter_text`` against user email, external email and
-    external subject id -- shared by ``list_by_provider`` and
+    """OR-match ``filter_text`` against user email, user name, external email
+    and external subject id -- shared by ``list_by_provider`` and
     ``count_by_provider`` so their row sets always agree."""
     if not filter_text:
         return query
@@ -30,6 +30,7 @@ def _apply_filter(query, filter_text: str | None):
     return query.where(
         or_(
             User.email.ilike(pattern, escape='\\'),
+            User.git_user_name.ilike(pattern, escape='\\'),
             AuthProviderUser.external_email.ilike(pattern, escape='\\'),
             AuthProviderUser.external_subject_id.ilike(pattern, escape='\\'),
         )
@@ -68,11 +69,11 @@ class AuthProviderUserStore:
         filter_text: str | None = None,
     ) -> list[tuple[AuthProviderUser, User]]:
         """Paginated ``auth_provider_users`` rows for one provider, joined to
-        ``User`` for the linked account's email.
+        ``User`` for the linked account's email and display name.
 
         Backs the admin "User Links" table. ``filter_text`` matches, case
-        insensitively, any of: the linked user's email, the external email,
-        or the external subject id.
+        insensitively, any of: the linked user's email or name, the external
+        email, or the external subject id.
         """
         async with a_session_maker() as session:
             query = (

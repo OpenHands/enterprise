@@ -44,6 +44,7 @@ from openhands.app_server.types import (
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.auth_error import AuthError
 from server.auth.constants import JIRA_DC_ENABLE_OAUTH, JIRA_DC_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
@@ -194,9 +195,12 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             return None, None
 
-        saas_user_auth = await get_user_auth_from_keycloak_id(
-            jira_dc_user.keycloak_user_id
-        )
+        try:
+            saas_user_auth = await get_user_auth_from_keycloak_id(
+                jira_dc_user.keycloak_user_id
+            )
+        except AuthError:
+            return None, None
         return jira_dc_user, saas_user_auth
 
     async def _create_provider_handler(
