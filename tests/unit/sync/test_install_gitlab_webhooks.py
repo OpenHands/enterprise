@@ -1,17 +1,19 @@
 """Unit tests for install_gitlab_webhooks module."""
 
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
-    install_webhook_on_resource,
     verify_webhook_conditions,
 )
 from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
+
+RUN_ID = uuid4()
 
 
 @pytest.fixture
@@ -31,8 +33,8 @@ def mock_gitlab_service():
 def mock_webhook_store():
     """Create a mock webhook store."""
     store = MagicMock()
-    store.delete_webhook = AsyncMock()
-    store.update_webhook = AsyncMock()
+    store.delete_claimed = AsyncMock(return_value=True)
+    store.update_claimed = AsyncMock(return_value=True)
     return store
 
 
@@ -40,6 +42,7 @@ def mock_webhook_store():
 def sample_webhook():
     """Create a sample webhook object."""
     webhook = MagicMock(spec=GitlabWebhook)
+    webhook.id = 7
     webhook.user_id = 'test_user_id'
     webhook.webhook_exists = False
     webhook.webhook_uuid = None
@@ -66,6 +69,7 @@ class TestVerifyWebhookConditions:
             resource_id=resource_id,
             webhook_store=mock_webhook_store,
             webhook=sample_webhook,
+            claim_run_id=RUN_ID,
         )
 
         # Assert
@@ -80,7 +84,7 @@ class TestVerifyWebhookConditions:
             resource_id=resource_id,
             webhook_url=GITLAB_WEBHOOK_URL,
         )
-        mock_webhook_store.delete_webhook.assert_not_called()
+        mock_webhook_store.delete_claimed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_verify_conditions_resource_does_not_exist(
@@ -102,10 +106,13 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
         # Assert webhook is deleted
-        mock_webhook_store.delete_webhook.assert_called_once_with(sample_webhook)
+        mock_webhook_store.delete_claimed.assert_called_once_with(
+            sample_webhook.id, RUN_ID
+        )
 
     @pytest.mark.asyncio
     async def test_verify_conditions_rate_limited_on_resource_check(
@@ -127,10 +134,11 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
         # Should not delete webhook on rate limit
-        mock_webhook_store.delete_webhook.assert_not_called()
+        mock_webhook_store.delete_claimed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_verify_conditions_user_no_admin_access(
@@ -152,10 +160,13 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
         # Assert webhook is deleted
-        mock_webhook_store.delete_webhook.assert_called_once_with(sample_webhook)
+        mock_webhook_store.delete_claimed.assert_called_once_with(
+            sample_webhook.id, RUN_ID
+        )
 
     @pytest.mark.asyncio
     async def test_verify_conditions_rate_limited_on_admin_check(
@@ -177,10 +188,11 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
         # Should not delete webhook on rate limit
-        mock_webhook_store.delete_webhook.assert_not_called()
+        mock_webhook_store.delete_claimed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_verify_conditions_webhook_already_exists(
@@ -202,6 +214,7 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
     @pytest.mark.asyncio
@@ -224,6 +237,7 @@ class TestVerifyWebhookConditions:
                 resource_id=resource_id,
                 webhook_store=mock_webhook_store,
                 webhook=sample_webhook,
+                claim_run_id=RUN_ID,
             )
 
     @pytest.mark.asyncio
@@ -247,195 +261,10 @@ class TestVerifyWebhookConditions:
             resource_id=resource_id,
             webhook_store=mock_webhook_store,
             webhook=sample_webhook,
+            claim_run_id=RUN_ID,
         )
 
         # Assert webhook status was updated to match API
-        mock_webhook_store.update_webhook.assert_called_once_with(
-            sample_webhook, {'webhook_exists': False}
+        mock_webhook_store.update_claimed.assert_called_once_with(
+            sample_webhook.id, RUN_ID, webhook_exists=False
         )
-
-
-class TestInstallWebhookOnResource:
-    """Test cases for install_webhook_on_resource function."""
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_success(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test successful webhook installation."""
-        # Arrange
-        resource_type = GitLabResourceType.PROJECT
-        resource_id = 'project-123'
-
-        # Act
-        webhook_id, status = await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Assert
-        assert webhook_id == 'webhook-id-123'
-        assert status is None
-        mock_gitlab_service.install_webhook.assert_called_once()
-        mock_webhook_store.update_webhook.assert_called_once()
-        # Verify update_webhook was called with correct fields (using keyword arguments)
-        call_args = mock_webhook_store.update_webhook.call_args
-        assert call_args[1]['webhook'] == sample_webhook
-        update_fields = call_args[1]['update_fields']
-        assert update_fields['webhook_exists'] is True
-        assert update_fields['webhook_url'] == GITLAB_WEBHOOK_URL
-        assert 'webhook_secret' in update_fields
-        assert 'webhook_uuid' in update_fields
-        assert 'scopes' in update_fields
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_group_resource(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test webhook installation for a group resource."""
-        # Arrange
-        resource_type = GitLabResourceType.GROUP
-        resource_id = 'group-456'
-
-        # Act
-        webhook_id, status = await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Assert
-        assert webhook_id == 'webhook-id-123'
-        # Verify install_webhook was called with GROUP type
-        call_args = mock_gitlab_service.install_webhook.call_args
-        assert call_args[1]['resource_type'] == resource_type
-        assert call_args[1]['resource_id'] == resource_id
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_rate_limited(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test when installation is rate limited."""
-        # Arrange
-        resource_type = GitLabResourceType.PROJECT
-        resource_id = 'project-123'
-        mock_gitlab_service.install_webhook = AsyncMock(
-            return_value=(None, WebhookStatus.RATE_LIMITED)
-        )
-
-        # Act & Assert
-        with pytest.raises(BreakLoopException):
-            await install_webhook_on_resource(
-                gitlab_service=mock_gitlab_service,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                webhook_store=mock_webhook_store,
-                webhook=sample_webhook,
-            )
-
-        # Should not update webhook on rate limit
-        mock_webhook_store.update_webhook.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_installation_fails(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test when webhook installation fails."""
-        # Arrange
-        resource_type = GitLabResourceType.PROJECT
-        resource_id = 'project-123'
-        mock_gitlab_service.install_webhook = AsyncMock(return_value=(None, None))
-
-        # Act
-        webhook_id, status = await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Assert
-        assert webhook_id is None
-        assert status is None
-        # Should not update webhook when installation fails
-        mock_webhook_store.update_webhook.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_generates_unique_secrets(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test that unique webhook secrets and UUIDs are generated."""
-        # Arrange
-        resource_type = GitLabResourceType.PROJECT
-        resource_id = 'project-123'
-
-        # Act - First call
-        webhook_id1, _ = await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Capture first call's values before resetting
-        call1_secret = mock_webhook_store.update_webhook.call_args_list[0][1][
-            'update_fields'
-        ]['webhook_secret']
-        call1_uuid = mock_webhook_store.update_webhook.call_args_list[0][1][
-            'update_fields'
-        ]['webhook_uuid']
-
-        # Reset mocks and call again
-        mock_gitlab_service.install_webhook.reset_mock()
-        mock_webhook_store.update_webhook.reset_mock()
-
-        # Act - Second call
-        webhook_id2, _ = await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Capture second call's values
-        call2_secret = mock_webhook_store.update_webhook.call_args_list[0][1][
-            'update_fields'
-        ]['webhook_secret']
-        call2_uuid = mock_webhook_store.update_webhook.call_args_list[0][1][
-            'update_fields'
-        ]['webhook_uuid']
-
-        # Assert - Secrets and UUIDs should be different
-        assert call1_secret != call2_secret
-        assert call1_uuid != call2_uuid
-
-    @pytest.mark.asyncio
-    async def test_install_webhook_uses_correct_webhook_name_and_url(
-        self, mock_gitlab_service, mock_webhook_store, sample_webhook
-    ):
-        """Test that correct webhook name and URL are used."""
-        # Arrange
-        resource_type = GitLabResourceType.PROJECT
-        resource_id = 'project-123'
-
-        # Act
-        await install_webhook_on_resource(
-            gitlab_service=mock_gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=mock_webhook_store,
-            webhook=sample_webhook,
-        )
-
-        # Assert
-        call_args = mock_gitlab_service.install_webhook.call_args
-        assert call_args[1]['webhook_name'] == 'OpenHands Resolver'
-        assert call_args[1]['webhook_url'] == GITLAB_WEBHOOK_URL

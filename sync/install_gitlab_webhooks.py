@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 from typing import cast
 from uuid import uuid4
 
 from sqlalchemy import text
 
 from integrations.gitlab.webhook_installation import (
+    CLAIM_LEASE,
     BreakLoopException,
     install_claimed_webhook,
 )
@@ -17,9 +17,6 @@ from storage.database import a_session_maker
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 CHUNK_SIZE = 100
-# Twice the job's 300 s deadline, so a claim is only taken over from a run that
-# has been stopped.
-CLAIM_LEASE = timedelta(minutes=10)
 
 
 class VerifyWebhookStatus:

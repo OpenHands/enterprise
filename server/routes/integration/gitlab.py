@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -9,9 +10,9 @@ from pydantic import BaseModel
 from integrations.gitlab.gitlab_manager import GitlabManager
 from integrations.gitlab.gitlab_service import SaaSGitLabService
 from integrations.gitlab.webhook_installation import (
+    CLAIM_LEASE,
     BreakLoopException,
-    install_webhook_on_resource,
-    verify_webhook_conditions,
+    install_claimed_webhook,
 )
 from integrations.models import Message, SourceType
 from integrations.types import GitLabResourceType
@@ -273,10 +274,10 @@ async def reinstall_gitlab_webhook(
     body: ReinstallWebhookRequest,
     user_id: str = Depends(get_user_id),
 ) -> ResourceInstallationResult:
-    """Reinstall GitLab webhook for a specific resource immediately.
+    """Replace the resource's webhooks with one installed by this user.
 
-    This endpoint validates permissions, resets webhook status in the database,
-    and immediately installs the webhook on the specified resource.
+    Claims the resource's row like the scheduled installer does, so the two
+    never install a hook on the same resource at once.
     """
     try:
         # Get GitLab service for the user
@@ -305,87 +306,76 @@ async def reinstall_gitlab_webhook(
                 detail='User does not have admin access to this resource',
             )
 
-        # Reset webhook in database (organization-wide, not user-specific)
-        # This allows any admin user to reinstall webhooks
-        await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, user_id
+        await webhook_store.store_webhooks(
+            [
+                GitlabWebhook(
+                    user_id=user_id,
+                    project_id=resource_id
+                    if resource_type == GitLabResourceType.PROJECT
+                    else None,
+                    group_id=resource_id
+                    if resource_type == GitLabResourceType.GROUP
+                    else None,
+                    webhook_exists=False,
+                )
+            ]
         )
 
-        # Get or create webhook record (without user_id filter)
-        webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
-        )
-
-        if not webhook:
-            # Create new webhook record
-            webhook = GitlabWebhook(
-                user_id=user_id,  # Track who created it
-                project_id=resource_id
-                if resource_type == GitLabResourceType.PROJECT
-                else None,
-                group_id=resource_id
-                if resource_type == GitLabResourceType.GROUP
-                else None,
-                webhook_exists=False,
-            )
-            await webhook_store.store_webhooks([webhook])
-            # Fetch it again to get the ID (without user_id filter)
-            webhook = await webhook_store.get_webhook_by_resource_only(
-                resource_type, resource_id
-            )
-
-        if not webhook:
+        # Recorded before the claim, so a run already holding it serves the
+        # request when this one can't.
+        if not await webhook_store.request_reinstall(resource_type, resource_id):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail='Failed to create or fetch webhook record',
             )
 
-        # Verify conditions and install webhook
+        run_id = uuid4()
+        webhook = await webhook_store.claim_resource(
+            resource_type, resource_id, run_id, CLAIM_LEASE
+        )
+        if not webhook:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='A webhook installation for this resource is already in '
+                'progress. Try again in a minute.',
+            )
+
         try:
-            await verify_webhook_conditions(
+            webhook_id = await install_claimed_webhook(
                 gitlab_service=gitlab_service,
                 resource_type=resource_type,
                 resource_id=resource_id,
                 webhook_store=webhook_store,
                 webhook=webhook,
+                run_id=run_id,
             )
-
-            # Install the webhook
-            webhook_id, install_status = await install_webhook_on_resource(
-                gitlab_service=gitlab_service,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                webhook_store=webhook_store,
-                webhook=webhook,
-            )
-
-            if webhook_id:
-                logger.info(
-                    'GitLab webhook reinstalled successfully',
-                    extra={
-                        'user_id': user_id,
-                        'resource_type': resource_type.value,
-                        'resource_id': resource_id,
-                    },
-                )
-                return ResourceInstallationResult(
-                    resource_id=resource_id,
-                    resource_type=resource_type.value,
-                    success=True,
-                    error=None,
-                )
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail='Failed to install webhook',
-                )
-
         except BreakLoopException:
-            # Conditions not met or webhook already exists
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Webhook installation conditions not met or webhook already exists',
+                detail='Webhook installation conditions not met',
             )
+        finally:
+            await webhook_store.release_claim(webhook.id, run_id)
+
+        if not webhook_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail='Failed to install webhook',
+            )
+        logger.info(
+            'GitLab webhook reinstalled successfully',
+            extra={
+                'user_id': user_id,
+                'resource_type': resource_type.value,
+                'resource_id': resource_id,
+            },
+        )
+        return ResourceInstallationResult(
+            resource_id=resource_id,
+            resource_type=resource_type.value,
+            success=True,
+            error=None,
+        )
 
     except HTTPException:
         raise
