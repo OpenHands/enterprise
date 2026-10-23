@@ -71,7 +71,7 @@ class AuthProvider(Base):
         String(32), nullable=False, default=DEFAULT_AUTH_PROVIDER_COLOR
     )
     # Whether this row may be used to authenticate or link at all. A row is
-    # created disabled (see migration 195) so an admin can fill in a
+    # created disabled (see migration 196) so an admin can fill in a
     # half-configured provider -- e.g. from a preset with placeholder URLs --
     # without it going live on the login screen. Disabling a row only stops
     # new flows: sessions and tokens already minted through it keep working,

@@ -21,8 +21,8 @@ the login/integrations UI, not when resolving an existing ``openhands_auth``
 cookie or refreshing its tokens. Flipping the flag is therefore reversible
 without a sign-out.
 
-Revision ID: 195
-Revises: 194
+Revision ID: 196
+Revises: 195
 Create Date: 2026-10-22 00:00:00.000000
 """
 
@@ -31,8 +31,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '195'
-down_revision: str | None = '194'
+revision: str = '196'
+down_revision: str | None = '195'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

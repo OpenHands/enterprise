@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 195 (``enabled`` on ``auth_providers``)."""
+"""Real-DB tests for migration 196 (``enabled`` on ``auth_providers``)."""
 
 from __future__ import annotations
 
@@ -41,12 +41,12 @@ def test_upgrade_backfills_existing_rows_to_true(
     """Every row that existed before the column did was reachable, so an
     upgrade must not silently disable configured login IDPs."""
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '194'
+        test_database.server, test_database.name, 'downgrade', '195'
     )
     provider_id = _insert_provider(engine)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '195'
+        test_database.server, test_database.name, 'upgrade', '196'
     )
 
     assert _enabled(engine, provider_id) is True
@@ -56,7 +56,7 @@ def test_upgrade_defaults_new_rows_to_false(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '195'
+        test_database.server, test_database.name, 'upgrade', '196'
     )
 
     provider_id = _insert_provider(engine)
@@ -68,7 +68,7 @@ def test_upgrade_allows_explicit_true_on_new_rows(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '195'
+        test_database.server, test_database.name, 'upgrade', '196'
     )
 
     provider_id = _insert_provider(engine, enabled=True)
@@ -80,10 +80,10 @@ def test_downgrade_drops_column(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '195'
+        test_database.server, test_database.name, 'upgrade', '196'
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '194'
+        test_database.server, test_database.name, 'downgrade', '195'
     )
 
     with engine.connect() as conn:
