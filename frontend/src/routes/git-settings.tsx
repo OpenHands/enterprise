@@ -1,6 +1,8 @@
 import React from "react";
-import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
+import { Trans, useTranslation } from "react-i18next";
 import { useConfig } from "#/hooks/query/use-config";
+import { useMe } from "#/hooks/query/use-me";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSettings } from "#/hooks/query/use-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -40,6 +42,8 @@ import {
   settingsListContainerClassName,
   settingsListDividerClassName,
 } from "#/utils/settings-list-classes";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 
 export const clientLoader = createPermissionGuard("manage_integrations");
 
@@ -63,6 +67,7 @@ function GitSettingsScreen() {
   const { providers } = useUserProviders();
 
   const { data: config } = useConfig();
+  const { data: me } = useMe();
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -149,7 +154,8 @@ function GitSettingsScreen() {
   const isSaas = config?.app_mode === "saas";
   const isOAuthV2 =
     isSaas && Boolean(config?.feature_flags?.enable_oauth_v2_login);
-  const { data: oauthV2GitProviders } = useOAuthV2GitProviders(isOAuthV2);
+  const { data: oauthV2GitProviders, isSuccess: hasLoadedOAuthV2GitProviders } =
+    useOAuthV2GitProviders(isOAuthV2);
   const oauthV2Cards = (oauthV2GitProviders ?? []).filter((row) =>
     OAUTH_V2_GIT_PROVIDER_TYPES.includes(row.provider_type as Provider),
   );
@@ -303,6 +309,17 @@ function GitSettingsScreen() {
     shouldRenderBitbucketDCSection ||
     shouldRenderAzureDevOpsSection ||
     shouldRenderSlackSection;
+  // Without this the page shows only its heading when nothing is configured.
+  // Wait for the v2 list so the message doesn't flash before the cards load.
+  const shouldRenderEmptyState =
+    isSaas &&
+    (!isOAuthV2 || hasLoadedOAuthV2GitProviders) &&
+    !hasSaasProviderCards &&
+    !shouldRenderProjectManagementIntegrations;
+  // With OAuth v2, a super admin adds git providers under Auth Providers.
+  const canAddGitProvider =
+    isOAuthV2 &&
+    canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions);
 
   const connectedStatusLabel = (
     isConnected: boolean,
@@ -505,6 +522,36 @@ function GitSettingsScreen() {
                   />
                 )}
               </div>
+            </div>
+          )}
+
+          {shouldRenderEmptyState && (
+            <div
+              data-testid="integrations-empty-state"
+              className={cn(settingsListContainerClassName, "p-8 text-center")}
+            >
+              <p className="text-sm text-[var(--oh-muted)]">
+                {t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY)}{" "}
+                {canAddGitProvider ? (
+                  <Trans
+                    i18nKey={
+                      I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER
+                    }
+                    components={{
+                      a: (
+                        <Link
+                          to={SUPER_ADMIN_PATHS.authProviders}
+                          className="underline underline-offset-2"
+                        >
+                          {t(I18nKey.SUPER_ADMIN$NAV_AUTH_PROVIDERS)}
+                        </Link>
+                      ),
+                    }}
+                  />
+                ) : (
+                  t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN)
+                )}
+              </p>
             </div>
           )}
 

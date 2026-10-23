@@ -70,13 +70,13 @@ RUN if [ -n "$AGENT_CANVAS" ]; then \
 
 RUN npm run build
 
-FROM python:3.13.13-slim-trixie AS base
+FROM python:3.13.17-slim-trixie AS base
 FROM base AS backend-builder
 
 WORKDIR /app
 
 # Pin uv to the version that generated uv.lock (see "Lockfile Regeneration" in AGENTS.md).
-COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_COMPILE_BYTECODE=1 \
