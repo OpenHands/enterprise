@@ -3,10 +3,10 @@
 <div align="center">
   <img src="https://assets.openhands.dev/logo-whitebackground.png" alt="OpenHands logo" width="340">
   <p align="center">
-    <strong>OpenHands Enterprise — Backend Codebase</strong>
+    <strong>OpenHands Enterprise — Backend Codebase, Arr!</strong>
   </p>
   <p align="center">
-    The source-available backend for OpenHands Enterprise, a self-hosted developer control center for coding agents and automations.
+    The source-available backend fer OpenHands Enterprise, a self-hosted developer control helm fer yer coding agents and automations, matey.
   </p>
 </div>
 
@@ -25,56 +25,56 @@
 
 ---
 
-## About OpenHands Enterprise
+## Ahoy, About OpenHands Enterprise
 
-OpenHands Enterprise brings the power of autonomous coding agents to your organization with the governance, security, and compliance your enterprise demands.
+OpenHands Enterprise brings the power o' autonomous coding agents t' yer crew, with the governance, security, and compliance yer enterprise demands, savvy?
 
-OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud.
+OpenHands Enterprise lets ye run AI coding agents right on yer own servers or in yer private cloud, far from prying eyes.
 
-**This is the source-available, commercially licensed backend codebase for OpenHands Enterprise**. It provides a self-hosted developer control center for coding agents and automations, with additional enterprise features including authentication, billing, and integrations.
+**This be the source-available, commercially licensed backend codebase fer OpenHands Enterprise**. It provides a self-hosted developer control helm fer coding agents and automations, with extra enterprise plunder includin' authentication, billin', and integrations.
 
-### License
+### License (Read the Pirate Code!)
 
 > [!WARNING]
-> OpenHands Enterprise is commercially licensed under the [Polyform Free Trial License](./LICENSE). This is **not** an open source license. Usage is limited to 30 days per calendar year without a commercial license.
+> OpenHands Enterprise be commercially licensed under the [Polyform Free Trial License](./LICENSE). This be **not** an open source license, ye scallywag. Usage be limited t' 30 days per calendar year without a commercial license.
 
-For commercial licensing and pricing inquiries, please [contact us](https://www.openhands.dev/contact).
+Fer commercial licensing and pricin' inquiries, send word and [contact us](https://www.openhands.dev/contact).
 
-### What OpenHands Enterprise Offers
+### What Treasure OpenHands Enterprise Offers
 
-- Multi-use RBAC — Manage multiple users from a single platform
-- Platform integrations — Invoke OpenHands directly from Slack, Jira, GitHub, GitLab, or Bitbucket
-- Scalability — Run unlimited parallel agent conversations without local resource constraints
-- Enterprise security — SAML authentication, RBAC, and centralized agent traces
-- Usage Monitoring — Track and enforce budgets; monitor usage across all users
+- Multi-use RBAC — Command multiple crew members from a single ship
+- Platform integrations — Summon OpenHands straight from Slack, Jira, GitHub, GitLab, or Bitbucket
+- Scalability — Sail unlimited parallel agent conversations without local resource constraints
+- Enterprise security — SAML authentication, RBAC, and centralized agent traces, locked tight as a treasure chest
+- Usage Monitoring — Track and enforce budgets; keep a weather eye on usage across all hands
 
-> [Choosing between OpenHands Agent Canvas and OpenHands Enterprise](https://docs.openhands.dev/enterprise/enterprise-vs-oss)
+> [Choosin' between OpenHands Agent Canvas and OpenHands Enterprise](https://docs.openhands.dev/enterprise/enterprise-vs-oss)
 
-### Free 30 Day Trial
+### Free 30 Day Trial Voyage
 
-The preferred method of installing OpenHands Enterprise is via our Replicated installer.
-- Fist, read the [Quick Start guide](https://docs.openhands.dev/enterprise/quick-start) to understand system requirements for OpenHands Enterprise
-- Then, [register for a Trial account](https://install.r9.all-hands.dev/openhands/signup) via the Replicated installer portal.
+The preferred way o' installin' OpenHands Enterprise be via our Replicated installer.
+- First, read the [Quick Start guide](https://docs.openhands.dev/enterprise/quick-start) t' understand the system requirements fer OpenHands Enterprise
+- Then, [register fer a Trial account](https://install.r9.all-hands.dev/openhands/signup) via the Replicated installer portal.
 
-### Run Locally with Docker Compose
+### Run Locally with Docker Compose (Hoist the Colors!)
 
-For a local evaluation or development, `docker-compose.yml` starts the whole stack (app, worker, automation service, Agent Canvas, PostgreSQL and a reverse proxy) from the released images. Docker with the Compose plugin is the only requirement.
+Fer a local evaluation or development, `docker-compose.yml` launches the whole fleet (app, worker, automation service, Agent Canvas, PostgreSQL and a reverse proxy) from the released images. Docker with the Compose plugin be the only thing ye need.
 
 ```bash
 docker compose up -d
 ```
 
-Then open <http://localhost:3100/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:3100/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
+Then open <http://localhost:3100/oauth/idp/signup> t' create the admin account, and add an LLM under **Settings**. Agent Canvas be served at <http://localhost:3100/canvas/>. Data be kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` t' scuttle everything and start anew. If ye change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` t' match (see the comments in `docker-compose.yml`).
 
-To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
+T' test yer local changes, build `app` and `worker` from yer checkout instead o' pullin' the release image:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-Or put `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env` and run `docker compose up -d --build`.
+Or stow `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env` and run `docker compose up -d --build`.
 
-To run other published versions, set any of these (shell or `.env`):
+T' sail other published versions, set any o' these (shell or `.env`):
 
 | Variable | Default | Example |
 | --- | --- | --- |
@@ -82,20 +82,20 @@ To run other published versions, set any of these (shell or `.env`):
 | `AUTOMATION_IMAGE` | `ghcr.io/openhands/automation:<version>` | `ghcr.io/openhands/automation:main` |
 | `AGENT_CANVAS_IMAGE` | `ghcr.io/openhands/agent-canvas:<version>` | `ghcr.io/openhands/agent-canvas:main` |
 
-For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
+Fer movin' tags such as `main`, add `--pull always` t' `docker compose up`. After upgradin' from an older checkout, run `docker compose down` first so the proxy picks up the new routin', or ye'll be sailin' by an old map.
 
-### Learn More
+### Learn More, Me Hearties
 
-- **Documentation**: [https://docs.openhands.dev/enterprise](https://docs.openhands.dev/enterprise)
-- **Website**: [https://www.openhands.dev/enterprise](https://www.openhands.dev/enterprise)
+- **Documentation** (the ship's log): [https://docs.openhands.dev/enterprise](https://docs.openhands.dev/enterprise)
+- **Website** (the crow's nest): [https://www.openhands.dev/enterprise](https://www.openhands.dev/enterprise)
 
-## Contributing
+## Contributing (Joinin' the Crew)
 
 > [!IMPORTANT]
-> Contributions from outside, non-OpenHands maintainers are currently not accepted.
+> Contributions from outside, non-OpenHands maintainers be currently not accepted. No stowaways!
 
-If you are interested in collaborating with us or contributing to OpenHands Enterprise, please reach out to discuss a Contributor License Agreement (CLA). You can contact us through our [website](https://www.openhands.dev/contact) or [Slack community](https://go.openhands.dev/slack).
+If ye be interested in collaboratin' with us or contributin' t' OpenHands Enterprise, send a message in a bottle t' discuss a Contributor License Agreement (CLA). Ye can contact us through our [website](https://www.openhands.dev/contact) or [Slack community](https://go.openhands.dev/slack).
 
-## Development
+## Development (Buildin' the Ship)
 
-See the [Development guide](./Development.md) for setup instructions, the repository layout, and development workflows. Python dependencies are managed with [uv](https://docs.astral.sh/uv/).
+See the [Development guide](./Development.md) fer setup instructions, the repository layout, and development workflows. Python dependencies be managed with [uv](https://docs.astral.sh/uv/).
