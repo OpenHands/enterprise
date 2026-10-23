@@ -56,6 +56,7 @@ from openhands.app_server.sandbox.sandbox_store import (
 )
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import LOCAL_USER_ID
 from openhands.app_server.user_auth.default_user_auth import DefaultUserAuth
 
@@ -107,7 +108,7 @@ def _user_context(
     user_id: str | None = OWNER_ID, default_sandbox_spec_id: str | None = None
 ) -> AsyncMock:
     """Mock UserContext resolving to the given user and default spec."""
-    context = AsyncMock()
+    context = AsyncMock(spec=UserContext)
     context.get_user_id.return_value = user_id
     context.get_default_sandbox_spec_id.return_value = default_sandbox_spec_id
     return context
@@ -2778,3 +2779,20 @@ class TestDockerSandboxServiceHostNetwork:
         # Verify - should be STARTING because container started within grace period
         assert result is not None
         assert result.status == SandboxStatus.STARTING
+
+
+@pytest.mark.asyncio
+async def test_start_persists_credential_organization(service, db_session):
+    from uuid import uuid4
+
+    org_id = uuid4()
+    service.user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        # Reuse the module's fake container with the name the service generates.
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(sandbox_id='org-binding')
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.credential_org_id == org_id
+    assert sandbox.credential_org_id == org_id

@@ -39,6 +39,8 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 def _user_context():
     """Mock UserContext for user-a."""
     context = AsyncMock()
+    context.resolver_org_id = None
+    context.get_effective_org_id.return_value = None
     context.get_user_id.return_value = 'user-a'
     context.get_default_sandbox_spec_id.return_value = None
     return context
