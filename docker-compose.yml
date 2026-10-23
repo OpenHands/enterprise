@@ -51,10 +51,9 @@
 # release (release-please bumps the annotated `x-app-image` line below).
 #
 # Known gaps, tracked separately rather than worked around here:
-#   * Redis-backed features (MCP OAuth connections, conversation-export
-#     locking) are not wired up for Compose. Redis-backed *rate limiting* is
-#     explicitly disabled below (RATE_LIMITING_ENABLED=false) since it adds no
-#     value in a single-evaluator environment with no Redis.
+#   * Redis-backed *rate limiting* is explicitly disabled below
+#     (RATE_LIMITING_ENABLED=false) since it adds no value in a
+#     single-evaluator environment.
 
 # enterprise-server tag must match the release this file ships with.
 x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.77.0} # x-release-please-version
@@ -75,6 +74,17 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # GitLab webhook dedup, MCP OAuth connections and conversation-export
+  # locking need Redis. Their keys are short-lived, so no volume.
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   app:
     image: *app-image
     # the enterprise-server image ends on `USER openhands` (its production,
@@ -85,8 +95,10 @@ services:
     # entrypoint.sh's `[ "$(id -u)" -ne 0 ]` check fails immediately and the
     # container crashloops.
     user: '0:0'
-    depends_on:
+    depends_on: &app-depends-on
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     # Not published: reached through `proxy`, which owns APP_PORT.
     expose:
@@ -112,6 +124,7 @@ services:
       DB_NAME: ${DB_NAME:-openhands}
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
+      REDIS_HOST: redis
 
       # server/constants.py defaults WEB_HOST to the literal cloud hostname
       # (app.all-hands.dev) when unset, which makes DEPLOYMENT_MODE resolve
@@ -215,11 +228,8 @@ services:
       # No billing/Stripe in this stack.
       ENABLE_BILLING: 'false'
 
-      # Redis-backed rate limiting adds no value without Redis in a
-      # single-evaluator environment; see server/utils/rate_limit_utils.py.
-      # (Everything else that touches Redis already fails open with a log
-      # warning when Redis is unreachable -- this flag just avoids the
-      # doomed connection attempt and its log noise.)
+      # Redis-backed rate limiting adds no value in a single-evaluator
+      # environment; see server/utils/rate_limit_utils.py.
       RATE_LIMITING_ENABLED: 'false'
 
       # Optional: telemetry is already force-disabled for self-hosted
@@ -412,9 +422,7 @@ services:
     # so entrypoint.sh's root check needs this override too.
     user: '0:0'
     command: ['python', '-m', 'openhands.app_server.worker']
-    depends_on:
-      db:
-        condition: service_healthy
+    depends_on: *app-depends-on
     volumes: *app-volumes
     extra_hosts: *app-extra-hosts
     environment:
