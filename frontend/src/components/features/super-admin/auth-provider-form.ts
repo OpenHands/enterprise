@@ -107,6 +107,10 @@ export interface AuthProviderFormState {
   /** CSS color string for this provider's login button -- defaults to
    * ``DEFAULT_AUTH_PROVIDER_COLOR`` (black), mirroring the backend. */
   color: string;
+  /** Whether this provider may be used for a new login or link. Off by
+   * default (mirroring the backend), so a new row stays inert until an
+   * admin has finished configuring it. */
+  enabled: boolean;
   /** Whether a brand-new user may be created the first time someone
    * authenticates through this provider, or only an already-linked account
    * may sign in through it. */
@@ -152,6 +156,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   isIdp: true,
   icon: "",
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: false,
   allowRegistration: true,
   allowMatchByEmail: true,
   providerType: "enterprise_sso",
@@ -184,6 +189,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       isIdp: provider.is_idp,
       icon: provider.icon ?? "",
       color: provider.color,
+      enabled: provider.enabled,
       allowRegistration: provider.allow_registration,
       allowMatchByEmail: provider.allow_match_by_email,
       providerType: details.provider_type,
@@ -205,6 +211,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       isIdp: true,
       icon: provider.icon ?? "",
       color: provider.color,
+      enabled: provider.enabled,
       allowRegistration: provider.allow_registration,
       allowMatchByEmail: provider.allow_match_by_email,
       metadataUrl: details.metadata_url ?? "",
@@ -225,6 +232,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
     isIdp: true,
     icon: provider.icon ?? "",
     color: provider.color,
+    enabled: provider.enabled,
     allowRegistration: provider.allow_registration,
     allowMatchByEmail: provider.allow_match_by_email,
   };
@@ -340,6 +348,7 @@ export function buildUpdatePayload(
     is_idp: form.isIdp,
     icon: form.icon.trim() || null,
     color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+    enabled: form.enabled,
     allow_registration: form.allowRegistration,
     allow_match_by_email: form.allowMatchByEmail,
     ...(detailsChanged && { details: buildDetails(form) }),

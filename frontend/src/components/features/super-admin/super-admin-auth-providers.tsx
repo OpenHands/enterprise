@@ -191,6 +191,23 @@ export function SuperAdminAuthProviders() {
             render: (row) => kindLabel(t, row.kind),
           },
           {
+            key: "enabled",
+            header: t(I18nKey.SUPER_ADMIN$COL_ENABLED),
+            className: "w-[8%]",
+            // Toggling here is the quick path to switch a provider on once
+            // it is fully configured; the edit form has the same switch.
+            render: (row) => (
+              <Toggle
+                checked={row.enabled}
+                disabled={updateProvider.isPending}
+                onClick={() =>
+                  updateProvider.mutate({ id: row.id, enabled: !row.enabled })
+                }
+                aria-label={`${t(I18nKey.SUPER_ADMIN$COL_ENABLED)}: ${row.title}`}
+              />
+            ),
+          },
+          {
             key: "is_idp",
             header: t(I18nKey.SUPER_ADMIN$COL_IS_IDP),
             className: "w-[8%]",

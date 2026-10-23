@@ -699,7 +699,10 @@ class SaasUserAuth(UserAuth):
         from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
-        idp_providers = await AuthProviderStore().get_idp_providers()
+        # ``enabled_only=False``: this path resolves tokens for a cookie that
+        # predates ``idp_provider_id``, i.e. an already-established session.
+        # Disabling a provider must not expire those.
+        idp_providers = await AuthProviderStore().get_idp_providers(enabled_only=False)
         for provider in idp_providers:
             store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
             raw = await store.get_raw()
@@ -845,7 +848,11 @@ class SaasUserAuth(UserAuth):
             raise AuthError('Invalid user identity') from exc
 
         try:
-            git_providers = await AuthProviderStore().get_git_providers()
+            # ``enabled_only=False``: tokens the user linked while the row was
+            # enabled must keep working after an admin disables it.
+            git_providers = await AuthProviderStore().get_git_providers(
+                enabled_only=False
+            )
             for provider in git_providers:
                 store = OAuthTokenStore(
                     user_id=user_uuid, oauth_provider_id=provider.id
@@ -919,7 +926,8 @@ class SaasUserAuth(UserAuth):
         except ValueError:
             return {}
         provider_tokens: dict[ProviderType, ProviderToken] = {}
-        for provider in await AuthProviderStore().get_git_providers():
+        # ``enabled_only=False``: see ``_v2_get_provider_tokens``.
+        for provider in await AuthProviderStore().get_git_providers(enabled_only=False):
             if not isinstance(provider.details, OAuthProviderDetails):
                 continue
             idp_type = provider.details.provider_type

@@ -9,7 +9,9 @@ already made, instead of asking for a second, provider-specific API token.
 
 The call runs the same SDK probe as ``POST /api/v1/mcp/test`` and is validated
 the same way (remote transports only, SSRF guard); ``mcp_test_router`` documents
-the threat model. Two things differ:
+the threat model. ``${NAME}`` secret references are expanded as that route does,
+except on OAuth servers, whose refreshed state this route saves: the OAuth client
+copies a configured client secret into that state. Two things differ:
 
 - The server comes from the caller's stored settings, never from the request,
   so the route only reaches servers the user connected and still has enabled.
@@ -35,11 +37,16 @@ from openhands.agent_server.mcp_router import (
 from openhands.app_server.mcp.mcp_oauth_router import _oauth_client_kwargs
 from openhands.app_server.mcp.mcp_test_router import (
     MCPTestRequestBody,
+    _expand_secret_references,
     _scrub_secrets,
     _secret_values,
+    _SecretExpansion,
+    _unset_secrets_error,
     prepare_probe_request,
+    user_context_dependency,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_user_settings_store
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.sdk.mcp.config import (
@@ -94,14 +101,16 @@ def _oauth_factory(
         "caller's settings, using its stored credentials, and return the "
         "tool's text output. A tool that reports a failure still answers 200, "
         'with `is_error` set; 404 means no enabled server has that name, and '
-        '502 that the server could not be reached or must be authorized again. '
-        'OAuth tokens refreshed by the call are saved to the server.'
+        '502 that the server could not be reached, must be authorized again, '
+        'or references a secret that is not set. OAuth tokens refreshed by the '
+        'call are saved to the server.'
     ),
 )
 async def call_mcp_tool(
     server_name: str,
     tool_call: MCPToolCallSpec,
     settings_store: SettingsStore | None = Depends(get_user_settings_store),
+    user_context: UserContext = user_context_dependency,
 ) -> MCPToolCallResult:
     """Call a tool on one of the caller's connected MCP servers."""
     settings = await settings_store.load() if settings_store else None
@@ -117,10 +126,18 @@ async def call_mcp_tool(
         )
 
     stored_server = (serialize_mcp_config({server_name: server}) or {})[server_name]
+    expansion = _SecretExpansion(stored_server, set(), [])
+    if server.oauth_auth is None:
+        expansion = await _expand_secret_references(stored_server, user_context)
+    if expansion.missing:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_unset_secrets_error(expansion.missing),
+        )
     request = await prepare_probe_request(
         MCPTestRequestBody(
             name=server_name,
-            server=stored_server,
+            server=expansion.server,
             timeout=_TOOL_CALL_TIMEOUT_SECONDS,
             tool_call=tool_call,
         ),
@@ -132,7 +149,7 @@ async def call_mcp_tool(
         await loop.run_in_executor(
             None, _probe_mcp_server, request, None, _oauth_factory
         ),
-        _secret_values(request.resolved_server),
+        _secret_values(request.resolved_server) | expansion.values,
     )
     if isinstance(response, MCPTestFailure):
         raise HTTPException(

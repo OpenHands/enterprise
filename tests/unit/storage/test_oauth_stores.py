@@ -84,6 +84,7 @@ def make_provider(async_session_maker, jwt_svc):
         *,
         category: ProviderType | str = ProviderType.GITHUB,
         is_idp: bool = False,
+        enabled: bool = True,
         client_secret: str | None = 'secret',
         token_url: str | None = 'https://example.com/token',
     ) -> AuthProvider:
@@ -105,7 +106,9 @@ def make_provider(async_session_maker, jwt_svc):
                 permitted_drift_seconds=60,
             )
             title = category_value.title()
-        provider = AuthProvider(title=title, is_idp=is_idp, details=details)
+        provider = AuthProvider(
+            title=title, is_idp=is_idp, enabled=enabled, details=details
+        )
         async with async_session_maker() as session:
             session.add(provider)
             await session.commit()
@@ -285,6 +288,64 @@ class TestAuthProviderStore:
 
         assert got is not None
         assert got.id == real.id
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_skips_disabled_rows(
+        self, patched_session, make_provider
+    ):
+        """A disabled IDP is invisible to ``/oauth/idp-login`` -- including
+        when it is the most recently created row, which would otherwise win."""
+        enabled = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        got = await AuthProviderStore().get_first_idp()
+
+        assert got is not None
+        assert got.id == enabled.id
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_none_when_only_disabled_rows(
+        self, patched_session, make_provider
+    ):
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        assert await AuthProviderStore().get_first_idp() is None
+        # ...but an already-established session still resolves its row.
+        assert (await AuthProviderStore().get_first_idp(enabled_only=False)) is not None
+
+    @pytest.mark.asyncio
+    async def test_get_idp_providers_excludes_disabled_unless_requested(
+        self, patched_session, make_provider
+    ):
+        enabled = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        disabled = await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        visible = await AuthProviderStore().get_idp_providers()
+        all_rows = await AuthProviderStore().get_idp_providers(enabled_only=False)
+
+        assert {p.id for p in visible} == {enabled.id}
+        assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_git_providers_excludes_disabled_unless_requested(
+        self, patched_session, make_provider
+    ):
+        enabled = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        disabled = await make_provider(
+            category=ProviderType.GITLAB, is_idp=False, enabled=False
+        )
+
+        visible = await AuthProviderStore().get_git_providers()
+        all_rows = await AuthProviderStore().get_git_providers(enabled_only=False)
+
+        assert {p.id for p in visible} == {enabled.id}
+        assert {p.id for p in all_rows} == {enabled.id, disabled.id}
 
     @pytest.mark.asyncio
     async def test_upsert_insert_then_update(self, patched_session):

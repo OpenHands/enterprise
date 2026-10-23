@@ -58,6 +58,9 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -3916,14 +3919,14 @@ class TestLiveStatusAppConversationService:
             profile_listing = Mock(raise_for_status=Mock())
             profile_listing.json.return_value = {'profiles': []}
             self.mock_httpx_client.get = AsyncMock(return_value=profile_listing)
-            self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
-                return_value=None
-            )
-            default_spec = Mock(spec=SandboxSpecInfo)
-            default_spec.id = current_image
-            default_spec.working_dir = '/workspace/project'
-            self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
-                return_value=default_spec
+            self.service.sandbox_spec_service = PresetSandboxSpecService(
+                specs=[
+                    SandboxSpecInfo(
+                        id=current_image,
+                        command=None,
+                        working_dir='/workspace/project',
+                    )
+                ]
             )
 
             tasks = [
@@ -3935,9 +3938,6 @@ class TestLiveStatusAppConversationService:
                 )
             ]
 
-        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
-            old_image
-        )
         assert tasks[-1].status == AppConversationStartTaskStatus.READY
         assert mock_remote_workspace_class.call_args.kwargs[
             'working_dir'
@@ -3961,8 +3961,7 @@ class TestLiveStatusAppConversationService:
         self._arrange_start_app_conversation(
             uuid4(), mock_conversation_info_class, mock_remote_workspace_class
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
-        self.mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             side_effect=SandboxError('No sandbox specs available!')
         )
 
@@ -4069,7 +4068,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -4318,7 +4317,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4535,7 +4534,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4612,7 +4611,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4768,7 +4767,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
@@ -4952,7 +4951,7 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_service.get_sandbox = AsyncMock(
             return_value=self.mock_sandbox
         )
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
         mock_remote_workspace_class.return_value = Mock()
