@@ -1,0 +1,41 @@
+{
+  "postgres": "16",
+  "cases": [
+    {
+      "driver": "pg8000",
+      "command": "alembic upgrade head",
+      "revision": "196",
+      "passed": true
+    },
+    {
+      "driver": "pg8000",
+      "command": "alembic downgrade -1",
+      "revision": "195",
+      "passed": true
+    },
+    {
+      "driver": "pg8000",
+      "command": "alembic upgrade head",
+      "revision": "196",
+      "passed": true
+    },
+    {
+      "driver": "psycopg2",
+      "command": "alembic upgrade head",
+      "revision": "196",
+      "passed": true
+    },
+    {
+      "driver": "psycopg2",
+      "command": "alembic downgrade -1",
+      "revision": "195",
+      "passed": true
+    },
+    {
+      "driver": "psycopg2",
+      "command": "alembic upgrade head",
+      "revision": "196",
+      "passed": true
+    }
+  ]
+}

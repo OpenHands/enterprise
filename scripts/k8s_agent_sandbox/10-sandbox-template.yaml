@@ -28,7 +28,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: agent-server
-          image: ghcr.io/openhands/agent-server:1.49.4-python
+          image: ghcr.io/openhands/agent-server:1.58.0-python
           args: ["--host", "0.0.0.0", "--port", "8000"]
           env:
             - name: OH_DEFERRED_INIT

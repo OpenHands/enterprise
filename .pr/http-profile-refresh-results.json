@@ -1,0 +1,148 @@
+{
+  "sdk_version": "1.58.0",
+  "identity": "Local bearer identity fixture; real org permissions, PostgreSQL, router, resolver and builder. No deployed Keycloak or Cloud orchestration.",
+  "cases": [
+    {
+      "name": "default",
+      "preview_valid": true,
+      "id": "195486aa-785c-4f90-bd66-580f6a72ec87",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "036e325b-abee-485a-9a90-3d034d4c040a",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "default-copy",
+      "preview_valid": true,
+      "id": "38a97b8c-b1e0-4f07-9efe-46c034512cf6",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "ab307b45-5ceb-4e27-a31d-f6d729c7afca",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "coding-no-browser",
+      "preview_valid": true,
+      "id": "5d1bfdd5-ca84-4d95-a17f-506bc7d9dc91",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "f035e252-4571-4b96-aa8d-61900c06ed03",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker"
+      ],
+      "mcp_servers": [],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "default-tools",
+      "preview_valid": true,
+      "id": "77d59da9-43ea-4de0-9cd0-7a1ea9293ed1",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "dede3957-524d-43b4-8baf-37e770b77324",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set"
+      ],
+      "mcp_servers": [],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "dangling_mcp",
+      "status": 422,
+      "detail": {
+        "code": "unresolved_profile_references",
+        "message": "MCP server(s) not configured: missing",
+        "dangling_llm_profile_ref": null,
+        "dangling_mcp_server_refs": [
+          "missing"
+        ],
+        "dangling_meta_profile_ref": null,
+        "dangling_meta_profile_llm_refs": []
+      },
+      "runtime_launches": 0
+    },
+    {
+      "name": "unknown_profile",
+      "status": 404,
+      "settings_readable": true,
+      "runtime_launches": 0
+    },
+    {
+      "name": "acp_create_without_inference",
+      "id": "288a1ac6-432f-4c69-baa9-077e71aebb9b",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "818186b6-cbd5-4b7b-801d-b2c175c0522e",
+      "revision": 0,
+      "request_secret_names": [],
+      "runtime_secret_names": [],
+      "agent_kind": "ACPAgent",
+      "tools": [],
+      "mcp_servers": [],
+      "persona": null,
+      "suffix": "RUNTIME_SUFFIX"
+    },
+    {
+      "name": "opaque_profile_preserved_and_active_launch_rejected",
+      "status": 422,
+      "opaque_preserved": true,
+      "settings_readable": true
+    },
+    {
+      "name": "real_model_mcp",
+      "model": "openai/deepseek-v4-1-flash",
+      "execution_status": "finished",
+      "tool": "qa_echo",
+      "marker": "ENTERPRISE_PROFILE_QA_OK"
+    }
+  ]
+}
