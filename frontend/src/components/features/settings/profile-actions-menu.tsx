@@ -11,10 +11,11 @@ import DeleteIcon from "#/icons/u-delete.svg?react";
 import CheckmarkIcon from "#/icons/checkmark.svg?react";
 
 interface ProfileActionsMenuProps {
-  onEdit: () => void;
-  onRename: () => void;
+  /** Edit / Rename / Delete are omitted from the menu when not provided. */
+  onEdit?: () => void;
+  onRename?: () => void;
   onSetActive: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   isActive: boolean;
   isActivating: boolean;
   onClose: () => void;
@@ -102,18 +103,26 @@ export function ProfileActionsMenu({
   }, [anchorRef, onClose]);
 
   const items: MenuItemSpec[] = [
-    {
-      testId: "profile-edit",
-      icon: SettingsIcon,
-      label: t(I18nKey.SETTINGS$PROFILE_EDIT),
-      onSelect: onEdit,
-    },
-    {
-      testId: "profile-rename",
-      icon: EditIcon,
-      label: t(I18nKey.BUTTON$RENAME),
-      onSelect: onRename,
-    },
+    ...(onEdit
+      ? [
+          {
+            testId: "profile-edit",
+            icon: SettingsIcon,
+            label: t(I18nKey.SETTINGS$PROFILE_EDIT),
+            onSelect: onEdit,
+          },
+        ]
+      : []),
+    ...(onRename
+      ? [
+          {
+            testId: "profile-rename",
+            icon: EditIcon,
+            label: t(I18nKey.BUTTON$RENAME),
+            onSelect: onRename,
+          },
+        ]
+      : []),
     {
       testId: "profile-set-active",
       icon: CheckmarkIcon,
@@ -121,13 +130,17 @@ export function ProfileActionsMenu({
       onSelect: onSetActive,
       isDisabled: isActive || isActivating,
     },
-    {
-      testId: "profile-delete",
-      icon: DeleteIcon,
-      label: t(I18nKey.BUTTON$DELETE),
-      onSelect: onDelete,
-      isDestructive: true,
-    },
+    ...(onDelete
+      ? [
+          {
+            testId: "profile-delete",
+            icon: DeleteIcon,
+            label: t(I18nKey.BUTTON$DELETE),
+            onSelect: onDelete,
+            isDestructive: true,
+          },
+        ]
+      : []),
   ];
 
   if (typeof document === "undefined" || !portalStyle) {
