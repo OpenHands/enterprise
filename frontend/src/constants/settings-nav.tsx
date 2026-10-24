@@ -107,6 +107,16 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "personal",
   },
   {
+    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agent-context",
+    text: "SETTINGS$AGENT_CONTEXT",
+    subtitle: "SETTINGS$PAGE_AGENT_CONTEXT_SUBLINE",
+    section: "personal",
+    // Persistent memory only applies to the OpenHands agent, as the inline
+    // section this page replaces did.
+    disabledByAcp: true,
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
