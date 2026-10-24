@@ -1489,6 +1489,60 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         return f'{working_dir}/{config_dir}/PLAN.md'
 
+    async def _launch_custom_secrets(self, user: UserInfo) -> dict:
+        """Custom secrets the conversation launches with.
+
+        The member's personal secrets merged with the org's shared ones, as
+        ``user_context.get_secrets()`` returns them — unless the launched Agent
+        Profile is org-scoped and lists its ``secret_refs`` explicitly. An org
+        profile is shared configuration, so those references resolve against
+        the org-shared secrets only, never against a member's personal secret
+        of the same name (OHE-3088); the system-managed ``OPENHANDS_API_KEY``
+        stays available. Org profiles without a list (the seeded ``default``)
+        keep the merged view. Should the effective org be unknown (not a
+        cloud/SaaS context), the org profile gets no custom secrets rather
+        than the member's.
+        """
+        secrets = await self.user_context.get_secrets()
+        secret_refs = getattr(user, 'active_agent_profile_secret_refs', None)
+        if getattr(user, 'active_agent_profile_scope', None) != 'org' or not isinstance(
+            secret_refs, list
+        ):
+            return secrets
+
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        shared: dict[str, Any] = {}
+        if org_id is None:
+            _logger.warning(
+                'agent_profile_org_secrets:missing_effective_org',
+                extra={'user_id': user.id},
+            )
+        else:
+            from storage.org_secrets_store import OrgSecretsStore
+
+            store = await OrgSecretsStore.get_instance(org_id)
+            shared = await store.load_shared_values()
+        allowed = set(secret_refs)
+        unresolved = sorted(allowed - set(shared))
+        if unresolved:
+            # A ref the org no longer shares (or never did): the agent runs
+            # without that secret, so leave a trace for the operator.
+            _logger.warning(
+                'agent_profile_org_secrets:unresolved_refs',
+                extra={'user_id': user.id, 'secret_names': unresolved},
+            )
+        scoped: dict = {
+            name: StaticSecret(
+                value=secret.secret, description=secret.description or None
+            )
+            for name, secret in shared.items()
+            if name in allowed
+        }
+        if 'OPENHANDS_API_KEY' in secrets:
+            scoped['OPENHANDS_API_KEY'] = secrets['OPENHANDS_API_KEY']
+        return scoped
+
     async def _setup_secrets_for_git_providers(self, user: UserInfo) -> dict:
         """Set up secrets for all git provider authentication.
 
@@ -1498,7 +1552,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Dictionary of secrets for the conversation
         """
-        secrets = await self.user_context.get_secrets()
+        secrets = await self._launch_custom_secrets(user)
 
         # Get all provider tokens from user authentication
         provider_tokens = cast(
@@ -2825,7 +2879,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # causing provider auth to silently fail at subprocess launch.
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
-        secrets: dict = await self.user_context.get_secrets()
+        secrets: dict = await self._launch_custom_secrets(user)
         provider_tokens = cast(
             PROVIDER_TOKEN_TYPE | None,
             await self.user_context.get_provider_tokens(),

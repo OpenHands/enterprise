@@ -52,7 +52,7 @@ from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
     load_llm_profiles,
-    load_member_agent_profiles,
+    locate_agent_profile,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -313,12 +313,8 @@ class SaasSettingsStore(SettingsStore):
         if not active_id:
             return None
 
-        # Ids are UUIDs minted per save, so the order is only a tiebreak; it
-        # lets a member pointer or a launch override reference either scope.
-        profile = load_member_agent_profiles(org_member).profiles.get(
-            active_id
-        ) or agent_profiles.profiles.get(active_id)
-        if profile is None:
+        located = locate_agent_profile(org, org_member, active_id)
+        if located is None:
             logger.warning(
                 'Active agent profile %s not found for user %s in org %s; '
                 'falling back to composed settings',
@@ -327,6 +323,7 @@ class SaasSettingsStore(SettingsStore):
                 org.id,
             )
             return None
+        profile, _scope = located
         name = profile.name
 
         mcp_config: dict[str, MCPServer] = {}
@@ -679,6 +676,15 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['agent_settings'] = resolved_dump
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
+                # Scope and secret allow-list of the launched profile, read by
+                # conversation-start's secrets setup: an org-scoped profile
+                # with an explicit list resolves it against the org-shared
+                # secrets only (OHE-3088).
+                located = locate_agent_profile(org, org_member, resolved_id)
+                if located is not None:
+                    launched, launched_scope = located
+                    kwargs['active_agent_profile_scope'] = launched_scope
+                    kwargs['active_agent_profile_secret_refs'] = launched.secret_refs
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
