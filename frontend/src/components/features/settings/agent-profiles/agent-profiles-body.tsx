@@ -19,6 +19,8 @@ interface AgentProfilesBodyProps {
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
+  /** True when the viewer may edit and delete the organization's profiles. */
+  canManageOrg?: boolean;
 }
 
 export function AgentProfilesBody({
@@ -30,6 +32,7 @@ export function AgentProfilesBody({
   onEdit,
   onDelete,
   isActivating,
+  canManageOrg = false,
 }: AgentProfilesBodyProps) {
   const { t } = useTranslation();
 
@@ -73,6 +76,7 @@ export function AgentProfilesBody({
           onEdit={onEdit}
           onDelete={onDelete}
           isActivating={isActivating}
+          canManageOrg={canManageOrg}
         />
       ))}
     </div>
