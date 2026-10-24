@@ -34,10 +34,13 @@ export const getLoginMethod = (): LoginMethod | null => {
 };
 
 /**
- * Clear login method and last page from local storage
+ * Clear login method and selected organization from local storage
  */
 export const clearLoginData = (): void => {
   localStorage.removeItem(LOCAL_STORAGE_KEYS.LOGIN_METHOD);
+  // Other apps (Agent Canvas, Automations) read this key; a stale value from a
+  // previous user causes 403s for the next user on the same browser.
+  localStorage.removeItem(LOCAL_STORAGE_KEYS.SELECTED_ORG);
 };
 
 export const setSelectedOrg = (orgId: string): void => {

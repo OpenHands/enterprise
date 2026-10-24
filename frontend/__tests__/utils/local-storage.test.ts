@@ -5,6 +5,7 @@ import {
   setLoginMethod,
   getLoginMethod,
   clearLoginData,
+  setSelectedOrg,
   setCTADismissed,
   isCTADismissed,
 } from "#/utils/local-storage";
@@ -74,6 +75,16 @@ describe("local-storage utilities", () => {
 
         clearLoginData();
         expect(getLoginMethod()).toBeNull();
+      });
+
+      it("removes the selected organization from local storage", () => {
+        setSelectedOrg("org-123");
+        expect(localStorage.getItem(LOCAL_STORAGE_KEYS.SELECTED_ORG)).toBe(
+          "org-123",
+        );
+
+        clearLoginData();
+        expect(localStorage.getItem(LOCAL_STORAGE_KEYS.SELECTED_ORG)).toBeNull();
       });
 
       it("does not throw when no login method is set", () => {
