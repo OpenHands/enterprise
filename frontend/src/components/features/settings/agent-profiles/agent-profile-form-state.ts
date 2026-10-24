@@ -70,6 +70,8 @@ export interface AgentProfileFormState {
   mcpSelected: string[];
   secretsMode: ProfileScopeMode;
   secretsSelected: string[];
+  /** Skill names this profile keeps the agent from loading (``disabled_skills``). */
+  disabledSkills: string[];
   /** Shell string shown in the ACP command textarea. */
   acpCommandText: string;
   acpModel: string;
@@ -102,6 +104,7 @@ export function newAgentProfileFormState(
     mcpSelected: [],
     secretsMode: "standard",
     secretsSelected: [],
+    disabledSkills: [],
     acpCommandText: "",
     acpModel: "",
   };
@@ -163,6 +166,7 @@ export function agentProfileFormStateFromProfile(
     llmProfileRef: profile.llm_profile_ref,
     enableSubAgents: toggles.enableSubAgents,
     enableSwitchLlmTool: toggles.enableSwitchLlmTool,
+    disabledSkills: profile.disabled_skills ?? [],
     toolConcurrency: deps.toolConcurrencyField
       ? normalizeFieldValue(
           deps.toolConcurrencyField,
@@ -261,6 +265,7 @@ export function buildAgentProfileSaveInput(
       state.systemPromptMode === "custom" && state.systemPromptText.trim()
         ? state.systemPromptText
         : null,
+    disabled_skills: state.disabledSkills,
   };
   // Only sections the schema exposes are rewritten; otherwise the stored
   // objects ride along through the whole-profile merge untouched.

@@ -54,6 +54,10 @@ interface AgentProfileFormProps {
   mcpServers: ProfileScopeItem[];
   /** The member's saved secrets (user-scoped). */
   secrets: ProfileScopeItem[];
+  /** Skills available to the member; organization-marketplace skills carry a badge. */
+  skills: ProfileScopeItem[];
+  /** True when the skills list could not be loaded. */
+  skillsLoadFailed?: boolean;
   /** Credentials for the selected ACP preset; saved as global secrets. */
   credentialForm: AcpCredentialForm;
 }
@@ -80,6 +84,8 @@ export function AgentProfileForm({
   schema,
   mcpServers,
   secrets,
+  skills,
+  skillsLoadFailed = false,
   credentialForm,
 }: AgentProfileFormProps) {
   const { t } = useTranslation();
@@ -627,6 +633,56 @@ export function AgentProfileForm({
           )}
         </Typography.Text>
       </div>
+
+      {/* OpenHands: skills — all on by default, unchecked ones are denied */}
+      {!isAcp && (
+        <div
+          className="flex flex-col gap-2.5"
+          data-testid="agent-profile-skills-section"
+        >
+          <Typography.Text className="text-sm">
+            {t(I18nKey.SETTINGS$AGENT_PROFILE_SKILLS)}
+          </Typography.Text>
+          {skills.length > 0 ? (
+            <div className="max-h-80 overflow-y-auto pr-1">
+              <ProfileScopeList
+                testId="agent-profile-skill"
+                items={skills}
+                selected={skills
+                  .map(({ name }) => name)
+                  .filter((name) => !state.disabledSkills.includes(name))}
+                isDisabled={isDisabled}
+                onToggle={(name, checked) =>
+                  onChange({
+                    disabledSkills: toggleName(
+                      state.disabledSkills,
+                      name,
+                      !checked,
+                    ),
+                  })
+                }
+              />
+            </div>
+          ) : (
+            <Typography.Text
+              testId="agent-profile-skills-empty"
+              className={cn(
+                "text-xs",
+                skillsLoadFailed ? "text-red-400" : "text-tertiary-alt",
+              )}
+            >
+              {t(
+                skillsLoadFailed
+                  ? I18nKey.SETTINGS$AGENT_PROFILE_SKILLS_LOAD_FAILED
+                  : I18nKey.SETTINGS$AGENT_PROFILE_SKILLS_NONE,
+              )}
+            </Typography.Text>
+          )}
+          <Typography.Text className="text-xs text-tertiary-alt">
+            {t(I18nKey.SETTINGS$AGENT_PROFILE_SKILLS_HINT)}
+          </Typography.Text>
+        </div>
+      )}
     </div>
   );
 }
