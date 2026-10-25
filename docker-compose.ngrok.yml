@@ -1,8 +1,0 @@
-# This file serves OpenHands through ngrok at WEB_URL.
-services:
-  ngrok:
-    image: ngrok/ngrok:3
-    command: ['http', '--url', '${WEB_URL:?Set WEB_URL to your ngrok URL}', 'proxy:80']
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN}
-    restart: unless-stopped
