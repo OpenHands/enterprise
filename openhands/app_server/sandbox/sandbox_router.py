@@ -262,7 +262,7 @@ async def list_secret_names(
 ) -> SecretNamesResponse:
     """List available secret names (no raw values).
 
-    Includes both custom secrets and provider tokens (e.g. github_token).
+    Includes both custom secrets and provider tokens (e.g. GITHUB_TOKEN).
     """
     user_context = await _get_user_context(sandbox_info)
 
@@ -273,13 +273,16 @@ async def list_secret_names(
     for name, source in secret_sources.items():
         items.append(SecretNameItem(name=name, description=source.description))
 
-    # Provider tokens (github_token, gitlab_token, etc.)
+    # Provider tokens (GITHUB_TOKEN, GITLAB_TOKEN, etc.); a custom secret of the
+    # same name overrides the provider token, as in get_secret_value.
     provider_env_vars = cast(
         dict[str, str] | None,
         await user_context.get_provider_tokens(as_env_vars=True),
     )
     if provider_env_vars:
         for env_key in provider_env_vars:
+            if env_key in secret_sources:
+                continue
             items.append(
                 SecretNameItem(name=env_key, description=f'{env_key} provider token')
             )
@@ -315,7 +318,10 @@ async def get_secret_value(
         await user_context.get_provider_tokens(as_env_vars=True),
     )
     if provider_env_vars:
-        token_value = provider_env_vars.get(secret_name)
+        # SDK releases before the uppercase names request e.g. github_token.
+        legacy_names = {key.lower(): key for key in provider_env_vars}
+        env_key = legacy_names.get(secret_name, secret_name)
+        token_value = provider_env_vars.get(env_key)
         if token_value is not None:
             return Response(content=token_value, media_type='text/plain')
 

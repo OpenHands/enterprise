@@ -1511,7 +1511,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 if not provider_token.token:
                     continue
 
-                secret_name = f'{provider_type.name}_TOKEN'
+                secret_name = ProviderHandler.get_provider_env_key(provider_type)
                 description = f'{provider_type.name} authentication token'
 
                 if self.web_url:
@@ -2834,7 +2834,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             for provider_type, provider_token in provider_tokens.items():
                 if not provider_token.token:
                     continue
-                secret_name = f'{provider_type.name}_TOKEN'
+                secret_name = ProviderHandler.get_provider_env_key(provider_type)
                 static_token = await self.user_context.get_latest_token(provider_type)
                 if static_token:
                     secrets[secret_name] = StaticSecret(

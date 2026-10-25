@@ -87,7 +87,7 @@ class UserContext(ABC):
 
         Args:
             as_env_vars: When True, return a ``dict[str, str]`` mapping env
-                var names (e.g. ``github_token``) to plain-text token values.
+                var names (e.g. ``GITHUB_TOKEN``) to plain-text token values.
                 When False (default), return the raw provider token mapping.
         """
 
