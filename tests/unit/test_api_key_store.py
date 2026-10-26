@@ -7,6 +7,8 @@ from sqlalchemy import or_, select, update
 
 from storage.api_key import ApiKey
 from storage.api_key_store import ApiKeyStore, ApiKeyValidationResult, _as_naive
+from storage.org_member import OrgMember
+from storage.role import Role
 
 
 @pytest.fixture
@@ -470,6 +472,49 @@ async def test_validate_api_key_only_not_before_past(
 
     assert isinstance(result, ApiKeyValidationResult)
     assert result.user_id == user_id
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_reports_missing_membership(
+    api_key_store, async_session_maker, create_org, create_user
+):
+    """``org_member_exists`` tells whether the key's user is a member of its org."""
+    # Arrange
+    member_org_id = create_org().id
+    other_org_id = create_org().id
+    user_id = create_user(current_org_id=member_org_id).id
+
+    async with async_session_maker() as session:
+        role = Role(name='member', rank=3)
+        session.add(role)
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=member_org_id,
+                user_id=user_id,
+                role_id=role.id,
+                llm_api_key='test-llm-key',
+                status='active',
+            )
+        )
+        session.add_all(
+            [
+                ApiKey(key='member-key', user_id=str(user_id), org_id=member_org_id),
+                ApiKey(key='non-member-key', user_id=str(user_id), org_id=other_org_id),
+            ]
+        )
+        await session.commit()
+
+    # Act
+    with patch('storage.api_key_store.a_session_maker', async_session_maker):
+        member_result = await api_key_store.validate_api_key('member-key')
+        non_member_result = await api_key_store.validate_api_key('non-member-key')
+
+    # Assert
+    assert member_result is not None
+    assert member_result.org_member_exists is True
+    assert non_member_result is not None
+    assert non_member_result.org_member_exists is False
 
 
 @pytest.mark.asyncio

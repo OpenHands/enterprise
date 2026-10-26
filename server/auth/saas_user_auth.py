@@ -1439,6 +1439,24 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         if not validation_result:
             return None
         await _require_active_user(validation_result.user_id)
+        # A key bound to an org the user is not a member of (e.g. removed
+        # since the key was minted) does not authenticate. Super roles are
+        # exempt: they may bind keys to orgs they have not joined (see
+        # ``create_api_key`` in ``server/routes/api_keys.py``).
+        if (
+            validation_result.org_id is not None
+            and not validation_result.org_member_exists
+            and await get_user_super_role(validation_result.user_id) is None
+        ):
+            logger.warning(
+                'api_key_org_membership_missing',
+                extra={
+                    'user_id': validation_result.user_id,
+                    'api_key_org_id': str(validation_result.org_id),
+                    'api_key_id': validation_result.key_id,
+                },
+            )
+            return None
         # API-key auth is intentionally decoupled from the Keycloak offline
         # session: we do NOT load an offline token or refresh here. A valid API
         # key alone authenticates the request. Any provider/access token needed

@@ -5,7 +5,7 @@ Store class for managing organization-member relationships.
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -19,6 +19,7 @@ from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
     OrgMemberSettingsUpdate,
 )
+from storage.api_key import ApiKey
 from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
 from storage.org_default_settings import strip_unset_condenser_max_tokens
@@ -156,7 +157,12 @@ class OrgMemberStore:
 
     @staticmethod
     async def remove_user_from_org(org_id: UUID, user_id: UUID) -> bool:
-        """Remove a user from an organization."""
+        """Remove a user from an organization.
+
+        Also deletes the user's API keys bound to this org (user, system and
+        MCP keys) in the same transaction. Unbound keys and keys bound to
+        other orgs are kept.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OrgMember).filter(
@@ -169,6 +175,11 @@ class OrgMemberStore:
                 return False
 
             await session.delete(org_member)
+            await session.execute(
+                delete(ApiKey).where(
+                    ApiKey.user_id == str(user_id), ApiKey.org_id == org_id
+                )
+            )
             await session.commit()
             return True
 
