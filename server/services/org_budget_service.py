@@ -1372,6 +1372,7 @@ class OrgBudgetService:
                 or_(
                     User.email.ilike(pattern, escape='\\'),
                     User.git_user_name.ilike(pattern, escape='\\'),
+                    User.display_name.ilike(pattern, escape='\\'),
                 )
             )
 
@@ -1385,7 +1386,9 @@ class OrgBudgetService:
             row = {
                 'user_id': user_id,
                 'user_email': user.email,
-                'user_name': user.git_user_name,
+                # display_name is set for service accounts only.
+                'user_name': user.display_name or user.git_user_name,
+                'account_type': user.account_type,
                 'current_spend': _litellm_member_cycle_spend(
                     settings, user_id, members.get(user_id)
                 ),
@@ -1436,7 +1439,8 @@ class OrgBudgetService:
         user_row = {
             'user_id': str(org_member.user_id),
             'user_email': user.email,
-            'user_name': user.git_user_name,
+            'user_name': user.display_name or user.git_user_name,
+            'account_type': user.account_type,
             'current_spend': _litellm_member_cycle_spend(
                 settings, user_id_str, members.get(user_id_str)
             ),

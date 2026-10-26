@@ -4645,3 +4645,114 @@ async def test_first_settings_write_creates_the_row_with_default_thresholds(
     assert sorted(
         (t.percentage, t.email_enabled, t.slack_enabled) for t in thresholds
     ) == sorted(DEFAULT_THRESHOLDS)
+
+
+async def _seed_service_account_member(async_session_maker, org_id, **settings_kwargs):
+    """A budget-enabled org with one service account member. Returns its id."""
+    sa_id = uuid4()
+    async with async_session_maker() as session:
+        role = Role(id=2000, name='service_account', rank=2000)
+        session.add_all(
+            [
+                role,
+                User(
+                    id=sa_id,
+                    current_org_id=org_id,
+                    account_type='service',
+                    display_name='CI bot',
+                ),
+                _enabled_budget_settings(org_id, **settings_kwargs),
+            ]
+        )
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=sa_id,
+                role_id=role.id,
+                llm_api_key='sk-sa',
+                agent_settings_diff={},
+                conversation_settings_diff={},
+                status='active',
+            )
+        )
+        await session.commit()
+    return sa_id
+
+
+@pytest.mark.asyncio
+async def test_override_for_service_account_member(async_session_maker, budget_org):
+    """GIVEN a service account member WHEN an override is set and removed THEN it works as for a human, and the row names the account."""
+    sa_id = await _seed_service_account_member(async_session_maker, budget_org.id)
+    financial = _financial_data(members={str(sa_id): (3.0, 20.0, False)})
+
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with (
+            patch.object(service, '_sync_litellm_budgets', AsyncMock()),
+            patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=financial)),
+        ):
+            await service.upsert_user_override(
+                budget_org.id, sa_id, monthly_limit=20.0, is_disabled=False
+            )
+            row = await service.get_user_budget_row(budget_org.id, sa_id)
+            await service.delete_user_override(budget_org.id, sa_id)
+            after = await service.get_user_budget_row(budget_org.id, sa_id)
+
+    assert row is not None
+    assert (row['monthly_limit'], row['is_override']) == (20.0, True)
+    assert after is not None
+    assert (after['monthly_limit'], after['is_override']) == (None, False)
+
+
+@pytest.mark.asyncio
+async def test_budget_rows_include_account_type(async_session_maker, budget_org):
+    """GIVEN a human and a service account in an org WHEN budget rows are built THEN each row has its account_type, and the service account has its name."""
+    sa_id = await _seed_service_account_member(async_session_maker, budget_org.id)
+    human_id = uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            User(
+                id=human_id,
+                current_org_id=budget_org.id,
+                email='h@example.com',
+                git_user_name='Hu Man',
+            )
+        )
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=budget_org.id,
+                user_id=human_id,
+                role_id=2000,
+                llm_api_key='sk-h',
+                agent_settings_diff={},
+                conversation_settings_diff={},
+                status='active',
+            )
+        )
+        await session.commit()
+    financial = _financial_data(
+        members={str(sa_id): (3.0, 20.0, False), str(human_id): (1.0, 20.0, False)}
+    )
+
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=financial)):
+            single = await service.get_user_budget_row(budget_org.id, sa_id)
+            settings = await service._get_settings_for_read(budget_org.id)
+            rows, total = await service._build_user_budget_rows(
+                budget_org.id, settings, None, 1, 10, None, None
+            )
+            found_by_name, _ = await service._build_user_budget_rows(
+                budget_org.id, settings, None, 1, 10, 'ci bot', None
+            )
+
+    assert total == 2
+    by_id = {r['user_id']: r for r in rows}
+    assert by_id[str(sa_id)]['account_type'] == 'service'
+    assert by_id[str(sa_id)]['user_name'] == 'CI bot'
+    assert by_id[str(human_id)]['account_type'] == 'human'
+    assert by_id[str(human_id)]['user_name'] == 'Hu Man'
+    assert single is not None and single['account_type'] == 'service'
+    assert [r['user_id'] for r in found_by_name] == [str(sa_id)]
