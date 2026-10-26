@@ -180,8 +180,10 @@ async def get_or_create_api_key_for_user(
     api_key_store = ApiKeyStore.get_instance()
 
     try:
+        # Canonical form: bearer auth and member removal match keys to
+        # org_member rows by str(UUID).
         api_key = await api_key_store.get_or_create_system_api_key(
-            user_id=user_id,
+            user_id=str(user_uuid),
             org_id=org_id,
             name=request.name,
         )
