@@ -47,7 +47,7 @@ ARG AGENT_CANVAS=
 ARG AGENT_CANVAS_SOURCE
 COPY --from=agent-canvas-source / /agent-canvas-source
 # Same-origin URL (scheme + host + port) the browser will use to reach this
-# app, e.g. http://localhost:3100. Passed through to
+# app, e.g. http://localhost:9043. Passed through to
 # scripts/build-agent-canvas.sh as AGENT_CANVAS_LOCK_TO_CLOUD, which bakes it
 # into the Canvas bundle as VITE_LOCK_TO_CLOUD -- this is what lets Canvas
 # skip its own onboarding and authenticate via this app's existing session
