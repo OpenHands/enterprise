@@ -9,7 +9,7 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -50,6 +50,9 @@ class CreateUserApiKeyResponse(BaseModel):
     name: str
 
 
+MembershipStatus = Literal['active', 'inactive', 'invited', 'disabled']
+
+
 class OrgMemberInfoResponse(BaseModel):
     """Response model for the org membership endpoint."""
 
@@ -59,7 +62,7 @@ class OrgMemberInfoResponse(BaseModel):
     role: str
     # ``disabled`` when the user is disabled or pending deletion; otherwise the
     # membership status (``active``, ``inactive`` or ``invited``).
-    status: str
+    status: MembershipStatus
 
 
 class ServiceInfoResponse(BaseModel):
@@ -293,13 +296,14 @@ async def get_org_member_info(
         )
 
     return OrgMemberInfoResponse(
-        user_id=user_id,
+        user_id=str(user_uuid),
         org_id=str(org_id),
         account_type='service' if user.account_type == 'service' else 'human',
         role=role.name,
         status='disabled'
         if user.is_disabled or user.deletion_pending
-        else (org_member.status or 'active'),
+        # Pydantic rejects a stored value outside the Literal.
+        else cast(MembershipStatus, org_member.status or 'active'),
     )
 
 

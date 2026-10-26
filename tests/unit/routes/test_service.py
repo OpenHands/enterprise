@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from server.routes.service import (
     CreateUserApiKeyRequest,
+    OrgMemberInfoResponse,
     delete_user_api_key,
     get_or_create_api_key_for_user,
     get_org_member_info,
@@ -487,6 +488,24 @@ class TestGetOrgMemberInfo:
             'role': 'service_account',
             'status': 'active',
         }
+
+    @pytest.mark.asyncio
+    async def test_user_id_is_canonical(self):
+        result = await self._call(
+            self._user(), self._member(), user_id=self.USER_ID.upper()
+        )
+
+        assert result.user_id == self.USER_ID
+
+    def test_status_is_a_closed_set(self):
+        schema = OrgMemberInfoResponse.model_json_schema()
+
+        assert schema['properties']['status']['enum'] == [
+            'active',
+            'inactive',
+            'invited',
+            'disabled',
+        ]
 
     @pytest.mark.asyncio
     async def test_human(self):
