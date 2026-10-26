@@ -54,7 +54,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_store import SuperAdminRevokeResult, UserStore
 from utils.identity import display_name_for_user
 
@@ -206,7 +206,9 @@ class SetupStateUpdate(BaseModel):
 
 
 def _display_name(user: User) -> str | None:
-    return display_name_for_user(user.git_user_name, user.email)
+    return display_name_for_user(
+        user.git_user_name, user.email, display_name=user.display_name
+    )
 
 
 def _plain_llm_api_key(settings: object) -> str:
@@ -506,7 +508,8 @@ async def delete_admin_user(
     """Delete a user's account and the data they own in every organization.
 
     Refuses with ``409`` if the user is the last owner of any team org or
-    the last Super Admin. The account and its rows go in one transaction.
+    the last Super Admin, and with ``403`` for a service account: it is
+    deleted with its org. The account and its rows go in one transaction.
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
     """
@@ -520,6 +523,11 @@ async def delete_admin_user(
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+        )
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot delete a service account',
         )
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
@@ -679,8 +687,14 @@ async def _add_selected_memberships(
 ) -> None:
     """Add the user to each selected org that they are not already in.
 
-    Refuses to reactivate a suspended service account membership.
+    Refuses service accounts, which belong to one org only, and refuses to
+    reactivate a suspended service account membership.
     """
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot add a service account to an organization',
+        )
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
@@ -737,7 +751,8 @@ async def update_admin_user_groups(
     last owner of an organization. ``add`` creates the missing memberships.
     ``set_role`` changes the role on existing memberships and refuses to
     demote the last owner. ``remove``, ``set_role`` and ``add`` refuse to
-    change a service account membership.
+    change a service account membership, and ``add`` refuses to add a
+    service account to another org.
     """
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:

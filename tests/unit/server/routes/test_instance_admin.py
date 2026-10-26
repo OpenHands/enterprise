@@ -134,6 +134,7 @@ async def test_list_users_success(mock_app, grant_manage_super_admins):
     user.id = user_id
     user.email = 'me@acme.example'
     user.git_user_name = 'openhands'
+    user.display_name = None
     user.is_disabled = True
 
     org_member = MagicMock()
@@ -184,6 +185,7 @@ async def test_list_users_includes_pending_invitations_without_accounts(
     user.id = uuid.uuid4()
     user.email = 'me@acme.example'
     user.git_user_name = None
+    user.display_name = None
     user.is_disabled = False
     org = MagicMock()
     org.id = org_id
@@ -440,6 +442,7 @@ async def test_update_user_status_success(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
     user.is_disabled = not disabled
 
     org = MagicMock()
@@ -491,6 +494,7 @@ async def test_update_user_status_rejects_suspending_self(
     caller.id = uuid.UUID(CALLER_USER_ID)
     caller.email = 'admin@acme.example'
     caller.git_user_name = 'Admin'
+    caller.display_name = None
     set_disabled = AsyncMock()
 
     with (
@@ -613,6 +617,7 @@ def _target_user(user_id: uuid.UUID) -> MagicMock:
     user.id = user_id
     user.email = 'dev@acme.example'
     user.git_user_name = 'Dev'
+    user.display_name = None
     return user
 
 
@@ -734,6 +739,7 @@ async def test_update_user_groups_suspends_or_resumes_selected_orgs(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
 
     org = MagicMock()
     org.id = uuid.uuid4()
@@ -782,6 +788,7 @@ async def test_update_user_groups_remove_blocks_last_owner(
     user.id = user_id
     user.email = 'owner@acme.example'
     user.git_user_name = 'Owner'
+    user.display_name = None
 
     org = MagicMock()
     org.id = uuid.uuid4()
@@ -830,6 +837,7 @@ async def test_update_user_groups_remove_resets_current_org_and_leaves_litellm_t
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
     user.current_org_id = org.id
     member = MagicMock()
     member.role_id = 1
@@ -1311,6 +1319,89 @@ async def test_update_user_groups_refuses_service_account_as_new_role(
 
 
 @pytest.mark.asyncio
+async def test_delete_user_refuses_service_account(mock_app, grant_manage_super_admins):
+    """Service accounts are deleted with their org, not from the directory."""
+    # Arrange
+    user_id = uuid.uuid4()
+    service_account = _target_user(user_id)
+    service_account.account_type = 'service'
+
+    # Act
+    with _delete_user_patches(service_account, role_name='service_account') as steps:
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot delete a service account'
+    assert steps.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_refuses_service_account_in_another_org(
+    mock_app, grant_manage_super_admins
+):
+    """A service account belongs to one org; it cannot join another one."""
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    service_account = _target_user(user_id)
+    service_account.account_type = 'service'
+    org = MagicMock()
+    org.name = 'Other'
+    role = MagicMock()
+    role.id = 3
+    create_integration = AsyncMock()
+    add_member = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=service_account),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=org),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.create_litellm_integration',
+            create_integration,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.add_user_to_org', add_member
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'member'},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot add a service account to an organization'
+    create_integration.assert_not_awaited()
+    add_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_user_groups_remove_rejects_own_personal_workspace(
     mock_app, grant_manage_super_admins
 ):
@@ -1319,6 +1410,7 @@ async def test_update_user_groups_remove_rejects_own_personal_workspace(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
 
     personal_org = MagicMock()
     personal_org.id = user_id
