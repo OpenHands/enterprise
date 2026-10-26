@@ -348,6 +348,34 @@ class TestDeleteUserApiKey:
         )
 
     @pytest.mark.asyncio
+    async def test_delete_uses_canonical_user_id(self, valid_org_id):
+        """Delete matches the canonical user ID that the mint endpoint stores."""
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.make_system_key_name.return_value = '__SYSTEM__:automation'
+        mock_api_key_store.delete_api_key_by_name = AsyncMock(return_value=True)
+        user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
+
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.ApiKeyStore.get_instance'
+            ) as mock_get_store:
+                mock_get_store.return_value = mock_api_key_store
+
+                await delete_user_api_key(
+                    user_id=user_id.upper(),
+                    org_id=valid_org_id,
+                    key_name='automation',
+                    x_service_api_key='test-key',
+                )
+
+        mock_api_key_store.delete_api_key_by_name.assert_called_once_with(
+            user_id=user_id,
+            org_id=valid_org_id,
+            name='__SYSTEM__:automation',
+            allow_system=True,
+        )
+
+    @pytest.mark.asyncio
     async def test_delete_key_not_found(self, valid_org_id):
         """Test error when key to delete is not found."""
         mock_api_key_store = MagicMock()

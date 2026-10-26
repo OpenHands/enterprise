@@ -250,10 +250,16 @@ async def delete_user_api_key(
 
     api_key_store = ApiKeyStore.get_instance()
 
+    # Match the canonical str(UUID) that the mint endpoint stores.
+    try:
+        stored_user_id = str(UUID(user_id))
+    except ValueError:
+        stored_user_id = user_id
+
     # Delete the key by name (wrap with system key prefix since service creates system keys)
     system_key_name = api_key_store.make_system_key_name(key_name)
     success = await api_key_store.delete_api_key_by_name(
-        user_id=user_id,
+        user_id=stored_user_id,
         org_id=org_id,
         name=system_key_name,
         allow_system=True,
