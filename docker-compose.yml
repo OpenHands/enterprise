@@ -52,13 +52,6 @@ services:
       # server's, background jobs can't read git tokens linked through OAuth v2.
       ENABLE_OAUTH_V2_LOGIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
-      # Setting GITLAB_APP_CLIENT_ID turns on the GitLab webhook routes and the worker's webhook installer.
-      # Webhooks need WEB_HOST set to a host GitLab can reach over HTTPS.
-      GITLAB_APP_CLIENT_ID: ${GITLAB_APP_CLIENT_ID:-}
-      GITLAB_APP_CLIENT_SECRET: ${GITLAB_APP_CLIENT_SECRET:-}
-      GITLAB_HOST: ${GITLAB_HOST:-}
-      # The image defaults to the OSS GitLab service, which can't install webhooks.
-      OPENHANDS_GITLAB_SERVICE_CLS: integrations.gitlab.gitlab_service.SaaSGitLabService
       ENABLE_SUPER_ADMIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
       # Each user adds their own LLM key in Settings, so no LiteLLM proxy is needed.
@@ -187,7 +180,6 @@ services:
     environment:
       <<: *app-environment
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
-      OH_WORKER_SCHEDULED_JOBS_INSTALL_GITLAB_WEBHOOKS: ${GITLAB_APP_CLIENT_ID:+true}
     restart: unless-stopped
 
 volumes:
