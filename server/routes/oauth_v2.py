@@ -45,7 +45,7 @@ from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.secrets.secrets_models import Secrets
-from openhands.app_server.user_auth import get_secrets, get_user_id
+from openhands.app_server.user_auth import get_secrets, get_user_id, reject_service_account
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
@@ -689,7 +689,9 @@ def _verify_link_state(request: Request, state: OAuthState) -> str:
     return state.user_id
 
 
-@oauth_v2_router.post('/{provider_id}/link')
+@oauth_v2_router.post(
+    '/{provider_id}/link', dependencies=[Depends(reject_service_account)]
+)
 async def oauth_v2_link(
     request: Request,
     provider_id: int,
@@ -744,7 +746,11 @@ async def oauth_v2_link(
     return response
 
 
-@oauth_v2_router.delete('/{provider_id}', status_code=status.HTTP_204_NO_CONTENT)
+@oauth_v2_router.delete(
+    '/{provider_id}',
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(reject_service_account)],
+)
 async def oauth_v2_unlink(
     provider_id: int,
     user_id: str = Depends(get_user_id),

@@ -1,4 +1,4 @@
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader
 from pydantic import SecretStr
 
@@ -63,3 +63,18 @@ async def get_user_settings_store(request: Request) -> SettingsStore | None:
 async def get_auth_type(request: Request) -> AuthType | None:
     user_auth = await get_user_auth(request)
     return user_auth.get_auth_type()
+
+
+async def reject_service_account(request: Request) -> None:
+    """Route dependency: answer 403 when the caller is a service account.
+
+    Put it on routes that change the caller's own account (API keys,
+    personal secrets, settings, git links). A service account's run key must
+    not be able to mint other keys or rewrite its own configuration.
+    """
+    user_auth = await get_user_auth(request)
+    if user_auth.is_service_account():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Service accounts cannot use this endpoint',
+        )

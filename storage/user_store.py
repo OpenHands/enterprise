@@ -814,6 +814,7 @@ class UserStore:
                         User.is_disabled,
                         User.deletion_pending,
                         User.credentials_revoked_at,
+                        User.account_type,
                         User.email,
                         User.email_verified,
                     )

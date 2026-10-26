@@ -8,7 +8,11 @@ from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.sandbox.session_auth import validate_session_key
-from openhands.app_server.user_auth import get_user_auth, get_user_id
+from openhands.app_server.user_auth import (
+    get_user_auth,
+    get_user_id,
+    reject_service_account,
+)
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
@@ -267,7 +271,7 @@ async def check_byor_permitted(
         ) from e
 
 
-@api_router.post('', tags=['Keys'])
+@api_router.post('', tags=['Keys'], dependencies=[Depends(reject_service_account)])
 async def create_api_key(
     key_data: ApiKeyCreate,
     user_id: str = Depends(get_user_id),
@@ -388,7 +392,11 @@ async def list_api_keys(
         )
 
 
-@api_router.delete('/{key_id}', tags=['Keys'])
+@api_router.delete(
+    '/{key_id}',
+    tags=['Keys'],
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_api_key(
     key_id: int,
     user_id: str = Depends(get_user_id),
