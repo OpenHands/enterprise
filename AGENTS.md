@@ -47,7 +47,7 @@ then re-run the command to ensure it passes. Common issues include:
 
 - Prefer specific `git add <filename>` instead of `git add .` to avoid accidentally staging unintended files
 - Be especially careful with `git reset --hard` after staging files, as it will remove accidentally staged files
-- When remote has new changes, use `git fetch upstream && git rebase upstream/<branch>` on the same branch
+- When `origin` has new changes, use `git fetch origin && git rebase origin/<branch>` on the same branch
 
 ## GitHub Actions
 
@@ -108,7 +108,7 @@ Backend:
 - The current V1 application server lives in `openhands/app_server/`. `make start-backend` launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`. It needs PostgreSQL; `make local-db` provides one.
 - For V1 web-app docs, LLM setup should point users to the Settings UI.
 - Testing:
-  - All tests are in `tests/unit/test_*.py`
+  - Unit tests live in `tests/unit/` (including nested packages such as `tests/unit/app_server/`); integration tests live in `tests/integration/`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
   - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
@@ -259,14 +259,11 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
   ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
   objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
   of inventing ids
-- In this sandbox the docker daemon is often not running and the venv may be missing `testcontainers` even though
-  it's pinned in `pyproject.toml` (stale `uv sync`). If `uv run pytest tests/unit/storage/...` fails with
-  `ModuleNotFoundError: No module named 'testcontainers'` or a docker socket `FileNotFoundError`, run
-  `uv sync --all-groups` to install the missing group, then start the daemon and fix socket permissions so the
-  non-root sandbox user can reach it: `sudo dockerd > /tmp/docker.log 2>&1 & sleep 5 && sudo chmod 666
-  /var/run/docker.sock`. After that, `uv run pytest tests/unit/storage/...` works normally.
-- Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
-  across pytest-xdist workers, and removes it when the run ends
+- If tests cannot import `testcontainers`, run `uv sync --all-groups` to install the pinned test dependencies.
+  The test suite requires access to a Docker daemon for its PostgreSQL container (see root `conftest.py` and
+  `tests/postgres_testdb.py`); if the Docker socket is unavailable, configure daemon access for your environment
+  before rerunning the tests. Do not make the Docker socket world-writable. The root `conftest.py` starts one
+  container per test run, shares it across pytest-xdist workers, and removes it when the run ends
 - Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,
   git providers)
 - Do not add SQLite paths to Alembic migrations
