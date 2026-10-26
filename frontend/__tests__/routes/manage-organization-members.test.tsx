@@ -371,6 +371,55 @@ describe("Manage Organization Members Route", () => {
     });
   });
 
+  it("gives a service account row no role menu", async () => {
+    // The backend filters service accounts out. If a row slips through, the
+    // viewer must not be able to change its role, even with a role they can edit.
+    vi.spyOn(organizationService, "getOrganizationMembers").mockResolvedValue({
+      items: [
+        {
+          org_id: "2",
+          user_id: "sa-1",
+          email: "nightly-report",
+          role: "member",
+          account_type: "service",
+          llm_api_key: "**********",
+          max_iterations: 20,
+          llm_model: "gpt-4",
+          llm_base_url: "https://api.openai.com",
+          status: "active",
+        },
+        {
+          org_id: "2",
+          user_id: "3",
+          email: "charlie@acme.org",
+          role: "member",
+          account_type: "human",
+          llm_api_key: "**********",
+          max_iterations: 20,
+          llm_model: "gpt-4",
+          llm_base_url: "https://api.openai.com",
+          status: "active",
+        },
+      ],
+      current_page: 1,
+      per_page: 10,
+    });
+
+    renderManageOrganizationMembers();
+    await screen.findByTestId("manage-organization-members-settings");
+
+    const serviceRow = await findMemberByEmail("nightly-report");
+    await userEvent.click(within(serviceRow).getByText(/^Member$/i));
+    expectDropdownNotVisible();
+
+    // A human row with the same role still opens the menu.
+    const humanRow = await findMemberByEmail("charlie@acme.org");
+    await userEvent.click(within(humanRow).getByText(/^Member$/i));
+    expect(
+      screen.getByTestId("organization-member-role-context-menu"),
+    ).toBeInTheDocument();
+  });
+
   it("should render the list of organization members", async () => {
     await setupTestWithOrg(0);
     const members = ORGS_AND_MEMBERS["1"];

@@ -289,6 +289,10 @@ describe("useSettingsNavItems", () => {
         },
         { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
         { to: "/settings/org-members", text: "SETTINGS$NAV_ORG_MEMBERS" },
+        {
+          to: "/settings/service-accounts",
+          text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
+        },
         { to: "/settings/org-defaults", text: "COMMON$LANGUAGE_MODEL_LLM" },
         {
           to: "/settings/org-defaults/condenser",
@@ -330,6 +334,40 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
+
+    it("shows service accounts only with manage_service_accounts in a team org", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
+
+      const { result, rerender } = renderHook(() => useSettingsNavItems(), {
+        wrapper,
+      });
+
+      await waitFor(() => {
+        expect(
+          findItemByPath(result.current, "/settings/service-accounts"),
+        ).toBeDefined();
+      });
+
+      mockMe.data = {
+        role: "owner",
+        permissions: MOCK_ROLE_PERMISSIONS.owner.filter(
+          (permission) => permission !== "manage_service_accounts",
+        ),
+      };
+      rerender();
+
+      await waitFor(() => {
+        expect(
+          findItemByPath(result.current, "/settings/service-accounts"),
+        ).toBeUndefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeDefined();
     });
 
     it("should still show org-members for a super admin when isPersonalOrg is true and enable_integrated_idp is on", async () => {

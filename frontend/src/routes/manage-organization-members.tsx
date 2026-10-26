@@ -188,7 +188,10 @@ function OrganizationMembersSection({
     user?.permissions ?? [],
   );
 
+  // A service account has no role to change here. The backend omits these
+  // rows; if one appears anyway, it gets no role menu.
   const canAssignUserRole = (member: OrganizationMember) =>
+    member.account_type !== "service" &&
     user != null &&
     user?.user_id !== member.user_id &&
     hasPermission(`change_user_role:${member.role}`);
@@ -314,7 +317,9 @@ function OrganizationMembersSection({
                     status={member.status}
                     hasPermissionToChangeRole={canAssignUserRole(member)}
                     availableRolesToChangeTo={availableRolesToChangeTo}
-                    canCreatePasswordResetLink={isSuperAdmin}
+                    canCreatePasswordResetLink={
+                      isSuperAdmin && member.account_type !== "service"
+                    }
                     onCreatePasswordResetLink={() =>
                       setMemberForPasswordReset(member)
                     }

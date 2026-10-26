@@ -13,6 +13,10 @@ import {
   OrgMcpServerUpdate,
 } from "#/api/org-mcp-servers.types";
 import {
+  getServiceAccountBudgetRows,
+  setServiceAccountBudget,
+} from "./service-account-handlers";
+import {
   findMockAdminUser,
   onMockAdminMembershipAdded,
   registerMockAdminOrg,
@@ -167,6 +171,7 @@ const MOCK_ADMIN_PERMISSIONS = [
   "manage_automations",
   "provision_user",
   "view_org_conversations",
+  "manage_service_accounts",
 ];
 export const MOCK_ROLE_PERMISSIONS: Record<OrganizationUserRole, string[]> = {
   member: MOCK_MEMBER_PERMISSIONS,
@@ -1080,7 +1085,7 @@ export const ORG_HANDLERS = [
     },
   ),
 
-  http.get("/api/organizations/:orgId/budgets", ({ params }) => {
+  http.get("/api/organizations/:orgId/budgets", ({ params, request }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !orgs.has(orgId)) {
       return HttpResponse.json(
@@ -1088,6 +1093,14 @@ export const ORG_HANDLERS = [
         { status: 404 },
       );
     }
+
+    // Service accounts show up as budget rows with `account_type: "service"`.
+    // The mock adds them only for a user search, which keeps the default
+    // list of the Budgets page unchanged.
+    const search = new URL(request.url).searchParams.get("users_search");
+    const serviceAccountRows = search
+      ? getServiceAccountBudgetRows(orgId, search)
+      : [];
 
     return HttpResponse.json({
       enabled: true,
@@ -1129,6 +1142,7 @@ export const ORG_HANDLERS = [
           is_disabled: false,
           is_override: false,
         },
+        ...serviceAccountRows,
       ],
       users_total: 1,
       users_page: 1,
@@ -1766,6 +1780,12 @@ export const ORG_HANDLERS = [
         monthly_limit?: number | null;
         is_disabled: boolean;
       };
+      const serviceAccountRow = setServiceAccountBudget(
+        String(params.orgId),
+        String(params.userId),
+        body.monthly_limit ?? null,
+      );
+      if (serviceAccountRow) return HttpResponse.json(serviceAccountRow);
       return HttpResponse.json({
         user_id: String(params.userId),
         user_email: "user@example.com",
@@ -1783,7 +1803,14 @@ export const ORG_HANDLERS = [
 
   http.delete(
     "/api/organizations/:orgId/budgets/overrides/:userId",
-    () => new HttpResponse(null, { status: 204 }),
+    ({ params }) => {
+      setServiceAccountBudget(
+        String(params.orgId),
+        String(params.userId),
+        null,
+      );
+      return new HttpResponse(null, { status: 204 });
+    },
   ),
 
   // Org LLM profiles (org-defaults settings page)
