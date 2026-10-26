@@ -9,6 +9,7 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -18,6 +19,7 @@ from openhands.app_server.utils.auth import secrets_equal
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.api_key_store import ApiKeyStore
 from storage.org_member_store import OrgMemberStore
+from storage.role_store import RoleStore
 from storage.user_store import UserStore
 
 # Environment variable for the service API key
@@ -46,6 +48,18 @@ class CreateUserApiKeyResponse(BaseModel):
     user_id: str
     org_id: str
     name: str
+
+
+class OrgMemberInfoResponse(BaseModel):
+    """Response model for the org membership endpoint."""
+
+    user_id: str
+    org_id: str
+    account_type: Literal['human', 'service']
+    role: str
+    # ``disabled`` when the user is disabled or pending deletion; otherwise the
+    # membership status (``active``, ``inactive`` or ``invited``).
+    status: str
 
 
 class ServiceInfoResponse(BaseModel):
@@ -216,6 +230,76 @@ async def get_or_create_api_key_for_user(
         user_id=user_id,
         org_id=str(org_id),
         name=request.name,
+    )
+
+
+@service_router.get('/users/{user_id}/orgs/{org_id}/membership')
+async def get_org_member_info(
+    user_id: str,
+    org_id: UUID,
+    x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
+) -> OrgMemberInfoResponse:
+    """
+    Report whether a user is a member of an org, and what kind of account it is.
+
+    The automations service calls this to tell service accounts from people and
+    to check that a member is usable before it acts for them.
+
+    Request:
+        GET /api/service/users/{user_id}/orgs/{org_id}/membership
+        Header ``X-Service-API-Key``: the shared service key.
+
+    Response contract (200 JSON):
+        user_id: str, the user id as given.
+        org_id: str, the org id.
+        account_type: ``"human"`` or ``"service"``.
+        role: str, the org role name (``owner``, ``admin``, ``member`` or
+            ``service_account``).
+        status: ``"disabled"`` when the user is disabled or pending deletion.
+            Otherwise the membership status: ``"active"``, ``"inactive"``
+            (suspended) or ``"invited"``. A membership without a status is
+            ``"active"``.
+
+    Errors:
+        401: the service key is missing or wrong.
+        404: the user does not exist, ``user_id`` is not a UUID, or the user
+            has no membership in the org. A client treats 404 as "not a member".
+        503: service authentication is not configured.
+    """
+    await validate_service_api_key(x_service_api_key)
+
+    # A user_id that is not a UUID cannot match a user.
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        user_uuid = None
+    user = await UserStore.get_user_by_id(user_id) if user_uuid is not None else None
+    org_member = (
+        await OrgMemberStore.get_org_member(org_id, user_uuid)
+        if user is not None and user_uuid is not None
+        else None
+    )
+    if user is None or org_member is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'User {user_id} is not a member of org {org_id}',
+        )
+
+    role = await RoleStore.get_role_by_id(org_member.role_id)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Membership role not found',
+        )
+
+    return OrgMemberInfoResponse(
+        user_id=user_id,
+        org_id=str(org_id),
+        account_type='service' if user.account_type == 'service' else 'human',
+        role=role.name,
+        status='disabled'
+        if user.is_disabled or user.deletion_pending
+        else (org_member.status or 'active'),
     )
 
 
