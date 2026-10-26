@@ -48,9 +48,6 @@ services:
       RUN_MIGRATIONS_ON_STARTUP: 'true'
       # The app uses its own password login, so Keycloak is not needed.
       ENABLE_INTEGRATED_IDP: 'true'
-      # The server and web client each read their own OAuth v2 flag. Without the
-      # server's, background jobs can't read git tokens linked through OAuth v2.
-      ENABLE_OAUTH_V2_LOGIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
       ENABLE_SUPER_ADMIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
