@@ -23,10 +23,13 @@ from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.org_context import resolve_effective_org_id
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes import api_keys as api_keys_module
+from server.routes.agent_profiles import router as agent_profiles_router
 from server.routes.api_keys import api_router as api_keys_router
 from server.routes.email import api_router as email_router
+from server.routes.oauth_device import oauth_device_router
 from server.routes.oauth_v2 import oauth_v2_router
 from server.routes.user_app_settings import user_app_settings_router
+from server.routes.users_v1 import saas_users_v1_router
 
 # (router, method, path relative to the router's own prefix) that a service
 # account must not reach.
@@ -47,6 +50,12 @@ GUARDED = [
     (email_router, 'POST', '/api/email'),
     (oauth_v2_router, 'POST', '/oauth/{provider_id}/link'),
     (oauth_v2_router, 'DELETE', '/oauth/{provider_id}'),
+    (oauth_device_router, 'POST', '/oauth/device/verify-authenticated'),
+    (api_keys_router, 'GET', '/api/keys/llm/byor'),
+    (api_keys_router, 'POST', '/api/keys/llm/byor/refresh'),
+    (api_keys_router, 'POST', '/api/keys/llm/managed/refresh'),
+    (agent_profiles_router, 'POST', '/api/agent-profiles/{profile_id}/activate'),
+    (saas_users_v1_router, 'DELETE', '/api/v1/users/git-providers/{provider}'),
 ]
 
 

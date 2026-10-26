@@ -689,6 +689,29 @@ async def test_background_user_auth_does_not_require_offline_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'build',
+    [
+        lambda: SaasUserAuth.get_for_user('test_user_id'),
+        lambda: get_user_auth_from_keycloak_id('test_user_id'),
+    ],
+    ids=['get_for_user', 'get_user_auth_from_keycloak_id'],
+)
+async def test_background_user_auth_keeps_service_account_type(build):
+    """A service account stays a service account on the background entry points."""
+    user = MagicMock()
+    user.account_type = 'service'
+
+    with patch(
+        'server.auth.saas_user_auth._require_active_user',
+        new=AsyncMock(return_value=user),
+    ):
+        built = await build()
+
+    assert built.is_service_account()
+
+
+@pytest.mark.asyncio
 async def test_get_user_settings_store():
     """Test that get_user_settings_store returns a settings store."""
     user_id = str(uuid.uuid4())
