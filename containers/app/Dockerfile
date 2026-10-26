@@ -205,11 +205,12 @@ RUN find /app \! -group openhands -exec chgrp openhands {} +
 COPY --chown=openhands:openhands --chmod=770 --from=frontend-builder /app/build ./frontend/build
 COPY --chown=openhands:openhands --chmod=770 ./containers/app/entrypoint.sh /app/entrypoint.sh
 
-# Default the enterprise service-injector kinds in the image (overridable via env).
+# Default the enterprise service-injector kinds and service classes in the image (overridable via env).
 # Keeping these next to the classes they name means the chart never references an
 # app-internal class path, so a chart/image version skew can't crashloop config load.
 ENV OH_LLM_MODEL_KIND=server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
 ENV OH_APP_CONVERSATION_INFO_KIND=server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector
+ENV OPENHANDS_GITLAB_SERVICE_CLS=integrations.gitlab.gitlab_service.SaaSGitLabService
 
 USER openhands
 
