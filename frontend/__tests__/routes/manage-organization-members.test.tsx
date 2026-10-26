@@ -16,6 +16,7 @@ import {
   MOCK_TEAM_ORG_ACME,
   MOCK_PERSONAL_ORG,
   INITIAL_MOCK_ORGS,
+  MOCK_ROLE_PERMISSIONS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
@@ -154,6 +155,7 @@ describe("Manage Organization Members Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "admin",
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -242,6 +244,7 @@ describe("Manage Organization Members Route", () => {
       user_id: string;
       email: string;
       role: "owner" | "admin" | "member";
+      permissions?: string[];
       llm_api_key: string;
       max_iterations: number;
       llm_model: string;
@@ -269,6 +272,7 @@ describe("Manage Organization Members Route", () => {
       user_id: string;
       email: string;
       role: "owner" | "admin" | "member";
+      permissions?: string[];
       llm_api_key: string;
       max_iterations: number;
       llm_model: string;
@@ -391,6 +395,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -449,6 +454,7 @@ describe("Manage Organization Members Route", () => {
       user_id: "2", // bob (admin) - different from alice
       email: "bob@acme.org",
       role: "admin" as const,
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -493,6 +499,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1",
         email: "admin1@acme.org",
         role: "admin" as const,
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -504,6 +511,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "2",
         email: "admin2@acme.org",
         role: "admin" as const,
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -525,6 +533,7 @@ describe("Manage Organization Members Route", () => {
       user_id: "1",
       email: "admin1@acme.org",
       role: "admin",
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -561,6 +570,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1", // Same as first member from org 1
         email: "alice@acme.org",
         role: "owner",
+        permissions: MOCK_ROLE_PERMISSIONS.owner,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -753,6 +763,7 @@ describe("Manage Organization Members Route", () => {
       user_id: "2",
       email: "bob@acme.org",
       role: "admin" as const,
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -1006,6 +1017,7 @@ describe("Manage Organization Members Route", () => {
             user_id: "4",
             email: "tom@acme.org",
             role: "member",
+            permissions: MOCK_ROLE_PERMISSIONS.member,
             llm_api_key: "**********",
             max_iterations: 20,
             llm_model: "gpt-4",
@@ -1072,6 +1084,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "member" as const,
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -1113,6 +1126,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1", // alice (owner) - same as first member
         email: "alice@acme.org",
         role: "owner" as const,
+        permissions: MOCK_ROLE_PERMISSIONS.owner,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -1157,6 +1171,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "1",
           email: "owner1@acme.org",
           role: "owner" as const,
+          permissions: MOCK_ROLE_PERMISSIONS.owner,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1168,6 +1183,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "2",
           email: "owner2@acme.org",
           role: "owner" as const,
+          permissions: MOCK_ROLE_PERMISSIONS.owner,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1189,6 +1205,7 @@ describe("Manage Organization Members Route", () => {
         user_id: "1",
         email: "owner1@acme.org",
         role: "owner",
+        permissions: MOCK_ROLE_PERMISSIONS.owner,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -1224,6 +1241,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "1", // First member is owner in org 1
           email: "alice@acme.org",
           role: "owner",
+          permissions: MOCK_ROLE_PERMISSIONS.owner,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1260,6 +1278,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "7", // Ray is admin in org 3
           email: "ray@all-hands.dev",
           role: "admin",
+          permissions: MOCK_ROLE_PERMISSIONS.admin,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1295,6 +1314,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "1", // First member is owner in org 1
           email: "alice@acme.org",
           role: "owner",
+          permissions: MOCK_ROLE_PERMISSIONS.owner,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1336,6 +1356,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "7", // Ray is admin in org 4
           email: "ray@all-hands.dev",
           role: "admin" as const,
+          permissions: MOCK_ROLE_PERMISSIONS.admin,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1365,6 +1386,7 @@ describe("Manage Organization Members Route", () => {
           user_id: "1", // First member is owner in org 1
           email: "alice@acme.org",
           role: "owner" as const,
+          permissions: MOCK_ROLE_PERMISSIONS.owner,
           llm_api_key: "**********",
           max_iterations: 20,
           llm_model: "gpt-4",
@@ -1396,6 +1418,7 @@ describe("Manage Organization Members Route", () => {
       id: 5,
       email: "pending@acme.org",
       role: "member",
+      permissions: MOCK_ROLE_PERMISSIONS.member,
       status: "pending",
       created_at: "2026-01-01T00:00:00Z",
       expires_at: "2026-01-08T00:00:00Z",

@@ -1,17 +1,18 @@
-import { useMemo } from "react";
-import { OrganizationUserRole } from "#/types/org";
-import { rolePermissions, PermissionKey } from "#/utils/org/permissions";
+import { useMe } from "#/hooks/query/use-me";
+import { PermissionKey } from "#/utils/org/permissions";
 
-export const usePermission = (role: OrganizationUserRole) => {
-  /* Memoize permissions for the role */
-  const currentPermissions = useMemo<PermissionKey[]>(
-    () => rolePermissions[role],
-    [role],
-  );
+/**
+ * Permission checks for the active user in the selected organization.
+ * Reads the server-computed `permissions` from `/me`, so it matches what the
+ * backend enforces. While `/me` is loading, or when it has no `permissions`,
+ * every check returns false (fail closed).
+ */
+export const usePermission = () => {
+  const { data: me } = useMe();
+  const permissions = me?.permissions;
 
-  /* Check if the user has a specific permission */
   const hasPermission = (permission: PermissionKey): boolean =>
-    currentPermissions.includes(permission);
+    permissions?.includes(permission) === true;
 
   return { hasPermission };
 };
