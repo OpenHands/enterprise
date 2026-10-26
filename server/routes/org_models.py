@@ -594,6 +594,12 @@ class ServiceAccountResponse(BaseModel):
     name: str
     is_disabled: bool
     role: str
+    # The per-user budget override, as in ``OrgBudgetUserOverrideUpdate``:
+    # ``monthly_limit`` is the cap, or ``None`` when there is no override or the
+    # override is unlimited; ``budget_limit_disabled`` is the override's
+    # ``is_disabled`` ("unlimited").
+    monthly_limit: float | None = None
+    budget_limit_disabled: bool = False
 
 
 class ServiceAccountSecretUpsert(BaseModel):

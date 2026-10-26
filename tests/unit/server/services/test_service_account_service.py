@@ -15,6 +15,7 @@ from server.services.service_account_service import (
 )
 from storage.org import Org
 from storage.org_member import OrgMember
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.user import User
 
@@ -234,3 +235,42 @@ async def test_rename_service_account(async_session_maker, seeded, service_db):
         await ServiceAccountService.rename_service_account(org_id, human_id, 'x')
         is None
     )
+
+
+async def _add_override(async_session_maker, org_id, user_id, limit, is_disabled):
+    async with async_session_maker() as session:
+        session.add(
+            OrgUserBudgetOverride(
+                org_id=org_id,
+                user_id=user_id,
+                monthly_limit=limit,
+                is_disabled=is_disabled,
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_service_account_carries_its_budget_override(
+    async_session_maker, seeded, service_db
+):
+    """GIVEN accounts with a limit, an unlimited override and no override WHEN read by get and list THEN each reports its own override."""
+    org_id, _ = seeded
+    limited = await ServiceAccountService.create_service_account(org_id, 'a-limited')
+    unlimited = await ServiceAccountService.create_service_account(org_id, 'b-unlimited')
+    plain = await ServiceAccountService.create_service_account(org_id, 'c-plain')
+    await _add_override(async_session_maker, org_id, limited.id, 12.5, False)
+    await _add_override(async_session_maker, org_id, unlimited.id, None, True)
+
+    got = await ServiceAccountService.get_service_account(org_id, limited.id)
+    listed = await ServiceAccountService.list_service_accounts(
+        org_id, offset=0, limit=10
+    )
+
+    assert got is not None
+    assert (got.monthly_limit, got.budget_limit_disabled) == (12.5, False)
+    assert {sa.id: (sa.monthly_limit, sa.budget_limit_disabled) for sa in listed} == {
+        str(limited.id): (12.5, False),
+        str(unlimited.id): (None, True),
+        str(plain.id): (None, False),
+    }

@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -25,6 +26,7 @@ from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
+from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import ACCOUNT_TYPE_SERVICE, User
@@ -118,7 +120,10 @@ class ServiceAccountService:
 
     @staticmethod
     def _to_response(
-        org_id: UUID, user: User, role_name: str
+        org_id: UUID,
+        user: User,
+        role_name: str,
+        override: OrgUserBudgetOverride | None = None,
     ) -> ServiceAccountResponse:
         return ServiceAccountResponse(
             id=str(user.id),
@@ -126,7 +131,24 @@ class ServiceAccountService:
             name=user.display_name or '',
             is_disabled=user.is_disabled,
             role=role_name,
+            monthly_limit=override.monthly_limit if override else None,
+            budget_limit_disabled=override.is_disabled if override else False,
         )
+
+    @staticmethod
+    async def _overrides_by_user(
+        session: AsyncSession, org_id: UUID, user_ids: list[UUID]
+    ) -> dict[UUID, OrgUserBudgetOverride]:
+        """Return the budget overrides of ``user_ids`` in ``org_id``, in one query."""
+        if not user_ids:
+            return {}
+        result = await session.execute(
+            select(OrgUserBudgetOverride).where(
+                OrgUserBudgetOverride.org_id == org_id,
+                OrgUserBudgetOverride.user_id.in_(user_ids),
+            )
+        )
+        return {o.user_id: o for o in result.scalars()}
 
     @staticmethod
     async def get_service_account(
@@ -142,7 +164,15 @@ class ServiceAccountService:
                     )
                 )
             ).first()
-        return ServiceAccountService._to_response(org_id, *row) if row else None
+            if row is None:
+                return None
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [row[0].id]
+            )
+        user, role_name = row
+        return ServiceAccountService._to_response(
+            org_id, user, role_name, overrides.get(user.id)
+        )
 
     @staticmethod
     async def list_service_accounts(
@@ -158,7 +188,15 @@ class ServiceAccountService:
                     .limit(limit)
                 )
             ).all()
-        return [ServiceAccountService._to_response(org_id, *row) for row in rows]
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [user.id for user, _ in rows]
+            )
+        return [
+            ServiceAccountService._to_response(
+                org_id, user, role_name, overrides.get(user.id)
+            )
+            for user, role_name in rows
+        ]
 
     @staticmethod
     async def rename_service_account(
@@ -192,7 +230,12 @@ class ServiceAccountService:
                 if 'uq_user_service_account_name' in str(exc):
                     raise ServiceAccountNameExistsError(name) from exc
                 raise
-        return ServiceAccountService._to_response(org_id, user, role_name)
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [user.id]
+            )
+        return ServiceAccountService._to_response(
+            org_id, user, role_name, overrides.get(user.id)
+        )
 
     @staticmethod
     async def _delete_litellm_user_best_effort(user_id: UUID) -> None:
