@@ -140,3 +140,97 @@ async def test_create_service_account_refuses_blank_name(seeded, stores):
         await ServiceAccountService.create_service_account(org_id, '   ')
 
     create_default_settings.assert_not_awaited()
+
+
+# --- Lookups scoped to one org (the service-account admin API) ---
+
+
+@pytest.fixture
+def service_db(async_session_maker, stores):
+    """``stores`` plus the service module's own session maker."""
+    with patch(
+        'server.services.service_account_service.a_session_maker',
+        async_session_maker,
+    ):
+        yield stores
+
+
+async def _add_human_member(async_session_maker, org_id, role_id) -> uuid.UUID:
+    user_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(User(id=user_id, current_org_id=org_id))
+        await session.flush()
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=user_id,
+                role_id=role_id,
+                llm_api_key='sk-human',
+                status='active',
+                agent_settings_diff={},
+                conversation_settings_diff={},
+            )
+        )
+        await session.commit()
+    return user_id
+
+
+@pytest.mark.asyncio
+async def test_get_service_account_is_scoped_to_org_and_account_type(
+    async_session_maker, seeded, service_db
+):
+    """GIVEN a service account and a human in one org WHEN looked up THEN only the service account of that org is found."""
+    org_id, role_id = seeded
+    other_org_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(Org(id=other_org_id, name='Other'))
+        await session.commit()
+    sa = await ServiceAccountService.create_service_account(org_id, 'CI bot')
+    human_id = await _add_human_member(async_session_maker, org_id, role_id)
+
+    found = await ServiceAccountService.get_service_account(org_id, sa.id)
+
+    assert found is not None
+    assert (found.id, found.org_id, found.name) == (str(sa.id), str(org_id), 'CI bot')
+    assert (found.is_disabled, found.role) == (False, 'service_account')
+    assert await ServiceAccountService.get_service_account(org_id, human_id) is None
+    assert await ServiceAccountService.get_service_account(other_org_id, sa.id) is None
+    assert await ServiceAccountService.get_service_account(org_id, uuid.uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_list_service_accounts_excludes_humans_and_pages(
+    async_session_maker, seeded, service_db
+):
+    """GIVEN three service accounts and a human WHEN listed with a limit THEN humans are excluded and the page has limit rows in name order."""
+    org_id, role_id = seeded
+    for name in ('c', 'a', 'b'):
+        await ServiceAccountService.create_service_account(org_id, name)
+    await _add_human_member(async_session_maker, org_id, role_id)
+
+    first = await ServiceAccountService.list_service_accounts(org_id, offset=0, limit=2)
+    second = await ServiceAccountService.list_service_accounts(
+        org_id, offset=2, limit=2
+    )
+
+    assert [sa.name for sa in first] == ['a', 'b']
+    assert [sa.name for sa in second] == ['c']
+
+
+@pytest.mark.asyncio
+async def test_rename_service_account(async_session_maker, seeded, service_db):
+    """GIVEN two service accounts WHEN one is renamed THEN the name changes, a clash is refused, and a human is not found."""
+    org_id, role_id = seeded
+    sa = await ServiceAccountService.create_service_account(org_id, 'one')
+    await ServiceAccountService.create_service_account(org_id, 'two')
+    human_id = await _add_human_member(async_session_maker, org_id, role_id)
+
+    renamed = await ServiceAccountService.rename_service_account(org_id, sa.id, 'uno')
+
+    assert renamed is not None and renamed.name == 'uno'
+    with pytest.raises(ServiceAccountNameExistsError):
+        await ServiceAccountService.rename_service_account(org_id, sa.id, 'TWO')
+    assert (
+        await ServiceAccountService.rename_service_account(org_id, human_id, 'x')
+        is None
+    )

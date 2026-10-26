@@ -574,6 +574,35 @@ class OrgMemberPage(BaseModel):
     per_page: int = 10
 
 
+class ServiceAccountCreate(BaseModel):
+    """Request model for creating a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountUpdate(BaseModel):
+    """Request model for renaming a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountResponse(BaseModel):
+    """A service account of an organization."""
+
+    id: str
+    org_id: str
+    name: str
+    is_disabled: bool
+    role: str
+
+
+class ServiceAccountPage(BaseModel):
+    """Paginated response for the service accounts of an organization."""
+
+    items: list[ServiceAccountResponse]
+    next_page_id: str | None = None
+
+
 class OrgMemberUpdate(BaseModel):
     """Request model for updating an organization member."""
 

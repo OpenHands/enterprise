@@ -52,7 +52,20 @@ class AdminUserLifecycleService:
     async def delete_user(self, user_id: str):
         return await self._operate(user_id, 'delete')
 
-    async def _operate(self, user_id: str, operation: str):
+    async def delete_service_account(self, user_id: str):
+        """Delete a service account. Refuses any user that is not one.
+
+        The only path that deletes a service account; ``delete_user`` refuses
+        them. The caller must have checked that the account is not in use.
+
+        Raises:
+            ValueError: If the user is not a service account.
+        """
+        return await self._operate(user_id, 'delete', service_account=True)
+
+    async def _operate(
+        self, user_id: str, operation: str, service_account: bool = False
+    ):
         uid = UUID(user_id)
         # Serialize remote and local phases across replicas without holding user
         # row locks across the independently committed local revocation phase.
@@ -77,10 +90,17 @@ class AdminUserLifecycleService:
                                 'Personal workspace cleanup incomplete; retry DELETE.'
                             ) from exc
                     return None
-                if operation == 'delete' and user.account_type == ACCOUNT_TYPE_SERVICE:
+                if (
+                    operation == 'delete'
+                    and user.account_type == ACCOUNT_TYPE_SERVICE
+                    and not service_account
+                ):
                     # Service accounts are removed through their org's
-                    # service-account routes. Disable/enable stay allowed.
+                    # service-account routes (``delete_service_account``).
+                    # Disable/enable stay allowed.
                     raise ServiceAccountDeleteError('Cannot delete a service account')
+                if service_account and user.account_type != ACCOUNT_TYPE_SERVICE:
+                    raise ValueError('User is not a service account')
                 result = UserLifecycleResult(str(uid), user.email)
                 if operation == 'enable':
                     if user.deletion_pending:

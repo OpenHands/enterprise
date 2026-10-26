@@ -87,6 +87,7 @@ from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
+from server.routes.service_accounts import service_accounts_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
     admin_users_router,
     super_admin_router,
@@ -214,6 +215,7 @@ base_app.include_router(service_router)  # Add routes for internal service API
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
+base_app.include_router(service_accounts_router)  # Service account admin
 base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
