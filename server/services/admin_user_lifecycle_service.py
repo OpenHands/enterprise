@@ -11,7 +11,7 @@ from server.services.user_lifecycle_remote import UserLifecycleRemote
 from storage.database import a_session_maker
 from storage.org_store import OrgStore
 from storage.role import Role
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_data_cleanup import (
     UserCleanupConflict,
     check_user_data_cleanup,
@@ -25,6 +25,10 @@ class LastSuperAdminError(RuntimeError):
 
 
 class LifecycleCleanupError(RuntimeError):
+    pass
+
+
+class ServiceAccountDeleteError(RuntimeError):
     pass
 
 
@@ -73,6 +77,10 @@ class AdminUserLifecycleService:
                                 'Personal workspace cleanup incomplete; retry DELETE.'
                             ) from exc
                     return None
+                if operation == 'delete' and user.account_type == ACCOUNT_TYPE_SERVICE:
+                    # Service accounts are removed through their org's
+                    # service-account routes. Disable/enable stay allowed.
+                    raise ServiceAccountDeleteError('Cannot delete a service account')
                 result = UserLifecycleResult(str(uid), user.email)
                 if operation == 'enable':
                     if user.deletion_pending:
