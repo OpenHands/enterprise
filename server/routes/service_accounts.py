@@ -11,8 +11,16 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
+from openhands.app_server.secrets.secrets_models import (
+    CustomSecretPage,
+    CustomSecretScope,
+    CustomSecretWithoutValue,
+)
+from openhands.app_server.secrets.secrets_router import _secrets_write_lock
+from openhands.app_server.utils.env_var_validation import validate_env_var_name
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.models import EditResponse
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
@@ -22,6 +30,7 @@ from server.routes.org_models import (
     ServiceAccountCreate,
     ServiceAccountPage,
     ServiceAccountResponse,
+    ServiceAccountSecretUpsert,
     ServiceAccountUpdate,
 )
 from server.services.admin_user_lifecycle_service import (
@@ -33,6 +42,7 @@ from server.services.service_account_service import (
     ServiceAccountService,
 )
 from storage.lite_llm_manager import is_litellm_enabled
+from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import ManagedLlmKeyStatus, SaasSettingsStore
 from storage.user_data_cleanup import UserCleanupConflict
 
@@ -42,6 +52,8 @@ service_accounts_router = APIRouter(
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
 
+# Injected into every run from the SA's own key (``SaasUserAuth.get_secrets``).
+RESERVED_SECRET_NAMES = frozenset({'OPENHANDS_API_KEY'})
 _AUTOMATION_CHECK_TIMEOUT_SECONDS = 5
 # The Automation Service caps a page at 100 automations.
 _AUTOMATION_PAGE_SIZE = 100
@@ -331,3 +343,89 @@ async def delete_service_account(
         )
     _log('delete', user_id, org_id, sa_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- Secrets ---
+#
+# A run with the service account's org-bound key loads its personal secrets
+# plus the org-shared ones (``SaasSecretsStore.load``). Only the personal
+# secrets are managed here. No route returns a value.
+
+
+def _validate_secret_name(name: str) -> None:
+    try:
+        validate_env_var_name(name, field_name='secret name')
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if name in RESERVED_SECRET_NAMES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, detail=f'{name} is a reserved secret name'
+        )
+
+
+@service_accounts_router.get(
+    '/{org_id}/service-accounts/{sa_id}/secrets', response_model=CustomSecretPage
+)
+async def list_service_account_secrets(
+    org_id: UUID,
+    sa_id: UUID,
+    user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
+) -> CustomSecretPage:
+    """List the personal secrets of a service account: names and descriptions only."""
+    await _get_or_404(org_id, sa_id)
+    store = await SaasSecretsStore.get_instance(str(sa_id), effective_org_id=org_id)
+    items = [
+        CustomSecretWithoutValue.model_construct(
+            name=name, description=description, scope=CustomSecretScope.PERSONAL
+        )
+        for name, description in sorted(await store.list_personal())
+    ]
+    return CustomSecretPage(items=items, next_page_id=None)
+
+
+@service_accounts_router.put(
+    '/{org_id}/service-accounts/{sa_id}/secrets/{secret_name}',
+    response_model=EditResponse,
+)
+async def put_service_account_secret(
+    org_id: UUID,
+    sa_id: UUID,
+    secret_name: str,
+    body: ServiceAccountSecretUpsert,
+    user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
+) -> EditResponse:
+    """Create or replace ONE personal secret. The value is write-only.
+
+    Omitting ``description`` keeps the existing one.
+    """
+    _validate_secret_name(secret_name)
+    await _get_or_404(org_id, sa_id)
+    store = await SaasSecretsStore.get_instance(str(sa_id), effective_org_id=org_id)
+    # Same lock key as ``/api/v1/secrets`` writes for this user and org.
+    async with _secrets_write_lock(str(sa_id), store):
+        await store.upsert_personal(
+            secret_name, body.value.get_secret_value(), body.description
+        )
+    _log('secret_put', user_id, org_id, sa_id)
+    return EditResponse(message='Secret saved successfully')
+
+
+@service_accounts_router.delete(
+    '/{org_id}/service-accounts/{sa_id}/secrets/{secret_name}',
+    response_model=EditResponse,
+)
+async def delete_service_account_secret(
+    org_id: UUID,
+    sa_id: UUID,
+    secret_name: str,
+    user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
+) -> EditResponse:
+    """Delete ONE personal secret. 404 if it does not exist."""
+    await _get_or_404(org_id, sa_id)
+    store = await SaasSecretsStore.get_instance(str(sa_id), effective_org_id=org_id)
+    async with _secrets_write_lock(str(sa_id), store):
+        deleted = await store.delete_personal(secret_name)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail='Secret not found')
+    _log('secret_delete', user_id, org_id, sa_id)
+    return EditResponse(message='Secret deleted successfully')
