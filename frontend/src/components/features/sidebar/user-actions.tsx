@@ -97,7 +97,6 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
         >
           <UserContextMenu
             key={menuResetCount}
-            type={me?.role ?? "member"}
             onClose={closeAccountMenu}
             onOpenInviteModal={openInviteMemberModal}
             onOpenCreateOrganizationModal={openCreateOrganizationModal}

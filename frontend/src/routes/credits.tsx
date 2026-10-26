@@ -33,7 +33,7 @@ function CreditsSettingsScreen() {
   const { data: me } = useMe();
   const { data: balance, isLoading } = useBalance();
   const { data: config } = useConfig();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   const [addCreditsFormVisible, setAddCreditsFormVisible] =
     React.useState(false);

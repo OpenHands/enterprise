@@ -30,8 +30,7 @@ function ManageOrg() {
   const { data: config } = useConfig();
   const { data: orgsData } = useOrganizations();
 
-  const role = me?.role ?? "member";
-  const { hasPermission } = usePermission(role);
+  const { hasPermission } = usePermission();
 
   const [changeOrgNameFormVisible, setChangeOrgNameFormVisible] =
     React.useState(false);

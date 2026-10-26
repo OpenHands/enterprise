@@ -5,7 +5,6 @@ import {
   OrganizationsQueryData,
   OrganizationUserRole,
 } from "#/types/org";
-import { PermissionKey } from "./permissions";
 import { queryClient } from "#/query-client-config";
 
 /**
@@ -67,11 +66,11 @@ export const getActiveOrganizationUser = async (): Promise<
 
 /**
  * Get a list of roles that a user has permission to assign to other users
- * @param userPermissions all permission for active user
+ * @param userPermissions all permissions for active user (from `/me`)
  * @returns an array of roles (strings) the user can change other users to
  */
 export const getAvailableRolesAUserCanAssign = (
-  userPermissions: PermissionKey[],
+  userPermissions: readonly string[],
 ): OrganizationUserRole[] => {
   const availableRoles: OrganizationUserRole[] = [];
   if (userPermissions.includes("change_user_role:member")) {

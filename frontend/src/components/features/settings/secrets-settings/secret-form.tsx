@@ -17,7 +17,6 @@ import {
 } from "#/hooks/query/use-get-secrets";
 import { OptionalTag } from "../optional-tag";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 
 interface SecretFormProps {
@@ -43,8 +42,7 @@ export function SecretForm({
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canShareWithOrg = hasPermission("manage_org_secrets");
 
   const { data: secrets } = useSearchSecrets();

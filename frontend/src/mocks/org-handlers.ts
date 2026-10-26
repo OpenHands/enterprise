@@ -44,6 +44,74 @@ const MOCK_MEMBER_AGENT_SETTINGS = {
   max_iterations: 20,
 };
 
+/**
+ * Mock copy of the backend org-role permission map (`ROLE_PERMISSIONS` in
+ * `server/auth/authorization.py`). Only mocks and tests use it: the app reads
+ * permissions from `/me`.
+ */
+const MOCK_MEMBER_PERMISSIONS = [
+  "manage_secrets",
+  "manage_mcp",
+  "manage_integrations",
+  "manage_application_settings",
+  "manage_api_keys",
+  "view_org_settings",
+  "view_llm_settings",
+  "view_automations",
+];
+const MOCK_ADMIN_PERMISSIONS = [
+  ...MOCK_MEMBER_PERMISSIONS,
+  "manage_org_secrets",
+  "manage_integration_providers",
+  "edit_llm_settings",
+  "view_billing",
+  "add_credits",
+  "invite_user_to_organization",
+  "change_user_role:member",
+  "change_user_role:admin",
+  "edit_org_settings",
+  "manage_org_claims",
+  "manage_automations",
+  "provision_user",
+  "view_org_conversations",
+];
+export const MOCK_ROLE_PERMISSIONS: Record<OrganizationUserRole, string[]> = {
+  member: MOCK_MEMBER_PERMISSIONS,
+  admin: MOCK_ADMIN_PERMISSIONS,
+  owner: [
+    ...MOCK_ADMIN_PERMISSIONS,
+    "change_user_role:owner",
+    "change_organization_name",
+    "delete_organization",
+  ],
+};
+
+/**
+ * The mock user is an instance Super Admin. Mirrors the backend
+ * `SUPER_ROLE_PERMISSIONS` for `superadmin` plus the dashboard permission
+ * granted while `ENABLE_SUPER_ADMIN` is on.
+ */
+const MOCK_SUPER_ADMIN_PERMISSIONS = [
+  "create_organization",
+  "provision_user",
+  "invite_user_to_organization",
+  "manage_super_admins",
+  "manage_feature_flags",
+  "manage_org_quota",
+  "create_signup_link",
+  "manage_oauth_providers",
+  "view_org_conversations",
+];
+
+/** `/me` permissions for the mock user: org-role plus super-role permissions, like the backend. */
+const mockMePermissions = (role: OrganizationUserRole): string[] =>
+  [
+    ...new Set([
+      ...(MOCK_ROLE_PERMISSIONS[role] ?? []),
+      ...MOCK_SUPER_ADMIN_PERMISSIONS,
+    ]),
+  ].sort();
+
 const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   user_id: "99",
   email: "me@acme.org",
@@ -53,12 +121,6 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   llm_base_url: "https://api.openai.com",
   agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
   status: "active",
-  permissions: [
-    "create_organization",
-    "manage_super_admins",
-    "provision_user",
-    "delete_organization",
-  ],
 };
 
 const currentUserMembership = (
@@ -600,7 +662,7 @@ export const ORG_HANDLERS = [
       ...MOCK_ME,
       ...membership,
       org_id: orgId,
-      permissions: MOCK_ME.permissions,
+      permissions: mockMePermissions(membership.role),
     });
   }),
 

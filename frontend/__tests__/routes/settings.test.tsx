@@ -9,7 +9,11 @@ import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { adminService } from "#/api/admin-service/admin-service.api";
-import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import {
+  MOCK_PERSONAL_ORG,
+  MOCK_TEAM_ORG_ACME,
+  MOCK_ROLE_PERMISSIONS,
+} from "#/mocks/org-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -90,6 +94,7 @@ describe("Settings Screen", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -376,6 +381,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -416,6 +422,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -454,6 +461,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -576,6 +584,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -688,6 +697,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -902,6 +912,7 @@ describe("Settings Screen", () => {
         user_id: "99",
         email: "me@test.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -1168,9 +1179,12 @@ describe("Settings Screen", () => {
 
         const badge = await screen.findByTestId("org-wide-settings-badge");
         expect(badge).toBeInTheDocument();
-        expect(badge).toHaveTextContent(
-          "This setting affects the whole organization",
-        );
+        // The variant comes from /me permissions, so wait for /me to load.
+        await waitFor(() => {
+          expect(badge).toHaveTextContent(
+            "This setting affects the whole organization",
+          );
+        });
       },
     );
 
@@ -1193,6 +1207,23 @@ describe("Settings Screen", () => {
         });
       },
     );
+
+    it("renders the managed-by-admin badge when /me lacks edit_org_settings, whatever the role", async () => {
+      seedSaasOrgContext(MOCK_TEAM_ORG_ACME, {
+        role: "service_account" as OrganizationMember["role"],
+        permissions: ["view_llm_settings"],
+      });
+
+      renderSettingsScreen("/settings/org-defaults");
+
+      const badge = await screen.findByTestId("org-wide-settings-badge");
+      await waitFor(() => {
+        expect(organizationService.getMe).toHaveBeenCalled();
+        expect(badge).toHaveTextContent(
+          "This setting is managed by your organization administrator",
+        );
+      });
+    });
 
     it("does not render the badge on /settings/org-defaults when the selected organization is a personal org", async () => {
       seedSaasOrgContext(MOCK_PERSONAL_ORG, { role: "admin" });
@@ -1483,6 +1514,7 @@ describe("clientLoader redirect behavior", () => {
       user_id: "99",
       email: "member@test.com",
       role: "member",
+      permissions: MOCK_ROLE_PERMISSIONS.member,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -1497,6 +1529,79 @@ describe("clientLoader redirect behavior", () => {
     expect(result).toBeDefined();
     expect(result.status).toBe(302);
     expect(result.headers.get("Location")).toBe("/settings");
+  });
+
+  describe("permissions from /me", () => {
+    // Seeds a SaaS team org and a /me with the given role and permissions.
+    const seedTeamOrgMe = (
+      role: OrganizationMember["role"],
+      permissions?: string[],
+    ) => {
+      mockQueryClient.setQueryData(
+        ["web-client-config"],
+        createMockWebClientConfig({ app_mode: "saas" }),
+      );
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_TEAM_ORG_ACME],
+        currentOrgId: MOCK_TEAM_ORG_ACME.id,
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "2" });
+      vi.spyOn(organizationService, "getMe").mockResolvedValue({
+        org_id: "2",
+        user_id: "99",
+        email: "me@test.com",
+        role,
+        permissions,
+        llm_api_key: "**********",
+        max_iterations: 20,
+        llm_model: "gpt-4",
+        llm_base_url: "https://api.openai.com",
+        status: "active",
+      });
+    };
+
+    it("does not throw for an unknown role", async () => {
+      seedTeamOrgMe("service_account" as OrganizationMember["role"], []);
+
+      for (const path of [
+        "/settings/billing",
+        "/settings/org",
+        "/settings/org-members",
+        "/settings/budgets",
+      ]) {
+        const result = (await clientLoader(
+          createMockRequest(path) as any,
+        )) as Response;
+        expect(result.status).toBe(302);
+      }
+    });
+
+    it("uses permissions, not role, for admin-only pages", async () => {
+      // A member whose /me grants view_org_conversations (e.g. a super
+      // admin who is an org member) but not edit_org_settings.
+      seedTeamOrgMe("member", ["view_org_conversations"]);
+
+      const usage = await clientLoader(
+        createMockRequest("/settings/usage-monitoring") as any,
+      );
+      const budgets = (await clientLoader(
+        createMockRequest("/settings/budgets") as any,
+      )) as Response;
+
+      expect(usage).toEqual({});
+      expect(budgets.status).toBe(302);
+      expect(budgets.headers.get("Location")).toBe("/settings");
+    });
+
+    it("lets a member whose /me grants invite_user_to_organization open org members", async () => {
+      seedTeamOrgMe("member", ["invite_user_to_organization"]);
+
+      const result = await clientLoader(
+        createMockRequest("/settings/org-members") as any,
+      );
+
+      expect(result).toEqual({});
+    });
   });
 
   it("should not redirect when accessing a non-hidden page", async () => {

@@ -21,12 +21,20 @@ type ManageAPIKeysPermission = "manage_api_keys";
 type ViewLLMSettingsPermission = "view_llm_settings";
 type EditLLMSettingsPermission = "edit_llm_settings";
 
+type EditOrgSettingsPermission = "edit_org_settings";
+type ViewOrgConversationsPermission = "view_org_conversations";
+
 type ManageOrgClaimsPermission = "manage_org_claims";
 type CreateOrganizationPermission = "create_organization";
 type ProvisionUserPermission = "provision_user";
 type ManageSuperAdminsPermission = "manage_super_admins";
 
-// Union of all permission keys
+/**
+ * Permission keys the frontend checks. Values match the backend
+ * ``Permission`` enum (``server/auth/authorization.py``). The backend computes
+ * each user's permissions and returns them in ``/me`` (``permissions``); the
+ * frontend reads that list and keeps no role-to-permission map.
+ */
 export type PermissionKey =
   | UserRoleChangePermissionKey
   | InviteUserToOrganizationKey
@@ -44,6 +52,8 @@ export type PermissionKey =
   | ManageAPIKeysPermission
   | ViewLLMSettingsPermission
   | EditLLMSettingsPermission
+  | EditOrgSettingsPermission
+  | ViewOrgConversationsPermission
   | ManageOrgClaimsPermission
   | CreateOrganizationPermission
   | ProvisionUserPermission
@@ -66,41 +76,3 @@ export function isInstanceSuperAdmin(
     (permission) => permissions?.includes(permission) === true,
   );
 }
-
-/* PERMISSION ARRAYS */
-const memberPerms: PermissionKey[] = [
-  "manage_secrets",
-  "manage_mcp",
-  "manage_integrations",
-  "manage_application_settings",
-  "manage_api_keys",
-  "view_llm_settings",
-];
-
-const adminOnly: PermissionKey[] = [
-  "manage_org_secrets",
-  "manage_org_agent_profiles",
-  "manage_integration_providers",
-  "edit_llm_settings",
-  "view_billing",
-  "add_credits",
-  "invite_user_to_organization",
-  "change_user_role:member",
-  "change_user_role:admin",
-  "manage_org_claims",
-];
-
-const ownerOnly: PermissionKey[] = [
-  "change_organization_name",
-  "delete_organization",
-  "change_user_role:owner",
-];
-
-const adminPerms: PermissionKey[] = [...memberPerms, ...adminOnly];
-const ownerPerms: PermissionKey[] = [...adminPerms, ...ownerOnly];
-
-export const rolePermissions: Record<OrganizationUserRole, PermissionKey[]> = {
-  owner: ownerPerms,
-  admin: adminPerms,
-  member: memberPerms,
-};

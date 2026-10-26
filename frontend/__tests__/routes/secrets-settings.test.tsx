@@ -15,6 +15,7 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { OrganizationMember } from "#/types/org";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 const MOCK_SECRETS: CustomSecretWithoutValue[] = [
   {
@@ -92,6 +93,7 @@ describe("clientLoader permission checks", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -707,6 +709,7 @@ describe("Organization-scoped secrets", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 

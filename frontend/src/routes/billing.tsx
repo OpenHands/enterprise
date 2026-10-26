@@ -10,7 +10,6 @@ import { I18nKey } from "#/i18n/declaration";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
-import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
@@ -44,10 +43,9 @@ export const clientLoader = async () => {
     return redirect(getFallbackPath());
   }
 
-  const userRole = user.role ?? "member";
-
+  // `/me` permissions are what the backend enforces. Missing = none.
   if (
-    isBillingHidden(config, rolePermissions[userRole].includes("view_billing"))
+    isBillingHidden(config, user.permissions?.includes("view_billing") === true)
   ) {
     return redirect(getFallbackPath());
   }
@@ -59,7 +57,7 @@ function BillingSettingsScreen() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canAddCredits = !!me && hasPermission("add_credits");
   const checkoutStatus = searchParams.get("checkout");
   const hasHandledCheckoutRef = React.useRef(false);

@@ -27,7 +27,6 @@ import { useIsSuperAdmin } from "#/hooks/query/use-is-super-admin";
 import { useConfig } from "#/hooks/query/use-config";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { BrandButton } from "#/components/features/settings/brand-button";
-import { rolePermissions } from "#/utils/org/permissions";
 import { I18nKey } from "#/i18n/declaration";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getAvailableRolesAUserCanAssign } from "#/utils/org/permission-checks";
@@ -126,9 +125,7 @@ function OrganizationMembersSection({
   const [memberForPasswordReset, setMemberForPasswordReset] =
     React.useState<OrganizationMember | null>(null);
 
-  const currentUserRole = user?.role ?? "member";
-
-  const { hasPermission } = usePermission(currentUserRole);
+  const { hasPermission } = usePermission();
   const hasPermissionToInvite = hasPermission("invite_user_to_organization");
   // Super admins always get the add-members affordance (as a sign-up link),
   // regardless of their own role in this particular organization.
@@ -188,7 +185,7 @@ function OrganizationMembersSection({
   };
 
   const availableRolesToChangeTo = getAvailableRolesAUserCanAssign(
-    rolePermissions[currentUserRole],
+    user?.permissions ?? [],
   );
 
   const canAssignUserRole = (member: OrganizationMember) =>

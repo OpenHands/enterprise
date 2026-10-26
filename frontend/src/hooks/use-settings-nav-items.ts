@@ -6,14 +6,12 @@ import {
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
-import { OrganizationUserRole } from "#/types/org";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
   isLiteLlmOnlyNavItem,
   isSettingsPageHidden,
 } from "#/utils/settings-utils";
-import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
@@ -47,18 +45,16 @@ const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
  * Build Settings navigation items based on:
  * - app mode (saas / oss)
  * - feature flags
- * - active user's role
+ * - active user's `/me` permissions
  * - org type (personal vs team)
  * @returns Settings Nav Rendered Items (items, headers, dividers)
  */
 export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
-  const { data: user } = useMe();
   const { data: settings } = useSettings();
   const isSaasMode = config?.app_mode === "saas";
   const { data: quota } = useQuotaStatus({ enabled: isSaasMode });
-  const userRole: OrganizationUserRole = user?.role ?? "member";
-  const { hasPermission } = usePermission(userRole);
+  const { hasPermission } = usePermission();
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
   const { data: isSuperAdmin = false } = useIsSuperAdmin();
 
@@ -71,7 +67,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   );
   const featureFlags = config?.feature_flags;
   const enableIntegratedIdp = !!featureFlags?.enable_integrated_idp;
-  const isAdminOrOwner = userRole === "admin" || userRole === "owner";
+  // Users who can edit org settings (org admins) get the section headers.
+  const canEditOrgSettings = hasPermission("edit_org_settings");
   // OHE-3456: with the Agent Profiles page on, the agent kind comes from the
   // active profile rather than the single-agent settings this guard reads
   // (and the page that edited them is gone), so the ACP guard is off.
@@ -142,10 +139,15 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     );
   }
 
-  // Hide admin-only settings pages for non-admins/owners or personal orgs
-  if (!isAdminOrOwner || !organizationId || isPersonalOrg) {
-    items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
-  }
+  // Hide admin-only settings pages without their permission, or for personal
+  // orgs or no org selected
+  items = items.filter((item) => {
+    const requiredPermission = ADMIN_ONLY_SETTINGS_PATHS.get(item.to);
+    return (
+      !requiredPermission ||
+      (hasPermission(requiredPermission) && !!organizationId && !isPersonalOrg)
+    );
+  });
 
   // Everyone in a team org has their own budget; personal workspaces do not.
   if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
@@ -185,8 +187,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   let currentSection: SettingsNavSection | undefined;
   let isFirstSection = true;
 
-  // Determine if we should show section headers (only for admins/owners in team orgs)
-  const showSectionHeaders = isTeamOrg && isAdminOrOwner;
+  // Determine if we should show section headers (only for org admins in team orgs)
+  const showSectionHeaders = isTeamOrg && canEditOrgSettings;
 
   for (const item of items) {
     const itemSection = item.section;
@@ -196,7 +198,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
       // For personal orgs or members, treat "org" and "personal" sections as one group
       // (LLM is the only org item visible and should flow with personal items)
       const isOrgToPersonalWithoutHeaders =
-        (isPersonalOrg || !isAdminOrOwner) &&
+        (isPersonalOrg || !canEditOrgSettings) &&
         currentSection === "org" &&
         itemSection === "personal";
 
@@ -206,7 +208,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org, personal and user sections (admins/owners only)
+      // Add section header for org, personal and user sections (org admins only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",
