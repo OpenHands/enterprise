@@ -996,6 +996,8 @@ async def test_update_user_groups_add_reactivates_a_suspended_membership(
     role.id = 2
     suspended = MagicMock()
     suspended.status = 'inactive'
+    current_role = MagicMock()
+    current_role.name = 'member'
     update_role = AsyncMock()
     add_member = AsyncMock()
 
@@ -1008,6 +1010,10 @@ async def test_update_user_groups_add_reactivates_a_suspended_membership(
         patch(
             'server.routes.instance_admin.RoleStore.get_role_by_name',
             AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=current_role),
         ),
         patch(
             'server.routes.instance_admin._is_personal_workspace',
@@ -1141,6 +1147,167 @@ async def test_update_user_groups_set_role_refuses_to_demote_the_last_owner(
     assert resp.status_code == 409
     assert resp.json()['detail'] == 'Cannot change role: last owner of Acme'
     update_role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('new_role', ['member', 'owner'])
+async def test_set_role_refuses_service_account_target(
+    mock_app, grant_manage_super_admins, new_role
+):
+    # Arrange
+    user_id = uuid.uuid4()
+
+    # Act
+    with _set_role_patches(
+        _target_user(user_id), current_role_name='service_account'
+    ) as (org_id, update_role):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={
+                    'action': 'set_role',
+                    'org_ids': [str(org_id)],
+                    'role': new_role,
+                },
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    update_role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_remove_refuses_service_account(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 4
+    member.status = 'active'
+    role = MagicMock()
+    role.name = 'service_account'
+    remove_member = AsyncMock(return_value=True)
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberService.remove_member_with_cleanup',
+            remove_member,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'remove', 'org_ids': [str(org.id)]},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    remove_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_refuses_to_reactivate_service_account(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    org = MagicMock()
+    org.name = 'Acme'
+    new_role = MagicMock()
+    new_role.id = 3
+    current_role = MagicMock()
+    current_role.name = 'service_account'
+    suspended = MagicMock()
+    suspended.role_id = 4
+    suspended.status = 'inactive'
+    update_role = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=new_role),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=current_role),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=org),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=suspended),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.update_user_role_in_org',
+            update_role,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'member'},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    update_role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['set_role', 'add'])
+async def test_update_user_groups_refuses_service_account_as_new_role(
+    mock_app, grant_manage_super_admins, action
+):
+    """The request model only accepts owner, admin and member."""
+    user_id = uuid.uuid4()
+
+    async with _client(mock_app) as client:
+        resp = await client.post(
+            f'/api/admin/directory/users/{user_id}/groups',
+            json={
+                'action': action,
+                'org_ids': [str(uuid.uuid4())],
+                'role': 'service_account',
+            },
+        )
+
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

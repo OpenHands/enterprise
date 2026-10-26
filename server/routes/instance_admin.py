@@ -28,7 +28,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
-from server.constants import ROLE_MEMBER, ROLE_OWNER
+from server.constants import ROLE_MEMBER, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
 from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -582,8 +582,23 @@ async def delete_admin_user(
     return {'message': 'User deleted', 'user_id': str(user_id)}
 
 
+def _refuse_service_account_changes(org_names: list[str]) -> None:
+    """Refuse to change or remove a ``service_account`` membership.
+
+    Service accounts are not people; the directory does not manage them.
+    """
+    if org_names:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot change a service account in ' + ', '.join(sorted(org_names)),
+        )
+
+
 async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
-    """Remove the user from the selected team orgs, keeping the last owner."""
+    """Remove the user from the selected team orgs, keeping the last owner.
+
+    Refuses service account memberships.
+    """
     selected = set(org_ids)
     if user.id in selected:
         raise HTTPException(
@@ -594,12 +609,16 @@ async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
     team_memberships = [
         (member, org) for member, org in membership_pairs if org.id in selected
     ]
+    service_accounts: list[str] = []
     blocked: list[str] = []
     for member, org in team_memberships:
         role = await RoleStore.get_role_by_id(member.role_id)
-        if role and role.name == ROLE_OWNER:
+        if role and role.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif role and role.name == ROLE_OWNER:
             if await OrgMemberService._is_last_owner(org.id, user.id):
                 blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
     if blocked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -614,31 +633,35 @@ async def _set_selected_roles(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Change the role on existing memberships without adding new ones."""
+    """Change the role on existing memberships without adding new ones.
+
+    Refuses service account memberships and demoting the last owner.
+    """
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Role {role_name!r} not found',
         )
-    if role_name != ROLE_OWNER:
-        selected = set(org_ids)
-        membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
-        blocked: list[str] = []
-        for member, org in membership_pairs:
-            if org.id not in selected:
-                continue
-            current = await RoleStore.get_role_by_id(member.role_id)
-            if current and current.name == ROLE_OWNER:
-                if await OrgMemberService._is_last_owner(org.id, user.id):
-                    blocked.append(org.name)
-        if blocked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    'Cannot change role: last owner of ' + ', '.join(sorted(blocked))
-                ),
-            )
+    selected = set(org_ids)
+    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
+    service_accounts: list[str] = []
+    blocked: list[str] = []
+    for member, org in membership_pairs:
+        if org.id not in selected:
+            continue
+        current = await RoleStore.get_role_by_id(member.role_id)
+        if current and current.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif current and current.name == ROLE_OWNER and role_name != ROLE_OWNER:
+            if await OrgMemberService._is_last_owner(org.id, user.id):
+                blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=('Cannot change role: last owner of ' + ', '.join(sorted(blocked))),
+        )
     for org_id in org_ids:
         existing = await OrgMemberStore.get_org_member(org_id, user.id)
         if existing is None:
@@ -654,7 +677,10 @@ async def _add_selected_memberships(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Add the user to each selected org that they are not already in."""
+    """Add the user to each selected org that they are not already in.
+
+    Refuses to reactivate a suspended service account membership.
+    """
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
@@ -678,6 +704,9 @@ async def _add_selected_memberships(
             # A suspended or invited row is not access. Granting again
             # reactivates it at the chosen role instead of leaving them out.
             if existing.status != 'active':
+                current = await RoleStore.get_role_by_id(existing.role_id)
+                if current and current.name == ROLE_SERVICE_ACCOUNT:
+                    _refuse_service_account_changes([org.name])
                 await OrgMemberStore.update_user_role_in_org(
                     org_id, user.id, role.id, status='active'
                 )
@@ -707,7 +736,8 @@ async def update_admin_user_groups(
     ``remove`` drops those memberships and still refuses to remove the
     last owner of an organization. ``add`` creates the missing memberships.
     ``set_role`` changes the role on existing memberships and refuses to
-    demote the last owner.
+    demote the last owner. ``remove``, ``set_role`` and ``add`` refuse to
+    change a service account membership.
     """
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
