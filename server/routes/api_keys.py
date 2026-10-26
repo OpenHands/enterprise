@@ -489,6 +489,7 @@ async def get_current_api_key(
     '/llm/managed/refresh',
     tags=['Keys'],
     response_model=ManagedLlmApiKeyRefreshResponse,
+    dependencies=[Depends(reject_service_account)],
 )
 async def refresh_managed_llm_api_key(
     user_id: str = Depends(get_user_id),
@@ -641,7 +642,9 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
     return PlainTextResponse(key)
 
 
-@api_router.get('/llm/byor', tags=['Keys'])
+@api_router.get(
+    '/llm/byor', tags=['Keys'], dependencies=[Depends(reject_service_account)]
+)
 async def get_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -718,7 +721,11 @@ async def get_llm_api_key_for_byor(
         ) from e
 
 
-@api_router.post('/llm/byor/refresh', tags=['Keys'])
+@api_router.post(
+    '/llm/byor/refresh',
+    tags=['Keys'],
+    dependencies=[Depends(reject_service_account)],
+)
 async def refresh_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,

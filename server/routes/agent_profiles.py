@@ -69,7 +69,7 @@ from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
 )
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.launch import LaunchRuntime, preview_launch
 from openhands.sdk.profiles import (
@@ -718,7 +718,11 @@ async def rename_agent_profile(
     )
 
 
-@router.post('/{profile_id}/activate', response_model=ActivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/activate',
+    response_model=ActivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def activate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,

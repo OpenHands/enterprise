@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from fastapi import (
     APIRouter,
+    Depends,
     FastAPI,
     Header,
     HTTPException,
@@ -29,6 +30,7 @@ from openhands.app_server.sandbox.session_auth import validate_session_key_owner
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
@@ -191,7 +193,9 @@ async def get_current_user_git_organizations(
 
 
 @saas_users_v1_router.delete(
-    '/git-providers/{provider}', status_code=status.HTTP_204_NO_CONTENT
+    '/git-providers/{provider}',
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(reject_service_account)],
 )
 async def disconnect_git_provider(
     provider: ProviderType,

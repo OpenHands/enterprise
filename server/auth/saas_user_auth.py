@@ -1380,11 +1380,12 @@ class SaasUserAuth(UserAuth):
         # user's Keycloak offline session either. The offline token (if any) is
         # loaded lazily by refresh() only when a Keycloak access token is
         # actually required; provider tokens resolve by user_id directly.
-        await _require_active_user(user_id)
+        user = await _require_active_user(user_id)
         return SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
             _active_user_validated=True,
         )
 
@@ -1648,7 +1649,7 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
-    await _require_active_user(keycloak_user_id)
+    user = await _require_active_user(keycloak_user_id)
     # Like get_for_user, this is a background / integration entry point that must
     # not require the offline session. Mark it BEARER so get_access_token()
     # degrades gracefully and refresh() lazily loads the offline token only if a
@@ -1657,5 +1658,6 @@ async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
         user_id=keycloak_user_id,
         refresh_token=SecretStr(''),
         auth_type=AuthType.BEARER,
+        account_type=user.account_type,
         _active_user_validated=True,
     )
