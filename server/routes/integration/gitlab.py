@@ -18,6 +18,7 @@ from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL, IS_LOCAL_DEPLOYMENT
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.utils.auth import secrets_equal
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
 from storage.gitlab_webhook import GitlabWebhook
@@ -75,7 +76,7 @@ async def verify_gitlab_signature(
             webhook_uuid=webhook_uuid, user_id=user_id
         )
 
-    if not webhook_secret or header_webhook_secret != webhook_secret:
+    if not webhook_secret or not secrets_equal(header_webhook_secret, webhook_secret):
         raise HTTPException(status_code=403, detail="Request signatures didn't match!")
 
 
