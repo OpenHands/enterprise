@@ -55,6 +55,14 @@ service_accounts_router = APIRouter(
 # Injected into every run from the SA's own key (``SaasUserAuth.get_secrets``).
 RESERVED_SECRET_NAMES = frozenset({'OPENHANDS_API_KEY'})
 _AUTOMATION_CHECK_TIMEOUT_SECONDS = 5
+# The credential headers that ``get_api_key_from_header`` accepts, plus the
+# session cookie. The Automation Service authenticates the same way.
+_FORWARDED_AUTH_HEADERS = (
+    'cookie',
+    'authorization',
+    'x-session-api-key',
+    'x-access-token',
+)
 # The Automation Service caps a page at 100 automations.
 _AUTOMATION_PAGE_SIZE = 100
 
@@ -96,7 +104,7 @@ async def _owns_automation(org_id: UUID, sa_id: UUID, request: Request) -> bool:
         return False
     headers = {
         name: value
-        for name in ('cookie', 'authorization')
+        for name in _FORWARDED_AUTH_HEADERS
         if (value := request.headers.get(name))
     }
     headers['X-Org-Id'] = str(org_id)
@@ -262,12 +270,15 @@ async def enable_service_account(
     sa_id: UUID,
     user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
 ) -> ServiceAccountResponse:
-    """Enable a service account and rotate its managed LLM key.
+    """Enable a service account and make sure it has a valid managed LLM key.
 
-    Disabling deleted its LiteLLM keys, so the key is minted again. Retry
-    after a 503; both steps are idempotent.
+    Disabling deleted its LiteLLM keys, so a disabled account gets a forced
+    rotation. An account that is already enabled keeps a valid key, because
+    in-flight sandboxes hold it (enterprise#439); a missing or stale key is
+    still minted. Retry after a 503: enabling is idempotent, and the retry
+    restores the key if the rotation failed.
     """
-    await _get_or_404(org_id, sa_id)
+    was_disabled = (await _get_or_404(org_id, sa_id)).is_disabled
     try:
         await AdminUserLifecycleService().enable_user(str(sa_id))
     except (LifecycleCleanupError, UserCleanupConflict) as exc:
@@ -282,7 +293,12 @@ async def enable_service_account(
             store = await SaasSettingsStore.get_instance(
                 str(sa_id), effective_org_id=org_id
             )
-            rotation = await store.rotate_managed_llm_key()
+            if was_disabled:
+                rotation = await store.rotate_managed_llm_key()
+            else:
+                # Rotates only if the key is missing or no longer valid.
+                await store.resolve_valid_managed_llm_key()
+                rotation = None
         except Exception as exc:
             logger.exception(
                 'org:service_accounts:rotate_failed',
@@ -293,7 +309,7 @@ async def enable_service_account(
                 detail='Service account enabled, but its LLM key was not rotated. '
                 'Retry enable.',
             ) from exc
-        if rotation.status != ManagedLlmKeyStatus.ROTATED:
+        if rotation is not None and rotation.status != ManagedLlmKeyStatus.ROTATED:
             # BYOK or non-managed LLM config: there is no managed key to mint.
             logger.warning(
                 'org:service_accounts:rotation_skipped',

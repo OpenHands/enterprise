@@ -222,6 +222,7 @@ async def test_disable_cleanup_failure_returns_503(client, as_admin, svc, lifecy
 
 @pytest.mark.asyncio
 async def test_enable_rotates_managed_key(client, as_admin, svc, lifecycle):
+    svc.get_service_account.side_effect = [_sa(is_disabled=True), _sa()]
     store = MagicMock()
     store.rotate_managed_llm_key = AsyncMock(
         return_value=ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.ROTATED)
@@ -254,6 +255,102 @@ async def test_enable_rotation_failure_returns_503(client, as_admin, svc, lifecy
             resp = await c.post(_url('/enable'))
 
     assert resp.status_code == 503
+
+
+def _enable_store():
+    store = MagicMock()
+    store.rotate_managed_llm_key = AsyncMock(
+        return_value=ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.ROTATED)
+    )
+    store.resolve_valid_managed_llm_key = AsyncMock(return_value='sk-valid')
+    return store
+
+
+@pytest.mark.asyncio
+async def test_enable_of_active_account_does_not_force_rotate(
+    client, as_admin, svc, lifecycle
+):
+    """An enabled account keeps its valid key: in-flight sandboxes hold it."""
+    store = _enable_store()
+    with (
+        patch(
+            f'{MODULE}.SaasSettingsStore.get_instance', AsyncMock(return_value=store)
+        ),
+        patch(f'{MODULE}.is_litellm_enabled', AsyncMock(return_value=True)),
+    ):
+        async with client as c:
+            resp = await c.post(_url('/enable'))
+
+    assert resp.status_code == 200
+    store.rotate_managed_llm_key.assert_not_awaited()
+    store.resolve_valid_managed_llm_key.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_enable_of_disabled_account_rotates(client, as_admin, svc, lifecycle):
+    svc.get_service_account.side_effect = [_sa(is_disabled=True), _sa()]
+    store = _enable_store()
+    with (
+        patch(
+            f'{MODULE}.SaasSettingsStore.get_instance', AsyncMock(return_value=store)
+        ),
+        patch(f'{MODULE}.is_litellm_enabled', AsyncMock(return_value=True)),
+    ):
+        async with client as c:
+            resp = await c.post(_url('/enable'))
+
+    assert resp.status_code == 200
+    store.rotate_managed_llm_key.assert_awaited_once_with()
+    store.resolve_valid_managed_llm_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enable_retry_after_failed_rotation_restores_the_key(
+    client, as_admin, svc, lifecycle
+):
+    """The account is already enabled but its key is gone: the retry mints it."""
+    store = _enable_store()
+    store.resolve_valid_managed_llm_key = AsyncMock(
+        side_effect=[RuntimeError('litellm down'), 'sk-new']
+    )
+    with (
+        patch(
+            f'{MODULE}.SaasSettingsStore.get_instance', AsyncMock(return_value=store)
+        ),
+        patch(f'{MODULE}.is_litellm_enabled', AsyncMock(return_value=True)),
+    ):
+        async with client as c:
+            first = await c.post(_url('/enable'))
+            retry = await c.post(_url('/enable'))
+
+    assert first.status_code == 503
+    assert retry.status_code == 200
+    assert store.resolve_valid_managed_llm_key.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_forwards_every_credential_header(
+    client, as_admin, svc, lifecycle
+):
+    get = AsyncMock(return_value=_automation_response([], total=0))
+    url_patch, client_patch = _patch_automation_service(get)
+
+    with url_patch, client_patch:
+        async with client as c:
+            resp = await c.delete(
+                _url(),
+                headers={
+                    'X-Session-API-Key': 'sess',
+                    'X-Access-Token': 'tok',
+                    'Cookie': 'api_key=c',
+                },
+            )
+
+    assert resp.status_code == 204
+    forwarded = get.await_args_list[0].kwargs['headers']
+    assert forwarded['x-session-api-key'] == 'sess'
+    assert forwarded['x-access-token'] == 'tok'
+    assert forwarded['cookie'] == 'api_key=c'
 
 
 def _automation_response(automations: list[dict], total: int) -> MagicMock:
