@@ -1,5 +1,6 @@
 """Unit tests for GitLab integration routes."""
 
+import hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from server.routes.integration.gitlab import (
     ResourceIdentifier,
     get_gitlab_resources,
     reinstall_gitlab_webhook,
+    verify_gitlab_signature,
 )
 from storage.gitlab_webhook import GitlabWebhook
 
@@ -501,3 +503,36 @@ class TestReinstallGitLabWebhook:
         mock_webhook_store.reset_webhook_for_reinstallation_by_resource.assert_called_once_with(
             resource_type, resource_id, user_id
         )
+
+
+class TestVerifyGitLabSignature:
+    """Test cases for verify_gitlab_signature."""
+
+    @pytest.mark.asyncio
+    @patch('server.routes.integration.gitlab.IS_LOCAL_DEPLOYMENT', False)
+    @patch('server.routes.integration.gitlab.webhook_store')
+    async def test_valid_secret(self, mock_webhook_store):
+        mock_webhook_store.get_webhook_secret = AsyncMock(return_value='hook-secret')
+
+        await verify_gitlab_signature('hook-secret', 'webhook-uuid', 'user-id')
+
+        mock_webhook_store.get_webhook_secret.assert_awaited_once_with(
+            webhook_uuid='webhook-uuid', user_id='user-id'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provided', ['wrong-secret', 'hóok-secret'])
+    @patch('server.routes.integration.gitlab.IS_LOCAL_DEPLOYMENT', False)
+    @patch('server.routes.integration.gitlab.webhook_store')
+    async def test_invalid_secret_is_rejected_in_constant_time(
+        self, mock_webhook_store, provided
+    ):
+        """Wrong or non-ASCII secrets get 403 through a constant-time compare."""
+        mock_webhook_store.get_webhook_secret = AsyncMock(return_value='hook-secret')
+
+        with patch('hmac.compare_digest', wraps=hmac.compare_digest) as spy:
+            with pytest.raises(HTTPException) as exc_info:
+                await verify_gitlab_signature(provided, 'webhook-uuid', 'user-id')
+
+        assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
+        spy.assert_called_once()

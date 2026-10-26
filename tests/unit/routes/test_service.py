@@ -1,5 +1,6 @@
 """Unit tests for service API routes."""
 
+import hmac
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,6 +42,19 @@ class TestValidateServiceApiKey:
                 await validate_service_api_key('wrong-key')
         assert exc_info.value.status_code == 401
         assert 'Invalid service API key' in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provided', ['wrong-key', 'tést-service-key'])
+    async def test_invalid_service_key_is_rejected_in_constant_time(self, provided):
+        """Wrong or non-ASCII keys get 401 through a constant-time compare."""
+        with (
+            patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-service-key'),
+            patch('hmac.compare_digest', wraps=hmac.compare_digest) as spy,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await validate_service_api_key(provided)
+        assert exc_info.value.status_code == 401
+        spy.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_service_auth_not_configured(self):
@@ -121,6 +135,26 @@ class TestGetOrCreateApiKeyForUser:
                     )
         assert exc_info.value.status_code == 404
         assert 'not found' in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_invalid_user_id_returns_404(self, valid_org_id, valid_request):
+        """A user_id that is not a UUID is treated as an unknown user, not a 500."""
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.UserStore.get_user_by_id', new_callable=AsyncMock
+            ) as mock_get_user:
+                mock_get_user.return_value = MagicMock()
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_or_create_api_key_for_user(
+                        user_id='not-a-uuid',
+                        org_id=valid_org_id,
+                        request=valid_request,
+                        x_service_api_key='test-key',
+                    )
+        assert exc_info.value.status_code == 404
+        assert 'not found' in exc_info.value.detail
+        # UserStore.get_user_by_id parses the ID too; it must not see invalid input.
+        mock_get_user.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_user_not_in_org(self, valid_user_id, valid_org_id, valid_request):

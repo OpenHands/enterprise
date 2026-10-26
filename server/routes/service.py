@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, field_validator
 
+from openhands.app_server.utils.auth import secrets_equal
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.api_key_store import ApiKeyStore
 from storage.org_member_store import OrgMemberStore
@@ -85,7 +86,7 @@ async def validate_service_api_key(
             detail='X-Service-API-Key header is required',
         )
 
-    if x_service_api_key != AUTOMATIONS_SERVICE_KEY:
+    if not secrets_equal(x_service_api_key, AUTOMATIONS_SERVICE_KEY):
         logger.warning('Invalid service API key attempted')
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -143,9 +144,14 @@ async def get_or_create_api_key_for_user(
     # Validate service API key
     service_id = await validate_service_api_key(x_service_api_key)
 
-    # Verify user exists
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
+    # Verify user exists. A user_id that is not a UUID cannot match a user.
+    user_uuid: UUID | None
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        user_uuid = None
+    user = await UserStore.get_user_by_id(user_id) if user_uuid is not None else None
+    if user_uuid is None or not user:
         logger.warning(
             'Service attempted to create key for non-existent user',
             extra={'user_id': user_id},
@@ -156,7 +162,7 @@ async def get_or_create_api_key_for_user(
         )
 
     # Verify user is a member of the specified org
-    org_member = await OrgMemberStore.get_org_member(org_id, UUID(user_id))
+    org_member = await OrgMemberStore.get_org_member(org_id, user_uuid)
     if not org_member:
         logger.warning(
             'Service attempted to create key for user not in org',
