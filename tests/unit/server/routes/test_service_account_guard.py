@@ -240,10 +240,8 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         '/api/service/users/{user_id}/orgs/{org_id}/api-keys/{key_name}',
     ): 'automations service route, authenticated by the service key',
     ('POST', '/integration/gitlab/reinstall-webhook'): _PROVIDER,
-    ('POST', '/integration/jira/workspaces/link'): _PROVIDER,
     ('POST', '/integration/jira/workspaces/unlink'): _PROVIDER,
     ('POST', '/integration/jira-dc/workspaces/status'): _PROVIDER,
-    ('POST', '/integration/jira-dc/workspaces/link'): _PROVIDER,
     ('POST', '/integration/jira-dc/workspaces/unlink'): _PROVIDER,
     ('POST', '/api/organizations/{org_id}/members/invite'): _ROLE_CHECK,
     ('DELETE', '/api/organizations/{org_id}/members/{user_id}'): _ROLE_CHECK,
@@ -264,7 +262,6 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'DELETE',
         '/api/admin/verified-models/{provider}/{model_name:path}',
     ): 'needs an admin email domain; a service account has no email',
-    ('POST', '/api/idp/password'): _NO_IDENTITY,
     (
         'POST',
         '/api/idp/signup-links',
