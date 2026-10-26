@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoutesStub } from "react-router";
+import { http, HttpResponse } from "msw";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import ServiceAccountsScreen, {
@@ -17,7 +18,12 @@ import {
   MOCK_TEAM_ORG_ACME,
   resetOrgMockData,
 } from "#/mocks/org-handlers";
-import { resetServiceAccountMockData } from "#/mocks/service-account-handlers";
+import { server } from "#/mocks/node";
+import {
+  resetServiceAccountMockData,
+  serviceAccountEnablePartialFailureHandler,
+  setServiceAccountBudget,
+} from "#/mocks/service-account-handlers";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { OrganizationMember } from "#/types/org";
@@ -29,6 +35,24 @@ const mockQueryClient = vi.hoisted(() => {
 
 vi.mock("#/query-client-config", () => ({
   queryClient: mockQueryClient,
+}));
+
+const mockDisplayErrorToast = vi.hoisted(() => vi.fn());
+
+vi.mock("#/utils/custom-toast-handlers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#/utils/custom-toast-handlers")>()),
+  displayErrorToast: mockDisplayErrorToast,
+}));
+
+// The global mock of `t` drops interpolation values. Keep them, so a test can
+// check that a button name includes the account name.
+vi.mock("react-i18next", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-i18next")>()),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, string>) =>
+      options ? `${key} ${JSON.stringify(options)}` : key,
+    i18n: { language: "en", exists: () => false },
+  }),
 }));
 
 vi.mock("#/hooks/query/use-is-authed", () => ({
@@ -81,12 +105,27 @@ const userWithRole = (role: "owner" | "member"): OrganizationMember => ({
 
 let queryClient: QueryClient;
 
-const renderPage = () =>
+const renderPage = (client: QueryClient = queryClient) =>
   render(<RouteStub initialEntries={["/settings/service-accounts"]} />, {
     wrapper: ({ children }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     ),
   });
+
+/**
+ * A client with the app's real `MutationCache`, which toasts every mutation
+ * error unless the mutation sets `meta.disableToast`.
+ */
+const createAppQueryClient = async () => {
+  const { queryClient: appQueryClient } = await vi.importActual<
+    typeof import("#/query-client-config")
+  >("#/query-client-config");
+  appQueryClient.setQueryData(["organizations"], {
+    items: INITIAL_MOCK_ORGS,
+    currentOrgId: MOCK_TEAM_ORG_ACME.id,
+  });
+  return appQueryClient;
+};
 
 const findRow = async (name: string) => {
   const rows = await screen.findAllByTestId("service-account-item");
@@ -126,6 +165,7 @@ describe("Service accounts route", () => {
     useSelectedOrganizationStore.setState({ organizationId: null });
     mockQueryClient.clear();
     queryClient.clear();
+    mockDisplayErrorToast.mockClear();
   });
 
   it("lists the service accounts of the org", async () => {
@@ -288,6 +328,235 @@ describe("Service accounts route", () => {
     expect(
       screen.getByTestId("service-account-budget-remove"),
     ).toBeInTheDocument();
+  });
+
+  it("shows one error toast when the name is taken (409)", async () => {
+    const appQueryClient = await createAppQueryClient();
+    renderPage(appQueryClient);
+    await findRow("nightly-report");
+
+    await userEvent.click(screen.getByTestId("create-service-account-button"));
+    await userEvent.type(
+      await screen.findByTestId("service-account-name-input"),
+      "nightly-report",
+    );
+    await userEvent.click(screen.getByTestId("service-account-submit-button"));
+
+    await waitFor(() => expect(mockDisplayErrorToast).toHaveBeenCalled());
+    expect(mockDisplayErrorToast).toHaveBeenCalledTimes(1);
+    expect(mockDisplayErrorToast).toHaveBeenCalledWith(
+      "A service account with this name already exists",
+    );
+    // The modal stays open so the admin can pick another name.
+    expect(screen.getByTestId("service-account-name-input")).toBeVisible();
+    appQueryClient.clear();
+  });
+
+  it("refreshes the list and toasts once when enable half-succeeds (503)", async () => {
+    const appQueryClient = await createAppQueryClient();
+    renderPage(appQueryClient);
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "toggle-service-account",
+      ),
+    );
+    await waitFor(async () =>
+      expect(
+        within(await findRow("nightly-report")).getByTestId(
+          "service-account-disabled-chip",
+        ),
+      ).toBeInTheDocument(),
+    );
+
+    server.use(serviceAccountEnablePartialFailureHandler);
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "toggle-service-account",
+      ),
+    );
+
+    const enableToasts = () =>
+      mockDisplayErrorToast.mock.calls.filter(([message]) =>
+        String(message).includes("Retry enable"),
+      );
+    await waitFor(() => expect(enableToasts()).not.toHaveLength(0));
+    expect(enableToasts()).toHaveLength(1);
+    // The account is enabled on the server, so the row must not stay stale.
+    await waitFor(async () =>
+      expect(
+        within(await findRow("nightly-report")).queryByTestId(
+          "service-account-disabled-chip",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+    appQueryClient.clear();
+  });
+
+  it("submits the name once when Enter is pressed during the request", async () => {
+    let posts = 0;
+    server.use(
+      http.post("/api/organizations/:orgId/service-accounts", async () => {
+        posts += 1;
+        await new Promise((resolve) => {
+          setTimeout(resolve, 100);
+        });
+        return HttpResponse.json(
+          {
+            id: "sa-new",
+            org_id: MOCK_TEAM_ORG_ACME.id,
+            name: "release-bot",
+            is_disabled: false,
+            role: "service_account",
+            monthly_limit: null,
+            budget_limit_disabled: false,
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    renderPage();
+    await findRow("nightly-report");
+
+    await userEvent.click(screen.getByTestId("create-service-account-button"));
+    await userEvent.type(
+      await screen.findByTestId("service-account-name-input"),
+      "release-bot{Enter}{Enter}",
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("service-account-name-input"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(posts).toBe(1);
+  });
+
+  it("deletes a secret once when the button is clicked twice", async () => {
+    let deletes = 0;
+    server.use(
+      http.delete(
+        "/api/organizations/:orgId/service-accounts/:saId/secrets/:name",
+        async () => {
+          deletes += 1;
+          await new Promise((resolve) => {
+            setTimeout(resolve, 100);
+          });
+          return HttpResponse.json({ message: "Secret deleted successfully" });
+        },
+      ),
+    );
+    renderPage();
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "manage-service-account",
+      ),
+    );
+    await userEvent.click(
+      await screen.findByTestId("add-service-account-secret-button"),
+    );
+    await userEvent.type(
+      await screen.findByTestId("service-account-secret-name-input"),
+      "API_TOKEN",
+    );
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-value-input"),
+      "v",
+    );
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+    const deleteButton = await within(
+      await screen.findByTestId("service-account-secret-item"),
+    ).findByTestId("delete-service-account-secret");
+
+    await userEvent.dblClick(deleteButton);
+
+    // The request is done once the button is enabled again.
+    await waitFor(() => expect(deleteButton).toBeEnabled());
+    expect(deletes).toBe(1);
+  });
+
+  it("names the account in the row buttons and marks the open panel", async () => {
+    renderPage();
+    await findRow("nightly-report");
+
+    const buttonFor = (action: string) =>
+      screen.getByRole("button", {
+        name: `SERVICE_ACCOUNTS$ACTION_LABEL ${JSON.stringify({
+          action,
+          name: "nightly-report",
+        })}`,
+      });
+    const manage = buttonFor("SERVICE_ACCOUNTS$MANAGE");
+    expect(manage).toHaveAttribute("aria-expanded", "false");
+    expect(buttonFor("BUTTON$RENAME")).toBeInTheDocument();
+    expect(buttonFor("SERVICE_ACCOUNTS$DISABLE")).toBeInTheDocument();
+
+    await userEvent.click(manage);
+    expect(manage).toHaveAttribute("aria-expanded", "true");
+
+    await userEvent.click(buttonFor("BUTTON$DELETE"));
+    expect(
+      await screen.findByRole("dialog", {
+        name: "SERVICE_ACCOUNTS$DELETE_TITLE",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the budget of the service account response without listing the org budgets", async () => {
+    setServiceAccountBudget(MOCK_TEAM_ORG_ACME.id, "sa-1", 40);
+    const getBudgets = vi.spyOn(organizationService, "getBudgetSettings");
+    renderPage();
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "manage-service-account",
+      ),
+    );
+
+    expect(
+      await screen.findByTestId("service-account-budget-input"),
+    ).toHaveValue(40);
+    expect(
+      screen.queryByTestId("service-account-budget-unlimited"),
+    ).not.toBeInTheDocument();
+    expect(getBudgets).not.toHaveBeenCalled();
+  });
+
+  it("shows an unlimited budget explicitly and replaces it only on save", async () => {
+    setServiceAccountBudget(MOCK_TEAM_ORG_ACME.id, "sa-1", null, true);
+    const upsert = vi.spyOn(organizationService, "upsertBudgetOverride");
+    renderPage();
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "manage-service-account",
+      ),
+    );
+
+    expect(
+      await screen.findByTestId("service-account-budget-unlimited"),
+    ).toBeVisible();
+    expect(screen.getByTestId("service-account-budget-input")).toHaveValue(
+      null,
+    );
+    expect(upsert).not.toHaveBeenCalled();
+
+    await userEvent.type(
+      screen.getByTestId("service-account-budget-input"),
+      "30",
+    );
+    await userEvent.click(screen.getByTestId("service-account-budget-save"));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("service-account-budget-unlimited"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { monthly_limit: 30, is_disabled: false },
+      }),
+    );
+    expect(screen.getByTestId("service-account-budget-input")).toHaveValue(30);
   });
 
   it("redirects a member away from the page", async () => {
