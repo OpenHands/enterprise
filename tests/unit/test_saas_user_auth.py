@@ -1746,3 +1746,39 @@ class TestOpenHandsApiKey:
             assert result is not None
             assert 'OPENHANDS_API_KEY' in result.custom_secrets
             assert len(result.custom_secrets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('account_type', 'expected'), [('service', True), ('human', False)]
+)
+async def test_saas_user_auth_from_bearer_sets_is_service_account(
+    account_type, expected
+):
+    """The bearer path reads ``user.account_type`` from the active-user check."""
+    mock_request = MagicMock()
+    mock_request.headers = {'Authorization': 'Bearer test_api_key'}
+    validation = ApiKeyValidationResult(
+        user_id=str(uuid.uuid4()),
+        org_id=uuid.uuid4(),
+        key_id=1,
+        key_name='k',
+        org_member_exists=True,
+    )
+    user = MagicMock()
+    user.account_type = account_type
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_store_cls,
+        patch(
+            'server.auth.saas_user_auth._require_active_user',
+            new=AsyncMock(return_value=user),
+        ),
+    ):
+        mock_store_cls.get_instance.return_value.validate_api_key = AsyncMock(
+            return_value=validation
+        )
+        result = await saas_user_auth_from_bearer(mock_request)
+
+    assert isinstance(result, SaasUserAuth)
+    assert result.is_service_account() is expected
