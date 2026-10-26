@@ -30,6 +30,7 @@ const NEW_OAUTH_PROVIDER: AuthProvider = {
     scopes: ["openid", "email"],
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
+    named_secret: null,
   },
 };
 
@@ -280,6 +281,7 @@ describe("Super Admin Auth Provider edit page", () => {
           scopes: ["openid", "email"],
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
+          named_secret: null,
         },
       }),
     );
@@ -390,6 +392,56 @@ describe("Super Admin Auth Provider edit page", () => {
             scopes: ["openid"],
             legacy_keycloak_type: "github",
           }),
+        }),
+      ),
+    );
+  });
+
+  it("loads named_secret and sends the edited value", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const namedSecretInput = within(form).getByTestId(
+      "super-admin-auth-provider-named-secret",
+    );
+    expect(namedSecretInput).toHaveValue("GITHUB_TOKEN");
+    await user.clear(namedSecretInput);
+    await user.type(namedSecretInput, "GH_PAT");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({ named_secret: "GH_PAT" }),
+        }),
+      ),
+    );
+  });
+
+  it("sends named_secret as null when the field is cleared", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.clear(
+      within(form).getByTestId("super-admin-auth-provider-named-secret"),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ named_secret: null }),
         }),
       ),
     );
