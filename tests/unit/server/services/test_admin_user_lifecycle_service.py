@@ -366,3 +366,22 @@ async def test_delete_refuses_service_account_but_disable_enable_work(
     # Disable and enable stay allowed: they are the kill switch.
     await service.disable_user(str(user.id))
     await service.enable_user(str(user.id))
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_removes_it_and_refuses_humans(
+    create_user, service, async_session_maker
+):
+    """GIVEN a service account and a human WHEN deleted through the explicit path THEN the service account is removed and the human is refused."""
+    sa = create_user(account_type='service')
+    human = create_user()
+
+    await service.delete_service_account(str(sa.id))
+
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is None
+    service.remote.delete.assert_awaited_once_with(str(sa.id))
+    with pytest.raises(ValueError):
+        await service.delete_service_account(str(human.id))
+    async with async_session_maker() as session:
+        assert await session.get(User, human.id) is not None
