@@ -270,3 +270,86 @@ async def test_denied_request_logs_no_change(mock_app, deny_manage_org_quota):
 
     assert resp.status_code == 403
     log.info.assert_not_called()
+
+
+# --- PUT /api/admin/quota/users/{user_id}/quota ---
+
+USER_ID = uuid.uuid4()
+
+
+def _fake_user(limit: int | None = None):
+    user = MagicMock()
+    user.id = USER_ID
+    user.display_name = 'CI bot'
+    user.email = None
+    user.account_type = 'service'
+    user.daily_sandbox_limit = limit
+    return user
+
+
+def _user_url(user_id=USER_ID):
+    return f'/api/admin/quota/users/{user_id}/quota'
+
+
+def _patch_user_session(user):
+    return patch(
+        'server.routes.quota.a_session_maker',
+        lambda **kwargs: _session_yielding(user),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [25, -1, None])
+async def test_set_user_quota_sets_limit(mock_app, grant_manage_org_quota, limit):
+    user = _fake_user(limit=7)
+    with _patch_user_session(user):
+        async with _client(mock_app) as client:
+            resp = await client.put(_user_url(), json={'daily_sandbox_limit': limit})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        'user_id': str(USER_ID),
+        'account_type': 'service',
+        'daily_sandbox_limit': limit,
+    }
+    assert user.daily_sandbox_limit == limit
+
+
+@pytest.mark.asyncio
+async def test_set_user_quota_requires_manage_org_quota(
+    mock_app, deny_manage_org_quota
+):
+    """An org owner without the super role cannot set a user's quota."""
+    user = _fake_user()
+    with _patch_user_session(user):
+        async with _client(mock_app) as client:
+            resp = await client.put(_user_url(), json={'daily_sandbox_limit': 5})
+
+    assert resp.status_code == 403
+    assert user.daily_sandbox_limit is None
+
+
+@pytest.mark.asyncio
+async def test_set_user_quota_unknown_user_returns_404(
+    mock_app, grant_manage_org_quota
+):
+    with _patch_user_session(None):
+        async with _client(mock_app) as client:
+            resp = await client.put(_user_url(), json={'daily_sandbox_limit': 5})
+
+    assert resp.status_code == 404
+    assert resp.json()['detail'] == 'User not found'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [0, -2])
+async def test_set_user_quota_rejects_meaningless_limits(
+    mock_app, grant_manage_org_quota, limit
+):
+    user = _fake_user()
+    with _patch_user_session(user):
+        async with _client(mock_app) as client:
+            resp = await client.put(_user_url(), json={'daily_sandbox_limit': limit})
+
+    assert resp.status_code == 422
+    assert user.daily_sandbox_limit is None

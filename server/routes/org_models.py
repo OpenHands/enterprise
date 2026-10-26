@@ -835,6 +835,8 @@ class OrgMemberFinancialResponse(BaseModel):
 
     user_id: str
     email: str | None
+    # ``human`` or ``service``. A service account has no email.
+    account_type: str = 'human'
     lifetime_spend: float | None  # Total amount spent (None = never observed)
     current_budget: float | None  # Remaining budget (None = spend never observed)
     max_budget: float | None  # Total allocated budget (None = unlimited)
@@ -878,6 +880,7 @@ class OrgBudgetUserResponse(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
+    account_type: str = 'human'
     current_spend: float | None = None
     monthly_limit: float | None = None
     effective_monthly_limit: float | None = None
