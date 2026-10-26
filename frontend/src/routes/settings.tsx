@@ -49,6 +49,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/model-router",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/service-accounts",
   "/settings/your-budget",
 ];
 

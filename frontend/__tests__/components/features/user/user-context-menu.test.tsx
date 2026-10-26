@@ -226,6 +226,7 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/credits" &&
         item.to !== "/settings/usage-monitoring" &&
         item.to !== "/settings/budgets" &&
+        item.to !== "/settings/service-accounts" &&
         item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
         !personalLlmPaths.has(item.to) &&

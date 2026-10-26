@@ -46,6 +46,7 @@ export const extractSettings = (
 export const ADMIN_ONLY_SETTINGS_PATHS = new Map<string, PermissionKey>([
   ["/settings/usage-monitoring", "view_org_conversations"],
   ["/settings/budgets", "edit_org_settings"],
+  ["/settings/service-accounts", "manage_service_accounts"],
 ]);
 
 /**

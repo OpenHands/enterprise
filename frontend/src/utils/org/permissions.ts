@@ -28,6 +28,7 @@ type ManageOrgClaimsPermission = "manage_org_claims";
 type CreateOrganizationPermission = "create_organization";
 type ProvisionUserPermission = "provision_user";
 type ManageSuperAdminsPermission = "manage_super_admins";
+type ManageServiceAccountsPermission = "manage_service_accounts";
 
 /**
  * Permission keys the frontend checks. Values match the backend
@@ -57,7 +58,8 @@ export type PermissionKey =
   | ManageOrgClaimsPermission
   | CreateOrganizationPermission
   | ProvisionUserPermission
-  | ManageSuperAdminsPermission;
+  | ManageSuperAdminsPermission
+  | ManageServiceAccountsPermission;
 
 /** Instance-level permissions that identify a Super Admin in the FE.
 
