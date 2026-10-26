@@ -7,10 +7,7 @@ import {
   UpdateOrganizationMemberParams,
 } from "#/types/org";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
-import {
-  getServiceAccountBudgetRows,
-  setServiceAccountBudget,
-} from "./service-account-handlers";
+import { setServiceAccountBudget } from "./service-account-handlers";
 import {
   findMockAdminUser,
   onMockAdminMembershipAdded,
@@ -992,7 +989,7 @@ export const ORG_HANDLERS = [
     },
   ),
 
-  http.get("/api/organizations/:orgId/budgets", ({ params, request }) => {
+  http.get("/api/organizations/:orgId/budgets", ({ params }) => {
     const orgId = params.orgId?.toString();
     if (!orgId || !orgs.has(orgId)) {
       return HttpResponse.json(
@@ -1000,14 +997,6 @@ export const ORG_HANDLERS = [
         { status: 404 },
       );
     }
-
-    // Service accounts show up as budget rows with `account_type: "service"`.
-    // The mock adds them only for a user search, which keeps the default
-    // list of the Budgets page unchanged.
-    const search = new URL(request.url).searchParams.get("users_search");
-    const serviceAccountRows = search
-      ? getServiceAccountBudgetRows(orgId, search)
-      : [];
 
     return HttpResponse.json({
       enabled: true,
@@ -1049,7 +1038,6 @@ export const ORG_HANDLERS = [
           is_disabled: false,
           is_override: false,
         },
-        ...serviceAccountRows,
       ],
       users_total: 1,
       users_page: 1,
@@ -1691,6 +1679,7 @@ export const ORG_HANDLERS = [
         String(params.orgId),
         String(params.userId),
         body.monthly_limit ?? null,
+        body.is_disabled,
       );
       if (serviceAccountRow) return HttpResponse.json(serviceAccountRow);
       return HttpResponse.json({

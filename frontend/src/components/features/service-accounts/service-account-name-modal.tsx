@@ -23,13 +23,16 @@ export function ServiceAccountNameModal({
   const [name, setName] = React.useState(currentName ?? "");
   const trimmed = name.trim();
 
+  const title = t(
+    currentName
+      ? I18nKey.SERVICE_ACCOUNTS$RENAME_TITLE
+      : I18nKey.SERVICE_ACCOUNTS$CREATE,
+  );
+
   return (
     <OrgModal
-      title={t(
-        currentName
-          ? I18nKey.SERVICE_ACCOUNTS$RENAME_TITLE
-          : I18nKey.SERVICE_ACCOUNTS$CREATE,
-      )}
+      title={title}
+      ariaLabel={title}
       primaryButtonText={t(
         currentName ? I18nKey.BUTTON$RENAME : I18nKey.BUTTON$CREATE,
       )}
@@ -49,7 +52,12 @@ export function ServiceAccountNameModal({
         onChange={setName}
         placeholder={t(I18nKey.SERVICE_ACCOUNTS$NAME_PLACEHOLDER)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && trimmed && trimmed !== currentName) {
+          if (
+            event.key === "Enter" &&
+            !isLoading &&
+            trimmed &&
+            trimmed !== currentName
+          ) {
             onSubmit(trimmed);
           }
         }}

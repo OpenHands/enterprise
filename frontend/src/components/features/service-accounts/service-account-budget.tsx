@@ -1,31 +1,30 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
+import { ServiceAccount } from "#/api/organization-service/service-accounts.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
-import { useServiceAccountBudget } from "#/hooks/query/use-service-account-budget";
 import { useSetServiceAccountBudget } from "#/hooks/mutation/use-service-account-budget-mutations";
 import { I18nKey } from "#/i18n/declaration";
 
 /**
- * Monthly budget of one service account. Reuses the budget override API of
- * the Budgets page: saving sets the override, "Remove limit" deletes it.
+ * Monthly budget of one service account. The budget comes with the service
+ * account (`monthly_limit`, `budget_limit_disabled`). Saving sets the budget
+ * override, "Remove limit" deletes it. An "unlimited" override is shown
+ * explicitly and stays until a limit is saved or the override is removed.
  */
-export function ServiceAccountBudget({
-  saId,
-  name,
-}: {
-  saId: string;
-  name: string;
-}) {
+export function ServiceAccountBudget({ account }: { account: ServiceAccount }) {
   const { t } = useTranslation();
-  const { data: row, isSuccess } = useServiceAccountBudget(saId, name, true);
-  const { mutate: setBudget, isPending } = useSetServiceAccountBudget(saId);
+  const { mutate: setBudget, isPending } = useSetServiceAccountBudget(
+    account.id,
+  );
   const [draft, setDraft] = React.useState<string | null>(null);
 
-  const savedLimit = row?.is_override ? row.monthly_limit : null;
+  const isUnlimited = account.budget_limit_disabled;
+  const savedLimit = account.monthly_limit;
+  const hasOverride = isUnlimited || savedLimit !== null;
   const value = draft ?? (savedLimit === null ? "" : String(savedLimit));
   const parsed = Number(value);
-  const isValid = value !== "" && Number.isFinite(parsed) && parsed >= 0;
+  const isValid = value !== "" && Number.isFinite(parsed) && parsed > 0;
 
   return (
     <section className="flex flex-col gap-2">
@@ -36,6 +35,14 @@ export function ServiceAccountBudget({
         <p className="text-xs text-muted">
           {t(I18nKey.SERVICE_ACCOUNTS$BUDGET_HELP)}
         </p>
+        {isUnlimited && (
+          <p
+            data-testid="service-account-budget-unlimited"
+            className="text-xs text-muted"
+          >
+            {t(I18nKey.SERVICE_ACCOUNTS$BUDGET_UNLIMITED)}
+          </p>
+        )}
       </div>
       <div className="flex items-end gap-4">
         <SettingsInput
@@ -47,7 +54,6 @@ export function ServiceAccountBudget({
           className="max-w-[200px]"
           value={value}
           onChange={setDraft}
-          isDisabled={!isSuccess}
         />
         <BrandButton
           testId="service-account-budget-save"
@@ -63,7 +69,7 @@ export function ServiceAccountBudget({
         >
           {t(I18nKey.BUTTON$SAVE)}
         </BrandButton>
-        {savedLimit !== null && (
+        {hasOverride && (
           <BrandButton
             testId="service-account-budget-remove"
             type="button"

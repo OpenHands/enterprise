@@ -38,6 +38,7 @@ function useSecretMutation<TVariables>(
         retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
       );
     },
+    meta: { disableToast: true },
   });
 }
 

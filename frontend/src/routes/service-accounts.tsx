@@ -54,6 +54,12 @@ export default function ServiceAccountsScreen() {
   const [modal, setModal] = React.useState<ModalState | null>(null);
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const closeModal = () => setModal(null);
+  // Accessible name of a row button: the action and the account it acts on.
+  const actionLabel = (action: I18nKey, account: ServiceAccount) =>
+    t(I18nKey.SERVICE_ACCOUNTS$ACTION_LABEL, {
+      action: t(action),
+      name: account.name,
+    });
 
   const renderModal = () => {
     if (!modal) return null;
@@ -61,6 +67,7 @@ export default function ServiceAccountsScreen() {
       return (
         <OrgModal
           title={t(I18nKey.SERVICE_ACCOUNTS$DELETE_TITLE)}
+          ariaLabel={t(I18nKey.SERVICE_ACCOUNTS$DELETE_TITLE)}
           description={t(I18nKey.SERVICE_ACCOUNTS$DELETE_WARNING, {
             name: modal.account.name,
           })}
@@ -205,6 +212,11 @@ export default function ServiceAccountsScreen() {
                     <div className="flex shrink-0 items-center gap-2">
                       <BrandButton
                         testId="manage-service-account"
+                        ariaLabel={actionLabel(
+                          I18nKey.SERVICE_ACCOUNTS$MANAGE,
+                          account,
+                        )}
+                        aria-expanded={isExpanded}
                         type="button"
                         variant="secondary"
                         className="h-7 min-h-7 px-2.5 text-xs"
@@ -216,6 +228,7 @@ export default function ServiceAccountsScreen() {
                       </BrandButton>
                       <BrandButton
                         testId="rename-service-account"
+                        ariaLabel={actionLabel(I18nKey.BUTTON$RENAME, account)}
                         type="button"
                         variant="secondary"
                         className="h-7 min-h-7 px-2.5 text-xs"
@@ -225,6 +238,12 @@ export default function ServiceAccountsScreen() {
                       </BrandButton>
                       <BrandButton
                         testId="toggle-service-account"
+                        ariaLabel={actionLabel(
+                          account.is_disabled
+                            ? I18nKey.SERVICE_ACCOUNTS$ENABLE
+                            : I18nKey.SERVICE_ACCOUNTS$DISABLE,
+                          account,
+                        )}
                         type="button"
                         variant="secondary"
                         className="h-7 min-h-7 px-2.5 text-xs"
@@ -245,6 +264,7 @@ export default function ServiceAccountsScreen() {
                       </BrandButton>
                       <BrandButton
                         testId="delete-service-account"
+                        ariaLabel={actionLabel(I18nKey.BUTTON$DELETE, account)}
                         type="button"
                         variant="danger"
                         className="h-7 min-h-7 px-2.5 text-xs"
@@ -260,12 +280,7 @@ export default function ServiceAccountsScreen() {
                       className="flex flex-col gap-6 border-t border-[var(--oh-border)] p-4"
                     >
                       <ServiceAccountSecrets saId={account.id} />
-                      {showBudget && (
-                        <ServiceAccountBudget
-                          saId={account.id}
-                          name={account.name}
-                        />
-                      )}
+                      {showBudget && <ServiceAccountBudget account={account} />}
                     </div>
                   )}
                 </li>

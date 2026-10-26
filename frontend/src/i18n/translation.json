@@ -39539,5 +39539,22 @@
     "de": "{{action}} {{name}}",
     "uk": "{{action}} {{name}}",
     "ca": "{{action}} {{name}}"
+  },
+  "SERVICE_ACCOUNTS$BUDGET_UNLIMITED": {
+    "en": "This service account has no spend limit. Saving a limit replaces this.",
+    "ja": "This service account has no spend limit. Saving a limit replaces this.",
+    "zh-CN": "This service account has no spend limit. Saving a limit replaces this.",
+    "zh-TW": "This service account has no spend limit. Saving a limit replaces this.",
+    "ko-KR": "This service account has no spend limit. Saving a limit replaces this.",
+    "no": "This service account has no spend limit. Saving a limit replaces this.",
+    "it": "This service account has no spend limit. Saving a limit replaces this.",
+    "pt": "This service account has no spend limit. Saving a limit replaces this.",
+    "es": "This service account has no spend limit. Saving a limit replaces this.",
+    "ar": "This service account has no spend limit. Saving a limit replaces this.",
+    "fr": "This service account has no spend limit. Saving a limit replaces this.",
+    "tr": "This service account has no spend limit. Saving a limit replaces this.",
+    "de": "This service account has no spend limit. Saving a limit replaces this.",
+    "uk": "This service account has no spend limit. Saving a limit replaces this.",
+    "ca": "This service account has no spend limit. Saving a limit replaces this."
   }
 }

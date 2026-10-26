@@ -138,7 +138,8 @@ export function ServiceAccountSecrets({ saId }: { saId: string }) {
   const { data: secrets = [] } = useServiceAccountSecrets(saId);
   const { mutate: putSecret, isPending: isSaving } =
     usePutServiceAccountSecret(saId);
-  const { mutate: deleteSecret } = useDeleteServiceAccountSecret(saId);
+  const { mutate: deleteSecret, isPending: isDeleting } =
+    useDeleteServiceAccountSecret(saId);
   const [form, setForm] = React.useState<FormState | null>(null);
 
   return (
@@ -213,6 +214,7 @@ export function ServiceAccountSecrets({ saId }: { saId: string }) {
                     action: t(I18nKey.BUTTON$DELETE),
                     name: secret.name,
                   })}
+                  disabled={isDeleting}
                   className={settingsListIconActionButtonClassName}
                   onClick={() => deleteSecret({ name: secret.name })}
                 >

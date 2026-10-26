@@ -12,7 +12,8 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 
 /**
  * Shared plumbing of the service account mutations: needs the selected org,
- * toasts the result and refreshes the list.
+ * toasts the result and refreshes the list. The error toast is local, so the
+ * global one is off (`disableToast`).
  */
 function useServiceAccountMutation<TVariables>(
   mutate: (orgId: string, variables: TVariables) => Promise<unknown>,
@@ -29,17 +30,19 @@ function useServiceAccountMutation<TVariables>(
       }
       return mutate(organizationId, variables);
     },
-    onSuccess: () => {
-      displaySuccessToast(t(successMessage));
-      queryClient.invalidateQueries({
-        queryKey: [SERVICE_ACCOUNTS_QUERY_KEY, organizationId],
-      });
-    },
+    onSuccess: () => displaySuccessToast(t(successMessage)),
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
       );
     },
+    // A failed request can still have changed the account (enable succeeds,
+    // then the key rotation fails with 503), so refresh on failure too.
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        queryKey: [SERVICE_ACCOUNTS_QUERY_KEY, organizationId],
+      }),
+    meta: { disableToast: true },
   });
 }
 

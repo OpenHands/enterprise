@@ -8,6 +8,13 @@ export interface ServiceAccount {
   name: string;
   is_disabled: boolean;
   role: string;
+  /**
+   * Budget override, with the semantics of the budget override API:
+   * `monthly_limit` is the cap (`null`: no override, or unlimited);
+   * `budget_limit_disabled` is the override's `is_disabled` ("unlimited").
+   */
+  monthly_limit: number | null;
+  budget_limit_disabled: boolean;
 }
 
 interface ServiceAccountPage {
