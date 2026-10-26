@@ -371,3 +371,147 @@ async def test_operations_are_logged(client, as_admin, svc, lifecycle):
         'org_id': str(ORG_ID),
         'service_account_id': str(SA_ID),
     }
+
+
+# --- Secrets ---
+
+
+@pytest.fixture
+def secrets_store():
+    store = MagicMock()
+    store.list_personal = AsyncMock(return_value=[('A', 'first'), ('B', None)])
+    store.upsert_personal = AsyncMock()
+    store.delete_personal = AsyncMock(return_value=True)
+    with patch(
+        f'{MODULE}.SaasSecretsStore.get_instance', AsyncMock(return_value=store)
+    ) as get_instance:
+        store.get_instance = get_instance
+        yield store
+
+
+def _secret_url(name: str = '') -> str:
+    return _url('/secrets' + (f'/{name}' if name else ''))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('method', 'name', 'body'),
+    [('GET', '', None), ('PUT', 'A', {'value': 'v'}), ('DELETE', 'A', None)],
+)
+async def test_secret_routes_require_manage_service_accounts(
+    client, svc, secrets_store, method, name, body
+):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=_role('member')),
+    ):
+        async with client as c:
+            resp = await c.request(method, _secret_url(name), json=body)
+
+    assert resp.status_code == 403
+    secrets_store.upsert_personal.assert_not_awaited()
+    secrets_store.delete_personal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('method', 'name', 'body'),
+    [('GET', '', None), ('PUT', 'A', {'value': 'v'}), ('DELETE', 'A', None)],
+)
+async def test_secret_routes_reject_human_target(
+    client, as_admin, svc, secrets_store, method, name, body
+):
+    svc.get_service_account = AsyncMock(return_value=None)
+
+    async with client as c:
+        resp = await c.request(method, _secret_url(name), json=body)
+
+    assert resp.status_code == 404
+    secrets_store.get_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_secrets_returns_names_and_descriptions_only(
+    client, as_admin, svc, secrets_store
+):
+    async with client as c:
+        resp = await c.get(_secret_url())
+
+    assert resp.status_code == 200
+    assert [(i['name'], i['description']) for i in resp.json()['items']] == [
+        ('A', 'first'),
+        ('B', None),
+    ]
+    assert 'value' not in resp.text
+    secrets_store.get_instance.assert_awaited_once_with(
+        str(SA_ID), effective_org_id=ORG_ID
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_secret_never_echoes_value(client, as_admin, svc, secrets_store):
+    async with client as c:
+        resp = await c.put(
+            _secret_url('API_TOKEN'),
+            json={'value': 'hunter2-secret', 'description': 'token'},
+        )
+
+    assert resp.status_code == 200
+    assert 'hunter2-secret' not in resp.text
+    secrets_store.upsert_personal.assert_awaited_once_with(
+        'API_TOKEN', 'hunter2-secret', 'token'
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_secret_holds_the_secrets_write_lock(
+    client, as_admin, svc, secrets_store
+):
+    """The write shares the lock key of ``/api/v1/secrets`` for the same user and org."""
+    events: list[str] = []
+
+    class _Lock:
+        async def __aenter__(self):
+            events.append('lock')
+
+        async def __aexit__(self, *exc):
+            events.append('unlock')
+
+    secrets_store.upsert_personal.side_effect = lambda *a: events.append('write')
+    with patch(f'{MODULE}._secrets_write_lock', return_value=_Lock()) as lock:
+        async with client as c:
+            await c.put(_secret_url('A'), json={'value': 'v'})
+
+    lock.assert_called_once_with(str(SA_ID), secrets_store)
+    assert events == ['lock', 'write', 'unlock']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['OPENHANDS_API_KEY', '1BAD', 'bad-name'])
+async def test_put_invalid_or_reserved_name_returns_400(
+    client, as_admin, svc, secrets_store, name
+):
+    async with client as c:
+        resp = await c.put(_secret_url(name), json={'value': 'v'})
+
+    assert resp.status_code == 400
+    secrets_store.upsert_personal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_secret(client, as_admin, svc, secrets_store):
+    async with client as c:
+        resp = await c.delete(_secret_url('A'))
+
+    assert resp.status_code == 200
+    secrets_store.delete_personal.assert_awaited_once_with('A')
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_secret_returns_404(client, as_admin, svc, secrets_store):
+    secrets_store.delete_personal.return_value = False
+
+    async with client as c:
+        resp = await c.delete(_secret_url('A'))
+
+    assert resp.status_code == 404

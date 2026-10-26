@@ -596,6 +596,16 @@ class ServiceAccountResponse(BaseModel):
     role: str
 
 
+class ServiceAccountSecretUpsert(BaseModel):
+    """Request model for setting one personal secret of a service account.
+
+    The value is write-only: no route returns it.
+    """
+
+    value: SecretStr
+    description: str | None = None
+
+
 class ServiceAccountPage(BaseModel):
     """Paginated response for the service accounts of an organization."""
 
