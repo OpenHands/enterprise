@@ -24,7 +24,7 @@ from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
 from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_HUMAN, User
 from storage.user_settings import UserSettings
 from utils.sql import escape_ilike
 
@@ -261,6 +261,8 @@ class OrgMemberStore:
     ) -> int:
         """Get total count of organization members, optionally filtered by email.
 
+        Service accounts are not counted.
+
         Args:
             org_id: Organization UUID.
             email_filter: Optional case-insensitive partial email match.
@@ -269,12 +271,17 @@ class OrgMemberStore:
             Total count of matching members.
         """
         async with a_session_maker() as session:
-            query = select(func.count(OrgMember.user_id)).filter(
-                OrgMember.org_id == org_id
+            query = (
+                select(func.count(OrgMember.user_id))
+                .join(User, User.id == OrgMember.user_id)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    User.account_type == ACCOUNT_TYPE_HUMAN,
+                )
             )
 
             if email_filter:
-                query = query.join(User, User.id == OrgMember.user_id).filter(
+                query = query.filter(
                     User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
                 )
 
@@ -289,6 +296,8 @@ class OrgMemberStore:
         email_filter: str | None = None,
     ) -> tuple[list[OrgMember], bool]:
         """Get paginated list of organization members with user and role info.
+
+        Service accounts are not listed.
 
         Args:
             org_id: Organization UUID.
@@ -306,7 +315,10 @@ class OrgMemberStore:
                 select(OrgMember)
                 .options(joinedload(OrgMember.user), joinedload(OrgMember.role))
                 .join(User, User.id == OrgMember.user_id)
-                .filter(OrgMember.org_id == org_id)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    User.account_type == ACCOUNT_TYPE_HUMAN,
+                )
             )
 
             # Apply email filter if provided
