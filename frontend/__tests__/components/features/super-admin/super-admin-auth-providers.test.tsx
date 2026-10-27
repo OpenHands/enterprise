@@ -274,6 +274,7 @@ describe("Super Admin Auth Providers page", () => {
           scopes: ["openid", "email"],
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
+          named_secret: null,
         },
       }),
     );
@@ -378,6 +379,7 @@ describe("Super Admin Auth Providers page", () => {
           token_url: "https://github.com/login/oauth/access_token",
           userinfo_url: "https://api.github.com/user",
           legacy_keycloak_type: null,
+          named_secret: "GITHUB_TOKEN",
         }),
       }),
     );

@@ -32,6 +32,9 @@ export interface OAuthProviderDetails {
   /** For a Keycloak-federated login row: the git provider whose real token
    * is additionally fetched from Keycloak after login. ``null`` otherwise. */
   legacy_keycloak_type: Exclude<OAuthProviderBrand, "enterprise_sso"> | null;
+  /** Conversation secret name a linked user's access token is exposed
+   * under (with OAuth v2 login enabled). ``null`` keeps it out. */
+  named_secret: string | null;
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the

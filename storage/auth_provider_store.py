@@ -157,6 +157,23 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
+    async def get_linked_oauth_providers(self, user_id: UUID) -> list[AuthProvider]:
+        """OAuth rows the user holds an ``oauth_tokens`` row for.
+
+        Git providers come before login IDPs, then the highest ``id`` first.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .join(OAuthToken, OAuthToken.oauth_provider_id == AuthProvider.id)
+                .where(
+                    OAuthToken.user_id == user_id,
+                    AuthProvider.kind == 'OAuthProviderDetails',
+                )
+                .order_by(AuthProvider.is_idp, AuthProvider.id.desc())
+            )
+            return list(result.scalars().all())
+
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
             result = await session.execute(

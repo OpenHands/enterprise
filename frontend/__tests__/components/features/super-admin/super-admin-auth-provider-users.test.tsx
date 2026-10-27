@@ -47,6 +47,7 @@ const GITHUB_PROVIDER: AuthProvider = {
     scopes: ["repo"],
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
+    named_secret: "GITHUB_TOKEN",
   },
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",

@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -101,6 +101,7 @@ from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
 )
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
@@ -151,7 +152,7 @@ from openhands.sdk.marketplace.registration import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
-from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
 from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec, Tool
@@ -1499,48 +1500,90 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             Dictionary of secrets for the conversation
         """
         secrets = await self.user_context.get_secrets()
+        secrets.update(
+            await self._get_provider_token_secrets(user, self._secret_lookup_url())
+        )
+        return secrets
 
-        # Get all provider tokens from user authentication
+    def _secret_lookup_url(self) -> str | None:
+        """The webhook secrets URL, when the sandbox can call back to it."""
+        if not self.web_url:
+            return None
+        if isinstance(self.sandbox_service, RemoteSandboxService) and (
+            urlparse(self.web_url).hostname in ('localhost', '127.0.0.1')
+        ):
+            return None
+        return self.web_url + '/api/v1/webhooks/secrets'
+
+    async def _get_provider_token_secrets(
+        self, user: UserInfo, lookup_url: str | None
+    ) -> dict[str, SecretSource]:
+        """Secrets carrying the user's git provider and OAuth tokens.
+
+        With named OAuth secrets in use, each linked provider's token is
+        exposed under its ``named_secret``; ``<PROVIDER_TYPE>_TOKEN`` remains
+        only for provider types the user has no OAuth v2 token for. Each is a
+        ``LookupSecret`` against ``lookup_url``, or a ``StaticSecret`` holding
+        the current token (which then never refreshes) when it is ``None``.
+        """
+        secrets: dict[str, SecretSource] = {}
         provider_tokens = cast(
             PROVIDER_TOKEN_TYPE | None,
             await self.user_context.get_provider_tokens(),
         )
-        if provider_tokens:
-            # Create secrets for each provider token
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
+        named_oauth_secrets = await self.user_context.get_named_oauth_secrets()
 
-                secret_name = f'{provider_type.name}_TOKEN'
-                description = f'{provider_type.name} authentication token'
+        for provider_type, provider_token in (provider_tokens or {}).items():
+            if not provider_token.token:
+                continue
+            if (
+                named_oauth_secrets is not None
+                and provider_type in named_oauth_secrets.linked_provider_types
+            ):
+                continue
+            secret_name = f'{provider_type.name}_TOKEN'
+            description = f'{provider_type.name} authentication token'
+            if lookup_url:
+                secrets[secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'provider_type': provider_type.value},
+                    description,
+                )
+                continue
+            static_token = await self.user_context.get_latest_token(provider_type)
+            if static_token:
+                secrets[secret_name] = StaticSecret(
+                    value=SecretStr(static_token), description=description
+                )
 
-                if self.web_url:
-                    # Create an access token for web-based authentication
-                    access_token = self.jwt_service.create_jws_token(
-                        payload={
-                            'user_id': user.id,
-                            'provider_type': provider_type.value,
-                        },
-                        expires_in=self.access_token_hard_timeout,
-                    )
-                    headers = {'X-Access-Token': access_token}
-
-                    secrets[secret_name] = LookupSecret(
-                        url=self.web_url + '/api/v1/webhooks/secrets',
-                        headers=headers,
-                        description=description,
-                    )
-                else:
-                    # Use static token for environments without web URL access
-                    static_token = await self.user_context.get_latest_token(
-                        provider_type
-                    )
-                    if static_token:
-                        secrets[secret_name] = StaticSecret(
-                            value=SecretStr(static_token), description=description
-                        )
-
+        for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
+            if lookup_url:
+                secrets[named.secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'oauth_provider_id': named.oauth_provider_id},
+                    named.description,
+                )
+                continue
+            value = await self.user_context.get_named_oauth_secret_value(
+                named.oauth_provider_id
+            )
+            if value:
+                secrets[named.secret_name] = StaticSecret(
+                    value=SecretStr(value), description=named.description
+                )
         return secrets
+
+    def _lookup_secret(
+        self, lookup_url: str, payload: dict[str, Any], description: str
+    ) -> LookupSecret:
+        access_token = self.jwt_service.create_jws_token(
+            payload=payload, expires_in=self.access_token_hard_timeout
+        )
+        return LookupSecret(
+            url=lookup_url,
+            headers={'X-Access-Token': access_token},
+            description=description,
+        )
 
     async def _setup_conversation_secrets(
         self,
@@ -2826,21 +2869,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
         secrets: dict = await self.user_context.get_secrets()
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
-        if provider_tokens:
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
-                secret_name = f'{provider_type.name}_TOKEN'
-                static_token = await self.user_context.get_latest_token(provider_type)
-                if static_token:
-                    secrets[secret_name] = StaticSecret(
-                        value=SecretStr(static_token),
-                        description=f'{provider_type.name} authentication token',
-                    )
+        secrets.update(await self._get_provider_token_secrets(user, lookup_url=None))
 
         enrichment = await self.conversation_secret_enricher.enrich(
             user_context=self.user_context,
