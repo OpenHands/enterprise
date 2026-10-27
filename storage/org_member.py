@@ -46,6 +46,13 @@ class OrgMember(Base):
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Personal (member-scoped) Agent Profiles: the same ``AgentProfiles``
+    # envelope as ``org.agent_profiles`` (migration 198). Its ``active`` is
+    # unused -- ``active_agent_profile_id`` below is the single launch pointer
+    # and may reference a personal or an org profile id. NULL reads as empty.
+    agent_profiles: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
     # Per-member pointer to the active AgentProfile id — the sole launch
     # authority for Agent Profiles (mirrors the per-member _llm_api_key
     # precedent). NULL falls back to the org default (org.agent_profiles.active)

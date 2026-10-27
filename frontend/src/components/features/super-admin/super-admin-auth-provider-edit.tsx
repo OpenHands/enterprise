@@ -451,6 +451,18 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
             >
               {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT)}
             </p>
+            <SettingsInput
+              testId="super-admin-auth-provider-named-secret"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET)}
+              type="text"
+              value={form.namedSecret}
+              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET_HINT)}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, namedSecret: value }))
+              }
+              showOptionalTag
+              autoComplete="off"
+            />
           </>
         ) : null}
         {form.kind === KIND_SAML ? (

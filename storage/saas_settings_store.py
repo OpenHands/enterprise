@@ -52,6 +52,7 @@ from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
     load_llm_profiles,
+    load_member_agent_profiles,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -289,7 +290,8 @@ class SaasSettingsStore(SettingsStore):
         non-persisted launch override — never written back to
         ``org_member.active_agent_profile_id``), else the member's ambient
         ``active_agent_profile_id``, else the org-wide default pointer
-        (``AgentProfiles.active``, if one has been set). Returns
+        (``AgentProfiles.active``, if one has been set). The id is looked up
+        in the member's personal collection first, then the org's. Returns
         ``(agent_settings_dump, profile_id, revision)``, or ``None`` to fall
         back to the composed ``agent_settings``.
         Delegates the ``llm_profile_ref`` + ``mcp_server_refs`` join entirely to
@@ -311,8 +313,12 @@ class SaasSettingsStore(SettingsStore):
         if not active_id:
             return None
 
-        name = agent_profiles.name_for_id(active_id)
-        if name is None:
+        # Ids are UUIDs minted per save, so the order is only a tiebreak; it
+        # lets a member pointer or a launch override reference either scope.
+        profile = load_member_agent_profiles(org_member).profiles.get(
+            active_id
+        ) or agent_profiles.profiles.get(active_id)
+        if profile is None:
             logger.warning(
                 'Active agent profile %s not found for user %s in org %s; '
                 'falling back to composed settings',
@@ -321,10 +327,7 @@ class SaasSettingsStore(SettingsStore):
                 org.id,
             )
             return None
-        try:
-            profile = agent_profiles.load(name)
-        except FileNotFoundError:
-            return None
+        name = profile.name
 
         mcp_config: dict[str, MCPServer] = {}
         mcp_raw = merged_agent_settings.get('mcp_config')
