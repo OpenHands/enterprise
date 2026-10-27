@@ -443,7 +443,7 @@ async def test_delete_without_automation_service_url_skips_the_check(
 async def test_delete_conflict_from_cleanup_returns_409(
     client, as_admin, svc, lifecycle
 ):
-    """E.g. the service account still has sandboxes."""
+    """E.g. the service account is the last owner of a team organization."""
     lifecycle.delete_service_account.side_effect = UserCleanupConflict('sandboxes')
 
     with patch(f'{MODULE}.AUTOMATION_SERVICE_URL', ''):
