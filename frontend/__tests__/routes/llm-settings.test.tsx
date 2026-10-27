@@ -862,6 +862,45 @@ describe("LlmSettingsScreen", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("asks for an API key and shows the OpenHands key help for the openhands provider when LiteLLM is off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    await renderLlmSettingsScreen({
+      appMode: "saas",
+      featureFlags: { deployment_mode: "self_hosted", enable_litellm: false },
+    });
+
+    await screen.findByTestId("llm-settings-screen");
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("openhands-api-key-help")).toBeInTheDocument();
+  });
+
+  it("keeps a typed API key in the payload for the openhands provider when LiteLLM is off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+
+    await renderLlmSettingsScreen({
+      appMode: "saas",
+      featureFlags: { deployment_mode: "self_hosted", enable_litellm: false },
+    });
+
+    const apiKeyInput = await screen.findByTestId("llm-api-key-input");
+    await userEvent.type(apiKeyInput, "sk-openhands-cloud");
+    await userEvent.click(screen.getByTestId("save-button"));
+
+    await waitFor(() => {
+      expect(saveSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
+            llm: expect.objectContaining({ api_key: "sk-openhands-cloud" }),
+          }),
+        }),
+      );
+    });
+  });
+
   it("shows the API key input for non-OpenHands providers in SaaS mode", async () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({

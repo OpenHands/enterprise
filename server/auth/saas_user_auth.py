@@ -22,6 +22,7 @@ from openhands.app_server.integrations.provider import (
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.auth_error import (
     AuthError,
@@ -949,6 +950,83 @@ class SaasUserAuth(UserAuth):
                 token=SecretStr(token), user_id=None, host=host
             )
         return provider_tokens
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        """Secrets named by ``OAuthProviderDetails.named_secret`` for the
+        providers this user linked. ``None`` unless OAuth v2 login is enabled.
+
+        When several linked rows share a name, the first in
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        """
+        if not is_oauth_v2_login_enabled():
+            return None
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+
+        result = NamedOAuthSecrets()
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return result
+        seen_names: set[str] = set()
+        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+            details = provider.details
+            if not isinstance(details, OAuthProviderDetails):
+                continue
+            if not provider.is_idp:
+                result.linked_provider_types.add(details.provider_type)
+            name = details.named_secret
+            if not name or details.legacy_keycloak_type or name in seen_names:
+                continue
+            seen_names.add(name)
+            result.secrets.append(
+                NamedOAuthSecret(
+                    secret_name=name,
+                    oauth_provider_id=provider.id,
+                    description=f'{provider.title} OAuth access token',
+                )
+            )
+        return result
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's access token for ``oauth_provider_id``, refreshed if due.
+
+        ``None`` when the row no longer names a secret or the token is
+        unavailable. A failed refresh keeps the token row, since there may be
+        no user present to re-link.
+        """
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider = await AuthProviderStore().get_by_id(oauth_provider_id)
+        if provider is None:
+            return None
+        details = provider.details
+        if (
+            not isinstance(details, OAuthProviderDetails)
+            or not details.named_secret
+            or details.legacy_keycloak_type
+        ):
+            return None
+        try:
+            return await OAuthTokenStore(
+                user_id=UUID(self.user_id), oauth_provider_id=provider.id
+            ).get_valid_access_token(
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
+                refresh=make_refresh_callback(provider),
+            )
+        except Exception:
+            logger.warning(
+                'named_oauth_secret_unavailable',
+                extra={'user_id': self.user_id, 'oauth_provider_id': provider.id},
+                exc_info=True,
+            )
+            return None
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')

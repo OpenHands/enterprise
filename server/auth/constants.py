@@ -148,9 +148,14 @@ SUSPICIOUS_LABELS = {
 
 
 def is_oauth_v2_login_enabled() -> bool:
-    """``ENABLE_OAUTH_V2_LOGIN``, parsed as the web client parses it.
+    """Whether OAuth v2 login is on, matching the web client's flag.
 
-    Read on each call, not at import, so the server and its tests see the
-    current value.
+    ``OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN`` wins when set, since
+    the web client then reads it in place of ``ENABLE_OAUTH_V2_LOGIN``
+    (OHE-3762). Read on each call, not at import, so the server and its tests
+    see the current value.
     """
-    return os.getenv('ENABLE_OAUTH_V2_LOGIN', 'false').lower() in ('true', '1')
+    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN')
+    if value is None:
+        value = os.getenv('ENABLE_OAUTH_V2_LOGIN', 'false')
+    return value.lower() in ('true', '1')

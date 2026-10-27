@@ -68,6 +68,34 @@ def test_the_flag_is_parsed_like_the_web_client_parses_it(
     assert is_oauth_v2_login_enabled() is enabled
 
 
+@pytest.mark.parametrize(
+    ('bare', 'prefixed', 'enabled'),
+    [
+        (None, '1', True),
+        (None, 'true', True),
+        ('true', 'false', False),
+        ('false', 'true', True),
+        ('true', None, True),
+    ],
+)
+def test_the_web_client_feature_flag_variable_wins_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+    bare: str | None,
+    prefixed: str | None,
+    enabled: bool,
+):
+    for name, value in (
+        ('ENABLE_OAUTH_V2_LOGIN', bare),
+        ('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN', prefixed),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    assert is_oauth_v2_login_enabled() is enabled
+
+
 @pytest.mark.asyncio
 async def test_keycloak_wins_over_an_oauth_tokens_row(
     create_git_provider, store_oauth_token, create_user
