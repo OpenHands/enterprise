@@ -22,6 +22,14 @@ parameter can still read a personal profile by name. The list endpoint returns
 both collections, each summary tagged with its scope, and ``activate`` accepts
 an id from either.
 
+Org-scope constraints (OHE-3088): an org profile launches for every member, so
+a ``scope=org`` save must stand on org-scoped configuration alone — the
+OpenHands agent kind only, no MCP server references (``null`` stays accepted
+for the legacy seeded ``default``), and ``secret_refs`` drawn from the
+organization's shared secrets. The name-collision guard is two-sided: a
+personal save may not shadow an org name, and an org save or rename may not
+take a name any member already uses personally.
+
 Domain logic is **imported, never re-implemented** (the #3730 thin-boundary
 contract): validation → ``validate_agent_profile``; id/revision stamping →
 ``save_profile_preserving_identity``; the dry-run resolve →
@@ -91,6 +99,7 @@ from storage.agent_profile_resolution import (
 from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_member import OrgMember
+from storage.org_secrets_store import OrgSecretsStore
 from storage.org_service import OrgService
 
 router = APIRouter(prefix='/api/agent-profiles', tags=['Agent Profiles'])
@@ -373,9 +382,9 @@ def _name_exists(profiles: AgentProfiles, name: str) -> bool:
 def _reject_org_owned_name(org: Org, personal: AgentProfiles, name: str) -> None:
     """409 when the org collection owns ``name`` and this member does not.
 
-    Keeps a personal profile from shadowing an org profile of the same name.
-    One-sided on purpose: only personal writes consult the other collection,
-    so admins never scan (or learn about) members' private profile names.
+    Keeps a personal profile from shadowing an org profile of the same name;
+    the personal half of the guard, ``_reject_member_owned_name`` is the org
+    half.
     """
     if _name_exists(personal, name):
         return
@@ -384,6 +393,74 @@ def _reject_org_owned_name(org: Org, personal: AgentProfiles, name: str) -> None
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent profile '{name}' already exists in this organization",
         )
+
+
+async def _reject_member_owned_name(
+    session: AsyncSession, org_id: UUID, name: str
+) -> None:
+    """409 when any member's personal collection already uses ``name``.
+
+    The org half of the collision guard: an org profile is listed to every
+    member next to their own, and the automation service rejects a merged list
+    with duplicate names, so an admin may not publish a name a member already
+    uses. Only names are compared; nothing else about a personal profile leaves
+    the scan.
+    """
+    members = (
+        (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.agent_profiles.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if any(
+        _name_exists(load_member_agent_profiles(member), name) for member in members
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Agent profile '{name}' already exists in a member's personal profiles"
+            ),
+        )
+
+
+async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) -> None:
+    """422 unless ``profile`` runs on org-scoped configuration alone.
+
+    An org profile launches for every member, so it may not lean on what the
+    authoring admin has configured personally: ACP backends are per-member
+    installs, MCP servers are per-member settings (``None`` stays accepted for
+    the legacy seeded ``default``; an explicit list must be empty), and
+    ``secret_refs`` may only name org-shared secrets, which is what the launch
+    path resolves an org profile's explicit list against (OHE-3753).
+    """
+    if profile.agent_kind != 'openhands':
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='Organization agent profiles must use the OpenHands agent',
+        )
+    if profile.mcp_server_refs:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='Organization agent profiles cannot reference MCP servers',
+        )
+    if profile.secret_refs:
+        store = await OrgSecretsStore.get_instance(org_id)
+        shared = {secret.name for secret in await store.list_shared()}
+        unknown = sorted(set(profile.secret_refs) - shared)
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    'Organization agent profiles can only reference '
+                    'organization-shared secrets; not shared: ' + ', '.join(unknown)
+                ),
+            )
 
 
 def _validate_profile_body(name: str, body: dict[str, Any]) -> AgentProfile:
@@ -518,19 +595,28 @@ async def save_agent_profile(
 
     Server-managed id/revision: overwrite keeps the namesake's id and bumps
     revision; create mints a fresh id (``save_profile_preserving_identity``).
-    Returns 422 on invalid payloads (secret-safe detail) and 409 when creating a
-    new profile would exceed ``MAX_AGENT_PROFILES`` (per collection) or, for
-    ``scope=personal``, when the org collection already owns ``name``.
+    Returns 422 on invalid payloads (secret-safe detail) and, for ``scope=org``,
+    on a profile that breaks the org-scope constraints (ACP kind, MCP server
+    references, secrets that are not org-shared). 409 when creating a new
+    profile would exceed ``MAX_AGENT_PROFILES`` (per collection) or when the
+    other side already owns ``name`` (the org collection for a personal save; a
+    member's personal collection for an org save).
     """
+    # Validation needs no row lock, and the secret-name lookup opens its own
+    # session, so both run before the collection is locked.
+    profile = _validate_profile_body(name, body)
+    if scope == 'org':
+        await _enforce_org_profile_constraints(profile, effective_org_id)
     async with _scoped_transaction(scope, effective_org_id, user_id) as (
-        _session,
+        session,
         org,
         _member,
         profiles,
     ):
-        profile = _validate_profile_body(name, body)
         if scope == 'personal':
             _reject_org_owned_name(org, profiles, name)
+        elif not _name_exists(profiles, name):
+            await _reject_member_owned_name(session, effective_org_id, name)
         _save_with_limit(profiles, profile)
 
     logger.info("Saved %s agent profile '%s' for org %s", scope, name, effective_org_id)
@@ -599,23 +685,26 @@ async def rename_agent_profile(
     """Rename a profile atomically.
 
     The stable id is preserved, so active pointers (keyed on id) survive
-    untouched. For ``scope=personal`` the new name must not be owned by the
-    org collection either (409).
+    untouched. The new name must not be owned by the other side either (409):
+    the org collection for ``scope=personal``, any member's personal collection
+    for ``scope=org``.
     """
     async with _scoped_transaction(scope, effective_org_id, user_id) as (
-        _session,
+        session,
         org,
         _member,
         profiles,
     ):
+        # 404 for a missing source before any 409 about the target.
+        if not _name_exists(profiles, name):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent profile '{name}' not found",
+            )
         if scope == 'personal':
-            # 404 for a missing source before any 409 about the target.
-            if not _name_exists(profiles, name):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Agent profile '{name}' not found",
-                )
             _reject_org_owned_name(org, profiles, request.new_name)
+        else:
+            await _reject_member_owned_name(session, effective_org_id, request.new_name)
         _rename(profiles, name, request.new_name)
 
     return AgentProfileMutationResponse(
