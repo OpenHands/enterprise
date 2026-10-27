@@ -185,6 +185,7 @@ export function StarterLlmFields({
 }) {
   const { t } = useTranslation();
   const { data: config } = useConfig();
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
   const { data: providers = [] } = useSearchProviders();
   const { data: providerModels = [] } = useProviderModels(value.provider);
   // Same list as the org LLM form's ModelSelector: hidden aliases are left
@@ -194,11 +195,13 @@ export function StarterLlmFields({
     ...visibleModels.filter((item) => item.verified),
     ...visibleModels.filter((item) => !item.verified),
   ].map((item) => ({ key: item.name, label: item.name }));
-  // Same rule as the org LLM form: no key for OpenHands models, or when the
-  // install turns off user LLM configuration.
+  // Same rule as the org LLM form: no key for OpenHands models served by a
+  // LiteLLM gateway (the gateway holds the key), or when the install turns off
+  // user LLM configuration. Without a gateway, OpenHands Cloud needs the
+  // user's own key.
   const showApiKey =
     !!value.provider &&
-    value.provider !== "openhands" &&
+    (value.provider !== "openhands" || !litellmEnabled) &&
     config?.feature_flags?.allow_user_llm_configuration !== false;
 
   return (
@@ -213,7 +216,7 @@ export function StarterLlmFields({
         placeholder={t(I18nKey.LLM$SELECT_PROVIDER_PLACEHOLDER)}
         items={providers.map((item) => ({
           key: item.name,
-          label: mapProvider(item.name),
+          label: mapProvider(item.name, litellmEnabled),
         }))}
         selectedKey={value.provider}
         onSelectionChange={(key) => {

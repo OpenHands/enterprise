@@ -43,9 +43,16 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.git_token_check import (
+    GitTokenCheckStatus,
+    check_git_provider_token,
+)
+from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -56,21 +63,28 @@ from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
 )
 from server.auth.provider_identity import (
+    require_enabled_provider as _require_enabled_provider,
+)
+from server.auth.provider_identity import (
     resolve_or_create_user as _resolve_or_create_user,
 )
 from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
+from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
+    GIT_PROVIDER_TYPES,
     OAuthProviderDetails,
     PasswordProviderDetails,
     SamlProviderDetails,
 )
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
+from storage.oauth_token import OAuthToken
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_store import UserStore
 
@@ -372,6 +386,7 @@ async def oauth_v2_login(
     the browser to the provider's authorization URL.
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
     # Integrated IDP is handled by its own routes (registered before this
     # router): intercept by kind and redirect to its dedicated email+password
@@ -453,6 +468,7 @@ async def oauth_v2_callback(
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
     # Password and SAML callbacks are handled by dedicated routes; checked
     # first, unconditionally, so this 404s on provider kind alone regardless
@@ -502,6 +518,7 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             external_subject_id=subject,
         )
+        await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
@@ -537,6 +554,19 @@ async def oauth_v2_callback(
             keycloak_access_token=access_token,
         )
 
+    # Password sessions never refresh a login token, so the middleware never
+    # starts this sync for them. Must run after the GitLab token is stored:
+    # the sync reads it from ``oauth_tokens``.
+    if (
+        is_oauth_v2_login_enabled()
+        and isinstance(details, OAuthProviderDetails)
+        and (
+            details.provider_type == ProviderType.GITLAB
+            or details.legacy_keycloak_type == ProviderType.GITLAB
+        )
+    ):
+        schedule_gitlab_repo_sync(user_id)
+
     redirect_url = state_data.redirect_url or '/'
 
     if state_data.mode == 'login':
@@ -544,6 +574,14 @@ async def oauth_v2_callback(
         # the user row so the cookie reflects the real TOS state, and
         # redirect to the TOS page when it has not been accepted yet.
         user = await UserStore.get_user_by_id(user_id)
+        if user is not None and user.email and user.email.lower() in SUPER_ADMIN_EMAILS:
+            # Escape hatch: configured emails always hold the super-admin
+            # role. Idempotent -- a no-op once already granted -- so it's
+            # cheap to self-heal on every login rather than only at account
+            # creation (``UserStore.create_user``'s first-user path), which
+            # covers both pre-existing accounts and an email added to
+            # ``SUPER_ADMIN_EMAILS`` after the account already existed.
+            await UserStore.grant_super_admin(user_id)
         has_accepted_tos = user is not None and user.accepted_tos is not None
         if not has_accepted_tos:
             encoded_redirect_url = quote(redirect_url, safe='')
@@ -620,11 +658,15 @@ async def oauth_v2_link(
             detail='Authentication required to link a provider',
         )
     provider = await _get_provider(provider_id)
-    if provider.is_idp:
+    if provider.is_idp and not (
+        isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type in GIT_PROVIDER_TYPES
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
         )
+    _require_enabled_provider(provider)
     _require_oauth_provider(provider)
     web_url = get_web_url(request)
     link_state = OAuthState(
@@ -679,6 +721,10 @@ async def oauth_v2_unlink(
     link = await link_store.get_by_user(user_uuid, provider.id)
     if link is not None:
         await link_store.unlink(provider.id, link.external_subject_id)
+        if isinstance(provider.details, OAuthProviderDetails):
+            await invalidate_user_id_cache(
+                provider.details.provider_type, link.external_subject_id
+            )
     token_store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
     await token_store.delete_tokens()
     return None
@@ -686,7 +732,11 @@ async def oauth_v2_unlink(
 
 @oauth_v2_router.get('/providers')
 async def oauth_v2_list_providers():
-    """List configured OAuth providers (Phase 1 introspection/debug)."""
+    """List configured OAuth providers (Phase 1 introspection/debug).
+
+    Includes disabled rows -- this endpoint exists to show an operator what is
+    configured, which is exactly what ``enabled`` is part of.
+    """
     store = AuthProviderStore()
     providers = await store.list_all()
     return {
@@ -696,6 +746,7 @@ async def oauth_v2_list_providers():
                 'kind': p.kind,
                 'title': p.title,
                 'is_idp': p.is_idp,
+                'enabled': p.enabled,
             }
             for p in providers
         ]
@@ -713,6 +764,12 @@ class GitProviderStatus(BaseModel):
     color: str
     provider_type: str
     connected: bool
+    # The provider rejected the linked token; only re-linking fixes it.
+    needs_reconnect: bool
+
+
+def _needs_reconnect(token: OAuthToken | None) -> bool:
+    return token is not None and token.invalidated_at is not None
 
 
 @oauth_v2_router.get('/git-providers', response_model=list[GitProviderStatus])
@@ -732,12 +789,18 @@ async def oauth_v2_list_git_providers(
         )
     user_uuid = uuid.UUID(user_id)
     result: list[GitProviderStatus] = []
-    for provider in await AuthProviderStore().get_git_providers():
+    # Disabled rows are hidden from this list, *unless* the user already has
+    # a token for one: that connection still works (see
+    # ``SaasUserAuth._v2_get_provider_tokens``), so dropping the card would
+    # leave the user with no way to disconnect it.
+    for provider in await AuthProviderStore().get_git_providers(enabled_only=False):
         if not isinstance(provider.details, OAuthProviderDetails):
             continue
         token = await OAuthTokenStore(
             user_id=user_uuid, oauth_provider_id=provider.id
         ).get_raw()
+        if token is None and not provider.enabled:
+            continue
         result.append(
             GitProviderStatus(
                 id=provider.id,
@@ -746,9 +809,69 @@ async def oauth_v2_list_git_providers(
                 color=provider.color,
                 provider_type=provider.details.provider_type.value,
                 connected=token is not None,
+                needs_reconnect=_needs_reconnect(token),
             )
         )
     return result
+
+
+class GitProviderCheckResult(BaseModel):
+    id: int
+    status: GitTokenCheckStatus
+    needs_reconnect: bool
+
+
+@oauth_v2_router.post(
+    '/git-providers/{provider_id}/check', response_model=GitProviderCheckResult
+)
+async def oauth_v2_check_git_provider(
+    provider_id: int,
+    user_id: str = Depends(get_user_id),
+    user_secrets: Secrets | None = Depends(get_secrets),
+) -> GitProviderCheckResult:
+    """Test the signed-in user's linked token against the provider's API.
+
+    One provider call per request; a rejection sets ``needs_reconnect`` until
+    the user re-links. Backs the Integrations page check and its "Test
+    connection" button.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+        )
+    provider = await _get_provider(provider_id)
+    details = provider.details
+    if (
+        not isinstance(details, OAuthProviderDetails)
+        or details.provider_type not in GIT_PROVIDER_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Git provider {provider_id} not found',
+        )
+    provider_type = details.provider_type
+    host = None
+    if user_secrets and provider_type in user_secrets.provider_tokens:
+        host = user_secrets.provider_tokens[provider_type].host
+
+    user_uuid = uuid.UUID(user_id)
+    check_status = await check_git_provider_token(
+        user_uuid, provider, provider_type, _idp_token_host(provider_type, host)
+    )
+    if check_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Git provider not connected',
+        )
+    token = await OAuthTokenStore(
+        user_id=user_uuid, oauth_provider_id=provider.id
+    ).get_raw()
+    return GitProviderCheckResult(
+        id=provider.id,
+        status=check_status,
+        needs_reconnect=_needs_reconnect(token),
+    )
 
 
 class PublicIdpProvider(BaseModel):

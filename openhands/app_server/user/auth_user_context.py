@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, cast
 from uuid import UUID
@@ -19,7 +19,7 @@ from openhands.app_server.sandbox.sandbox_template_policy import SandboxTemplate
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
-from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth, get_user_auth
 from openhands.sdk.secret import SecretSource, StaticSecret
 
@@ -35,6 +35,7 @@ class AuthUserContext(UserContext):
     user_auth: UserAuth
     _user_info: UserInfo | None = None
     _resolved_user_info: UserInfo | None = None
+    _override_user_infos: dict[str, UserInfo] = field(default_factory=dict)
     _provider_handler: ProviderHandler | None = None
 
     async def get_user_id(self) -> str | None:
@@ -50,10 +51,12 @@ class AuthUserContext(UserContext):
     def _user_info_from_settings(user_id: str | None, settings: Any | None) -> UserInfo:
         if settings is None:
             return UserInfo(id=user_id)
-        return UserInfo(
+        user_info = UserInfo(
             id=user_id,
             **settings.model_dump(context={'expose_secrets': True}),
         )
+        user_info._resolved_view = settings._resolved_view
+        return user_info
 
     async def get_user_info(
         self,
@@ -62,13 +65,17 @@ class AuthUserContext(UserContext):
         override_agent_profile_id: str | None = None,
     ) -> UserInfo:
         if override_agent_profile_id is not None:
-            # One-off launch override: never memoized in either direction.
+            cached = self._override_user_infos.get(override_agent_profile_id)
+            if cached is not None:
+                return cached
             user_id = await self.get_user_id()
             settings = await self.user_auth.get_user_settings(
                 resolve_agent_profile=True,
                 override_agent_profile_id=override_agent_profile_id,
             )
-            return self._user_info_from_settings(user_id, settings)
+            override_user_info = self._user_info_from_settings(user_id, settings)
+            self._override_user_infos[override_agent_profile_id] = override_user_info
+            return override_user_info
         if resolve_agent_profile:
             user_info = self._resolved_user_info
             if user_info is None:
@@ -91,6 +98,7 @@ class AuthUserContext(UserContext):
         """Discard both user views after an out-of-band settings mutation."""
         self._user_info = None
         self._resolved_user_info = None
+        self._override_user_infos.clear()
         self.user_auth.invalidate_user_settings_cache()
 
     async def get_provider_tokens(
@@ -147,11 +155,16 @@ class AuthUserContext(UserContext):
         return provider_handler
 
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
         provider_handler = await self.get_provider_handler()
         url = await provider_handler.get_authenticated_git_url(
-            repository, is_optional=is_optional
+            repository,
+            is_optional=is_optional,
+            specified_provider=specified_provider,
         )
         return url
 
@@ -196,6 +209,26 @@ class AuthUserContext(UserContext):
         from server.services.sandbox_template_policy import get_org_template_policy
 
         return await get_org_template_policy(await self.get_effective_org_id())
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        get_named_oauth_secrets = getattr(
+            self.user_auth, 'get_named_oauth_secrets', None
+        )
+        if get_named_oauth_secrets is None:
+            return None
+        return await cast(
+            Callable[[], Awaitable[NamedOAuthSecrets | None]], get_named_oauth_secrets
+        )()
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        get_named_oauth_secret_value = getattr(
+            self.user_auth, 'get_named_oauth_secret_value', None
+        )
+        if get_named_oauth_secret_value is None:
+            return None
+        return await cast(
+            Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
+        )(oauth_provider_id)
 
     async def get_effective_org_id(self) -> UUID | None:
         get_effective_org_id = getattr(self.user_auth, 'get_effective_org_id', None)

@@ -488,7 +488,10 @@ class K8sAgentSandboxService(ManagedSandboxService):
     # ------------------------------------------------------------------
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Claim a warm sandbox and initialize its agent server.
 
@@ -543,7 +546,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
             await self._initialize_agent_server(
-                sandbox_name, sandbox_spec, session_api_key
+                sandbox_name, sandbox_spec, session_api_key, extra_env=extra_env
             )
         except BaseException:
             # Init is never retried: a pod that took a half-finished init is
@@ -578,6 +581,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
         sandbox_spec: K8sAgentSandboxSpecInfo,
         session_api_key: str,
         allow_initialized: bool = False,
+        extra_env: dict[str, str] | None = None,
     ) -> None:
         """Wait for the dormant agent server and hand it its runtime config.
 
@@ -593,7 +597,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
         try:
             response = await self.httpx_client.post(
                 f'{agent_server_url}/api/init',
-                json=self._build_init_request(sandbox_spec, session_api_key),
+                json=self._build_init_request(sandbox_spec, session_api_key, extra_env),
                 headers=headers,
             )
         except httpx.HTTPError as exc:
@@ -646,7 +650,10 @@ class K8sAgentSandboxService(ManagedSandboxService):
             await asyncio.sleep(self.poll_interval)
 
     def _build_init_request(
-        self, sandbox_spec: K8sAgentSandboxSpecInfo, session_api_key: str
+        self,
+        sandbox_spec: K8sAgentSandboxSpecInfo,
+        session_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the ``POST /api/init`` body.
 
@@ -681,7 +688,8 @@ class K8sAgentSandboxService(ManagedSandboxService):
             },
         }
         body['env'].update(self._lifecycle_env())
-
+        if extra_env:
+            body['env'].update(extra_env)
         cors_origins = []
         if self.web_url:
             cors_origins.append(self.web_url)

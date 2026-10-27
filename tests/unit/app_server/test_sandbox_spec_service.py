@@ -2,8 +2,11 @@
 
 Covers ``get_agent_server_image`` (derived from the installed
 ``openhands-agent-server`` package, with auto-correction of stale canonical
-tags for self-hosted installs) and ``is_custom_sandbox_spec`` (which compares
-a sandbox spec id against the bundled default).
+tags for self-hosted installs), ``is_custom_sandbox_spec`` (which compares
+a sandbox spec id against the bundled default) and
+``SandboxSpecService.resolve_existing_sandbox_spec`` (the spec of a sandbox that
+already exists, with the default as the fallback once its image is no longer
+advertised).
 """
 
 import importlib.metadata
@@ -11,6 +14,10 @@ from unittest.mock import patch
 
 import pytest
 
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
+from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
     _bundled_agent_server_version,
     get_agent_server_image,
@@ -179,3 +186,43 @@ def test_get_agent_server_image_propagates_package_not_found():
     ):
         with pytest.raises(importlib.metadata.PackageNotFoundError):
             get_agent_server_image()
+
+
+async def test_resolve_existing_sandbox_spec_returns_the_sandbox_spec():
+    """A sandbox whose image runtime-api still advertises keeps its own spec."""
+    default = SandboxSpecInfo(
+        id='ghcr.io/openhands/agent-server:1.57.0-python', command=None
+    )
+    spec = SandboxSpecInfo(id='ghcr.io/some/custom:0.0.1', command=None)
+    spec_service = PresetSandboxSpecService(specs=[default, spec])
+
+    with patch('openhands.app_server.sandbox.sandbox_spec_service._logger') as logger:
+        resolved = await spec_service.resolve_existing_sandbox_spec(
+            spec.id, 'sandbox-1'
+        )
+
+    assert resolved is spec
+    logger.warning.assert_not_called()
+
+
+async def test_resolve_existing_sandbox_spec_falls_back_to_the_default():
+    """After an agent-server image bump the old image has no spec; the default
+    stands in, and the warning names the image, the sandbox and the pick."""
+    old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+    default = SandboxSpecInfo(
+        id='ghcr.io/openhands/agent-server:1.57.0-python',
+        command=None,
+        working_dir='/workspace/project',
+    )
+    spec_service = PresetSandboxSpecService(specs=[default])
+
+    with patch('openhands.app_server.sandbox.sandbox_spec_service._logger') as logger:
+        resolved = await spec_service.resolve_existing_sandbox_spec(
+            old_image, 'sandbox-1'
+        )
+
+    assert resolved is default
+    logged = logger.warning.call_args.args
+    assert old_image in logged
+    assert 'sandbox-1' in logged
+    assert default.id in logged

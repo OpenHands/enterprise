@@ -147,14 +147,14 @@ async def resume_sandbox(
 
     try:
         user_info = await user_context.get_user_info()
-        if user_info.git_user_name or user_info.git_user_email:
-            asyncio.create_task(
-                _restore_git_user_settings_after_resume(
-                    sandbox_id,
-                    user_info.git_user_name,
-                    user_info.git_user_email,
-                )
+        # Restore even without a saved identity: the default one is applied.
+        asyncio.create_task(
+            _restore_git_user_settings_after_resume(
+                sandbox_id,
+                user_info.git_user_name,
+                user_info.git_user_email,
             )
+        )
     except Exception:
         _logger.warning(
             'Failed to load Git identity after resuming sandbox %s',
@@ -183,11 +183,9 @@ async def _restore_git_user_settings_after_resume(
             sandbox = await sandbox_service.wait_for_sandbox_running(
                 sandbox_id, httpx_client=httpx_client
             )
-            sandbox_spec = await sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
+            sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+                sandbox.sandbox_spec_id, sandbox_id
             )
-            if sandbox_spec is None:
-                raise ValueError(f'Sandbox spec not found: {sandbox.sandbox_spec_id}')
             if sandbox.session_api_key is None:
                 raise ValueError(f'Sandbox session key unavailable: {sandbox_id}')
 

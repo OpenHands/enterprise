@@ -66,7 +66,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     hash_session_api_key as _hash_session_api_key,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.settings.settings_models import grouped_workspace_dir
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
+)
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
@@ -523,7 +526,10 @@ class RemoteSandboxService(SandboxService):
         return info
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
@@ -557,6 +563,8 @@ class RemoteSandboxService(SandboxService):
 
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
+            if extra_env:
+                environment.update(extra_env)
 
             # Prepare start request
             start_request = await self.build_sandbox_start_request(
@@ -902,21 +910,22 @@ class RemoteSandboxService(SandboxService):
         Pre-pinning conversations have no pinned path; the legacy fallback re-reads
         the live grouping strategy, which can disagree with creation if the user
         toggled it — but a resulting 404 no longer silently tears the sandbox down
-        under REQUIRED (it blocks for the idle reap). Raises if the layout cannot
-        be resolved, so the caller never archives to the wrong path.
+        under REQUIRED (it blocks for the idle reap). A sandbox on an image that
+        runtime-api no longer advertises uses the default spec's ``working_dir``;
+        raises only if no spec resolves at all, so the caller never archives to
+        the wrong path.
         """
         if workspace_path:
             return workspace_path
         # For cloud conversations the sandbox id is the conversation_id.hex.
         conversation_key = conversation_id or stored_sandbox.id
-        sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-            stored_sandbox.sandbox_spec_id
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
         )
-        if sandbox_spec is None:
-            raise SandboxError(
-                f'No sandbox spec {stored_sandbox.sandbox_spec_id} for archive'
-            )
-        grouping = (await self.user_context.get_user_info()).sandbox_grouping_strategy
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
         return grouped_workspace_dir(
             sandbox_spec.working_dir, grouping, conversation_key
         )

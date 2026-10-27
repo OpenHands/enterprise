@@ -14,6 +14,7 @@ import { WebClientConfig } from "#/api/option-service/option.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 import { SecretsService } from "#/api/secrets-service";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import type { OAuthV2GitProviderCheckStatus } from "#/api/oauth-v2-service/oauth-v2-service.api";
 
 const VALID_OSS_CONFIG: WebClientConfig = {
   app_mode: "oss",
@@ -103,6 +104,8 @@ const renderGitSettingsScreen = () => {
             "Installing GitLab webhook, please wait a few minutes.",
           SETTINGS$SAVING: "Saving...",
           ERROR$GENERIC: "An error occurred",
+          SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER:
+            "To offer a Git provider here, add it under <a>Auth Providers</a> with Login IDP turned off.",
         },
       },
     },
@@ -954,11 +957,20 @@ describe("OAuth v2 provider cards", () => {
     feature_flags: {
       ...VALID_SAAS_CONFIG.feature_flags,
       enable_oauth_v2_login: true,
+      enable_super_admin: true,
     },
     // Env-driven config must be ignored when v2 is on.
     providers_configured: ["bitbucket"],
     gitlab_enabled: true,
   };
+
+  beforeEach(() => {
+    queryClient.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   const mockV2 = (
     rows: {
@@ -966,7 +978,9 @@ describe("OAuth v2 provider cards", () => {
       title: string;
       provider_type: string;
       connected: boolean;
+      needs_reconnect?: boolean;
     }[],
+    permissions: string[] = [],
   ) => {
     useSelectedOrganizationStore.setState({ organizationId: "org-1" });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(V2_CONFIG);
@@ -977,8 +991,16 @@ describe("OAuth v2 provider cards", () => {
     return vi.spyOn(openHands, "get").mockImplementation(async (url) => {
       if (url === "/oauth/git-providers") {
         return {
-          data: rows.map((row) => ({ icon: null, color: "#000", ...row })),
+          data: rows.map((row) => ({
+            icon: null,
+            color: "#000",
+            needs_reconnect: false,
+            ...row,
+          })),
         };
+      }
+      if (url === "/api/organizations/org-1/me") {
+        return { data: { permissions } };
       }
       return { data: {} };
     });
@@ -1030,6 +1052,223 @@ describe("OAuth v2 provider cards", () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  it("points a super admin to Auth Providers when no git provider is defined", async () => {
+    // Arrange
+    mockV2([], ["manage_super_admins"]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    const emptyState = await screen.findByTestId("integrations-empty-state");
+    expect(emptyState).toHaveTextContent("SETTINGS$INTEGRATIONS_EMPTY");
+    expect(
+      await screen.findByRole("link", { name: "Auth Providers" }),
+    ).toHaveAttribute("href", "/super-admin/auth-providers");
+  });
+
+  it("asks other users to contact an administrator when no git provider is defined", async () => {
+    // Arrange
+    mockV2([]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByTestId("integrations-empty-state")).toHaveTextContent(
+        "SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN",
+      ),
+    );
+    expect(
+      screen.queryByRole("link", { name: "Auth Providers" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the empty state when a git provider is defined", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: false },
+    ]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await screen.findByTestId("github-status-text");
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("waits for the git providers to load before showing the empty state", async () => {
+    // Arrange
+    let resolveProviders: (response: { data: unknown[] }) => void = () => {};
+    const getSpy = mockV2([]);
+    getSpy.mockImplementation(async (url) =>
+      url === "/oauth/git-providers"
+        ? new Promise((resolve) => {
+            resolveProviders = resolve;
+          })
+        : { data: {} },
+    );
+    renderGitSettingsScreen();
+    await waitFor(() =>
+      expect(getSpy).toHaveBeenCalledWith("/oauth/git-providers"),
+    );
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+
+    // Act
+    resolveProviders({ data: [] });
+
+    // Assert
+    expect(
+      await screen.findByTestId("integrations-empty-state"),
+    ).toBeInTheDocument();
+  });
+
+  const CHECK_URL = /^\/oauth\/git-providers\/(\d+)\/check$/;
+
+  /** Answers each provider's checks in order (then repeats the last one);
+   * any other POST is the link flow. */
+  const mockChecks = (
+    results: Record<number, OAuthV2GitProviderCheckStatus[]> = {},
+  ) => {
+    const calls: Record<number, number> = {};
+    return vi.spyOn(openHands, "post").mockImplementation(async (url) => {
+      const match = CHECK_URL.exec(url);
+      if (!match) return { data: { start_url: "about:blank" } };
+      const id = Number(match[1]);
+      const sequence = results[id] ?? ["valid"];
+      const status = sequence[Math.min(calls[id] ?? 0, sequence.length - 1)];
+      calls[id] = (calls[id] ?? 0) + 1;
+      return {
+        data: { id, status, needs_reconnect: status === "invalid" },
+      };
+    });
+  };
+
+  it("tests each linked provider's connection when the page loads", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+      { id: 2, title: "GitLab", provider_type: "gitlab", connected: false },
+    ]);
+    const postSpy = mockChecks();
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith("/oauth/git-providers/1/check"),
+    );
+    expect(postSpy.mock.calls.filter(([url]) => CHECK_URL.test(url))).toEqual([
+      ["/oauth/git-providers/1/check"],
+    ]);
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      /Connected|STATUS\$CONNECTED/,
+    );
+    expect(
+      screen.queryByTestId("reconnect-github-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks the user to reconnect when the provider rejects the token", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+    ]);
+    const postSpy = mockChecks({ 1: ["invalid"] });
+    renderGitSettingsScreen();
+
+    // Act
+    await userEvent.click(await screen.findByTestId("reconnect-github-button"));
+
+    // Assert
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      "STATUS$RECONNECT_REQUIRED",
+    );
+    expect(screen.getByTestId("disconnect-github-button")).toBeInTheDocument();
+    await waitFor(() => expect(postSpy).toHaveBeenCalledWith("/oauth/1/link"));
+  });
+
+  it("shows a recorded rejection before the check finishes", async () => {
+    // Arrange
+    mockV2([
+      {
+        id: 1,
+        title: "GitHub",
+        provider_type: "github",
+        connected: true,
+        needs_reconnect: true,
+      },
+    ]);
+    vi.spyOn(openHands, "post").mockReturnValue(new Promise(() => {}));
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    expect(
+      await screen.findByTestId("reconnect-github-button"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      "STATUS$RECONNECT_REQUIRED",
+    );
+  });
+
+  it("hides a provider's webhook settings while it needs reconnecting", async () => {
+    // Arrange
+    mockV2([
+      { id: 2, title: "GitLab", provider_type: "gitlab", connected: true },
+    ]);
+    mockChecks({ 2: ["invalid"] });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    const card = (await screen.findByTestId("reconnect-gitlab-button")).closest(
+      "section",
+    );
+    expect(card?.children).toHaveLength(1);
+  });
+
+  it.each([
+    ["valid", "displaySuccessToast", "GIT_PROVIDER$CONNECTION_VALID"],
+    ["invalid", "displayErrorToast", "GIT_PROVIDER$CONNECTION_INVALID"],
+    ["unavailable", "displayErrorToast", "GIT_PROVIDER$CONNECTION_UNAVAILABLE"],
+  ] as const)(
+    "re-tests the connection on Test connection and reports %s",
+    async (status, toast, message) => {
+      // Arrange
+      mockV2([
+        { id: 1, title: "GitHub", provider_type: "github", connected: true },
+      ]);
+      const postSpy = mockChecks({ 1: ["valid", status] });
+      const checkCalls = () =>
+        postSpy.mock.calls.filter(([url]) => CHECK_URL.test(url));
+      const toastSpy = vi.spyOn(ToastHandlers, toast);
+      renderGitSettingsScreen();
+      await waitFor(() => expect(checkCalls()).toHaveLength(1));
+
+      // Act
+      await userEvent.click(
+        await screen.findByTestId("test-github-connection-button"),
+      );
+
+      // Assert
+      await waitFor(() => expect(toastSpy).toHaveBeenCalledWith(message));
+      expect(checkCalls()).toHaveLength(2);
+      expect(screen.queryByTestId("reconnect-github-button") !== null).toBe(
+        status === "invalid",
+      );
+    },
+  );
 
   it("starts the v2 link flow with the auth_providers id on Connect", async () => {
     mockV2([

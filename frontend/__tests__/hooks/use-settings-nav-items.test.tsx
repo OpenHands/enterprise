@@ -11,6 +11,7 @@ import {
 } from "#/hooks/use-settings-nav-items";
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { I18nKey } from "#/i18n/declaration";
 
 // Helper to find an item by path in rendered items
 const findItemByPath = (
@@ -825,6 +826,64 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/your-budget"),
       ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+    });
+  });
+
+  describe("Account settings section in the sidebar", () => {
+    const accountSettingsHeader = expect.objectContaining({
+      type: "header",
+      text: I18nKey.USER$ACCOUNT_SETTINGS,
+    });
+
+    // Matches the docker compose stack: LiteLLM is off, so Your Budget is
+    // never added and only Quota can join the menu-only User and Application.
+    const selectTeamOwnerWithoutLiteLlm = (dailyLimit: number | null) => {
+      mockConfigWithFeatureFlags("saas", { enable_litellm: false });
+      mockMe.data = { role: "owner" };
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-1";
+      mockQuotaStatus.data = { daily_limit: dailyLimit };
+    };
+
+    it("drops the header when every item in the section is menu-only", async () => {
+      // Arrange
+      selectTeamOwnerWithoutLiteLlm(null);
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
+      });
+      // The account menu still lists User and Application under the header.
+      expect(result.current).toContainEqual(accountSettingsHeader);
+      const sidebar = filterSettingsNavForSidebar(result.current);
+      expect(sidebar).not.toContainEqual(accountSettingsHeader);
+      expect(sidebar[sidebar.length - 1].type).toBe("item");
+    });
+
+    it("keeps the header when the section still has a sidebar item", async () => {
+      // Arrange
+      selectTeamOwnerWithoutLiteLlm(20);
+
+      // Act
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      // Assert
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/quota")).toBeDefined();
+      });
+      const sidebar = filterSettingsNavForSidebar(result.current);
+      const headerIndex = sidebar.findIndex(
+        (item) =>
+          item.type === "header" && item.text === I18nKey.USER$ACCOUNT_SETTINGS,
+      );
+      expect(headerIndex).toBeGreaterThan(-1);
+      expect(sidebar[headerIndex + 1]).toEqual({
+        type: "item",
+        item: expect.objectContaining({ to: "/settings/quota" }),
+      });
     });
   });
 });

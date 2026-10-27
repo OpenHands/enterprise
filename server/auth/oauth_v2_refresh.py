@@ -14,9 +14,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 from urllib.parse import parse_qs
+from uuid import UUID
 
 import httpx
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
@@ -24,10 +26,20 @@ from storage.auth_provider_details import (
     DEFAULT_PERMITTED_DRIFT_SECONDS,
     OAuthProviderDetails,
 )
-from storage.oauth_token_store import RefreshResult
+from storage.auth_provider_store import AuthProviderStore
+from storage.oauth_token_store import OAuthTokenStore, RefreshResult
 
 # HTTP timeout for external token-endpoint refresh calls.
 REFRESH_HTTP_TIMEOUT = 15.0
+
+# Token-endpoint ``error`` codes meaning the refresh token itself is dead.
+# ``invalid_grant`` is RFC 6749 section 5.2; GitHub sends ``bad_refresh_token``
+# with a 200 status.
+REJECTED_REFRESH_ERRORS = frozenset({'invalid_grant', 'bad_refresh_token'})
+
+
+class RefreshTokenRejectedError(ValueError):
+    """The provider refused the refresh token: only re-linking can recover."""
 
 
 def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
@@ -53,6 +65,29 @@ def get_permitted_drift_seconds(provider: AuthProvider) -> int:
     if isinstance(details, OAuthProviderDetails):
         return details.permitted_drift_seconds
     return DEFAULT_PERMITTED_DRIFT_SECONDS
+
+
+def _parse_token_body(response: httpx.Response) -> dict:
+    """Token-endpoint body as a dict, JSON or form-encoded."""
+    if 'application/json' in response.headers.get('content-type', ''):
+        return response.json()
+    parsed = parse_qs(response.text)
+    return {
+        k: (
+            int(v[0])
+            if k in {'expires_in', 'refresh_token_expires_in', 'refresh_expires_in'}
+            else v[0]
+        )
+        for k, v in parsed.items()
+    }
+
+
+def _refresh_error_code(response: httpx.Response) -> str | None:
+    try:
+        error = _parse_token_body(response).get('error')
+    except ValueError:
+        return None
+    return error if isinstance(error, str) else None
 
 
 def _parse_token_response(
@@ -117,6 +152,17 @@ async def refresh_oauth_token(
             data=payload,
             headers={'Accept': 'application/json'},
         )
+        error_code = _refresh_error_code(response)
+        if error_code in REJECTED_REFRESH_ERRORS:
+            logger.warning(
+                'oauth_v2 refresh token rejected provider=%s status=%s error=%s',
+                provider.id,
+                response.status_code,
+                error_code,
+            )
+            raise RefreshTokenRejectedError(
+                f'Provider {provider.id} rejected the refresh token: {error_code}'
+            )
         if response.status_code >= 400:
             logger.warning(
                 'oauth_v2 refresh failed provider=%s status=%s body=%s',
@@ -128,20 +174,7 @@ async def refresh_oauth_token(
                 f'Token refresh failed at provider {provider.id}: '
                 f'status {response.status_code}'
             )
-        content_type = response.headers.get('content-type', '')
-        if 'application/json' in content_type:
-            token_data = response.json()
-        else:
-            parsed = parse_qs(response.text)
-            token_data = {
-                k: (
-                    int(v[0])
-                    if k
-                    in {'expires_in', 'refresh_token_expires_in', 'refresh_expires_in'}
-                    else v[0]
-                )
-                for k, v in parsed.items()
-            }
+        token_data = _parse_token_body(response)
 
     access_token, new_refresh, access_exp, refresh_exp = _parse_token_response(
         token_data
@@ -171,6 +204,24 @@ def make_refresh_callback(
         return await refresh_oauth_token(provider, refresh_token)
 
     return _callback
+
+
+async def get_oauth_v2_git_token(
+    user_id: str, provider_type: ProviderType
+) -> str | None:
+    """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak."""
+    user_uuid = UUID(user_id)
+    provider = await AuthProviderStore().get_linked_git_provider(
+        user_uuid, provider_type.value
+    )
+    if provider is None:
+        return None
+    return await OAuthTokenStore(
+        user_id=user_uuid, oauth_provider_id=provider.id
+    ).get_valid_access_token(
+        permitted_drift_seconds=get_permitted_drift_seconds(provider),
+        refresh=make_refresh_callback(provider),
+    )
 
 
 def create_oauth_v2_cookie_payload(

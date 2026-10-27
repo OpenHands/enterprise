@@ -15,17 +15,22 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_details import (
+    OAuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+)
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.oauth_token import OAuthToken
@@ -83,12 +88,14 @@ def make_provider(async_session_maker, jwt_svc):
         *,
         category: ProviderType | str = ProviderType.GITHUB,
         is_idp: bool = False,
+        enabled: bool = True,
         client_secret: str | None = 'secret',
         token_url: str | None = 'https://example.com/token',
+        title: str | None = None,
     ) -> AuthProvider:
         if category == INTEGRATED_IDP_KIND:
             details = PasswordProviderDetails()
-            title = 'Integrated IDP'
+            default_title = 'Integrated IDP'
         else:
             category_value = (
                 category.value if isinstance(category, ProviderType) else category
@@ -103,8 +110,13 @@ def make_provider(async_session_maker, jwt_svc):
                 scopes=['repo'],
                 permitted_drift_seconds=60,
             )
-            title = category_value.title()
-        provider = AuthProvider(title=title, is_idp=is_idp, details=details)
+            default_title = category_value.title()
+        provider = AuthProvider(
+            title=title if title is not None else default_title,
+            is_idp=is_idp,
+            enabled=enabled,
+            details=details,
+        )
         async with async_session_maker() as session:
             session.add(provider)
             await session.commit()
@@ -129,6 +141,24 @@ class TestAuthProviderStore:
     @pytest.mark.asyncio
     async def test_get_by_id_missing(self, patched_session):
         assert await AuthProviderStore().get_by_id(99999) is None
+
+    @pytest.mark.asyncio
+    async def test_list_all_orders_by_title_case_insensitively(
+        self, patched_session, make_provider
+    ):
+        zeta = await make_provider(title='Zeta')
+        beta_upper = await make_provider(title='Beta')
+        alpha = await make_provider(title='alpha')
+        beta_lower = await make_provider(title='beta')
+
+        providers = await AuthProviderStore().list_all()
+
+        assert [p.id for p in providers] == [
+            alpha.id,
+            beta_upper.id,
+            beta_lower.id,
+            zeta.id,
+        ]
 
     @pytest.mark.asyncio
     async def test_idp_and_git_split(self, patched_session, make_provider):
@@ -284,6 +314,94 @@ class TestAuthProviderStore:
 
         assert got is not None
         assert got.id == real.id
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_skips_disabled_rows(
+        self, patched_session, make_provider
+    ):
+        """A disabled IDP is invisible to ``/oauth/idp-login`` -- including
+        when it is the most recently created row, which would otherwise win."""
+        enabled = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        got = await AuthProviderStore().get_first_idp()
+
+        assert got is not None
+        assert got.id == enabled.id
+
+    @pytest.mark.asyncio
+    async def test_get_first_idp_none_when_only_disabled_rows(
+        self, patched_session, make_provider
+    ):
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        assert await AuthProviderStore().get_first_idp() is None
+        # ...but an already-established session still resolves its row.
+        assert (await AuthProviderStore().get_first_idp(enabled_only=False)) is not None
+
+    @pytest.mark.asyncio
+    async def test_get_idp_providers_excludes_disabled_unless_requested(
+        self, patched_session, make_provider
+    ):
+        enabled = await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        disabled = await make_provider(
+            category=ProviderType.ENTERPRISE_SSO, is_idp=True, enabled=False
+        )
+
+        visible = await AuthProviderStore().get_idp_providers()
+        all_rows = await AuthProviderStore().get_idp_providers(enabled_only=False)
+
+        assert {p.id for p in visible} == {enabled.id}
+        assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_git_providers_excludes_disabled_unless_requested(
+        self, patched_session, make_provider
+    ):
+        enabled = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        disabled = await make_provider(
+            category=ProviderType.GITLAB, is_idp=False, enabled=False
+        )
+
+        visible = await AuthProviderStore().get_git_providers()
+        all_rows = await AuthProviderStore().get_git_providers(enabled_only=False)
+
+        assert {p.id for p in visible} == {enabled.id}
+        assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_git_providers_matches_on_provider_type_not_is_idp(
+        self, patched_session, make_provider, async_session_maker
+    ):
+        github = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        bbdc = await make_provider(
+            category=ProviderType.BITBUCKET_DATA_CENTER, is_idp=False
+        )
+        gitlab_login = await make_provider(category=ProviderType.GITLAB, is_idp=True)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=False)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        async with async_session_maker() as session:
+            session.add(
+                AuthProvider(
+                    title='SAML',
+                    is_idp=False,
+                    enabled=True,
+                    details=SamlProviderDetails(
+                        idp_entity_id='https://idp.example.com',
+                        sso_url='https://idp.example.com/sso',
+                        idp_x509_cert='cert',
+                    ),
+                )
+            )
+            await session.commit()
+
+        gits = await AuthProviderStore().get_git_providers()
+
+        assert {p.id for p in gits} == {github.id, bbdc.id, gitlab_login.id}
 
     @pytest.mark.asyncio
     async def test_upsert_insert_then_update(self, patched_session):
@@ -726,6 +844,79 @@ class TestOAuthTokenStore:
         await store.delete_tokens()
         assert await store.get_raw() is None
 
+    @pytest.mark.asyncio
+    async def test_set_invalidated_flags_and_clears(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('at', None, None, None)
+        assert (await store.get_raw()).invalidated_at is None
+
+        assert await store.set_invalidated('at', True) is True
+        flagged_at = (await store.get_raw()).invalidated_at
+        assert flagged_at is not None
+
+        # A repeat rejection keeps the first timestamp.
+        assert await store.set_invalidated('at', True) is True
+        assert (await store.get_raw()).invalidated_at == flagged_at
+
+        assert await store.set_invalidated('at', False) is True
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_ignores_a_replaced_token(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('new-at', None, None, None)
+
+        assert await store.set_invalidated('old-at', True) is False
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_without_row(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        assert await store.set_invalidated('at', True) is False
+
+    @pytest.mark.asyncio
+    async def test_store_tokens_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('old-at', None, None, None)
+        await store.set_invalidated('old-at', True)
+
+        await store.store_tokens('new-at', None, None, None)
+
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_successful_refresh_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=10)
+        await store.store_tokens('old-at', 'rt', past, None)
+        await store.set_invalidated('old-at', True)
+
+        async def refresh(rt, at_exp, rt_exp):
+            return {
+                'access_token': 'new-at',
+                'refresh_token': 'new-rt',
+                'access_token_expires_at': None,
+                'refresh_token_expires_at': None,
+            }
+
+        assert await store.get_valid_access_token(refresh=refresh) == 'new-at'
+        assert (await store.get_raw()).invalidated_at is None
+
 
 # ── lock double-check & timeout (require SELECT FOR UPDATE + lock_timeout) ──
 
@@ -778,9 +969,7 @@ class TestOAuthTokenStoreLocking:
     async def test_lock_timeout_raises_token_refresh_error(
         self, patched_session, make_provider, create_user
     ):
-        """A lock timeout (simulated) surfaces as ``TokenRefreshError``."""
-        from sqlalchemy.exc import OperationalError
-
+        """A row lock held past ``lock_timeout`` surfaces as ``TokenRefreshError``."""
         from server.auth.auth_error import TokenRefreshError
 
         provider = await make_provider()
@@ -793,46 +982,48 @@ class TestOAuthTokenStoreLocking:
             access_token_expires_at=past,
             refresh_token_expires_at=None,
         )
+        refresh = AsyncMock()
 
-        async def refresh(rt, at_exp, rt_exp):
-            return {
-                'access_token': 'new',
-                'refresh_token': 'new',
-                'access_token_expires_at': datetime.now(timezone.utc)
-                + timedelta(hours=1),
-                'refresh_token_expires_at': None,
-            }
-
-        # The fast path must succeed (read the expired token); only the slow
-        # path's session entry raises to mimic ``lock_timeout`` aborting
-        # ``SELECT FOR UPDATE``. Delegate the first invocation to the real
-        # (already-patched) session maker; raise on the second.
-        real_maker = patched_session
-        call_count = {'n': 0}
-
-        class _FakeSessionMaker:
-            async def __aenter__(self_inner):
-                call_count['n'] += 1
-                if call_count['n'] == 1:
-                    # Fast path: delegate to the real session maker.
-                    self_inner._real = real_maker()
-                    return await self_inner._real.__aenter__()
-
-                raise OperationalError(
-                    'SELECT FOR UPDATE', {}, Exception('lock timeout')
-                )
-
-            async def __aexit__(self_inner, *exc):
-                real = getattr(self_inner, '_real', None)
-                if real is not None:
-                    return await real.__aexit__(*exc)
-                return False
-
-            def __call__(self_inner, **kwargs):
-                return self_inner
-
-        with patch('storage.oauth_token_store.a_session_maker', _FakeSessionMaker()):
-            with pytest.raises(TokenRefreshError):
+        async with patched_session() as other_worker, other_worker.begin():
+            await other_worker.execute(
+                select(OAuthToken)
+                .where(OAuthToken.oauth_provider_id == provider.id)
+                .with_for_update()
+            )
+            with (
+                patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 1),
+                pytest.raises(TokenRefreshError),
+            ):
                 await store.get_valid_access_token(
                     permitted_drift_seconds=60, refresh=refresh
                 )
+
+        refresh.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_database_error_that_is_not_a_lock_timeout_propagates(
+        self, patched_session, make_provider, create_user
+    ):
+        from server.auth.auth_error import TokenRefreshError
+
+        provider = await make_provider()
+        user = create_user()
+        store = OAuthTokenStore(user_id=user.id, oauth_provider_id=provider.id)
+        await store.store_tokens(
+            access_token='old-at',
+            refresh_token='rt',
+            access_token_expires_at=datetime.now(timezone.utc) - timedelta(seconds=10),
+            refresh_token_expires_at=None,
+        )
+
+        # An invalid lock_timeout makes the slow path's SET LOCAL fail with
+        # SQLSTATE 22023 instead of 55P03.
+        with (
+            patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 'not-a-number'),
+            pytest.raises(DBAPIError) as raised,
+        ):
+            await store.get_valid_access_token(
+                permitted_drift_seconds=60, refresh=AsyncMock()
+            )
+
+        assert not isinstance(raised.value, TokenRefreshError)

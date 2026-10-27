@@ -29,6 +29,7 @@ from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_MEMBER, ROLE_OWNER
+from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
     OrgDatabaseError,
@@ -55,6 +56,7 @@ from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_store import SuperAdminRevokeResult, UserStore
+from utils.identity import display_name_for_user
 
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
@@ -204,11 +206,7 @@ class SetupStateUpdate(BaseModel):
 
 
 def _display_name(user: User) -> str | None:
-    if user.git_user_name and user.git_user_name.strip():
-        return user.git_user_name.strip()
-    if user.email and '@' in user.email:
-        return user.email.split('@', 1)[0]
-    return user.email
+    return display_name_for_user(user.git_user_name, user.email)
 
 
 def _plain_llm_api_key(settings: object) -> str:
@@ -481,11 +479,9 @@ async def update_admin_user_status(
         )
 
     disabled = body.status == 'inactive'
-    if not await UserStore.set_user_disabled(user_id, disabled):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='Cannot disable the last Super Admin',
-        )
+    await _operate(
+        user_id, 'disable_user' if disabled else 'enable_user', caller_user_id
+    )
     user.is_disabled = disabled
 
     logger.info(

@@ -12,7 +12,7 @@
 # becomes the only surface and this script goes away.
 #
 # Overrides:
-#   AGENT_CANVAS_REF        git tag/branch/commit to build (default: v1.21.0)
+#   AGENT_CANVAS_REF        git tag/branch/commit to build (default: v1.32.0)
 #   AGENT_CANVAS_REPO       repository URL
 #   AGENT_CANVAS_CACHE_DIR  where to keep the checkout (default: frontend/.cache/agent-canvas)
 #   AGENT_CANVAS_SOURCE_DIR an already-fetched source tree to build as-is, skipping
@@ -25,7 +25,7 @@ set -euo pipefail
 export GIT_TERMINAL_PROMPT=0
 
 CANVAS_REPO="${AGENT_CANVAS_REPO:-https://github.com/OpenHands/OpenHands.git}"
-CANVAS_REF="${AGENT_CANVAS_REF:-v1.21.0}"
+CANVAS_REF="${AGENT_CANVAS_REF:-v1.32.0}"
 
 FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="${AGENT_CANVAS_CACHE_DIR:-$FRONTEND_DIR/.cache/agent-canvas}"

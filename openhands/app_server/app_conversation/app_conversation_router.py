@@ -263,13 +263,9 @@ async def _get_agent_server_context(
         )
 
     # Get the sandbox spec to find the working directory
-    sandbox_spec = await sandbox_spec_service.get_sandbox_spec(sandbox.sandbox_spec_id)
-    if not sandbox_spec:
-        # TODO: This is a temporary work around for the fact that we don't store previous
-        # sandbox spec versions when updating OpenHands. When the SandboxSpecServices
-        # transition to truly multi sandbox spec model this should raise a 404 error
-        logger.warning('Sandbox spec not found - using default.')
-        sandbox_spec = await sandbox_spec_service.get_default_sandbox_spec()
+    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+        sandbox.sandbox_spec_id, sandbox.id
+    )
 
     # Get the agent server URL
     if not sandbox.exposed_urls:
@@ -1278,9 +1274,9 @@ async def read_conversation_file(
         return ''
 
     # Get the sandbox spec to find the working directory
-    sandbox_spec = await sandbox_spec_service.get_sandbox_spec(sandbox.sandbox_spec_id)
-    if not sandbox_spec:
-        return ''
+    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+        sandbox.sandbox_spec_id, sandbox.id
+    )
 
     # Get the agent server URL
     if not sandbox.exposed_urls:

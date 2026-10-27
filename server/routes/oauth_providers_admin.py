@@ -1,7 +1,8 @@
 """Admin REST API for the ``auth_providers`` table.
 
 Exposes CRUD for login/integration provider configuration rows -- login IDPs
-(``is_idp=True``) and git providers (``is_idp=False``), see
+(``is_idp=True``) and git providers (``OAuthProviderDetails`` with a git
+``provider_type``; a row can be both), see
 ``storage.auth_provider`` for the row shape and ``storage.auth_provider_details``
 for the ``details`` discriminated union. Every endpoint requires the
 ``Permission.MANAGE_OAUTH_PROVIDERS`` permission, which -- like
@@ -42,6 +43,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.services.saml_metadata import (
     SamlIdpMetadata,
     SamlMetadataFetchError,
@@ -61,6 +63,7 @@ from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.database import a_session_maker
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user import User
+from utils.identity import display_name_for_user
 
 oauth_provider_admin_router = APIRouter(
     prefix='/api/admin/oauth-providers', tags=['Admin']
@@ -76,6 +79,7 @@ class AuthProviderResponse(BaseModel):
     is_idp: bool
     icon: str | None
     color: str
+    enabled: bool
     allow_registration: bool
     allow_match_by_email: bool
     details: AuthProviderDetails
@@ -96,7 +100,9 @@ class CreateAuthProviderRequest(BaseModel):
 
     title: str = Field(..., min_length=1)
     is_idp: bool = Field(
-        default=False, description='True for login IDPs, False for git providers.'
+        default=False,
+        description='True to offer this row as a login IDP. Independent of '
+        'whether it is a git provider (that is set by provider_type).',
     )
     icon: str | None = Field(
         default=None, description="Raw SVG markup for this provider's login button."
@@ -104,6 +110,15 @@ class CreateAuthProviderRequest(BaseModel):
     color: str = Field(
         default=DEFAULT_AUTH_PROVIDER_COLOR,
         description="CSS color string for this provider's login button.",
+    )
+    enabled: bool = Field(
+        default=False,
+        description=(
+            'Whether this provider may be used for a new login or link. New '
+            'rows start disabled so a half-configured provider (e.g. a preset '
+            'with placeholder URLs) never goes live before an admin finishes '
+            'it.'
+        ),
     )
     allow_registration: bool = Field(
         default=True,
@@ -116,23 +131,27 @@ class CreateAuthProviderRequest(BaseModel):
     allow_match_by_email: bool = Field(
         default=True,
         description=(
-            'Initial value of User.allow_match_by_email for a brand-new user '
-            'created by a login through this provider -- see '
-            'server.auth.provider_identity.resolve_or_create_user.'
+            'Whether a login through this provider whose subject is not '
+            'linked yet may be linked to the existing user with the same '
+            'email, trusting the email this provider asserts.'
         ),
     )
     details: AuthProviderDetails
 
 
 class AuthProviderUserResponse(BaseModel):
-    """One ``auth_provider_users`` row, joined with the linked ``User.email``.
+    """One ``auth_provider_users`` row, joined with the linked ``User``.
 
     Backs the admin "User Links" table (``GET /{provider_id}/users``).
+    ``user_name`` is the linked account's display name, so a super admin
+    picking the right account to re-point at sees a name rather than only a
+    UUID.
     """
 
     id: int
     user_id: str
     email: str | None
+    user_name: str | None = None
     external_subject_id: str
     external_email: str | None
 
@@ -166,6 +185,7 @@ class UpdateAuthProviderRequest(BaseModel):
     is_idp: bool | None = None
     icon: str | None = None
     color: str | None = None
+    enabled: bool | None = None
     allow_registration: bool | None = None
     allow_match_by_email: bool | None = None
     details: AuthProviderDetails | None = None
@@ -340,6 +360,7 @@ async def create_oauth_provider(
         is_idp=body.is_idp,
         icon=body.icon,
         color=body.color,
+        enabled=body.enabled,
         allow_registration=body.allow_registration,
         allow_match_by_email=body.allow_match_by_email,
         details=body.details,
@@ -447,12 +468,13 @@ async def delete_oauth_provider(
 
 
 def _to_auth_provider_user_response(
-    link: AuthProviderUser, email: str | None
+    link: AuthProviderUser, user: User
 ) -> AuthProviderUserResponse:
     return AuthProviderUserResponse(
         id=link.id,
         user_id=str(link.user_id),
-        email=email,
+        email=user.email,
+        user_name=display_name_for_user(user.git_user_name, user.email),
         external_subject_id=link.external_subject_id,
         external_email=link.external_email,
     )
@@ -475,7 +497,8 @@ async def list_auth_provider_users(
         Query(
             title=(
                 'Filter by partial, case-insensitive match on the linked '
-                "user's email, external email, or external subject id"
+                "user's name or email, the external email, or the external "
+                'subject id'
             ),
             min_length=1,
             max_length=255,
@@ -512,9 +535,7 @@ async def list_auth_provider_users(
     )
     total = await store.count_by_provider(provider_id, filter_text=q)
     return AuthProviderUserPage(
-        items=[
-            _to_auth_provider_user_response(link, user.email) for link, user in rows
-        ],
+        items=[_to_auth_provider_user_response(link, user) for link, user in rows],
         total=total,
         current_page=(offset // limit) + 1,
         per_page=limit,
@@ -546,7 +567,8 @@ async def update_auth_provider_user(
     provider -- same cleanup ``oauth_v2_unlink`` does -- so they don't keep
     a token for an identity they no longer own.
     """
-    if await AuthProviderStore().get_by_id(provider_id) is None:
+    provider = await AuthProviderStore().get_by_id(provider_id)
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='OAuth provider not found'
         )
@@ -588,6 +610,10 @@ async def update_auth_provider_user(
 
     token_store = OAuthTokenStore(user_id=old_user_id, oauth_provider_id=provider_id)
     await token_store.delete_tokens()
+    if isinstance(provider.details, OAuthProviderDetails):
+        await invalidate_user_id_cache(
+            provider.details.provider_type, updated.external_subject_id
+        )
 
     logger.info(
         'oauth_providers_admin:update_user_link',
@@ -599,4 +625,4 @@ async def update_auth_provider_user(
             'new_user_id': str(body.user_id),
         },
     )
-    return _to_auth_provider_user_response(updated, target_user.email)
+    return _to_auth_provider_user_response(updated, target_user)

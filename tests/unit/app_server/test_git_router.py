@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.app_server.git.git_models import SortOrder
 from openhands.app_server.git.git_router import (
@@ -155,6 +156,31 @@ class TestInstallationsEndpoint:
                 '/git/installations/search', params={'provider': 'invalid'}
             )
             assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @pytest.mark.parametrize('provider', [ProviderType.GITLAB, ProviderType.FORGEJO])
+    def test_returns_empty_page_for_provider_without_installations(
+        self, test_client, provider
+    ):
+        with (
+            patch(
+                'openhands.app_server.user.auth_user_context.AuthUserContext.get_provider_tokens',
+                AsyncMock(
+                    return_value={
+                        provider: ProviderToken(token=SecretStr('token'), host=None)
+                    }
+                ),
+            ),
+            patch(
+                'openhands.app_server.user.auth_user_context.AuthUserContext.get_user_id',
+                AsyncMock(return_value='user-123'),
+            ),
+        ):
+            response = test_client.get(
+                '/git/installations/search',
+                params={'provider': provider.value, 'limit': 100},
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {'items': [], 'next_page_id': None}
 
 
 @pytest.mark.asyncio

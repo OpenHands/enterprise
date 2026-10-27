@@ -41,6 +41,7 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
+from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -86,6 +87,7 @@ from server.routes.super_admins import (  # noqa: E402
     admin_users_router,
     super_admin_router,
 )
+from server.routes.tool_catalog import router as tool_catalog_router  # noqa: E402
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
     user_provisioning_router,
@@ -204,6 +206,7 @@ base_app.include_router(service_router)  # Add routes for internal service API
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
+base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
@@ -236,6 +239,9 @@ base_app.include_router(
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
+base_app.include_router(
+    tool_catalog_router
+)  # Add /api/tools/catalog for the agent-profile tool picker
 base_app.include_router(
     verified_models_router
 )  # Add routes for verified models management
