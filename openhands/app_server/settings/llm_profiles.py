@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import (
     BaseModel,
@@ -18,6 +18,11 @@ from pydantic import (
 from openhands.app_server.utils.llm import resolve_llm_base_url
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
+
+if TYPE_CHECKING:
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
 
 
 def has_real_api_key(api_key: Any) -> bool:
@@ -40,6 +45,8 @@ def resolve_profile_llm(
     *,
     managed_proxy_url: str,
     fallback_api_key: Any = None,
+    connections: ProviderConnections | None = None,
+    strict: bool = False,
 ) -> LLM:
     """Resolve a saved profile's LLM for activation on the agent server.
 
@@ -57,18 +64,25 @@ def resolve_profile_llm(
     org-profiles routes normally apply — pins the profile to a credential that
     dies at the next rotation with no path back. The org's current key is the
     only authoritative one for anything pointed at the managed proxy.
+
+    A profile linked to a provider connection (``provider_connection_id``)
+    takes its ``api_key`` and ``base_url`` only from that connection in
+    ``connections``, applied last so they win; it never takes
+    ``fallback_api_key``. With the connection missing it resolves with no key,
+    so the settings key is not sent to a host the profile never chose, or it
+    raises ``ProviderConnectionNotFoundError`` when ``strict``. All callers that
+    turn a saved profile into a live LLM go through here.
     """
-    resolved = profile_llm.model_copy(
-        update={
-            'base_url': resolve_llm_base_url(
-                model=profile_llm.model,
-                base_url=profile_llm.base_url,
-                managed_proxy_url=managed_proxy_url,
-            ),
-            # Force streaming on (profiles default to the SDK's stream=False).
-            'stream': True,
-        }
+    # Imported here: provider_connections imports this module.
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
     )
+
+    if profile_llm.provider_connection_id:
+        return (connections or ProviderConnections()).apply(
+            _resolve_base_url(profile_llm, managed_proxy_url), strict=strict
+        )
+    resolved = _resolve_base_url(profile_llm, managed_proxy_url)
     # Compare the *resolved* base_url so this covers both an inferred managed
     # url (``openhands/`` models) and one the profile stored explicitly.
     routes_to_managed_proxy = bool(
@@ -79,6 +93,21 @@ def resolve_profile_llm(
     ):
         resolved = resolved.model_copy(update={'api_key': fallback_api_key})
     return resolved
+
+
+def _resolve_base_url(profile_llm: LLM, managed_proxy_url: str) -> LLM:
+    """Fill the provider-default ``base_url`` and force streaming."""
+    return profile_llm.model_copy(
+        update={
+            'base_url': resolve_llm_base_url(
+                model=profile_llm.model,
+                base_url=profile_llm.base_url,
+                managed_proxy_url=managed_proxy_url,
+            ),
+            # Force streaming on (profiles default to the SDK's stream=False).
+            'stream': True,
+        }
+    )
 
 
 def _get_max_profiles_per_user() -> int:

@@ -121,3 +121,94 @@ class TestStreamingIsForced:
             fallback_api_key=CURRENT_KEY,
         )
         assert resolved.stream is True
+
+
+class TestProviderConnections:
+    """A linked profile takes its key and base_url only from its connection."""
+
+    CONNECTION_URL = 'https://llm-proxy.example.test'
+    CONNECTION_KEY = SecretStr('sk-connection-key')
+
+    def _connections(self, **overrides):
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnection,
+            ProviderConnections,
+        )
+
+        fields = {
+            'id': 'proxy',
+            'display_name': 'Proxy',
+            'api_key': self.CONNECTION_KEY,
+            'base_url': self.CONNECTION_URL,
+            **overrides,
+        }
+        return ProviderConnections(connections={'proxy': ProviderConnection(**fields)})
+
+    def test_linked_profile_takes_the_connection_key_and_base_url(self):
+        resolved = resolve_profile_llm(
+            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
+            managed_proxy_url=MANAGED_URL,
+            fallback_api_key=CURRENT_KEY,
+            connections=self._connections(),
+        )
+        assert resolved.base_url == self.CONNECTION_URL
+        assert _key_of(resolved) == self.CONNECTION_KEY.get_secret_value()
+
+    def test_connection_on_the_managed_proxy_keeps_the_connection_key(self):
+        """The managed-proxy override must not replace a connection key."""
+        resolved = resolve_profile_llm(
+            LLM(model='openhands/claude-test', provider_connection_id='proxy'),
+            managed_proxy_url=MANAGED_URL,
+            fallback_api_key=CURRENT_KEY,
+            connections=self._connections(base_url=MANAGED_URL),
+        )
+        assert resolved.base_url == MANAGED_URL
+        assert _key_of(resolved) == self.CONNECTION_KEY.get_secret_value()
+
+    def test_missing_connection_gets_no_key(self):
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnections,
+        )
+
+        resolved = resolve_profile_llm(
+            LLM(model='anthropic/claude-test', provider_connection_id='gone'),
+            managed_proxy_url=MANAGED_URL,
+            fallback_api_key=CURRENT_KEY,
+            connections=ProviderConnections(),
+        )
+        assert resolved.api_key is None
+
+    def test_linked_profile_without_connections_gets_no_key(self):
+        resolved = resolve_profile_llm(
+            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
+            managed_proxy_url=MANAGED_URL,
+            fallback_api_key=CURRENT_KEY,
+        )
+        assert resolved.api_key is None
+
+    def test_missing_connection_raises_when_strict(self):
+        import pytest
+
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnectionNotFoundError,
+            ProviderConnections,
+        )
+
+        with pytest.raises(ProviderConnectionNotFoundError):
+            resolve_profile_llm(
+                LLM(model='anthropic/claude-test', provider_connection_id='gone'),
+                managed_proxy_url=MANAGED_URL,
+                fallback_api_key=CURRENT_KEY,
+                connections=ProviderConnections(),
+                strict=True,
+            )
+
+    def test_unlinked_profile_ignores_connections(self):
+        resolved = resolve_profile_llm(
+            LLM(model='anthropic/claude-test', base_url=BYOR_URL),
+            managed_proxy_url=MANAGED_URL,
+            fallback_api_key=CURRENT_KEY,
+            connections=self._connections(),
+        )
+        assert resolved.base_url == BYOR_URL
+        assert _key_of(resolved) == CURRENT_KEY.get_secret_value()

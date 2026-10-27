@@ -34,6 +34,7 @@ from pydantic import (
 
 from openhands.app_server.settings.llm_profiles import has_real_api_key
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.llm import LLM
 
 # Connection ids: 1-128 chars, alphanumeric start, then alphanumeric/._-.
 # Same shape as the SDK's CONNECTION_ID_PATTERN / profile names — blocks path
@@ -188,6 +189,31 @@ class ProviderConnections(BaseModel):
 
     def has(self, connection_id: str) -> bool:
         return connection_id in self.connections
+
+    def apply(self, llm: LLM, *, strict: bool = False) -> LLM:
+        """Overlay the linked connection's ``api_key`` and ``base_url`` on ``llm``.
+
+        Unlinked LLMs are returned unchanged. The connection's values win, and
+        its ``base_url`` is applied as-is, including ``None``. A missing
+        connection raises ``ProviderConnectionNotFoundError`` when ``strict``;
+        otherwise it is logged and ``llm`` is returned unchanged.
+        """
+        connection_id = llm.provider_connection_id
+        if not connection_id:
+            return llm
+        connection = self.get(connection_id)
+        if connection is None:
+            if strict:
+                raise ProviderConnectionNotFoundError(connection_id)
+            logger.warning(
+                'LLM profile references missing provider connection %s',
+                connection_id,
+            )
+            return llm
+        updates: dict[str, Any] = {'base_url': connection.base_url}
+        if connection.api_key_value() is not None:
+            updates['api_key'] = connection.api_key
+        return llm.model_copy(update=updates)
 
     def all(self) -> list[ProviderConnection]:
         return list(self.connections.values())
