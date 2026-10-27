@@ -27,7 +27,7 @@ spec.loader.exec_module(migration_197)
 def _run(engine: Engine, step: str) -> None:
     """Run ``migration_197.upgrade`` / ``downgrade`` alone, keeping the rest of
     the schema at head: later migrations add columns the ORM fixtures insert
-    through (e.g. 201 ``org.meta_profiles``), which ``alembic downgrade 196``
+    through (e.g. 202 ``org.meta_profiles``), which ``alembic downgrade 196``
     would remove."""
     with engine.begin() as conn:
         migration_197.op = Operations(MigrationContext.configure(conn))

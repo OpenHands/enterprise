@@ -4,7 +4,7 @@ Runs the migration's ``upgrade()`` against a real Postgres database seeded with
 users in each state the migration distinguishes. Migration 197 drops the column
 again, so each test first re-adds it through that migration's ``downgrade()``
 while the rest of the schema stays at head: later migrations add columns the
-ORM fixtures insert through (e.g. 201 ``org.meta_profiles``), which a full
+ORM fixtures insert through (e.g. 202 ``org.meta_profiles``), which a full
 downgrade to 196 would remove.
 """
 
