@@ -212,6 +212,13 @@ describe("UserContextMenu", () => {
       "/settings/condenser",
       "/settings/verification",
     ]);
+    // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
+    // until enable_agent_context_page / enable_agent_profiles_page are on,
+    // and this config leaves both off.
+    const flagGatedPaths = new Set([
+      "/settings/agent-context",
+      "/settings/agents",
+    ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
@@ -222,7 +229,8 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/budgets" &&
         item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
-        !personalLlmPaths.has(item.to),
+        !personalLlmPaths.has(item.to) &&
+        !flagGatedPaths.has(item.to),
     );
 
     await waitFor(() => {
@@ -255,13 +263,19 @@ describe("UserContextMenu", () => {
     renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for config to load and verify that navigation items are rendered (except organization-members/org which are filtered out)
+    // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
+    // until their feature flags are on, and this config leaves both off.
+    const flagGatedPaths = new Set([
+      "/settings/agent-context",
+      "/settings/agents",
+    ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
         item.to !== "/settings/org" &&
         item.to !== "/settings/credits" &&
         item.to !== "/settings/integrations-hub" &&
-        true,
+        !flagGatedPaths.has(item.to),
     );
 
     await waitFor(() => {

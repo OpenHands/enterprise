@@ -36,6 +36,7 @@ import { useMe } from "#/hooks/query/use-me";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
 const SAAS_ONLY_PATHS = [
+  "/settings/agents",
   "/settings/agent-context",
   "/settings/user",
   "/settings/billing",
@@ -109,6 +110,14 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
+  // On SaaS the personal Agent page is superseded by Agent Profiles once
+  // ``enable_agent_profiles_page`` is on (OHE-3456); keep the old URL working
+  // for bookmarks and in-app links.
+  const agentProfilesEnabled = !!featureFlags?.enable_agent_profiles_page;
+  if (isSaas && agentProfilesEnabled && pathname === "/settings/agent") {
+    return replace("/settings/agents");
+  }
+
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
     return replace("/settings");
@@ -137,8 +146,10 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   // Gated on ``enable_acp`` so the guard is fully off when the feature
   // flag is disabled. If we can't fetch settings (unauthed, no org, etc.)
   // we fall through and let the page render — same behaviour the
-  // previous hook-based guard had.
-  if (featureFlags?.enable_acp) {
+  // previous hook-based guard had. Off with the Agent Profiles page
+  // (OHE-3456): the agent kind then comes from the active profile, not
+  // from these single-agent settings.
+  if (featureFlags?.enable_acp && !(isSaas && agentProfilesEnabled)) {
     const navItems = isSaas ? SAAS_NAV_ITEMS : OSS_NAV_ITEMS;
     const currentItem = navItems.find((item) => item.to === pathname);
     if (currentItem?.disabledByAcp) {

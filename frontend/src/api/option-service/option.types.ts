@@ -77,6 +77,9 @@ export interface WebClientFeatureFlags {
   /** When true, the personal ``Agent`` page is replaced by Agent Profiles
    *  (``/settings/agents``). Off by default until bug bash. */
   enable_agent_profiles_page?: boolean;
+  /** When true, org admins can add, edit and delete the organization's
+   *  shared Agent Profiles on the Agent Profiles page. Off by default. */
+  enable_org_agent_profiles?: boolean;
 }
 
 export interface ACPModelOption {
