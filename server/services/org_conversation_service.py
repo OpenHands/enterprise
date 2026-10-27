@@ -41,7 +41,7 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.stored_conversation_cost_event import StoredConversationCostEvent
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 
 # Valid sort fields
 VALID_SORT_FIELDS = {
@@ -141,6 +141,15 @@ class OrgConversationFilterError(ValueError):
         super().__init__(message)
         self.error_code = error_code
         self.message = message
+
+
+def _people_only() -> ColumnElement[bool]:
+    """Keep people in per-user usage views; drop service accounts.
+
+    A service account has no email or login, so it would show as "Unknown".
+    A deleted user (no ``user`` row, outer join) is kept, as before.
+    """
+    return or_(User.id.is_(None), User.account_type != ACCOUNT_TYPE_SERVICE)
 
 
 @dataclass
@@ -985,6 +994,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_people_only())
             .where(StoredConversationCostEvent.occurred_at >= cutoff)
             .group_by(
                 StoredConversationMetadataSaas.user_id,
@@ -1014,6 +1024,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_people_only())
             .where(StoredConversationMetadata.created_at >= cutoff)
             .where(
                 ~select(StoredConversationCostEvent.id)
@@ -1426,6 +1437,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_people_only())
             .group_by(
                 StoredConversationMetadataSaas.user_id,
                 User.email,
