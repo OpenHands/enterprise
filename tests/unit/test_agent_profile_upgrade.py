@@ -32,7 +32,7 @@ def test_audit_reports_invalid_versions_without_mutating_input(version):
     assert envelope == original
 
 
-@pytest.mark.parametrize('starting_revision', ['192', '195', '198'])
+@pytest.mark.parametrize('starting_revision', ['192', '195', '198', '199'])
 def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
     starting_revision,
     test_database,
@@ -62,7 +62,7 @@ def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
             session.execute(
                 text('SELECT version_num FROM alembic_version')
             ).scalar_one()
-            == '199'
+            == '200'
         )
     expected = copy.deepcopy(original)
     expected['profiles'][legacy['id']]['tools'] = None

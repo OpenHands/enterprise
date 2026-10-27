@@ -749,6 +749,7 @@ class TestResolveActiveAgentProfile:
         org.id = ORG_ID
         org.agent_profiles = None
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = None
         assert store._resolve_active_agent_profile(org, member, {}, None) is None
 
@@ -767,6 +768,7 @@ class TestResolveActiveAgentProfile:
         )
 
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = None
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
@@ -780,6 +782,7 @@ class TestResolveActiveAgentProfile:
         org.id = ORG_ID
         org.agent_profiles = None
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = str(uuid.uuid4())
         with pytest.raises(HTTPException) as exc:
             store._resolve_active_agent_profile(org, member, {}, None)
@@ -791,6 +794,7 @@ class TestResolveActiveAgentProfile:
             OpenHandsAgentProfile(name='reviewer', llm_profile_ref='Default')
         )
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = pid
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
@@ -812,6 +816,7 @@ class TestResolveActiveAgentProfile:
             )
         )
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = pid
         merged_agent_settings = {
             'mcp_config': {
@@ -866,6 +871,7 @@ class TestResolveActiveAgentProfile:
             'active': 'Default',
         }
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = pid
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
@@ -880,6 +886,7 @@ class TestResolveActiveAgentProfile:
             OpenHandsAgentProfile(name='reviewer', llm_profile_ref='Default')
         )
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = None  # no ambient pointer at all
 
         result = store._resolve_active_agent_profile(
@@ -895,6 +902,7 @@ class TestResolveActiveAgentProfile:
             OpenHandsAgentProfile(name='reviewer', llm_profile_ref='Default')
         )
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = None
 
         store._resolve_active_agent_profile(
@@ -1606,9 +1614,137 @@ class TestProfileSecretScope:
             'active': 'Default',
         }
         member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
         member.active_agent_profile_id = next(iter(ap.profiles.values())).id
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
         _dump, _id, _revision, refs = result
         assert refs == ['DATADOG_API_KEY']
+
+
+class TestPersonalProfileLaunch:
+    _store = TestResolveActiveAgentProfile._store
+    _org_with = TestResolveActiveAgentProfile._org_with
+
+    def _personal(self):
+        org, pid = self._org_with(
+            OpenHandsAgentProfile(
+                name='personal-coding',
+                llm_profile_ref='Default',
+                tools=[],
+                secret_refs=['allowed'],
+            )
+        )
+        member = MagicMock(spec=OrgMember)
+        member.agent_profiles = org.agent_profiles
+        member.active_agent_profile_id = pid
+        org.agent_profiles = None
+        return org, member, pid
+
+    def test_personal_launch_preserves_selection_and_secret_scope(self):
+        org, member, pid = self._personal()
+        result = self._store()._resolve_active_agent_profile(org, member, {}, None)
+        assert result is not None
+        settings, resolved_id, revision, refs = result
+        assert (resolved_id, revision, refs) == (pid, 0, ['allowed'])
+        assert settings['tools'] == []
+        assert settings['llm']['model'] == 'gpt-4o'
+
+    def test_another_members_profile_id_cannot_be_selected(self):
+        org, member, pid = self._personal()
+        member.agent_profiles = None
+        member.active_agent_profile_id = None
+        with pytest.raises(HTTPException) as exc:
+            self._store()._resolve_active_agent_profile(
+                org, member, {}, None, override_agent_profile_id=pid
+            )
+        assert exc.value.status_code == 404
+
+    @pytest.mark.parametrize('broken', ['envelope', 'profile', 'reference'])
+    def test_invalid_personal_profile_rejects_instead_of_using_defaults(self, broken):
+        org, member, pid = self._personal()
+        if broken == 'envelope':
+            member.agent_profiles = {'profiles': 'unreadable'}
+        elif broken == 'profile':
+            member.agent_profiles['profiles'][pid]['schema_version'] = 99
+        else:
+            member.agent_profiles['profiles'][pid]['llm_profile_ref'] = 'missing'
+        with pytest.raises(HTTPException) as exc:
+            self._store()._resolve_active_agent_profile(org, member, {}, None)
+        assert exc.value.status_code == (503 if broken == 'envelope' else 422)
+
+
+@pytest.mark.asyncio
+async def test_member_can_manage_personal_profiles_without_editing_org(
+    agent_profiles_app, async_session_maker, patch_agent_routes
+):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=_role('member')),
+    ):
+        client = TestClient(agent_profiles_app)
+        response = client.post(
+            '/api/agent-profiles/personal-coding?scope=personal',
+            json={'llm_profile_ref': 'Default', 'tools': []},
+        )
+        assert response.status_code == 201
+        listing = client.get('/api/agent-profiles').json()['profiles']
+        assert [(p['name'], p['scope']) for p in listing] == [
+            ('personal-coding', 'personal')
+        ]
+        pid = listing[0]['id']
+        assert client.post(f'/api/agent-profiles/{pid}/activate').status_code == 200
+        member = await _read_member(async_session_maker, ORG_ID, USER_ID)
+        assert member.active_agent_profile_id == pid
+        org = await _read_org_raw(async_session_maker, ORG_ID)
+        assert org.agent_profiles is None
+        assert (
+            client.post(
+                '/api/agent-profiles/personal-coding/rename?scope=personal',
+                json={'new_name': 'renamed'},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.delete('/api/agent-profiles/renamed?scope=personal').status_code
+            == 200
+        )
+        member = await _read_member(async_session_maker, ORG_ID, USER_ID)
+        assert member.active_agent_profile_id is None
+
+
+@pytest.mark.asyncio
+async def test_personal_profiles_are_not_visible_or_activatable_by_another_member(
+    agent_profiles_app, async_session_maker, patch_agent_routes
+):
+    other_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(User(id=other_id, current_org_id=ORG_ID))
+        session.add(
+            OrgMember(
+                org_id=ORG_ID,
+                user_id=other_id,
+                role_id=20,
+                llm_api_key='test-key',
+                status='active',
+            )
+        )
+        await session.commit()
+    await save_agent_profile(
+        name='private',
+        body={'llm_profile_ref': 'Default'},
+        scope='personal',
+        effective_org_id=ORG_ID,
+        user_id=str(other_id),
+    )
+    other = await _read_member(async_session_maker, ORG_ID, other_id)
+    pid = next(iter(other.agent_profiles['profiles']))
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=_role('member')),
+    ):
+        client = TestClient(agent_profiles_app)
+        assert client.get('/api/agent-profiles').json()['profiles'] == []
+        assert client.get('/api/agent-profiles/private').status_code == 404
+        assert client.post(f'/api/agent-profiles/{pid}/activate').status_code == 404

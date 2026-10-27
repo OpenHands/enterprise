@@ -53,6 +53,7 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
+    load_member_agent_profiles,
     org_launch_stores,
 )
 from storage.database import a_session_maker
@@ -285,14 +286,17 @@ class SaasSettingsStore(SettingsStore):
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
     ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
-        """Resolve one profile snapshot or reject the launch."""
+        """Resolve one personal or org profile snapshot or reject the launch."""
         raw_envelope = org.agent_profiles
-        if raw_envelope is not None and (
-            not isinstance(raw_envelope, dict)
-            or not isinstance(raw_envelope.get('profiles', {}), dict)
-        ):
-            raise HTTPException(503, detail={'code': 'agent_profile_store_unreadable'})
-        profiles = load_agent_profiles(org)
+        personal_envelope = org_member.agent_profiles
+        for envelope in (personal_envelope, raw_envelope):
+            if envelope is not None and (
+                not isinstance(envelope, dict)
+                or not isinstance(envelope.get('profiles', {}), dict)
+            ):
+                raise HTTPException(
+                    503, detail={'code': 'agent_profile_store_unreadable'}
+                )
         active_id = (
             override_agent_profile_id
             if override_agent_profile_id is not None
@@ -301,11 +305,20 @@ class SaasSettingsStore(SettingsStore):
         )
         if active_id is None:
             return None
-        name = profiles.name_for_id(active_id)
-        if name is None:
-            raw_profiles = (raw_envelope or {}).get('profiles', {})
-            if active_id in raw_profiles:
+        active_id = str(active_id)
+        profile = None
+        for envelope, profiles in (
+            (personal_envelope, load_member_agent_profiles(org_member)),
+            (raw_envelope, load_agent_profiles(org)),
+        ):
+            if active_id not in (envelope or {}).get('profiles', {}):
+                continue
+            name = profiles.name_for_id(active_id)
+            if name is None:
                 raise HTTPException(422, detail={'code': 'agent_profile_unreadable'})
+            profile = profiles.load(name)
+            break
+        if profile is None:
             raise HTTPException(404, detail={'code': 'agent_profile_not_found'})
         try:
             mcp_config = coerce_persisted_mcp_config(
@@ -314,7 +327,6 @@ class SaasSettingsStore(SettingsStore):
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, detail={'code': 'invalid_mcp_config'}) from exc
         try:
-            profile = profiles.load(name)
             launched = resolve(
                 profile,
                 org_launch_stores(

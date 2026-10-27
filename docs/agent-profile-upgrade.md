@@ -17,7 +17,7 @@ must be updated by their deployment owner as well.
    An exit status of 2 requires repair or a compatible newer release before
    proceeding. Never delete opaque profiles to make the audit pass.
 4. Run `uv run alembic heads` and verify one head. The profile-tools migration is
-   revision 199 after 198. Do not reuse or edit the released revision 175.
+   revision 200 after the personal-profile column in 199. Do not reuse or edit the released revision 175.
 
 A rolling update with unrestricted old writers is unsafe: older releases can
 remove profiles they cannot parse when saving an envelope. The new release
@@ -27,7 +27,7 @@ cutover, rather than relying on mixed-version saves.
 
 ## Migration and cutover
 
-Run `uv run alembic upgrade head` with the writes still frozen. Revision 199
+Run `uv run alembic upgrade head` with the writes still frozen. Revision 200
 changes only OpenHands profiles at a known legacy schema version (missing, 1 or
 2) whose `tools` is `[]`: those old Cloud profiles always launched the standard
 set, so they become `tools: null`. Current profiles at version 3 retain a

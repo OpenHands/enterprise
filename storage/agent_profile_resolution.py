@@ -4,7 +4,8 @@ The thin glue (#15044) that lets the SDK profile substrate
 (``resolve_agent_profile`` / ``find_referrers`` / ``cascade_rename``) operate
 over the SaaS storage model. Everything domain-level is imported from
 ``openhands.sdk.profiles``; this module only adapts the ``org.agent_profiles`` /
-``org.llm_profiles`` columns to the SDK's store/loader/mutator Protocols.
+``org_member.agent_profiles`` / ``org.llm_profiles`` columns to the SDK's
+store/loader/mutator Protocols.
 
 Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
 ``org_profiles``, and ``SaasSettingsStore.load``.
@@ -12,7 +13,7 @@ Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import SecretStr, ValidationError
 
@@ -48,6 +49,28 @@ def load_agent_profiles(org: Org) -> AgentProfiles:
     except ValidationError as exc:
         logger.warning(
             'Failed to load org agent profiles for %s: %s', org.id, type(exc).__name__
+        )
+        return AgentProfiles()
+
+
+AgentProfileScope = Literal['personal', 'org']
+
+
+def load_member_agent_profiles(member: OrgMember) -> AgentProfiles:
+    """Load the member's personal ``AgentProfiles``, defaulting to empty if unset.
+
+    Same degrade-on-drift contract as :func:`load_agent_profiles`.
+    """
+    if member.agent_profiles is None:
+        return AgentProfiles()
+    try:
+        return AgentProfiles.model_validate(member.agent_profiles)
+    except ValidationError as exc:
+        logger.warning(
+            'Failed to load personal agent profiles for member %s in org %s: %s',
+            member.user_id,
+            member.org_id,
+            type(exc).__name__,
         )
         return AgentProfiles()
 
