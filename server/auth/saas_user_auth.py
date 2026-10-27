@@ -826,10 +826,10 @@ class SaasUserAuth(UserAuth):
     async def _v2_get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         """Resolve git-provider tokens for an OAuth v2 cookie session.
 
-        Queries ``oauth_tokens`` for this user where the linked provider
-        ``is_idp=False`` and builds ``ProviderToken`` objects via
-        ``OAuthTokenStore.get_valid_access_token`` with a provider-specific
-        refresh callback. The interface to ``ProviderHandler`` / ``GitService``
+        Queries ``oauth_tokens`` for this user's git providers (see
+        ``AuthProviderStore.get_git_providers``) and builds ``ProviderToken``
+        objects via ``OAuthTokenStore.get_valid_access_token`` with a
+        provider-specific refresh callback. The interface to ``ProviderHandler`` / ``GitService``
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
@@ -861,8 +861,6 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
-                # Git providers (is_idp=False) are always OAuth2 -- there is
-                # no password/SAML "git integration".
                 assert isinstance(provider.details, OAuthProviderDetails)
                 try:
                     idp_type = provider.details.provider_type
@@ -960,7 +958,10 @@ class SaasUserAuth(UserAuth):
         """
         if not is_oauth_v2_login_enabled():
             return None
-        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_details import (
+            GIT_PROVIDER_TYPES,
+            OAuthProviderDetails,
+        )
         from storage.auth_provider_store import AuthProviderStore
 
         result = NamedOAuthSecrets()
@@ -973,7 +974,7 @@ class SaasUserAuth(UserAuth):
             details = provider.details
             if not isinstance(details, OAuthProviderDetails):
                 continue
-            if not provider.is_idp:
+            if details.provider_type in GIT_PROVIDER_TYPES:
                 result.linked_provider_types.add(details.provider_type)
             name = details.named_secret
             if not name or details.legacy_keycloak_type or name in seen_names:
