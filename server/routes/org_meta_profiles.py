@@ -92,6 +92,12 @@ class ActivateMetaProfileResponse(BaseModel):
     applied: bool = True
 
 
+class MetaProfileSettingsUpdateRequest(BaseModel):
+    """Org-wide router behaviour that is not part of any single router."""
+
+    run_at_conversation_start: bool
+
+
 # ── Helper Functions ────────────────────────────────────────────────────────
 
 
@@ -205,8 +211,9 @@ async def save_meta_profile(
 ) -> MetaProfileMutationResponse:
     """Create or overwrite a Model Router.
 
-    The first router an organization creates becomes the active one, matching
-    the Agent Canvas behaviour, so adding a router is enough to start routing.
+    The first router an organization creates becomes the active one and turns
+    "Run on first message" on, matching the Agent Canvas behaviour, so adding a
+    router is enough to start routing.
     """
     if not body.classes and not body.prompt_template:
         # Mirrors the agent-server save route: a router with no destinations
@@ -230,6 +237,7 @@ async def save_meta_profile(
         routers.profiles[name] = body
         if first_router:
             routers.active = name
+            routers.run_at_conversation_start = True
     return MetaProfileMutationResponse(
         name=name, message=f"Model Router '{name}' saved"
     )
@@ -316,3 +324,26 @@ async def deactivate_meta_profile(
     return MetaProfileMutationResponse(
         name=name, message=f"Model Router '{name}' deactivated"
     )
+
+
+@router.patch('/{org_id}/meta-profiles', response_model=MetaProfileListResponse)
+async def update_meta_profile_settings(
+    org_id: UUID,
+    body: MetaProfileSettingsUpdateRequest,
+    user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+) -> MetaProfileListResponse:
+    """Set the org-wide "Run on first message" behaviour.
+
+    When on, every launch that carries the active router is also instructed to
+    call ``route_task_to_model`` on the first user message (see
+    ``LiveStatusAppConversationService``). The instruction is skipped for a
+    launch that explicitly picks an LLM profile.
+    """
+    async with _org_meta_profiles_transaction(org_id, user_id) as (
+        _session,
+        _org,
+        routers,
+    ):
+        routers.run_at_conversation_start = body.run_at_conversation_start
+        response = _list_response(routers)
+    return response

@@ -17,6 +17,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { isSettingsPageHidden } from "#/utils/settings-utils";
 
 // Mock useBreakpoint hook
 vi.mock("#/hooks/use-breakpoint", () => ({
@@ -233,35 +234,36 @@ describe("UserContextMenu", () => {
   });
 
   it("should render navigation items from SAAS_NAV_ITEMS when user role is admin (except organization-members/org)", async () => {
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({
-        app_mode: "saas",
-        feature_flags: {
-          enable_billing: true,
-          hide_llm_settings: false,
-          enable_jira: false,
-          enable_jira_dc: false,
-          enable_linear: false,
-          hide_users_page: false,
-          hide_billing_page: false,
-          hide_integrations_page: false,
+    const config = createMockWebClientConfig({
+      app_mode: "saas",
+      feature_flags: {
+        enable_billing: true,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
         enable_onboarding: false,
-        },
-      }),
-    );
+      },
+    });
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
 
     seedActiveUser({ role: "admin" });
 
     renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    // Wait for config to load and verify that navigation items are rendered (except organization-members/org which are filtered out)
+    // Wait for config to load and verify that navigation items are rendered
+    // (except organization-members/org which are filtered out, and pages a
+    // feature flag hides, which the menu drops the same way the nav does).
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
         item.to !== "/settings/org" &&
         item.to !== "/settings/credits" &&
         item.to !== "/settings/integrations-hub" &&
-        true,
+        !isSettingsPageHidden(item.to, config.feature_flags),
     );
 
     await waitFor(() => {
