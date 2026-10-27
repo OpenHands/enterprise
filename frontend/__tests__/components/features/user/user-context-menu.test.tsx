@@ -72,15 +72,14 @@ const renderUserContextMenu = ({
       onOpenOrganizationPreviewModal={onOpenOrganizationPreviewModal}
     />,
     {
-      wrapper: ({ children }) => (
-        <MemoryRouter>
-          <QueryClientProvider client={new QueryClient()}>
-            {children}
-          </QueryClientProvider>
-        </MemoryRouter>
-      ),
-    },
-  );
+    wrapper: ({ children }) => (
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          {children}
+        </QueryClientProvider>
+      </MemoryRouter>
+    ),
+  });
 
 const { navigateMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -162,11 +161,7 @@ describe("UserContextMenu", () => {
       createMockWebClientConfig({ app_mode: "saas" }),
     );
 
-    renderUserContextMenu({
-      type: "member",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     screen.getByTestId("org-selector");
 
@@ -181,7 +176,9 @@ describe("UserContextMenu", () => {
     expect(
       screen.queryByText("ORG$ORGANIZATION_MEMBERS"),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("COMMON$ORGANIZATION"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render navigation items from SAAS_NAV_ITEMS (except organization-members/org)", async () => {
@@ -197,16 +194,12 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
+        enable_onboarding: false,
         },
       }),
     );
 
-    renderUserContextMenu({
-      type: "member",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // In SaaS, personal LLM/Condenser/Verification routes are hidden in favor
     // of /settings/org-defaults/* (visible only when an org is selected, which
@@ -260,18 +253,14 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
+        enable_onboarding: false,
         },
       }),
     );
 
     seedActiveUser({ role: "admin" });
 
-    renderUserContextMenu({
-      type: "admin",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for config to load and verify that navigation items are rendered (except organization-members/org which are filtered out)
     // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
@@ -297,22 +286,14 @@ describe("UserContextMenu", () => {
   });
 
   it("should not display Organization Members menu item for regular users (filtered out)", () => {
-    renderUserContextMenu({
-      type: "member",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Organization Members is filtered out from nav items for all users
     expect(screen.queryByText("Organization Members")).not.toBeInTheDocument();
   });
 
   it("should render a documentation link", () => {
-    renderUserContextMenu({
-      type: "member",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     const docsLink = screen.getByText("SIDEBAR$DOCS").closest("a");
     expect(docsLink).toHaveAttribute("href", "https://docs.openhands.dev");
@@ -333,18 +314,14 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
     });
 
     it("should render OSS_NAV_ITEMS when in OSS mode", async () => {
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       // Wait for the config to load and OSS nav items to appear
       await waitFor(() => {
@@ -360,11 +337,7 @@ describe("UserContextMenu", () => {
     });
 
     it("should not display Organization Members menu item in OSS mode", async () => {
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       // Wait for the config to load
       await waitFor(() => {
@@ -378,11 +351,7 @@ describe("UserContextMenu", () => {
     });
 
     it("should not display logout button in OSS mode", async () => {
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       // Wait for the config to load
       await waitFor(() => {
@@ -410,16 +379,12 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         // Other nav items should still be visible
@@ -444,7 +409,7 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
@@ -458,11 +423,7 @@ describe("UserContextMenu", () => {
         organizationId: MOCK_PERSONAL_ORG.id,
       });
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         expect(
@@ -488,11 +449,7 @@ describe("UserContextMenu", () => {
       createMockUser({ role: "admin", org_id: MOCK_TEAM_ORG_ACME.id }),
     );
 
-    renderUserContextMenu({
-      type: "admin",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     screen.getByTestId("org-selector");
     // Wait for orgs to load so org management items appear
@@ -519,11 +476,7 @@ describe("UserContextMenu", () => {
       createMockUser({ role: "owner", org_id: MOCK_TEAM_ORG_ACME.id }),
     );
 
-    renderUserContextMenu({
-      type: "owner",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "owner", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     screen.getByTestId("org-selector");
     // Wait for orgs to load so org management items appear
@@ -540,11 +493,7 @@ describe("UserContextMenu", () => {
     );
 
     const logoutSpy = vi.spyOn(AuthService, "logout");
-    renderUserContextMenu({
-      type: "member",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for config to load so logout button appears
     const logoutButton = await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
@@ -566,18 +515,14 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
+        enable_onboarding: false,
         },
       }),
     );
 
     seedActiveUser({ role: "admin" });
 
-    renderUserContextMenu({
-      type: "admin",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for config to load and test a few representative nav items have the correct href
     await waitFor(() => {
@@ -617,11 +562,7 @@ describe("UserContextMenu", () => {
       createMockUser({ role: "admin", org_id: MOCK_TEAM_ORG_ACME.id }),
     );
 
-    renderUserContextMenu({
-      type: "admin",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for nav items to load. The Org Members link may appear if permissions are met.
     await waitFor(() => {
@@ -651,11 +592,7 @@ describe("UserContextMenu", () => {
       createMockUser({ role: "admin", org_id: MOCK_TEAM_ORG_ACME.id }),
     );
 
-    renderUserContextMenu({
-      type: "admin",
-      onClose: vi.fn,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     // Wait for nav items to load. The Organization link may appear if permissions are met.
     await waitFor(() => {
@@ -668,11 +605,7 @@ describe("UserContextMenu", () => {
 
   it("should call the onClose handler when clicking outside the context menu", async () => {
     const onCloseMock = vi.fn();
-    renderUserContextMenu({
-      type: "member",
-      onClose: onCloseMock,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: onCloseMock, onOpenInviteModal: vi.fn });
 
     const contextMenu = screen.getByTestId("user-context-menu");
     await userEvent.click(contextMenu);
@@ -698,11 +631,7 @@ describe("UserContextMenu", () => {
     seedActiveUser({ role: "owner" });
 
     const onCloseMock = vi.fn();
-    renderUserContextMenu({
-      type: "owner",
-      onClose: onCloseMock,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "owner", onClose: onCloseMock, onOpenInviteModal: vi.fn });
 
     // Wait for config to load so logout button appears
     const logoutButton = await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
@@ -742,11 +671,7 @@ describe("UserContextMenu", () => {
       // Pre-select the personal org in the Zustand store
       useSelectedOrganizationStore.setState({ organizationId: "1" });
 
-      renderUserContextMenu({
-        type: "admin",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       // Wait for org selector to load and org management buttons to disappear
       // (they disappear when personal org is selected)
@@ -756,7 +681,9 @@ describe("UserContextMenu", () => {
         ).not.toBeInTheDocument();
       });
 
-      expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("COMMON$ORGANIZATION"),
+      ).not.toBeInTheDocument();
     });
 
     it("should not show Billing settings item when team org is selected", async () => {
@@ -776,11 +703,7 @@ describe("UserContextMenu", () => {
         status: "active",
       });
 
-      renderUserContextMenu({
-        type: "admin",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       // Wait for org selector to load and billing to disappear
       // (billing disappears when team org is selected)
@@ -1066,7 +989,7 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
+        enable_onboarding: false,
         },
       }),
     );
@@ -1077,11 +1000,7 @@ describe("UserContextMenu", () => {
 
     const user = userEvent.setup();
     const onCloseMock = vi.fn();
-    renderUserContextMenu({
-      type: "member",
-      onClose: onCloseMock,
-      onOpenInviteModal: vi.fn,
-    });
+    renderUserContextMenu({ type: "member", onClose: onCloseMock, onOpenInviteModal: vi.fn });
 
     // Wait for org selector to appear (it may take a moment for config to load)
     const orgSelector = await screen.findByTestId("org-selector");
@@ -1124,16 +1043,12 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         expect(screen.getByTestId("context-menu-cta")).toBeInTheDocument();
@@ -1147,11 +1062,7 @@ describe("UserContextMenu", () => {
         createMockWebClientConfig({ app_mode: "oss" }),
       );
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         expect(screen.getByTestId("user-context-menu")).toBeInTheDocument();
@@ -1173,18 +1084,14 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
       // Set mobile mode
       vi.mocked(breakpoint.useBreakpoint).mockReturnValue(true);
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         expect(screen.getByTestId("user-context-menu")).toBeInTheDocument();
@@ -1207,16 +1114,12 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
+        enable_onboarding: false,
           },
         }),
       );
 
-      renderUserContextMenu({
-        type: "member",
-        onClose: vi.fn,
-        onOpenInviteModal: vi.fn,
-      });
+      renderUserContextMenu({ type: "member", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
         expect(screen.getByTestId("user-context-menu")).toBeInTheDocument();
