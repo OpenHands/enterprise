@@ -38,6 +38,7 @@ export default function LoginPage() {
     hasDuplicatedEmail,
     recaptchaBlocked,
     accountDisabled,
+    gitProviderLoginFailed,
     wasRateLimited,
     emailVerificationModalOpen,
     setEmailVerificationModalOpen,
@@ -138,6 +139,7 @@ export default function LoginPage() {
           hasDuplicatedEmail={hasDuplicatedEmail}
           recaptchaBlocked={recaptchaBlocked}
           accountDisabled={accountDisabled}
+          gitProviderLoginFailed={gitProviderLoginFailed}
           hasInvitation={hasInvitation}
           buildOAuthStateData={buildOAuthStateData}
           v2IdpProviders={enableOauthV2Login ? (v2IdpProviders ?? []) : null}

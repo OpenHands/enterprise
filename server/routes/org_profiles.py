@@ -28,13 +28,16 @@ from openhands.app_server.settings.llm_profiles import (
 )
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
+    agent_llm,
 )
 from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import (
     ProfileReferenced,
+    cascade_rename,
     delete_llm_profile,
+    find_referrers,
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
@@ -50,6 +53,7 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     OrgLLMProfileMutator,
     load_agent_profiles,
+    load_member_agent_profiles,
 )
 from storage.database import a_session_maker
 from storage.org import Org
@@ -318,7 +322,13 @@ async def save_profile(
             # Snapshot current org LLM settings. Route through the persisted
             # loader so legacy/canonical ``agent_kind`` discriminator values
             # ('llm' vs 'openhands') both validate.
-            llm = _load_persisted_agent_settings(org.agent_settings).llm
+            org_llm = agent_llm(_load_persisted_agent_settings(org.agent_settings))
+            if org_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='ACP agents have no LLM settings to save as a profile',
+                )
+            llm = org_llm
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
@@ -366,7 +376,10 @@ async def delete_profile(
     Blocked with 409 if any of the org's Agent Profiles still reference this LLM
     profile by ``llm_profile_ref`` (the SDK ``find_referrers`` FK guard) — both
     collections live on the same org row, so the ``SELECT ... FOR UPDATE`` lock
-    makes the referrer check and the delete atomic.
+    makes the referrer check and the delete atomic. Members' personal Agent
+    Profiles (``org_member.agent_profiles``) are checked the same way under
+    their row locks; the 409 reports only how many members reference it, since
+    an admin cannot see or repoint their profiles.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -377,6 +390,34 @@ async def delete_profile(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
+            )
+        members_with_profiles = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        referencing_members = sum(
+            1
+            for member in members_with_profiles
+            if find_referrers(load_member_agent_profiles(member), name)
+        )
+        if referencing_members:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"LLM profile '{name}' is referenced by the personal agent "
+                    f'profiles of {referencing_members} member(s); they must '
+                    'repoint those profiles first.'
+                ),
             )
         agent_profiles = load_agent_profiles(org)
         try:
@@ -530,7 +571,8 @@ async def rename_profile(
     The SDK ``rename_llm_profile`` renames the LLM profile and repoints every
     ``agent_profiles.*.llm_profile_ref == name`` to ``new_name`` under the org
     row lock, so a referencing Agent Profile never dangles. Both collections are
-    written back in the same transaction.
+    written back in the same transaction, and every member's personal Agent
+    Profiles (``org_member.agent_profiles``) are repointed the same way.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -569,6 +611,32 @@ async def rename_profile(
         after = agent_profiles.model_dump(mode='json', context={'expose_secrets': True})
         if after != before:
             org.agent_profiles = after
+        # Personal Agent Profiles reference org LLM profiles by name too.
+        members = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for member in members:
+            personal = load_member_agent_profiles(member)
+            personal_before = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            cascade_rename(personal, name, request.new_name)
+            personal_after = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            if personal_after != personal_before:
+                member.agent_profiles = personal_after
         await session.execute(
             update(OrgMember)
             .where(

@@ -71,7 +71,10 @@ def _fake_provider(
     client_secret: str | None = None,
     icon: str | None = None,
     color: str = DEFAULT_AUTH_PROVIDER_COLOR,
+    enabled: bool = True,
     allow_registration: bool = True,
+    allow_match_by_email: bool = True,
+    legacy_keycloak_type: ProviderType | None = None,
 ) -> AuthProvider:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     provider = AuthProvider(
@@ -79,11 +82,14 @@ def _fake_provider(
         is_idp=is_idp,
         icon=icon,
         color=color,
+        enabled=enabled,
         allow_registration=allow_registration,
+        allow_match_by_email=allow_match_by_email,
         details=OAuthProviderDetails(
             provider_type=ProviderType(category),
             client_id=client_id,
             client_secret=client_secret,
+            legacy_keycloak_type=legacy_keycloak_type,
         ),
     )
     provider.id = provider_id
@@ -224,7 +230,9 @@ async def test_create_integrated_idp_provider(mock_app, grant_manage_oauth_provi
         title='Integrated IDP',
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
+        allow_match_by_email=True,
         details=PasswordProviderDetails(),
     )
     created.id = 3
@@ -301,6 +309,92 @@ async def test_update_provider_partial(mock_app, grant_manage_oauth_providers):
     assert resp.json()['title'] == 'New Name'
     # Only the explicitly-set field is forwarded to the store.
     update_mock.assert_awaited_once_with(1, title='New Name')
+
+
+@pytest.mark.asyncio
+async def test_update_provider_toggles_enabled(mock_app, grant_manage_oauth_providers):
+    """``enabled`` is a plain patchable column, so the list page's inline
+    toggle can switch a provider on/off without resending ``details`` (which
+    would need the secret carried forward)."""
+    updated = _fake_provider(enabled=False)
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=_fake_provider(1, 'github')),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=updated),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={'enabled': False},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()['enabled'] is False
+    update_mock.assert_awaited_once_with(1, enabled=False)
+
+
+@pytest.mark.asyncio
+async def test_create_provider_defaults_to_disabled(
+    mock_app, grant_manage_oauth_providers
+):
+    """New rows start switched off so a half-configured provider -- e.g. one
+    created from a preset with placeholder URLs -- never serves logins."""
+    created = _fake_provider(enabled=False)
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'GitHub',
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    assert resp.json()['enabled'] is False
+    (persisted,), _ = create_mock.call_args
+    assert persisted.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_create_provider_enabled_explicitly(
+    mock_app, grant_manage_oauth_providers
+):
+    created = _fake_provider(enabled=True)
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'GitHub',
+                    'enabled': True,
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    assert resp.json()['enabled'] is True
+    (persisted,), _ = create_mock.call_args
+    assert persisted.enabled is True
 
 
 @pytest.mark.asyncio
@@ -400,6 +494,94 @@ async def test_update_provider_omitted_details_untouched(
     # left untouched.
     update_mock.assert_awaited_once_with(1, title='Renamed')
     assert 'details' not in update_mock.call_args.kwargs
+
+
+async def _patch_oauth_details(app, details: dict) -> OAuthProviderDetails:
+    """PATCH ``details`` onto a row whose ``legacy_keycloak_type`` is github
+    and return the ``details`` forwarded to the store."""
+    existing = _fake_provider(
+        1,
+        'enterprise_sso',
+        is_idp=True,
+        client_secret='old-secret',
+        legacy_keycloak_type=ProviderType.GITHUB,
+    )
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=existing),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=existing),
+        ) as update_mock,
+    ):
+        async with _client(app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1',
+                json={
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'enterprise_sso',
+                        'client_id': 'cid',
+                        **details,
+                    }
+                },
+            )
+    assert resp.status_code == 200
+    return update_mock.call_args.kwargs['details']
+
+
+@pytest.mark.asyncio
+async def test_update_provider_keeps_unsent_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'scopes': ['openid']})
+
+    assert details.legacy_keycloak_type == ProviderType.GITHUB
+    assert details.scopes == ['openid']
+    assert details.client_secret.get_secret_value() == 'old-secret'
+
+
+@pytest.mark.asyncio
+async def test_update_provider_explicit_null_clears_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'legacy_keycloak_type': None})
+
+    assert details.legacy_keycloak_type is None
+
+
+@pytest.mark.asyncio
+async def test_update_provider_sets_legacy_keycloak_type(
+    mock_app,
+    grant_manage_oauth_providers,
+):
+    details = await _patch_oauth_details(mock_app, {'legacy_keycloak_type': 'gitlab'})
+
+    assert details.legacy_keycloak_type == ProviderType.GITLAB
+
+
+@pytest.mark.asyncio
+async def test_update_provider_rejects_enterprise_sso_legacy_keycloak_type(
+    mock_app, grant_manage_oauth_providers
+):
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/oauth-providers/1',
+            json={
+                'details': {
+                    'kind': 'OAuthProviderDetails',
+                    'provider_type': 'enterprise_sso',
+                    'client_id': 'cid',
+                    'legacy_keycloak_type': 'enterprise_sso',
+                }
+            },
+        )
+
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -516,7 +698,9 @@ def _fake_password_provider(provider_id: int = 1, title: str = 'Password Login')
         title=title,
         is_idp=True,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
+        allow_match_by_email=True,
         details=PasswordProviderDetails(),
     )
     provider.id = provider_id
@@ -721,7 +905,9 @@ def _fake_saml_provider(
         title=title,
         is_idp=is_idp,
         color=DEFAULT_AUTH_PROVIDER_COLOR,
+        enabled=True,
         allow_registration=True,
+        allow_match_by_email=True,
         details=SamlProviderDetails(
             sp_private_key=SecretStr(sp_private_key) if sp_private_key else None,
             sp_x509_cert=sp_x509_cert,
@@ -910,4 +1096,401 @@ async def test_preview_saml_metadata_forbidden_without_permission(mock_app):
                 json={'metadata_url': 'https://idp.example.com/metadata'},
             )
 
+    assert resp.status_code == 403
+
+
+# ── GET/PATCH /{provider_id}/users ("User Links") ──────────────────────
+#
+# These exercise the real ``auth_provider_users`` row shape end to end (the
+# DB fixtures are cheap, and the filter/join/409 logic is easiest to get
+# right against real Postgres), unlike the ``AuthProviderStore``-mocking
+# tests above.
+
+
+@pytest.fixture
+def db(async_session_maker):
+    """Point every store this router touches at the shared test database."""
+    patches = [
+        patch('storage.auth_provider_store.a_session_maker', async_session_maker),
+        patch('storage.auth_provider_user_store.a_session_maker', async_session_maker),
+        patch('storage.oauth_token_store.a_session_maker', async_session_maker),
+        patch(
+            'server.routes.oauth_providers_admin.a_session_maker', async_session_maker
+        ),
+    ]
+    for p in patches:
+        p.start()
+    yield async_session_maker
+    for p in patches:
+        p.stop()
+
+
+@pytest.fixture
+def make_provider(db):
+    async def _make(category: str = 'github') -> AuthProvider:
+        provider = AuthProvider(
+            title=category.title(),
+            is_idp=False,
+            enabled=True,
+            details=OAuthProviderDetails(
+                provider_type=ProviderType(category), client_id='cid'
+            ),
+        )
+        async with db() as session:
+            session.add(provider)
+            await session.commit()
+            await session.refresh(provider)
+        return provider
+
+    return _make
+
+
+@pytest.fixture
+def make_link(db):
+    from storage.auth_provider_user import AuthProviderUser
+
+    async def _make(
+        provider_id: int, user_id, external_subject_id: str, external_email=None
+    ) -> AuthProviderUser:
+        link = AuthProviderUser(
+            oauth_provider_id=provider_id,
+            user_id=user_id,
+            external_subject_id=external_subject_id,
+            external_email=external_email,
+        )
+        async with db() as session:
+            session.add(link)
+            await session.commit()
+            await session.refresh(link)
+        return link
+
+    return _make
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_404_when_provider_missing(
+    mock_app, grant_manage_oauth_providers, db
+):
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/oauth-providers/999/users')
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_forbidden_without_permission(
+    mock_app, make_provider
+):
+    provider = await make_provider()
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get(f'/api/admin/oauth-providers/{provider.id}/users')
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_scoped_and_joined(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider_a = await make_provider('github')
+    provider_b = await make_provider('gitlab')
+    user_a = create_user(email='a@example.com')
+    user_b = create_user(email='b@example.com')
+    await make_link(provider_a.id, user_a.id, 'sub-a', 'ext-a@example.com')
+    await make_link(provider_b.id, user_b.id, 'sub-b', 'ext-b@example.com')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(f'/api/admin/oauth-providers/{provider_a.id}/users')
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 1
+    assert len(body['items']) == 1
+    item = body['items'][0]
+    assert item['user_id'] == str(user_a.id)
+    assert item['email'] == 'a@example.com'
+    assert item['external_subject_id'] == 'sub-a'
+    assert item['external_email'] == 'ext-a@example.com'
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_pagination(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    for i in range(3):
+        await make_link(provider.id, create_user().id, f'sub-{i}')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'limit': 2},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 3
+    assert len(body['items']) == 2
+    assert body['current_page'] == 1
+
+    async with _client(mock_app) as client:
+        resp2 = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'limit': 2, 'page_id': '2'},
+        )
+    assert resp2.status_code == 200
+    assert len(resp2.json()['items']) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_filter(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    match = create_user(email='findme@example.com')
+    await make_link(provider.id, match.id, 'sub-1')
+    await make_link(provider.id, create_user().id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'q': 'findme'},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 1
+    assert body['items'][0]['user_id'] == str(match.id)
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_includes_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    named = create_user(email='ada@example.com', git_user_name='Ada Lovelace')
+    unnamed = create_user(email='grace@example.com')
+    await make_link(provider.id, named.id, 'sub-1')
+    await make_link(provider.id, unnamed.id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(f'/api/admin/oauth-providers/{provider.id}/users')
+
+    assert resp.status_code == 200
+    by_subject = {item['external_subject_id']: item for item in resp.json()['items']}
+    assert by_subject['sub-1']['user_name'] == 'Ada Lovelace'
+    # No git profile name: fall back to the email local part, matching the
+    # instance user directory, so the row is still recognizable.
+    assert by_subject['sub-2']['user_name'] == 'grace'
+
+
+@pytest.mark.asyncio
+async def test_list_auth_provider_users_filter_matches_linked_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    match = create_user(email='someone@example.com', git_user_name='Ada Lovelace')
+    await make_link(provider.id, match.id, 'sub-1')
+    await make_link(provider.id, create_user(email='other@example.com').id, 'sub-2')
+
+    async with _client(mock_app) as client:
+        resp = await client.get(
+            f'/api/admin/oauth-providers/{provider.id}/users',
+            params={'q': 'lovelace'},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['total'] == 1
+    assert body['items'][0]['user_id'] == str(match.id)
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_returns_target_user_name(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    link = await make_link(provider.id, create_user().id, 'sub-1')
+    target = create_user(email='new@example.com', git_user_name='Ada Lovelace')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(target.id)},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()['user_name'] == 'Ada Lovelace'
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_happy_path_preserves_external_email(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    old_user = create_user()
+    new_user = create_user(email='new@example.com')
+    link = await make_link(provider.id, old_user.id, 'sub-1', 'ext@example.com')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(new_user.id)},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['user_id'] == str(new_user.id)
+    assert body['email'] == 'new@example.com'
+    assert body['external_email'] == 'ext@example.com'
+    assert body['external_subject_id'] == 'sub-1'
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_deletes_old_users_token(
+    mock_app,
+    grant_manage_oauth_providers,
+    make_provider,
+    make_link,
+    create_user,
+    db,
+):
+    from storage.oauth_token_store import OAuthTokenStore
+
+    provider = await make_provider()
+    old_user = create_user()
+    new_user = create_user()
+    link = await make_link(provider.id, old_user.id, 'sub-1')
+
+    old_token_store = OAuthTokenStore(
+        user_id=old_user.id, oauth_provider_id=provider.id
+    )
+    await old_token_store.store_tokens(
+        access_token='at',
+        refresh_token=None,
+        access_token_expires_at=None,
+        refresh_token_expires_at=None,
+    )
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(new_user.id)},
+        )
+
+    assert resp.status_code == 200
+    assert await old_token_store.get_raw() is None
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_invalidates_webhook_user_cache(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    # Redis is not available in unit tests; the cache delete itself is covered
+    # in test_automation_event_service.py.
+    provider = await make_provider('gitlab')
+    link = await make_link(provider.id, create_user().id, '42')
+
+    with patch(
+        'server.routes.oauth_providers_admin.invalidate_user_id_cache',
+        new=AsyncMock(),
+    ) as invalidate_cache:
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+                json={'user_id': str(create_user().id)},
+            )
+
+    assert resp.status_code == 200
+    invalidate_cache.assert_awaited_once_with(ProviderType.GITLAB, '42')
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_404_provider_not_found(
+    mock_app, grant_manage_oauth_providers, db, create_user
+):
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/oauth-providers/999/users/1',
+            json={'user_id': str(create_user().id)},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_404_link_not_found(
+    mock_app, grant_manage_oauth_providers, make_provider, create_user
+):
+    provider = await make_provider()
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/999',
+            json={'user_id': str(create_user().id)},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_404_link_belongs_to_other_provider(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider_a = await make_provider('github')
+    provider_b = await make_provider('gitlab')
+    link = await make_link(provider_a.id, create_user().id, 'sub-1')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider_b.id}/users/{link.id}',
+            json={'user_id': str(create_user().id)},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_404_target_user_not_found(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    link = await make_link(provider.id, create_user().id, 'sub-1')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(uuid.uuid4())},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_409_target_already_linked(
+    mock_app, grant_manage_oauth_providers, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    target = create_user()
+    await make_link(provider.id, target.id, 'sub-already-linked')
+    link = await make_link(provider.id, create_user().id, 'sub-to-repoint')
+
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+            json={'user_id': str(target.id)},
+        )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_update_auth_provider_user_forbidden_without_permission(
+    mock_app, make_provider, make_link, create_user
+):
+    provider = await make_provider()
+    link = await make_link(provider.id, create_user().id, 'sub-1')
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=None),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                f'/api/admin/oauth-providers/{provider.id}/users/{link.id}',
+                json={'user_id': str(create_user().id)},
+            )
     assert resp.status_code == 403

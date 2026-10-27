@@ -28,6 +28,7 @@ from openhands.app_server.app_conversation.skill_loader import (
     build_sandbox_config,
     explicit_source_provider,
     get_azure_devops_bearer_token,
+    is_agent_server_repository_source,
     load_skills_from_agent_server,
 )
 from openhands.app_server.integrations.provider import (
@@ -1451,6 +1452,25 @@ class TestAzureDevOpsMarketplaceCredentials:
         orgs = await azure_devops_marketplace_orgs(registrations, mock_user_context)
 
         assert orgs == ['acme']
+
+
+@pytest.mark.parametrize(
+    'source, cloned',
+    [
+        ('github:owner/repo', True),
+        ('https://gitlab.example.com/group/skills.git', True),
+        ('http://gitea.lab.example.com/org/skills', True),
+        ('git@bitbucket.example.com:proj/skills.git', True),
+        ('git://example.com/org/skills.git', True),
+        ('owner/repo', False),
+        ('gitlab:group/skills', False),
+        ('marketplaces/internal', False),
+        ('ssh://git@example.com/org/skills.git', False),
+    ],
+)
+def test_is_agent_server_repository_source(source, cloned):
+    """Matches the forms the agent-server clones rather than reads as paths."""
+    assert is_agent_server_repository_source(source) is cloned
 
 
 @pytest.mark.parametrize(

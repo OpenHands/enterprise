@@ -40,8 +40,7 @@ there is no Keycloak client to route through otherwise), it adds a new
   re-deriving a sibling migration's logic rather than importing it).
   Customers keep using their existing Keycloak client; this never talks to
   GitHub/GitLab/Bitbucket's own OAuth endpoints directly.
-- Overrides ``provider_type`` (to the brand) and appends
-  ``kc_idp_hint=<brand>`` to ``authorization_url`` (the same query param
+- Appends ``kc_idp_hint=<brand>`` to ``authorization_url`` (the same query param
   ``generate-auth-url.ts`` added client-side for the legacy buttons) so
   ``GET /oauth/{id}/login`` (``server/routes/oauth_v2.py``) sends the
   browser straight to that brand's federated login at Keycloak -- no code
@@ -50,6 +49,12 @@ there is no Keycloak client to route through otherwise), it adds a new
 - Carries that brand's button color/icon from the legacy, hard-coded
   buttons above, so the "Let's Get Started" screen looks the same as before
   OAuth v2.
+- Keeps ``provider_type='enterprise_sso'`` (it *is* a Keycloak connector) and
+  sets ``details.legacy_keycloak_type = <brand>`` so
+  ``server.routes.oauth_v2``'s callback knows this row's ``token_url`` only
+  ever yields a Keycloak token, not the brand's real one, and fetches/stores
+  the real token against the git-provider row for that brand instead -- see
+  ``OAuthProviderDetails.legacy_keycloak_type``.
 
 **Retiring the generic Keycloak row.** This migration also deletes the old
 generic Keycloak row outright, if a host still has one from an older version
@@ -262,7 +267,8 @@ def _federated_idp_row_exists(bind, provider_type: str) -> bool:
                 """
                 SELECT 1 FROM auth_providers
                 WHERE kind = :kind AND is_idp = true
-                  AND details ->> 'provider_type' = :provider_type
+                  AND (details ->> 'provider_type' = :provider_type
+                       OR details ->> 'legacy_keycloak_type' = :provider_type)
                 LIMIT 1
                 """
             ),
@@ -296,10 +302,15 @@ def _seed_federated_idp_rows(bind, keycloak_details: dict) -> None:
             continue
 
         details = dict(keycloak_details)
-        details['provider_type'] = provider_type
         details['authorization_url'] = _with_idp_hint(
             details.get('authorization_url'), provider_type
         )
+        # Marks this row's token_url/credentials as Keycloak's own, not the
+        # brand's -- see ``OAuthProviderDetails.legacy_keycloak_type``. The
+        # git-provider row this brand's real tokens get stored against is
+        # seeded separately (migration 168), gated on the same env var
+        # checked above.
+        details['legacy_keycloak_type'] = provider_type
 
         bind.execute(
             sa.text(
@@ -397,7 +408,7 @@ def downgrade() -> None:
                 DELETE FROM auth_providers
                 WHERE kind = :kind AND is_idp = true AND title = :title
                   AND color = :color
-                  AND details ->> 'provider_type' = :provider_type
+                  AND details ->> 'legacy_keycloak_type' = :provider_type
                 """
             ),
             {

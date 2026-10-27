@@ -107,46 +107,30 @@ class TestSpecifyUserContextEmail:
         assert await ctx.get_user_email() is None
 
 
-class TestLaminarUserIdFallback:
-    """The exact ``email or user_id`` expression used at the three callsites
-    inside ``LiveStatusAppConversationService``. We verify the semantics here
-    rather than reach into the large async _start_app_conversation flow.
-    """
+@pytest.mark.asyncio
+async def test_profile_override_uses_one_snapshot_per_request():
+    from openhands.app_server.settings.settings_models import Settings
+    from openhands.sdk import LLM
+    from openhands.sdk.settings import OpenHandsAgentSettings
 
-    @pytest.mark.asyncio
-    async def test_prefers_email_when_available(self):
-        ctx = AuthUserContext(user_auth=AsyncMock())
-        ctx.user_auth.get_user_email = AsyncMock(return_value='alice@example.com')
-        user_id = 'internal-uuid-123'
-
-        laminar_user_id = await ctx.get_user_email() or user_id
-
-        assert laminar_user_id == 'alice@example.com'
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_user_id_when_email_is_none(self):
-        ctx = AuthUserContext(user_auth=AsyncMock())
-        ctx.user_auth.get_user_email = AsyncMock(return_value=None)
-        user_id = 'internal-uuid-123'
-
-        laminar_user_id = await ctx.get_user_email() or user_id
-
-        assert laminar_user_id == 'internal-uuid-123'
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_user_id_when_email_is_empty_string(self):
-        """``or`` also treats '' as falsy, which is the desired behavior:
-        an empty email is not useful as a Laminar trace id."""
-        ctx = AuthUserContext(user_auth=AsyncMock())
-        ctx.user_auth.get_user_email = AsyncMock(return_value='')
-        user_id = 'internal-uuid-123'
-
-        laminar_user_id = await ctx.get_user_email() or user_id
-
-        assert laminar_user_id == 'internal-uuid-123'
-
-    @pytest.mark.asyncio
-    async def test_admin_context_always_falls_back_to_user_id(self):
-        user_id = 'admin-target-user-id'
-        laminar_user_id = await ADMIN.get_user_email() or user_id
-        assert laminar_user_id == 'admin-target-user-id'
+    profile_id = str(uuid4())
+    settings = Settings(
+        active_agent_profile_id=profile_id,
+        active_agent_profile_revision=1,
+        agent_settings=OpenHandsAgentSettings(llm=LLM(model='test'), tools=[]),
+    )
+    settings._resolved_view = True
+    user_auth = MagicMock(spec=UserAuth)
+    user_auth.get_user_id = AsyncMock(return_value='user')
+    user_auth.get_user_settings = AsyncMock(return_value=settings)
+    context = AuthUserContext(user_auth=user_auth)
+    first = await context.get_user_info(override_agent_profile_id=profile_id)
+    settings.active_agent_profile_revision = 2
+    second = await context.get_user_info(override_agent_profile_id=profile_id)
+    assert first is second
+    assert second.active_agent_profile_revision == 1
+    assert second._resolved_view is True
+    user_auth.get_user_settings.assert_awaited_once()
+    context.invalidate_user_info_cache()
+    third = await context.get_user_info(override_agent_profile_id=profile_id)
+    assert third.active_agent_profile_revision == 2

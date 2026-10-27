@@ -87,10 +87,13 @@ def _runtime_hosts_from_web_host() -> str:
     (``<sandbox>.<sibling>.<registrable>``) and the VS Code iframe
     (``vscode-<sandbox>.<sibling>.<registrable>``).
 
-    Returns an empty string when ``WEB_HOST`` is unset or single-label
-    (e.g. ``localhost``), where the wildcard would either be invalid or
-    too broad — ``frame-src 'self'`` already covers ``localhost`` in that
-    case.
+    Returns ``http://localhost:* http://127.0.0.1:*`` when ``WEB_HOST`` is
+    ``localhost``: local sandboxes are published on random ports of the
+    Docker host, and ``'self'`` only matches the app's own port.
+
+    Returns an empty string when ``WEB_HOST`` is unset or any other
+    single-label host, where the wildcard would either be invalid or too
+    broad.
     """
     web_host = os.getenv('WEB_HOST', '').strip().rstrip('/')
     if not web_host:
@@ -105,6 +108,8 @@ def _runtime_hosts_from_web_host() -> str:
     # Strip port (e.g. `localhost:3000`) so the dot-split below is sane.
     if ':' in web_host:
         web_host = web_host.split(':', 1)[0]
+    if web_host == 'localhost':
+        return 'http://localhost:* http://127.0.0.1:*'
     parts = web_host.split('.')
     if len(parts) < 2:
         # Single-label host (`localhost`, `nginx`, ...); no registrable

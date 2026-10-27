@@ -124,7 +124,7 @@ async def test_search_repositories_slash_query():
 
     mock_fetch.assert_called_once_with(
         'https://host.example.com/rest/api/1.0/projects/PROJ/repos',
-        {'limit': 25},
+        {'limit': 100},
         1000,
     )
     assert len(repos) == 1
@@ -338,3 +338,92 @@ async def _make_parsed_repo(svc, repo_dict):
     """Helper to create a parsed Repository from a repo dict (with mocked default branch)."""
     with patch.object(svc, '_make_request', return_value=({'displayId': 'main'}, {})):
         return await svc._parse_repository(repo_dict, fetch_default_branch=True)
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_finds_matches_past_first_page_of_a_project():
+    """Search reads every repository of a project, not only the first per_page."""
+    svc = make_service()
+    proj_a = [_repo_dict('A', slug=f'other{i}', name=f'other {i}') for i in range(5)]
+    proj_a.append(_repo_dict('A', slug='repo-a', name='repo a'))
+
+    with (
+        patch.object(svc, 'get_installations', new=AsyncMock(return_value=['A'])),
+        patch.object(svc, '_fetch_paginated_data', new=AsyncMock(return_value=proj_a)),
+    ):
+        repos = await svc.search_repositories(
+            'repo', 3, 'name', 'asc', False, AppMode.SAAS
+        )
+
+    assert [r.full_name for r in repos] == ['A/repo-a']
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_stops_after_a_page_of_matches():
+    """The projects after a full page of matches are not read."""
+    svc = make_service()
+    proj_a = [_repo_dict('A', slug=f'repo-a{i}', name=f'repo a{i}') for i in (1, 2)]
+    proj_b = [_repo_dict('B', slug=f'repo-b{i}', name=f'repo b{i}') for i in (1, 2)]
+
+    with (
+        patch.object(
+            svc, 'get_installations', new=AsyncMock(return_value=['A', 'B', 'C'])
+        ),
+        patch.object(
+            svc, '_fetch_paginated_data', new=AsyncMock(side_effect=[proj_a, proj_b])
+        ) as mock_fetch,
+    ):
+        repos = await svc.search_repositories(
+            'repo', 3, 'name', 'asc', False, AppMode.SAAS
+        )
+
+    assert [r.full_name for r in repos] == ['A/repo-a1', 'A/repo-a2', 'B/repo-b1']
+    assert mock_fetch.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_slash_query_cuts_to_per_page():
+    svc = make_service()
+    raw = [_repo_dict('PROJ', slug=f'myrepo{i}', name=f'My Repo {i}') for i in range(5)]
+
+    with patch.object(svc, '_fetch_paginated_data', new=AsyncMock(return_value=raw)):
+        repos = await svc.search_repositories(
+            'PROJ/myrepo', 2, 'name', 'asc', False, AppMode.SAAS
+        )
+
+    assert [r.full_name for r in repos] == ['PROJ/myrepo0', 'PROJ/myrepo1']
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_cap_is_per_project():
+    """A large project does not hide the matches of the projects after it."""
+    svc = make_service()
+    big = [_repo_dict('A', slug=f'a{i}', name=f'a{i}') for i in range(1000)]
+    small = [_repo_dict('B', slug='foo', name='foo')]
+
+    with (
+        patch.object(svc, 'get_installations', new=AsyncMock(return_value=['A', 'B'])),
+        patch.object(
+            svc, '_fetch_paginated_data', new=AsyncMock(side_effect=[big, small])
+        ) as mock_fetch,
+    ):
+        repos = await svc.search_repositories(
+            'foo', 25, 'name', 'asc', False, AppMode.SAAS
+        )
+
+    assert [r.full_name for r in repos] == ['B/foo']
+    assert [call.args[2] for call in mock_fetch.call_args_list] == [1000, 1000]
+
+
+@pytest.mark.asyncio
+async def test_search_repositories_slash_query_raises_on_error():
+    """A search in one named project raises the API error, as before."""
+    svc = make_service()
+
+    with patch.object(
+        svc, '_fetch_paginated_data', new=AsyncMock(side_effect=RuntimeError('boom'))
+    ):
+        with pytest.raises(RuntimeError):
+            await svc.search_repositories(
+                'PROJ/myrepo', 25, 'name', 'asc', False, AppMode.SAAS
+            )

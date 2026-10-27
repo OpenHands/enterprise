@@ -30,6 +30,7 @@ step differs.
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -41,9 +42,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -54,11 +58,16 @@ from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
 )
 from server.auth.provider_identity import (
+    require_enabled_provider as _require_enabled_provider,
+)
+from server.auth.provider_identity import (
     resolve_or_create_user as _resolve_or_create_user,
 )
 from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
+from server.auth.token_manager import TokenManager
+from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -74,6 +83,13 @@ from storage.user_store import UserStore
 # HTTP timeout for external OAuth/token endpoint calls.
 OAUTH_HTTP_TIMEOUT = 15.0
 
+# Binds a link flow's state to the browser that started it.
+LINK_NONCE_COOKIE = 'openhands_oauth_link_nonce'
+LINK_STATE_TTL_SECONDS = 600
+# Outlives the state, so a late callback still carries the cookie and gets
+# "expired" instead of "not started by this browser".
+LINK_NONCE_COOKIE_MAX_AGE = LINK_STATE_TTL_SECONDS + 60
+
 oauth_v2_router = APIRouter(prefix='/oauth', tags=['OAuth v2'])
 
 
@@ -86,18 +102,31 @@ class OAuthState(BaseModel):
     # linking. Absent on login flows.
     user_id: str | None = None
     nonce: str = ''
+    issued_at: float = 0.0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
+def _require_oauth_provider(provider: AuthProvider) -> None:
+    """404 unless ``provider`` is generic OAuth2.
+
+    Fails closed for any provider kind without a dedicated branch before the
+    call, so a newly added kind can't fall through into the OAuth2 flow.
+    """
+    if not isinstance(provider.details, OAuthProviderDetails):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Provider {provider.id} does not support OAuth2 login',
+        )
+
+
 def _oauth_details(provider: AuthProvider) -> OAuthProviderDetails:
     """Narrow ``provider.details`` to ``OAuthProviderDetails``.
 
-    Every caller of this helper runs after the generic OAuth2 redirect/token
-    routes have already excluded non-OAuth2 rows (see the ``kind ==
-    PasswordProviderDetails.__name__`` checks in ``oauth_v2_login`` /
-    ``oauth_v2_callback``), so this should never actually mismatch -- the
+    Every caller of this helper runs after ``oauth_v2_login`` /
+    ``oauth_v2_callback`` / ``oauth_v2_link`` have excluded non-OAuth2 rows (see
+    ``_require_oauth_provider``), so this should never actually mismatch -- the
     assertion documents that invariant instead of silently reaching into the
     wrong subclass's fields.
     """
@@ -212,6 +241,86 @@ async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
         return response.json()
 
 
+def _epoch_to_datetime(expires_at: int | str | None) -> datetime | None:
+    """Convert a broker-response epoch timestamp to a tz-aware datetime.
+
+    ``get_idp_tokens_from_keycloak`` uses ``0`` for "never expires" (no
+    ``0`` epoch-second sentinel is otherwise reachable); the rest of
+    oauth_v2 uses ``None`` for the same thing -- see ``_parse_token_response``.
+    """
+    if not expires_at:
+        return None
+    return datetime.fromtimestamp(int(expires_at), tz=timezone.utc)
+
+
+async def _store_legacy_keycloak_git_token(
+    provider_type: ProviderType,
+    user_id: uuid.UUID,
+    keycloak_access_token: str,
+) -> None:
+    """Fetch ``provider_type``'s real token via Keycloak's identity-brokering
+    endpoint and store it under the git-provider row of that type.
+
+    Called after a successful OAuth2 exchange against a login row with
+    ``OAuthProviderDetails.legacy_keycloak_type`` set: that row's own
+    ``token_url`` is Keycloak's, so the pair ``_exchange_code`` just
+    returned is a Keycloak access/refresh token, never ``provider_type``'s
+    real one -- Keycloak does not embed the upstream IdP's token in its own
+    OIDC response, it only exposes it via this separate endpoint.
+
+    Best-effort: any failure here is logged and swallowed rather than
+    failing the login/link itself, which already completed successfully
+    with the (perfectly valid, for its own purpose) Keycloak token pair
+    persisted under the login row -- a transient broker/network error
+    should not lock the user out of the app, only leave git-provider repo
+    access unavailable until the next login (or a manual link in
+    Settings > Integrations).
+    """
+    git_provider = await AuthProviderStore().get_provider_by_type(provider_type.value)
+    if git_provider is None:
+        # Should not happen in practice -- migration 189 only seeds a
+        # legacy-Keycloak login row when the matching git-provider row
+        # (migration 168) already exists, gated on the same env var -- but an
+        # admin could have deleted that row since, or hand-created a login
+        # row via the admin API without one.
+        logger.warning(
+            'oauth_v2_legacy_keycloak_no_git_provider_row',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+
+    try:
+        data = await TokenManager().get_idp_tokens_from_keycloak(
+            keycloak_access_token, provider_type
+        )
+    except Exception:
+        logger.exception(
+            'oauth_v2_legacy_keycloak_broker_fetch_failed',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+    if not data:
+        # The broker reported no association for this IdP (e.g. the user
+        # was created by some other means and never actually went through
+        # Keycloak's GitHub/GitLab/Bitbucket federation).
+        logger.info(
+            'oauth_v2_legacy_keycloak_no_broker_token',
+            extra={'provider_type': provider_type.value},
+        )
+        return
+
+    await OAuthTokenStore(
+        user_id=user_id, oauth_provider_id=git_provider.id
+    ).store_tokens(
+        access_token=str(data['access_token']),
+        refresh_token=str(data['refresh_token']),
+        access_token_expires_at=_epoch_to_datetime(data.get('access_token_expires_at')),
+        refresh_token_expires_at=_epoch_to_datetime(
+            data.get('refresh_token_expires_at')
+        ),
+    )
+
+
 # ── routes ────────────────────────────────────────────────────────────────
 
 
@@ -269,6 +378,7 @@ async def oauth_v2_login(
     the browser to the provider's authorization URL.
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
     # Integrated IDP is handled by its own routes (registered before this
     # router): intercept by kind and redirect to its dedicated email+password
@@ -300,36 +410,40 @@ async def oauth_v2_login(
             target = f'{target}?{urlencode(params)}'
         return RedirectResponse(target, status_code=302)
 
-    details = _oauth_details(provider)
-    auth_url = details.authorization_url
-    if not auth_url:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Provider {provider_id} has no authorization_url',
-        )
-
+    _require_oauth_provider(provider)
     state = OAuthState(
         redirect_url=redirect_url,
         mode=mode,
         nonce=str(time.time()),
     )
-    encrypted_state = _encrypt_state(state.model_dump())
+    return RedirectResponse(_authorization_url(request, provider, state))
+
+
+def _authorization_url(
+    request: Request, provider: AuthProvider, state: OAuthState
+) -> str:
+    """The provider's authorization URL for ``state``, returning to our callback."""
+    details = _oauth_details(provider)
+    auth_url = details.authorization_url
+    if not auth_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no authorization_url',
+        )
 
     web_url = get_web_url(request)
-    callback_uri = f'{web_url}/oauth/{provider_id}/callback'
-
     params = {
         'client_id': details.client_id,
-        'redirect_uri': callback_uri,
+        'redirect_uri': f'{web_url}/oauth/{provider.id}/callback',
         'response_type': 'code',
-        'state': encrypted_state,
+        'state': _encrypt_state(state.model_dump()),
     }
     scopes = details.scopes or []
     if scopes:
         params['scope'] = ' '.join(scopes)
 
     separator = '&' if '?' in auth_url else '?'
-    return RedirectResponse(f'{auth_url}{separator}{urlencode(params)}')
+    return f'{auth_url}{separator}{urlencode(params)}'
 
 
 @oauth_v2_router.get('/{provider_id}/callback')
@@ -346,22 +460,12 @@ async def oauth_v2_callback(
     signed-in user (``link`` mode) or completes a login (``login`` mode).
     """
     provider = await _get_provider(provider_id)
+    _require_enabled_provider(provider)
 
-    # Integrated IDP callbacks are handled by dedicated routes -- checked
+    # Password and SAML callbacks are handled by dedicated routes; checked
     # first, unconditionally, so this 404s on provider kind alone regardless
     # of whatever ``code``/``state`` a caller happens to send.
-    if provider.kind == PasswordProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='Password login callback must use POST with email field',
-        )
-    # SAML's ACS is a POST (the IdP's auto-submitting form) handled by
-    # ``server.routes.saml``, never this GET callback.
-    if provider.kind == SamlProviderDetails.__name__:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail='SAML callback must use POST /saml/{provider_id}/acs',
-        )
+    _require_oauth_provider(provider)
 
     if error:
         raise HTTPException(
@@ -382,6 +486,9 @@ async def oauth_v2_callback(
             detail='Invalid or tampered OAuth state',
         ) from exc
 
+    if state_data.mode == 'link':
+        link_user_id = _verify_link_state(request, state_data)
+
     web_url = get_web_url(request)
     redirect_uri = f'{web_url}/oauth/{provider_id}/callback'
 
@@ -391,12 +498,7 @@ async def oauth_v2_callback(
     )
 
     if state_data.mode == 'link':
-        if not state_data.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Link flow missing user_id in state',
-            )
-        user_id = state_data.user_id
+        user_id = link_user_id
         # Best-effort userinfo for the external subject link.
         try:
             userinfo = await _fetch_userinfo(provider, access_token)
@@ -408,6 +510,7 @@ async def oauth_v2_callback(
             user_id=uuid.UUID(user_id),
             external_subject_id=subject,
         )
+        await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _fetch_userinfo(provider, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
@@ -427,6 +530,35 @@ async def oauth_v2_callback(
         refresh_token_expires_at=refresh_exp,
     )
 
+    # ``provider`` is a login IDP whose own token exchange only ever yields
+    # a Keycloak token (see ``OAuthProviderDetails.legacy_keycloak_type``) --
+    # additionally fetch and store the real git-provider token so repo
+    # access works the same way it did for the pre-OAuth-v2 Keycloak login
+    # path (``TokenManager.store_idp_tokens``), not just the login session.
+    details = provider.details
+    if (
+        isinstance(details, OAuthProviderDetails)
+        and details.legacy_keycloak_type is not None
+    ):
+        await _store_legacy_keycloak_git_token(
+            provider_type=details.legacy_keycloak_type,
+            user_id=uuid.UUID(user_id),
+            keycloak_access_token=access_token,
+        )
+
+    # Password sessions never refresh a login token, so the middleware never
+    # starts this sync for them. Must run after the GitLab token is stored:
+    # the sync reads it from ``oauth_tokens``.
+    if (
+        is_oauth_v2_login_enabled()
+        and isinstance(details, OAuthProviderDetails)
+        and (
+            (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
+            or details.legacy_keycloak_type == ProviderType.GITLAB
+        )
+    ):
+        schedule_gitlab_repo_sync(user_id)
+
     redirect_url = state_data.redirect_url or '/'
 
     if state_data.mode == 'login':
@@ -434,6 +566,14 @@ async def oauth_v2_callback(
         # the user row so the cookie reflects the real TOS state, and
         # redirect to the TOS page when it has not been accepted yet.
         user = await UserStore.get_user_by_id(user_id)
+        if user is not None and user.email and user.email.lower() in SUPER_ADMIN_EMAILS:
+            # Escape hatch: configured emails always hold the super-admin
+            # role. Idempotent -- a no-op once already granted -- so it's
+            # cheap to self-heal on every login rather than only at account
+            # creation (``UserStore.create_user``'s first-user path), which
+            # covers both pre-existing accounts and an email added to
+            # ``SUPER_ADMIN_EMAILS`` after the account already existed.
+            await UserStore.grant_super_admin(user_id)
         has_accepted_tos = user is not None and user.accepted_tos is not None
         if not has_accepted_tos:
             encoded_redirect_url = quote(redirect_url, safe='')
@@ -450,7 +590,45 @@ async def oauth_v2_callback(
         )
     else:
         response = RedirectResponse(redirect_url, status_code=302)
+        response.delete_cookie(
+            LINK_NONCE_COOKIE,
+            path='/oauth',
+            secure=web_url.startswith('https'),
+            httponly=True,
+            samesite='lax',
+        )
     return response
+
+
+def _verify_link_state(request: Request, state: OAuthState) -> str:
+    """Return the user to link, if this browser started the link flow.
+
+    The state alone names the user, so without this an attacker could send
+    their own ``start_url`` to a victim and capture the victim's provider
+    identity and tokens. The session cookie can't be checked instead: it is
+    ``SameSite=strict`` in production, so the provider's redirect lacks it.
+    """
+    if not state.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow missing user_id in state',
+        )
+    cookie_nonce = request.cookies.get(LINK_NONCE_COOKIE)
+    if not (
+        state.nonce
+        and cookie_nonce
+        and secrets.compare_digest(cookie_nonce, state.nonce)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow was not started by this browser',
+        )
+    if time.time() - state.issued_at > LINK_STATE_TTL_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Link flow expired; start it again',
+        )
+    return state.user_id
 
 
 @oauth_v2_router.post('/{provider_id}/link')
@@ -461,9 +639,10 @@ async def oauth_v2_link(
 ):
     """Link a git provider to the signed-in user.
 
-    Returns a JSON body with a ``start_url`` to ``/oauth/{provider_id}/login``
-    in link mode, which the frontend navigates the browser to. The callback
-    completes the link.
+    Returns a JSON body with a ``start_url``: the provider's authorization
+    URL, carrying an encrypted link-mode state bound to ``user_id``. It also
+    sets a nonce cookie that the callback matches against the state. The
+    frontend navigates the browser to it; the callback completes the link.
     """
     if not user_id:
         raise HTTPException(
@@ -476,23 +655,32 @@ async def oauth_v2_link(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
         )
+    _require_enabled_provider(provider)
+    _require_oauth_provider(provider)
     web_url = get_web_url(request)
     link_state = OAuthState(
         redirect_url=f'{web_url}/settings/integrations',
         mode='link',
         user_id=user_id,
-        nonce=str(time.time()),
+        nonce=secrets.token_urlsafe(32),
+        issued_at=time.time(),
     )
-    encrypted = _encrypt_state(link_state.model_dump())
-    start_url = (
-        f'{web_url}/oauth/{provider_id}/login'
-        f'?mode=link&redirect_url={web_url}/settings/integrations'
-        f'&_state={encrypted}'
-    )
-    return JSONResponse(
+    response = JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={'start_url': start_url},
+        content={'start_url': _authorization_url(request, provider, link_state)},
     )
+    # ``lax``, unlike the session cookie, so the provider's top-level
+    # redirect back to the callback carries it.
+    response.set_cookie(
+        key=LINK_NONCE_COOKIE,
+        value=link_state.nonce,
+        max_age=LINK_NONCE_COOKIE_MAX_AGE,
+        path='/oauth',
+        secure=web_url.startswith('https'),
+        httponly=True,
+        samesite='lax',
+    )
+    return response
 
 
 @oauth_v2_router.delete('/{provider_id}', status_code=status.HTTP_204_NO_CONTENT)
@@ -522,6 +710,10 @@ async def oauth_v2_unlink(
     link = await link_store.get_by_user(user_uuid, provider.id)
     if link is not None:
         await link_store.unlink(provider.id, link.external_subject_id)
+        if isinstance(provider.details, OAuthProviderDetails):
+            await invalidate_user_id_cache(
+                provider.details.provider_type, link.external_subject_id
+            )
     token_store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
     await token_store.delete_tokens()
     return None
@@ -529,7 +721,11 @@ async def oauth_v2_unlink(
 
 @oauth_v2_router.get('/providers')
 async def oauth_v2_list_providers():
-    """List configured OAuth providers (Phase 1 introspection/debug)."""
+    """List configured OAuth providers (Phase 1 introspection/debug).
+
+    Includes disabled rows -- this endpoint exists to show an operator what is
+    configured, which is exactly what ``enabled`` is part of.
+    """
     store = AuthProviderStore()
     providers = await store.list_all()
     return {
@@ -539,10 +735,66 @@ async def oauth_v2_list_providers():
                 'kind': p.kind,
                 'title': p.title,
                 'is_idp': p.is_idp,
+                'enabled': p.enabled,
             }
             for p in providers
         ]
     }
+
+
+class GitProviderStatus(BaseModel):
+    """A git provider defined in ``auth_providers``, with whether the signed-in
+    user has linked it (i.e. has an ``oauth_tokens`` row for it).
+    """
+
+    id: int
+    title: str
+    icon: str | None
+    color: str
+    provider_type: str
+    connected: bool
+
+
+@oauth_v2_router.get('/git-providers', response_model=list[GitProviderStatus])
+async def oauth_v2_list_git_providers(
+    user_id: str = Depends(get_user_id),
+) -> list[GitProviderStatus]:
+    """Git providers the signed-in user can connect, with link status.
+
+    Backs the Integrations settings page when ``ENABLE_OAUTH_V2_LOGIN`` is on:
+    the cards come from the ``auth_providers`` git rows and the connected state
+    from ``oauth_tokens``. No secrets or provider URLs are returned.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+        )
+    user_uuid = uuid.UUID(user_id)
+    result: list[GitProviderStatus] = []
+    # Disabled rows are hidden from this list, *unless* the user already has
+    # a token for one: that connection still works (see
+    # ``SaasUserAuth._v2_get_provider_tokens``), so dropping the card would
+    # leave the user with no way to disconnect it.
+    for provider in await AuthProviderStore().get_git_providers(enabled_only=False):
+        if not isinstance(provider.details, OAuthProviderDetails):
+            continue
+        token = await OAuthTokenStore(
+            user_id=user_uuid, oauth_provider_id=provider.id
+        ).get_raw()
+        if token is None and not provider.enabled:
+            continue
+        result.append(
+            GitProviderStatus(
+                id=provider.id,
+                title=provider.title,
+                icon=provider.icon,
+                color=provider.color,
+                provider_type=provider.details.provider_type.value,
+                connected=token is not None,
+            )
+        )
+    return result
 
 
 class PublicIdpProvider(BaseModel):

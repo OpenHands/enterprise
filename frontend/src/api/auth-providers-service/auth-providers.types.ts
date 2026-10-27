@@ -23,12 +23,18 @@ export interface OAuthProviderDetails {
   kind: "OAuthProviderDetails";
   provider_type: OAuthProviderBrand;
   client_id: string;
-  client_secret: string | null;
+  client_secret?: string | null;
   authorization_url: string | null;
   token_url: string | null;
   userinfo_url: string | null;
   scopes: string[] | null;
   permitted_drift_seconds: number;
+  /** For a Keycloak-federated login row: the git provider whose real token
+   * is additionally fetched from Keycloak after login. ``null`` otherwise. */
+  legacy_keycloak_type: Exclude<OAuthProviderBrand, "enterprise_sso"> | null;
+  /** Conversation secret name a linked user's access token is exposed
+   * under (with OAuth v2 login enabled). ``null`` keeps it out. */
+  named_secret: string | null;
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the
@@ -108,10 +114,21 @@ export interface AuthProvider {
   icon: string | null;
   /** CSS color string for this provider's login button. */
   color: string;
+  /** Whether this provider may be used for a new login or link. New rows
+   * start disabled (the server defaults it to ``false``) so a
+   * half-configured provider -- e.g. a preset with placeholder URLs -- does
+   * not appear on the login screen before an admin finishes it. Disabling a
+   * provider only blocks new flows; sessions and tokens already minted
+   * through it keep working. */
+  enabled: boolean;
   /** Whether a brand-new user may be created the first time someone
    * authenticates through this provider, or whether only an already-linked
    * account may sign in through it. */
   allow_registration: boolean;
+  /** Initial value of a new user's `allow_match_by_email` flag when they are
+   * first created by a login through this provider -- see the backend's
+   * `server.auth.provider_identity.resolve_or_create_user`. */
+  allow_match_by_email: boolean;
   details: AuthProviderDetails;
   created_at: string;
   updated_at: string;
@@ -122,7 +139,11 @@ export interface CreateAuthProviderParams {
   is_idp?: boolean;
   icon?: string | null;
   color?: string;
+  /** Defaults to ``false`` server-side: enable a provider only once it is
+   * fully configured. */
+  enabled?: boolean;
   allow_registration?: boolean;
+  allow_match_by_email?: boolean;
   details: AuthProviderDetails;
 }
 
@@ -146,4 +167,28 @@ export interface PublicIdpProvider {
   icon: string | null;
   color: string;
   provider_type: OAuthProviderBrand | null;
+}
+
+/** A single ``auth_provider_users`` row for one provider, joined with the
+ * linked ``User`` -- mirrors
+ * ``server.routes.oauth_providers_admin.AuthProviderUserResponse``. Backs
+ * the admin "User Links" table
+ * (``/super-admin/auth-providers/{provider_id}/users``). */
+export interface AuthProviderUserLink {
+  id: number;
+  user_id: string;
+  email: string | null;
+  /** The linked account's display name (git profile name, else the local
+   * part of its email) -- what the admin recognizes the account by. */
+  user_name: string | null;
+  external_subject_id: string;
+  external_email: string | null;
+}
+
+/** Paginated response for ``GET /{provider_id}/users``. */
+export interface AuthProviderUserLinkPage {
+  items: AuthProviderUserLink[];
+  total: number;
+  current_page: number;
+  per_page: number;
 }

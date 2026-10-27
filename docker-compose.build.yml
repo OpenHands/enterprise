@@ -1,0 +1,14 @@
+# This file builds app and worker from this checkout instead of pulling the released image.
+x-app-build: &app-build
+  context: .
+  dockerfile: containers/app/Dockerfile
+
+services:
+  app:
+    # The local tag keeps the build from overwriting a pulled release image.
+    image: openhands/enterprise-server:local
+    build: *app-build
+
+  worker:
+    image: openhands/enterprise-server:local
+    build: *app-build

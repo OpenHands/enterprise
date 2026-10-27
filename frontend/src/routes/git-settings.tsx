@@ -1,6 +1,8 @@
 import React from "react";
-import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
+import { Trans, useTranslation } from "react-i18next";
 import { useConfig } from "#/hooks/query/use-config";
+import { useMe } from "#/hooks/query/use-me";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSettings } from "#/hooks/query/use-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -19,6 +21,7 @@ import { GitProviderConnection } from "#/components/features/settings/git-settin
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
 import { IntegrationProviderCard } from "#/components/features/settings/git-settings/integration-provider-card";
+import type { IntegrationProviderId } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { I18nKey } from "#/i18n/declaration";
 import {
   displayErrorToast,
@@ -29,6 +32,9 @@ import { GitSettingInputsSkeleton } from "#/components/features/settings/git-set
 import { useAddGitProviders } from "#/hooks/mutation/use-add-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
 import { useSlackStatus } from "#/hooks/query/use-slack-status";
+import { useOAuthV2GitProviders } from "#/hooks/query/use-oauth-v2-git-providers";
+import type { OAuthV2GitProvider } from "#/api/oauth-v2-service/oauth-v2-service.api";
+import type { Provider } from "#/types/settings";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
 import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
@@ -36,8 +42,19 @@ import {
   settingsListContainerClassName,
   settingsListDividerClassName,
 } from "#/utils/settings-list-classes";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 
 export const clientLoader = createPermissionGuard("manage_integrations");
+
+const OAUTH_V2_GIT_PROVIDER_TYPES: Provider[] = [
+  "github",
+  "gitlab",
+  "bitbucket",
+  "bitbucket_data_center",
+  "azure_devops",
+  "forgejo",
+];
 
 function GitSettingsScreen() {
   const { t } = useTranslation();
@@ -50,6 +67,7 @@ function GitSettingsScreen() {
   const { providers } = useUserProviders();
 
   const { data: config } = useConfig();
+  const { data: me } = useMe();
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -134,6 +152,13 @@ function GitSettingsScreen() {
   const existingForgejoHost = settings?.provider_tokens_set.forgejo;
 
   const isSaas = config?.app_mode === "saas";
+  const isOAuthV2 =
+    isSaas && Boolean(config?.feature_flags?.enable_oauth_v2_login);
+  const { data: oauthV2GitProviders, isSuccess: hasLoadedOAuthV2GitProviders } =
+    useOAuthV2GitProviders(isOAuthV2);
+  const oauthV2Cards = (oauthV2GitProviders ?? []).filter((row) =>
+    OAUTH_V2_GIT_PROVIDER_TYPES.includes(row.provider_type as Provider),
+  );
   const isGitHubTokenSet = providers.includes("github");
   const isGitLabTokenSet = providers.includes("gitlab");
   const isBitbucketTokenSet = providers.includes("bitbucket");
@@ -247,18 +272,24 @@ function GitSettingsScreen() {
     !bitbucketDCHostInputHasValue &&
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
+  // With OAuth v2 the cards come from `auth_providers`, not env-driven config.
+  const isEnvProviderCardVisible = isSaas && !isOAuthV2;
   const shouldRenderGitHubSection =
-    isSaas && Boolean(config?.providers_configured?.includes("github"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("github"));
   const shouldRenderGitHubConfigureButton =
     shouldRenderGitHubSection && isGitHubTokenSet && config?.github_app_slug;
-  const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderGitLabSection =
+    isEnvProviderCardVisible && Boolean(config?.gitlab_enabled);
   const shouldRenderBitbucketSection =
-    isSaas && Boolean(config?.providers_configured?.includes("bitbucket"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("bitbucket"));
   const shouldRenderBitbucketDCSection =
-    isSaas &&
+    isEnvProviderCardVisible &&
     Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
   const shouldRenderAzureDevOpsSection =
-    isSaas && Boolean(config?.providers_configured?.includes("azure_devops"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("azure_devops"));
   const shouldRenderSlackSection = isSaas && Boolean(config?.slack_enabled);
   const { data: slackStatus } = useSlackStatus(shouldRenderSlackSection);
   // A server without the status route answers with the app's HTML page.
@@ -271,17 +302,76 @@ function GitSettingsScreen() {
     config?.feature_flags?.enable_jira_dc ||
     config?.feature_flags?.enable_linear;
   const hasSaasProviderCards =
+    oauthV2Cards.length > 0 ||
     shouldRenderGitHubSection ||
     shouldRenderGitLabSection ||
     shouldRenderBitbucketSection ||
     shouldRenderBitbucketDCSection ||
     shouldRenderAzureDevOpsSection ||
     shouldRenderSlackSection;
+  // Without this the page shows only its heading when nothing is configured.
+  // Wait for the v2 list so the message doesn't flash before the cards load.
+  const shouldRenderEmptyState =
+    isSaas &&
+    (!isOAuthV2 || hasLoadedOAuthV2GitProviders) &&
+    !hasSaasProviderCards &&
+    !shouldRenderProjectManagementIntegrations;
+  // With OAuth v2, a super admin adds git providers under Auth Providers.
+  const canAddGitProvider =
+    isOAuthV2 &&
+    canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions);
 
   const connectedStatusLabel = (
     isConnected: boolean,
     disconnectedKey: I18nKey,
   ) => (isConnected ? t(I18nKey.STATUS$CONNECTED) : t(disconnectedKey));
+
+  const renderOAuthV2Card = (row: OAuthV2GitProvider) => {
+    const provider = row.provider_type as Provider;
+    const statusTestIds: Partial<Record<Provider, string>> = {
+      bitbucket_data_center: "bitbucket-dc-status-text",
+      azure_devops: "azure-devops-status-text",
+    };
+    // A single node (not several `cond && <X />` siblings): the card renders its
+    // bordered children panel whenever `children` is truthy, and an array of
+    // nulls is truthy.
+    const webhookManagers: Partial<Record<Provider, React.ReactNode>> = {
+      gitlab: <GitLabWebhookManager />,
+      bitbucket_data_center: <BitbucketDCWebhookManager />,
+      azure_devops: <AzureDevOpsWebhookManager />,
+    };
+    const webhookManager = row.connected ? webhookManagers[provider] : null;
+    return (
+      <IntegrationProviderCard
+        key={row.id}
+        provider={provider as IntegrationProviderId}
+        title={row.title}
+        isConnected={row.connected}
+        statusTestId={statusTestIds[provider] ?? `${provider}-status-text`}
+        statusLabel={connectedStatusLabel(
+          row.connected,
+          I18nKey.STATUS$NOT_CONNECTED,
+        )}
+        action={
+          <GitProviderConnection
+            provider={provider}
+            providerName={row.title}
+            isConnected={row.connected}
+            oauthProviderId={row.id}
+          >
+            {provider === "github" && config?.github_app_slug ? (
+              <ConfigureGitHubRepositoriesAnchor
+                slug={config.github_app_slug}
+                isInstalled
+              />
+            ) : null}
+          </GitProviderConnection>
+        }
+      >
+        {webhookManager}
+      </IntegrationProviderCard>
+    );
+  };
 
   return (
     <form
@@ -302,6 +392,8 @@ function GitSettingsScreen() {
                   settingsListDividerClassName,
                 )}
               >
+                {oauthV2Cards.map(renderOAuthV2Card)}
+
                 {shouldRenderGitHubSection && (
                   <IntegrationProviderCard
                     provider="github"
@@ -430,6 +522,36 @@ function GitSettingsScreen() {
                   />
                 )}
               </div>
+            </div>
+          )}
+
+          {shouldRenderEmptyState && (
+            <div
+              data-testid="integrations-empty-state"
+              className={cn(settingsListContainerClassName, "p-8 text-center")}
+            >
+              <p className="text-sm text-[var(--oh-muted)]">
+                {t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY)}{" "}
+                {canAddGitProvider ? (
+                  <Trans
+                    i18nKey={
+                      I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER
+                    }
+                    components={{
+                      a: (
+                        <Link
+                          to={SUPER_ADMIN_PATHS.authProviders}
+                          className="underline underline-offset-2"
+                        >
+                          {t(I18nKey.SUPER_ADMIN$NAV_AUTH_PROVIDERS)}
+                        </Link>
+                      ),
+                    }}
+                  />
+                ) : (
+                  t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN)
+                )}
+              </p>
             </div>
           )}
 

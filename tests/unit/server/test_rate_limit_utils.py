@@ -126,6 +126,25 @@ async def test_rate_limit_by_ip_second_request_within_window_fails(
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_skipped_when_disabled(mock_request, mock_redis):
+    """RATE_LIMITING_ENABLED=false skips Redis entirely (no connection attempt,
+    no log noise) -- for deployments with no Redis at all, e.g. Docker Compose."""
+    with (
+        patch(REDIS_PATCH, return_value=mock_redis) as mock_get_redis,
+        patch('server.utils.rate_limit_utils.RATE_LIMITING_ENABLED', False),
+        patch('server.utils.rate_limit_utils.logger') as mock_logger,
+    ):
+        await check_rate_limit_by_user_id(
+            request=mock_request, key_prefix='email_resend', user_id='test_user_id'
+        )
+
+        mock_get_redis.assert_not_called()
+        mock_redis.set.assert_not_called()
+        mock_logger.warning.assert_not_called()
+        mock_logger.info.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_redis_unavailable_fails_open(mock_request):
     """Test that rate limiting fails open when Redis is unavailable."""
     # Arrange
@@ -287,6 +306,7 @@ class TestRateLimitEnvConfiguration:
             ('RATE_LIMIT_EMAIL_RESEND_USER_SECONDS', 30),
             ('RATE_LIMIT_EMAIL_RESEND_IP_SECONDS', 60),
             ('RATE_LIMIT_ORG_INVITATION_USER_SECONDS', 6),
+            ('RATE_LIMITING_ENABLED', True),
         ],
     )
     def test_default_values(self, const_name, expected_default):
@@ -306,6 +326,7 @@ class TestRateLimitEnvConfiguration:
             'RATE_LIMIT_EMAIL_RESEND_USER_SECONDS': '55',
             'RATE_LIMIT_EMAIL_RESEND_IP_SECONDS': '66',
             'RATE_LIMIT_ORG_INVITATION_USER_SECONDS': '77',
+            'RATE_LIMITING_ENABLED': 'false',
         }
         for key, value in overrides.items():
             monkeypatch.setenv(key, value)
@@ -320,7 +341,26 @@ class TestRateLimitEnvConfiguration:
             assert rate_limit_utils.RATE_LIMIT_EMAIL_RESEND_USER_SECONDS == 55
             assert rate_limit_utils.RATE_LIMIT_EMAIL_RESEND_IP_SECONDS == 66
             assert rate_limit_utils.RATE_LIMIT_ORG_INVITATION_USER_SECONDS == 77
+            assert rate_limit_utils.RATE_LIMITING_ENABLED is False
         finally:
             # Restore module-level defaults so other tests are unaffected.
+            monkeypatch.undo()
+            importlib.reload(rate_limit_utils)
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [('true', True), ('True', True), ('1', True), ('false', False), ('0', False)],
+    )
+    def test_rate_limiting_enabled_accepts_true_and_1(
+        self, monkeypatch, env_value, expected
+    ):
+        """Accepts both 'true' and '1' per AGENTS.md's enable-toggle convention."""
+        import server.utils.rate_limit_utils as rate_limit_utils
+
+        monkeypatch.setenv('RATE_LIMITING_ENABLED', env_value)
+        try:
+            importlib.reload(rate_limit_utils)
+            assert rate_limit_utils.RATE_LIMITING_ENABLED is expected
+        finally:
             monkeypatch.undo()
             importlib.reload(rate_limit_utils)

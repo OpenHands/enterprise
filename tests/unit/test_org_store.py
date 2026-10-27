@@ -225,6 +225,23 @@ def test_merge_and_validate_settings_switches_variant_without_mongrel():
     assert merged.acp_server == 'claude-code'
 
 
+def test_merge_and_validate_settings_folds_retired_sub_agents_switch():
+    """An org-defaults diff from an older client may still carry the SDK's
+    retired ``enable_sub_agents`` switch; it lands in ``tools`` instead."""
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import selects_tool
+
+    merged = OrgStore._merge_and_validate_settings(
+        {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
+        {'enable_sub_agents': True},
+        OpenHandsAgentSettings,
+    )
+
+    assert isinstance(merged, OpenHandsAgentSettings)
+    assert merged.tools is not None
+    assert selects_tool(merged.tools, SUB_AGENT_TOOL_NAME)
+
+
 @pytest.mark.asyncio
 async def test_update_org_not_found(async_session_maker):
     # Test updating org that doesn't exist
@@ -2250,6 +2267,39 @@ class TestUsesManagedDefaultLlm:
                 'https://llm-proxy.app.all-hands.dev',
             ),
             patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_openhands_cloud_on_public_proxy_is_byok_without_gateway(self):
+        # No gateway: the public OpenHands proxy is OpenHands Cloud with the
+        # org's own key, so the gateway-off repair must leave it alone.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_openhands_model_on_public_proxy_is_managed_with_gateway(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
         ):
             assert OrgStore._uses_managed_default_llm(org) is True
 

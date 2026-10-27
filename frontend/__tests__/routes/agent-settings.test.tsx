@@ -283,7 +283,6 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     agent_settings: {
       ...MOCK_DEFAULT_USER_SETTINGS.agent_settings,
       agent_kind: "openhands",
-      enable_sub_agents: false,
       tool_concurrency_limit: toolConcurrencyLimit,
     },
   });
@@ -314,6 +313,11 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     };
     // Coerced to a number (not the raw input string) via the shared coercion.
     expect(diff.tool_concurrency_limit).toBe(4);
+    // The SDK retired ``enable_sub_agents`` and rejects a diff that carries it.
+    expect(diff).not.toHaveProperty("enable_sub_agents");
+    expect(
+      screen.queryByText("SETTINGS$SDK_SCHEMA_UNAVAILABLE"),
+    ).not.toBeInTheDocument();
   });
 
   it("rejects a tool_concurrency_limit above the cap of 10", async () => {
@@ -346,7 +350,6 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     agent_settings: {
       ...MOCK_DEFAULT_USER_SETTINGS.agent_settings,
       agent_kind: "openhands",
-      enable_sub_agents: false,
     },
   });
 

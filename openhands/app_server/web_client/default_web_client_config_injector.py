@@ -161,6 +161,12 @@ def _get_user_provisioning_enabled() -> bool:
     return USER_PROVISIONING_ENABLED
 
 
+def _get_require_verified_emails() -> bool:
+    from server.constants import REQUIRE_VERIFIED_EMAILS
+
+    return REQUIRE_VERIFIED_EMAILS
+
+
 def _get_jira_dc_oauth_host() -> str | None:
     """Hostname of the Jira Data Center server when DC OAuth is configured.
 
@@ -211,7 +217,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, and ENABLE_OAUTH_V2_LOGIN from
+    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
+    ENABLE_AGENT_CONTEXT_PAGE, and ENABLE_AGENT_PROFILES_PAGE from
     environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
@@ -250,6 +257,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
         enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
+        enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
+        enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
     )
 
 
@@ -344,6 +353,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     user_provisioning_enabled: bool = Field(
         default_factory=_get_user_provisioning_enabled
     )
+    require_verified_emails: bool = Field(default_factory=_get_require_verified_emails)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -421,6 +431,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
             user_provisioning_enabled=self.user_provisioning_enabled,
+            require_verified_emails=self.require_verified_emails,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

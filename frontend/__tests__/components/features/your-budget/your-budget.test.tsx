@@ -154,8 +154,10 @@ describe("YourBudget", () => {
 
         // Assert
         expect(
-          await screen.findByTestId("your-budget-allocation"),
-        ).toHaveTextContent(note);
+          within(
+            await screen.findByTestId("your-budget-allocation"),
+          ).getByLabelText(note),
+        ).toBeInTheDocument();
       },
     );
 
@@ -181,8 +183,10 @@ describe("YourBudget", () => {
 
         // Assert
         expect(
-          await screen.findByTestId("your-budget-remaining"),
-        ).toHaveTextContent(projection);
+          within(
+            await screen.findByTestId("your-budget-remaining"),
+          ).getByLabelText(projection),
+        ).toBeInTheDocument();
       },
     );
 
@@ -206,6 +210,116 @@ describe("YourBudget", () => {
       expect(await screen.findByTestId("your-budget-spent")).toHaveTextContent(
         "SETTINGS$YOUR_BUDGET_SPEND_AS_OF",
       );
+    });
+  });
+
+  describe("effective remaining budget", () => {
+    // The organization has $87.60 left while the member still has $150.
+    const createOrgBudget = (overrides: Partial<OrgMyBudget> = {}) =>
+      createBudget({
+        org_monthly_limit: 1000,
+        org_current_spend: 912.4,
+        ...overrides,
+      });
+
+    const selectOrganizationBudget = async () => {
+      const toggle = await screen.findByTestId("your-budget-scope-toggle");
+      await userEvent.click(
+        within(toggle).getByRole("button", {
+          name: "SETTINGS$YOUR_BUDGET_SCOPE_ORG",
+        }),
+      );
+    };
+
+    it("should show the lesser of the organization's and your own remaining budget as available", async () => {
+      // Arrange & Act
+      renderYourBudget(createOrgBudget());
+
+      // Assert
+      expect(
+        await screen.findByTestId("your-budget-available"),
+      ).toHaveTextContent("$87.60");
+      expect(screen.getByTestId("your-budget-remaining")).toHaveTextContent(
+        "$150.00",
+      );
+    });
+
+    it("should show the organization's figures and status when Organization Budget is selected", async () => {
+      // Arrange
+      renderYourBudget(createOrgBudget());
+      await screen.findByTestId("your-budget-available");
+
+      // Act
+      await selectOrganizationBudget();
+
+      // Assert
+      const allocation = screen.getByTestId("your-budget-allocation");
+      const remaining = screen.getByTestId("your-budget-remaining");
+      expect(allocation).toHaveTextContent("$1.0k");
+      expect(
+        within(allocation).getByLabelText(
+          "SETTINGS$YOUR_BUDGET_ORG_ALLOCATION_HELP",
+        ),
+      ).toBeInTheDocument();
+      expect(remaining).toHaveTextContent("$87.60");
+      expect(
+        within(remaining).getByLabelText(
+          "SETTINGS$YOUR_BUDGET_ORG_REMAINING_HELP",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("your-budget-status")).toHaveTextContent(
+        "SETTINGS$YOUR_BUDGET_STATUS_OVER_90 · 91%",
+      );
+    });
+
+    it("should fall back to your own remaining budget when the organization's figures are missing", async () => {
+      // Arrange & Act
+      renderYourBudget(createBudget());
+
+      // Assert
+      expect(
+        await screen.findByTestId("your-budget-available"),
+      ).toHaveTextContent("$150.00");
+    });
+
+    it("should show no organization limit when the organization's figures are missing", async () => {
+      // Arrange
+      renderYourBudget(createBudget());
+      await screen.findByTestId("your-budget-available");
+
+      // Act
+      await selectOrganizationBudget();
+
+      // Assert
+      expect(screen.getByTestId("your-budget-allocation")).toHaveTextContent(
+        "SETTINGS$YOUR_BUDGET_NO_LIMIT",
+      );
+      expect(screen.getByTestId("your-budget-remaining")).toHaveTextContent(
+        "—",
+      );
+      expect(screen.queryByTestId("your-budget-meter")).not.toBeInTheDocument();
+    });
+
+    it("should use the organization's remaining budget when you have no personal limit", async () => {
+      // Arrange & Act
+      renderYourBudget(
+        createOrgBudget({ monthly_limit: null, is_disabled: true }),
+      );
+
+      // Assert
+      expect(
+        await screen.findByTestId("your-budget-available"),
+      ).toHaveTextContent("$87.60");
+    });
+
+    it("should show nothing available once the organization budget is used up", async () => {
+      // Arrange & Act
+      renderYourBudget(createOrgBudget({ org_current_spend: 1200 }));
+
+      // Assert
+      expect(
+        await screen.findByTestId("your-budget-available"),
+      ).toHaveTextContent("$0.00");
     });
   });
 

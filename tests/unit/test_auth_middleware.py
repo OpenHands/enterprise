@@ -524,3 +524,89 @@ async def test_middleware_skips_mcp_oauth_callback(
     # Assert - middleware should skip auth check and call next
     assert result == mock_response
     mock_call_next.assert_called_once_with(mock_request)
+
+
+# ── REQUIRE_VERIFIED_EMAILS gating ───────────────────────────────────────
+
+
+def _unverified_user_auth():
+    mock_user_auth = MagicMock(spec=SaasUserAuth)
+    mock_user_auth.refreshed = False
+    mock_user_auth.auth_type = AuthType.COOKIE
+    mock_user_auth.oauth_v2_cookie = False
+    mock_user_auth.email_verified = False
+    return mock_user_auth
+
+
+@pytest.mark.asyncio
+async def test_middleware_blocks_unverified_email_when_required(
+    middleware, mock_request, mock_response
+):
+    """When ``REQUIRE_VERIFIED_EMAILS`` is true, an unverified user is
+    rejected with 403 outside the email/settings/logout/authenticate
+    allow-list."""
+    with _mock_jwt_decode():
+        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
+        mock_request.url = MagicMock()
+        mock_request.url.hostname = 'localhost'
+        mock_request.url.path = '/api/some/endpoint'
+        mock_call_next = AsyncMock(return_value=mock_response)
+
+        with (
+            patch('server.middleware.REQUIRE_VERIFIED_EMAILS', True),
+            patch(
+                'server.middleware.SetAuthCookieMiddleware._get_user_auth',
+                return_value=_unverified_user_auth(),
+            ),
+        ):
+            result = await middleware(mock_request, mock_call_next)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == status.HTTP_403_FORBIDDEN
+        assert decode_body(result.body).find('EmailNotVerifiedError') > 0
+
+
+@pytest.mark.asyncio
+async def test_middleware_allows_unverified_email_by_default(
+    middleware, mock_request, mock_response
+):
+    """``REQUIRE_VERIFIED_EMAILS`` defaults to false, so an unverified user
+    is not blocked."""
+    with _mock_jwt_decode():
+        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
+        mock_request.url = MagicMock()
+        mock_request.url.hostname = 'localhost'
+        mock_request.url.path = '/api/some/endpoint'
+        mock_call_next = AsyncMock(return_value=mock_response)
+
+        with patch(
+            'server.middleware.SetAuthCookieMiddleware._get_user_auth',
+            return_value=_unverified_user_auth(),
+        ):
+            result = await middleware(mock_request, mock_call_next)
+
+        assert result == mock_response
+
+
+@pytest.mark.asyncio
+async def test_middleware_allows_unverified_email_when_disabled_explicitly(
+    middleware, mock_request, mock_response
+):
+    """An explicit ``REQUIRE_VERIFIED_EMAILS = False`` also does not block."""
+    with _mock_jwt_decode():
+        mock_request.cookies = {'keycloak_auth': 'test_cookie'}
+        mock_request.url = MagicMock()
+        mock_request.url.hostname = 'localhost'
+        mock_request.url.path = '/api/some/endpoint'
+        mock_call_next = AsyncMock(return_value=mock_response)
+
+        with (
+            patch('server.middleware.REQUIRE_VERIFIED_EMAILS', False),
+            patch(
+                'server.middleware.SetAuthCookieMiddleware._get_user_auth',
+                return_value=_unverified_user_auth(),
+            ),
+        ):
+            result = await middleware(mock_request, mock_call_next)
+
+        assert result == mock_response

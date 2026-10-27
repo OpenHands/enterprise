@@ -8,6 +8,8 @@ repos:
         exclude: ^(docs/|modules/|python/|openhands-ui/)
       - id: check-yaml
         args: ["--allow-multiple-documents"]
+        # Compose overlays use Compose-only tags such as !reset, which check-yaml cannot parse.
+        exclude: ^docker-compose\..+\.yml$
       - id: debug-statements
 
 
@@ -55,10 +57,12 @@ repos:
             types-Markdown,
             types-redis,
             types-defusedxml,
-            pydantic,
+            # Pinned to the version in uv.lock: pydantic 2.14 types TypeAdapter
+            # with TypeForm, which this mypy cannot infer from list[...] expressions.
+            "pydantic==2.13.5",
             lxml,
-            "openhands-sdk==1.39.1",
-            "openhands-tools==1.39.1",
+            "openhands-sdk==1.58.1",
+            "openhands-tools==1.58.1",
             "sqlalchemy==2.0.48",
             "stripe==11.6.0",
             "pygithub==2.6.1",

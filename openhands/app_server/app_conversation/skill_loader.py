@@ -31,7 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
+from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ class SkillInfo(BaseModel):
     name: str
     content: str
     triggers: list[str] = []
+    paths: list[str] = []
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -435,6 +436,18 @@ def parse_marketplace_source(source: str) -> tuple[str, str]:
 # parse_marketplace_source, never treated as scp-style host:path.
 _PROVIDER_SOURCE_PREFIXES = ('github:', 'gitlab:', 'bitbucket:', 'azure-devops:')
 
+# Source forms the agent-server clones (mirrors the SDK's parse_extension_source).
+# Anything else is read as a path in the sandbox, or not loaded at all.
+_AGENT_SERVER_REPOSITORY_RE = re.compile(
+    r'^(?:github:|https?://|git://|file://|[\w.-]+@[\w.-]+:)'
+)
+
+
+def is_agent_server_repository_source(source: str) -> bool:
+    """Whether the agent-server clones ``source`` rather than reading a path."""
+    return bool(_AGENT_SERVER_REPOSITORY_RE.match(source.strip()))
+
+
 _SOURCE_PREFIX_PROVIDERS = {
     'github:': ProviderType.GITHUB,
     'gitlab:': ProviderType.GITLAB,
@@ -599,6 +612,31 @@ async def azure_devops_marketplace_orgs(
         org = matched[1].split('/')[0]
         if org not in orgs:
             orgs.append(org)
+    return orgs
+
+
+async def azure_devops_user_orgs(
+    user_context: UserContext,
+    selected_repository: str | None = None,
+) -> list[str]:
+    """Return every Azure DevOps organization the user can reach.
+
+    Covers the organizations the user's Azure DevOps token is installed on, plus
+    the selected repository's organization when one is given, so the git
+    credential helper is installed for all of the user's Azure DevOps repos (not
+    only the selected one). Failures degrade to the orgs already collected.
+    """
+    orgs: list[str] = []
+    if selected_repository and len(selected_repository.split('/')) >= 2:
+        orgs.append(selected_repository.split('/')[0])
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        if ProviderType.AZURE_DEVOPS in provider_handler.provider_tokens:
+            for org in await provider_handler.get_azure_devops_organizations():
+                if org and org not in orgs:
+                    orgs.append(org)
+    except Exception as exc:
+        _logger.debug(f'Failed to enumerate Azure DevOps organizations: {exc}')
     return orgs
 
 
@@ -846,9 +884,13 @@ def _convert_skill_info_to_skill(skill_info: SkillInfo) -> Skill:
     Returns:
         Skill object
     """
-    trigger: TaskTrigger | KeywordTrigger | None = None
+    trigger: PathTrigger | TaskTrigger | KeywordTrigger | None = None
 
-    if skill_info.triggers:
+    if skill_info.paths:
+        # Path-triggered rule: injected on file-touch. As in the SDK loader,
+        # paths take precedence over keyword/task triggers.
+        trigger = PathTrigger(paths=skill_info.paths)
+    elif skill_info.triggers:
         # Determine trigger type based on content
         if any(t.startswith('/') for t in skill_info.triggers):
             trigger = TaskTrigger(triggers=skill_info.triggers)

@@ -71,6 +71,17 @@ class WebClientFeatureFlags(BaseModel):
     # create/refresh) and show a "Please enable LiteLLM to use this
     # feature" placeholder instead. Set from the ENABLE_LEGACY_LITELLM env var.
     enable_litellm: bool = True
+    # OHE-3456 settings pages, hidden until bug bash is complete. Each gates
+    # one Personal Settings entry: ``enable_agent_context_page`` shows the
+    # dedicated Agent Context page (``/settings/agent-context``) and
+    # ``enable_agent_profiles_page`` replaces ``Agent`` with Agent Profiles
+    # (``/settings/agents``) and, because that Agent page hosted the memory
+    # toggle, also shows the Agent Context page. Set from ENABLE_AGENT_CONTEXT_PAGE and
+    # ENABLE_AGENT_PROFILES_PAGE (or the OH_WEB_CLIENT_FEATURE_FLAGS_* form).
+    # Default False so every existing install keeps today's settings UI.
+    # UI-level only -- the agent-profiles API is not gated.
+    enable_agent_context_page: bool = False
+    enable_agent_profiles_page: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -121,6 +132,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # True when USER_PROVISIONING_ENABLED registers the admin provision-user
     # route; the Super Admin Users page hides "Provision User" otherwise.
     user_provisioning_enabled: bool = False
+    # Mirrors REQUIRE_VERIFIED_EMAILS: only then does the server block
+    # unverified users, so the UI should only restrict them in that case.
+    require_verified_emails: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

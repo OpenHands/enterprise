@@ -8,6 +8,14 @@ from pydantic import SecretStr
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_models import Settings as DataSettings
 
+_ACP_ROW = {'schema_version': 9, 'agent_kind': 'acp', 'acp_server': 'claude-code'}
+
+
+_SUB_AGENT_TOOLS = [
+    {'name': name, 'params': {}}
+    for name in ('terminal', 'file_editor', 'task_tracker', 'task_tool_set')
+]
+
 
 def _agent_value(settings: Settings, key: str):
     """Navigate into settings.agent_settings using a dot-separated key."""
@@ -1253,11 +1261,9 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         session.commit()
 
     acp_settings = _make_settings(
-        model='anthropic/claude-sonnet-4',
-        base_url='https://api.anthropic.com/v1',
-        api_key='member1-byor-key',
         agent_kind='acp',
         acp_server='codex',
+        acp_model='gpt-5.5/high',
     )
 
     # Act - member 1 saves their own settings.
@@ -1292,7 +1298,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
     member1_diff = members[member1_user_id].agent_settings_diff
     assert member1_diff['agent_kind'] == 'acp'
     assert member1_diff['acp_server'] == 'codex'
-    assert member1_diff['llm']['model'] == 'anthropic/claude-sonnet-4'
+    assert member1_diff['acp_model'] == 'gpt-5.5/high'
 
 
 @pytest.mark.asyncio
@@ -3032,7 +3038,7 @@ def test_profile_sync_skips_non_openhands_agent_kind():
 
 
 async def _seed_litellm_off_member(
-    async_session_maker, fixture, *, org_llm: dict, member_key: str
+    async_session_maker, fixture, *, org_llm: dict, member_key: str | None
 ) -> None:
     """One member in the shape signup leaves: model on the org, key on the member."""
     from sqlalchemy import select, text
@@ -3065,8 +3071,11 @@ async def _seed_litellm_off_member(
         await session.commit()
 
 
-async def _launch_settings(async_session_maker, user_id, *, litellm: bool):
+async def _launch_settings(
+    async_session_maker, user_id, *, litellm: bool, install_default: bool = True
+):
     store = SaasSettingsStore(str(user_id))
+    direct = not litellm and install_default
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch('storage.user_store.a_session_maker', async_session_maker),
@@ -3075,16 +3084,16 @@ async def _launch_settings(async_session_maker, user_id, *, litellm: bool):
         patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
         patch(
             'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
-            None if litellm else 'direct',
+            'direct' if direct else None,
         ),
         patch(
             'server.constants.OPENHANDS_DEFAULT_LLM_MODEL',
-            None if litellm else 'anthropic/claude-x',
+            'anthropic/claude-x' if direct else None,
         ),
         patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
         patch(
             'server.constants.OPENHANDS_DEFAULT_LLM_API_KEY',
-            None if litellm else 'sk-install',
+            'sk-install' if direct else None,
         ),
     ):
         return await store.load(resolve_agent_profile=True)
@@ -3179,3 +3188,432 @@ def test_managed_llm_key_config_treats_linked_llm_as_byok():
         )
         is None
     )
+
+
+def test_managed_llm_key_config_treats_openhands_cloud_as_byok_without_gateway():
+    """With the LiteLLM gateway off, an ``openhands/`` model on the public
+    OpenHands proxy is OpenHands Cloud with a user-owned key, so it is not a
+    managed key. Without an explicit base_url it still counts as managed, so
+    the gateway-off repair of leftover defaults is unchanged."""
+    from storage.saas_settings_store import managed_llm_key_config_from_model
+
+    with patch('server.constants.ENABLE_LEGACY_LITELLM', False):
+        assert (
+            managed_llm_key_config_from_model(
+                'openhands/claude', 'https://llm-proxy.app.all-hands.dev'
+            )
+            is None
+        )
+        assert managed_llm_key_config_from_model('openhands/claude', None) is not None
+
+
+@pytest.mark.asyncio
+async def test_member_diff_without_tools_keeps_the_org_tool_selection(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        assert org is not None
+        org.agent_settings = {
+            'schema_version': 9,
+            'tools': [{'name': 'terminal', 'params': {}}],
+        }
+        admin = next(
+            m for m in org.org_members if m.user_id == fixture['admin_user_id']
+        )
+        admin.agent_settings_diff = {
+            'schema_version': 1,
+            'llm': {'model': 'openhands/claude-opus-4-5-20251101'},
+        }
+        session.commit()
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert [tool.name for tool in loaded.agent_settings.tools or []] == ['terminal']
+
+
+async def _seed_admin_diff(session_maker, fixture, diff):
+    from storage.org import Org
+
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        assert org is not None
+        admin = next(
+            m for m in org.org_members if m.user_id == fixture['admin_user_id']
+        )
+        admin.agent_settings_diff = {**admin.agent_settings_diff, **diff}
+        session.commit()
+
+
+def _patched_sessions(async_session_maker):
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    for target in (
+        'storage.saas_settings_store.a_session_maker',
+        'storage.user_store.a_session_maker',
+        'storage.org_store.a_session_maker',
+    ):
+        stack.enter_context(patch(target, async_session_maker))
+    return stack
+
+
+@pytest.mark.asyncio
+async def test_retired_tool_switches_do_not_outlive_a_save(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_admin_diff(
+        session_maker,
+        fixture,
+        {
+            'schema_version': 6,
+            'enable_sub_agents': False,
+            'enable_switch_llm_tool': False,
+        },
+    )
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+        assert loaded is not None
+        assert [t.name for t in loaded.agent_settings.tools or []] == [
+            'terminal',
+            'file_editor',
+            'task_tracker',
+            'browser_tool_set',
+        ]
+        loaded.update({'agent_settings_diff': {'tools': None}})
+        await store.store(loaded)
+        reloaded = await store.load()
+
+    assert reloaded is not None
+    assert reloaded.agent_settings.tools is None
+    with session_maker() as session:
+        admin = session.get(OrgMember, (fixture['org_id'], fixture['admin_user_id']))
+        assert admin is not None
+        assert 'enable_sub_agents' not in admin.agent_settings_diff
+        assert 'enable_switch_llm_tool' not in admin.agent_settings_diff
+
+
+@pytest.mark.asyncio
+async def test_unversioned_legacy_empty_member_tools_load_as_the_standard_set(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    fixture = org_with_multiple_members_fixture
+    await _seed_admin_diff(session_maker, fixture, {'tools': []})
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.tools is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sub_agents', [False, True], ids=['off', 'on'])
+async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
+    session_maker, async_session_maker, org_with_multiple_members_fixture, sub_agents
+):
+    """A save writes schema 9, so the older row's switches must not outlive it.
+
+    The org and member rows are shaped as enterprise 1.72 left them on a live
+    install: schema 6, still carrying both retired switches.
+    """
+    from sqlalchemy import update
+
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    switches = {'enable_sub_agents': sub_agents, 'enable_switch_llm_tool': True}
+    with session_maker() as session:
+        session.execute(
+            update(Org)
+            .where(Org.id == fixture['org_id'])
+            .values(
+                agent_settings={
+                    'schema_version': 6,
+                    'agent_kind': 'openhands',
+                    'enable_sub_agents': False,
+                    'enable_switch_llm_tool': True,
+                }
+            )
+        )
+        session.commit()
+    store, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        fixture,
+        {
+            'schema_version': 6,
+            'agent_kind': 'openhands',
+            'tool_concurrency_limit': 1,
+            **switches,
+        },
+    )
+    assert loaded is not None
+    loaded.update({'agent_settings_diff': {'tool_concurrency_limit': 3}})
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        await store.store(loaded)
+        reloaded = await store.load()
+
+    assert reloaded is not None
+    assert reloaded.agent_settings.tool_concurrency_limit == 3
+    tools = reloaded.agent_settings.tools
+    assert (
+        tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME)
+    ) is sub_agents
+    with session_maker() as session:
+        row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
+        assert row is not None
+        assert row.agent_settings_diff['schema_version'] == 9
+        assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
+
+
+@pytest.mark.asyncio
+async def test_managed_key_helpers_treat_acp_members_as_not_managed(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """ACP agents make their own model calls, so there is no managed key."""
+    from storage.saas_settings_store import ManagedLlmKeyStatus
+
+    store, loaded = await _load_member(
+        session_maker, async_session_maker, org_with_multiple_members_fixture, _ACP_ROW
+    )
+    assert loaded is not None
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        assert await store.get_current_managed_llm_key() is None
+        assert await store.clear_stale_org_level_llm_key_if_managed() is False
+        rotation = await store.rotate_managed_llm_key()
+
+    assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
+
+
+@pytest.mark.asyncio
+async def test_load_acp_member_while_org_default_profile_is_active(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """The active ``Default`` profile sets the LLM for the OpenHands agent only."""
+    profiles = {
+        'profiles': {
+            'Default': {'model': 'openhands/claude-sonnet-4-5-20250929'},
+        },
+        'active': 'Default',
+    }
+    with patch(
+        'storage.saas_settings_store.get_openhands_default_model_name',
+        AsyncMock(return_value='claude-sonnet-4-5-20250929'),
+    ):
+        _, loaded = await _load_member(
+            session_maker,
+            async_session_maker,
+            org_with_multiple_members_fixture,
+            _ACP_ROW,
+            org_profiles=profiles,
+        )
+
+    assert loaded is not None
+    assert loaded.agent_settings.agent_kind == 'acp'
+    assert loaded.llm_profiles.active == 'Default'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'member_diff, agent_kind, sub_agents',
+    [
+        # SDK 1.50 (enterprise 1.71 and earlier) kept sub-agents as a switch.
+        (
+            {'schema_version': 6, 'agent_kind': 'openhands', 'enable_sub_agents': True},
+            'openhands',
+            True,
+        ),
+        (
+            {
+                'schema_version': 6,
+                'agent_kind': 'openhands',
+                'enable_sub_agents': False,
+            },
+            'openhands',
+            False,
+        ),
+        # SDK 1.55 (enterprise 1.72) folded the switch into ``tools``.
+        (
+            {'schema_version': 8, 'agent_kind': 'openhands', 'tools': _SUB_AGENT_TOOLS},
+            'openhands',
+            True,
+        ),
+        # ACP rows carried an unused ``llm`` before SDK 1.51, and none from 1.56.
+        (
+            {
+                'schema_version': 6,
+                'agent_kind': 'acp',
+                'acp_server': 'claude-code',
+                'llm': {'model': 'gpt-5.6'},
+            },
+            'acp',
+            False,
+        ),
+        (_ACP_ROW, 'acp', False),
+        # A schema-9 row that kept an older row's switches, and a diff with no
+        # schema version: merged over the org's schema-9 dump, the SDK no longer
+        # migrates either.
+        (
+            {
+                'schema_version': 9,
+                'agent_kind': 'openhands',
+                'enable_sub_agents': False,
+                'enable_switch_llm_tool': True,
+            },
+            'openhands',
+            False,
+        ),
+        ({'enable_sub_agents': True}, 'openhands', True),
+    ],
+    ids=[
+        'sdk1.50-sub-agents-on',
+        'sdk1.50-sub-agents-off',
+        'sdk1.55',
+        'sdk1.50-acp',
+        'sdk1.56-acp',
+        'schema9-with-switches',
+        'no-schema-version',
+    ],
+)
+async def test_load_reads_member_rows_saved_by_each_sdk(
+    session_maker,
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    member_diff,
+    agent_kind,
+    sub_agents,
+):
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import selects_tool
+
+    _, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        org_with_multiple_members_fixture,
+        member_diff,
+    )
+
+    assert loaded is not None
+    assert loaded.agent_settings.agent_kind == agent_kind
+    tools = getattr(loaded.agent_settings, 'tools', None)
+    assert (
+        tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME)
+    ) is sub_agents
+
+
+async def _load_member(
+    session_maker, async_session_maker, fixture, member_diff, org_profiles=None
+):
+    """Store ``member_diff`` as member1's row, then load member1's settings."""
+    from storage.org import Org
+
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        assert org is not None
+        if org_profiles is not None:
+            org.llm_profiles = org_profiles
+        member = next(
+            m for m in org.org_members if m.user_id == fixture['member1_user_id']
+        )
+        member.agent_settings_diff = member_diff
+        session.commit()
+
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        return store, await store.load()
+
+
+@pytest.mark.asyncio
+async def test_load_with_direct_install_default_still_seeds_default_profile(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """An install default is a default LLM, so a profile-less org on a
+    LiteLLM-off install still gets its Default profile."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker,
+        fixture,
+        org_llm={'model': 'anthropic/claude-x', 'base_url': None},
+        member_key='sk-install',
+    )
+
+    await _launch_settings(async_session_maker, fixture['admin_user_id'], litellm=False)
+
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+    assert set(org.llm_profiles['profiles']) == {'Default'}
+    assert org.llm_profiles['profiles']['Default']['model'] == 'anthropic/claude-x'
+
+
+@pytest.mark.parametrize(
+    'org_llm,member_key',
+    [
+        pytest.param(
+            {'model': 'gpt-5.6', 'base_url': None},
+            None,
+            id='new org on the SDK placeholder',
+        ),
+        pytest.param(
+            {'model': 'anthropic/claude-sonnet-4-5-20250929', 'base_url': None},
+            'sk-user',
+            id='org whose first LLM was just saved',
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_load_without_a_default_llm_adds_no_default_profile(
+    async_session_maker, org_with_multiple_members_fixture, org_llm, member_key
+):
+    """With no LiteLLM gateway and no install default there is no default LLM,
+    so load() must not add a Default profile nobody created (OHE-3662)."""
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_litellm_off_member(
+        async_session_maker, fixture, org_llm=org_llm, member_key=member_key
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker,
+        fixture['admin_user_id'],
+        litellm=False,
+        install_default=False,
+    )
+
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+    assert loaded is not None
+    assert loaded.llm_profiles.profiles == {}
+    assert not (org.llm_profiles or {}).get('profiles')

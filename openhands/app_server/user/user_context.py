@@ -8,6 +8,7 @@ from openhands.app_server.integrations.provider import (
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.user.user_models import (
+    NamedOAuthSecrets,
     UserInfo,
 )
 from openhands.sdk.secret import SecretSource
@@ -62,7 +63,10 @@ class UserContext(ABC):
 
     @abstractmethod
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
         """Get an authenticated git URL for a repository.
 
@@ -70,6 +74,10 @@ class UserContext(ABC):
             repository: Repository name (owner/repo)
             is_optional: If True, logs at debug level instead of error level
                 when repository is not found. Use for optional repositories.
+            specified_provider: If set, resolve only against this provider
+                instead of trying every token in turn. This prevents a
+                host-blind resolver from claiming a same-named repository on
+                the wrong provider.
         """
 
     @abstractmethod
@@ -103,6 +111,18 @@ class UserContext(ABC):
     @abstractmethod
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        """Conversation secrets named by the OAuth providers the user linked.
+
+        ``None`` means named OAuth secrets are not in use, so provider tokens
+        are exposed as ``<PROVIDER_TYPE>_TOKEN`` secrets instead.
+        """
+        return None
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's current access token for a named OAuth secret's provider."""
+        return None
 
     async def get_provider_handler(self) -> ProviderHandler:
         """Get a ProviderHandler bound to this user's provider tokens.

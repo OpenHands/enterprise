@@ -334,3 +334,9 @@ def test_cloud_oauth_client_registers_the_public_callback():
     )
 
     assert oauth.context.client_metadata.redirect_uris == [AnyUrl(CALLBACK_URL)]
+
+
+def test_oauth_client_is_registered_as_openhands_by_default():
+    kwargs = mcp_oauth_router._oauth_client_kwargs(None, oauth_token_storage=None)
+
+    assert kwargs['client_name'] == 'OpenHands'

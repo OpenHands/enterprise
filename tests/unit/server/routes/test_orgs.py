@@ -4519,6 +4519,32 @@ async def test_member_reads_own_budget_without_admin_privileges(own_budget_api, 
 
 
 @pytest.mark.asyncio
+async def test_own_budget_includes_the_organization_figures(own_budget_api, org_id):
+    """
+    GIVEN: The member's budget comes with the organization's limit and cycle spend
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: Both organization figures are returned alongside the member's own
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+    budget_service.get_my_budget.return_value = {
+        'enabled': True,
+        'monthly_limit': 50.0,
+        'current_spend': 10.0,
+        'org_monthly_limit': 1000.0,
+        'org_current_spend': 912.4,
+    }
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['org_monthly_limit'] == 1000.0
+    assert response.json()['org_current_spend'] == 912.4
+
+
+@pytest.mark.asyncio
 async def test_own_budget_is_always_read_for_the_authenticated_user(
     own_budget_api, org_id, target_user_id
 ):
@@ -4703,3 +4729,23 @@ async def test_user_usage_counts_conversations_in_the_requested_time_window(
     usage_service.get_user_usage_stats.assert_awaited_once_with(
         org_id=uuid.UUID(org_id), limit=500, offset=0, time_window='7d'
     )
+
+
+@pytest.mark.asyncio
+async def test_org_update_key_rotation_skips_acp_admin():
+    """ACP settings have no ``llm``, so there is no managed key to rotate."""
+    from openhands.app_server.settings.settings_models import Settings
+    from openhands.sdk.settings import ACPAgentSettings
+    from server.routes.orgs import _maybe_rotate_managed_key_for_org_update
+
+    settings_store = MagicMock()
+    settings_store.load = AsyncMock(
+        return_value=Settings(agent_settings=ACPAgentSettings(acp_server='claude-code'))
+    )
+    with patch(
+        'openhands.app_server.settings.settings_router._maybe_rotate_stale_managed_key',
+        new_callable=AsyncMock,
+    ) as rotate:
+        await _maybe_rotate_managed_key_for_org_update(settings_store, TEST_USER_ID)
+
+    rotate.assert_not_awaited()

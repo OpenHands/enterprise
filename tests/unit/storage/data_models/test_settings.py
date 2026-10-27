@@ -68,7 +68,7 @@ def test_settings_loads_persisted_settings_via_sdk_loaders():
             conversation_settings={'legacy': True},
         )
 
-    agent_loader.assert_called_once_with({'legacy': True})
+    agent_loader.assert_called_once_with({'legacy': True}, persisted=True)
     conversation_loader.assert_called_once_with({'legacy': True})
     assert settings.agent_settings.agent == 'migrated-agent'
     assert settings.conversation_settings.max_iterations == 77
@@ -1653,6 +1653,33 @@ class TestMarketplaceRegistration:
         with pytest.raises(ValidationError, match="cannot contain '..'"):
             MarketplaceRegistration(name='test', source='../escape/path')
 
+    @pytest.mark.parametrize(
+        'source, expected',
+        [
+            ('github.com/acme/skills', 'https://github.com/acme/skills'),
+            ('github.com/acme/skills.git', 'https://github.com/acme/skills.git'),
+            (
+                ' gitlab.example.com/group/skills ',
+                'https://gitlab.example.com/group/skills',
+            ),
+            (
+                'bitbucket.example.com:7990/scm/proj/skills.git',
+                'https://bitbucket.example.com:7990/scm/proj/skills.git',
+            ),
+        ],
+    )
+    def test_source_validation_adds_https_to_host_without_scheme(
+        self, source, expected
+    ):
+        """A repository address without a scheme is stored as an https URL."""
+        assert MarketplaceRegistration(name='test', source=source).source == expected
+
+    @pytest.mark.parametrize(
+        'source', ['marketplaces/internal', 'skills', 'my_dir/v1.2/skills']
+    )
+    def test_source_validation_keeps_plain_relative_paths(self, source):
+        assert MarketplaceRegistration(name='test', source=source).source == source
+
 
 # --- Tests for Settings.registered_marketplaces ---
 
@@ -1918,3 +1945,72 @@ def test_git_full_clone_defaults_to_false_and_updates():
 
     assert settings.git_full_clone is True
     assert settings.model_dump(mode='json')['git_full_clone'] is True
+
+
+class TestMarketplaceSourceWithoutScheme:
+    """Sources entered or saved without a scheme load as https URLs."""
+
+    def test_stored_host_without_scheme_loads_as_https(self):
+        from openhands.app_server.settings.settings_models import (
+            validate_and_convert_marketplaces,
+        )
+
+        result = validate_and_convert_marketplaces(
+            [
+                {
+                    'name': 'acme',
+                    'source': 'github.com/acme/skills',
+                    'auto_load': True,
+                },
+                {'name': 'local', 'source': 'marketplaces/internal'},
+            ]
+        )
+
+        assert [(m.name, m.source, m.auto_load) for m in result] == [
+            ('acme', 'https://github.com/acme/skills', True),
+            ('local', 'marketplaces/internal', False),
+        ]
+
+    def test_settings_load_upgrades_stored_host_without_scheme(self):
+        """Loading saved settings must not fail on a source stored without a scheme."""
+        settings = Settings(
+            registered_marketplaces=[
+                {
+                    'name': 'mine',
+                    'source': 'github.com/owner/repo',
+                    'auto_load': True,
+                    'scope': 'personal',
+                }
+            ],
+            inherited_marketplaces=[
+                {'name': 'org', 'source': 'github.com/acme/skills', 'scope': 'org'}
+            ],
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )
+        assert settings.inherited_marketplaces[0].source == (
+            'https://github.com/acme/skills'
+        )
+
+    def test_settings_update_saves_host_without_scheme_as_https(self):
+        settings = Settings()
+        settings.update(
+            {
+                'registered_marketplaces': [
+                    {'name': 'mine', 'source': 'github.com/owner/repo'}
+                ]
+            }
+        )
+
+        assert settings.registered_marketplaces[0].source == (
+            'https://github.com/owner/repo'
+        )
+
+
+def test_settings_sandbox_grouping_strategy_defaults_to_none():
+    """None means no org/user override — the effective strategy is resolved by
+    LiveStatusAppConversationService._get_sandbox_grouping_strategy(), which
+    falls back to the deployment-configured default and then NO_GROUPING."""
+    assert Settings().sandbox_grouping_strategy is None

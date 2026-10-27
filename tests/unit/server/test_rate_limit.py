@@ -33,6 +33,13 @@ def test_create_redis_rate_limiter_disabled():
     assert create_redis_rate_limiter('') is None
 
 
+def test_create_redis_rate_limiter_disabled_by_rate_limiting_enabled_flag():
+    """RATE_LIMITING_ENABLED=false disables the limiter even with windows set,
+    without requiring a reachable Redis (e.g. the Docker Compose stack)."""
+    with mock.patch('server.rate_limit.RATE_LIMITING_ENABLED', False):
+        assert create_redis_rate_limiter('10/second; 100/minute') is None
+
+
 @pytest.fixture
 def test_app(rate_limiter):
     """Create a FastAPI app with rate limiting for testing."""

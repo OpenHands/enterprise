@@ -7,6 +7,7 @@ from typing import Optional, cast
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import UUID as parse_uuid
 
+import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -16,16 +17,21 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import (
+    KeycloakAuthenticationError,
+    KeycloakConnectionError,
+    KeycloakError,
+)
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.auth_error import TokenRefreshError
+from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.constants import (
     ENABLE_SUPER_ADMIN,
     KEYCLOAK_CLIENT_ID,
@@ -534,9 +540,70 @@ async def keycloak_callback(
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
     if idp and idp_type != 'saml':
-        await token_manager.store_idp_tokens(
-            ProviderType(idp), user_id, keycloak_access_token
-        )
+        provider = ProviderType(idp)
+        try:
+            existing_tokens_valid = (
+                await token_manager.get_idp_token_by_user_id(user_id, provider)
+                is not None
+            )
+        except (AuthError, httpx.HTTPError, SQLAlchemyError, ValueError):
+            existing_tokens_valid = False
+
+        if existing_tokens_valid:
+            # The provider tokens stored by an earlier login still refresh
+            # against the provider itself (see
+            # ``TokenManager.get_idp_token_by_user_id``), so the user can
+            # work normally. Refresh them from Keycloak's broker copy on a
+            # best-effort basis only.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+        else:
+            # OpenHands cannot function without working git-provider
+            # tokens, and silently completing the login would only defer
+            # the failure to a 401 bounce inside the app when those tokens
+            # are first used. Refuse the session instead: end the
+            # just-established Keycloak session so the next login performs
+            # a fresh provider authentication (which re-mints the stale or
+            # revoked federated grant that makes Keycloak's broker endpoint
+            # answer 502), and send the user back to the login page to
+            # retry.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed_logout',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+                try:
+                    await token_manager.logout(keycloak_refresh_token)
+                except KeycloakError:
+                    logger.exception(
+                        'keycloak_logout_after_idp_token_failure_failed',
+                        extra={'user_id': user_id},
+                        stack_info=True,
+                    )
+                response = RedirectResponse(
+                    f'{web_url}/login?git_provider_login_failed=true',
+                    status_code=302,
+                )
+                delete_chunked_cookie(
+                    response,
+                    'keycloak_auth',
+                    domain=get_cookie_domain(),
+                    samesite=get_cookie_samesite(),
+                )
+                return response
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
@@ -802,6 +869,47 @@ async def github_dummy_callback(request: Request):
     """Callback for GitHub that just forwards the user to the app base URL."""
     web_url = get_web_url(request)
     return RedirectResponse(web_url, status_code=302)
+
+
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return an authenticated routing hint, never credentials or authorization.
+
+    Keycloak still verifies account ownership and authorizes the Git connection.
+    Stored account attributes are not session provenance. Only suggest corporate
+    SSO when browser login history is absent; never suggest a Git provider.
+    """
+    user_auth = await get_user_auth(request)
+    if (
+        not isinstance(user_auth, SaasUserAuth)
+        or user_auth.oauth_v2_cookie
+        or user_auth.auth_type != AuthType.COOKIE
+    ):
+        # Native IdP and API-key credentials must not be sent to Keycloak.
+        return KeycloakLinkContext()
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakError as exc:
+        if exc.response_code in (401, 403):
+            raise HTTPException(401, 'Keycloak authentication required') from exc
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    return KeycloakLinkContext(
+        provider=ProviderType.ENTERPRISE_SSO.value
+        if provider == ProviderType.ENTERPRISE_SSO.value
+        else None
+    )
 
 
 @api_router.post('/authenticate')

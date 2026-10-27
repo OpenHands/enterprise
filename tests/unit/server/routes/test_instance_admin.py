@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
@@ -458,7 +458,7 @@ async def test_update_user_status_success(
             AsyncMock(return_value=user),
         ),
         patch(
-            'server.routes.instance_admin.UserStore.set_user_disabled',
+            'server.routes.instance_admin._operate',
             set_disabled,
         ),
         patch(
@@ -478,7 +478,9 @@ async def test_update_user_status_success(
 
     assert resp.status_code == 200
     assert resp.json()['status'] == user_status
-    set_disabled.assert_awaited_once_with(user_id, disabled)
+    set_disabled.assert_awaited_once_with(
+        user_id, 'disable_user' if disabled else 'enable_user', CALLER_USER_ID
+    )
 
 
 @pytest.mark.asyncio
@@ -497,7 +499,7 @@ async def test_update_user_status_rejects_suspending_self(
             AsyncMock(return_value=caller),
         ),
         patch(
-            'server.routes.instance_admin.UserStore.set_user_disabled',
+            'server.routes.instance_admin._operate',
             set_disabled,
         ),
     ):
@@ -524,8 +526,10 @@ async def test_update_user_status_refuses_the_last_super_admin(
             AsyncMock(return_value=user),
         ),
         patch(
-            'server.routes.instance_admin.UserStore.set_user_disabled',
-            AsyncMock(return_value=False),
+            'server.routes.instance_admin._operate',
+            AsyncMock(
+                side_effect=HTTPException(409, 'Cannot disable the last Super Admin')
+            ),
         ),
     ):
         async with _client(mock_app) as client:

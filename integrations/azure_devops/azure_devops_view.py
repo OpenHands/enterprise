@@ -3,11 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any, cast
-from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from jinja2 import Environment
 
+from integrations.azure_devops.azure_devops_payload import (
+    extract_org as _extract_org,
+)
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.models import Message
 from integrations.resolver_context import ResolverUserContext
@@ -40,6 +42,9 @@ from openhands.sdk import TextContent
 
 OH_LABEL, INLINE_OH_LABEL = get_oh_labels(HOST)
 OPENHANDS_COMMENT_MARKER = '<!-- openhands-azure-devops-resolver -->'
+# Azure strips HTML comments from work item comments but keeps attributes, so
+# work item replies also carry an empty element with this attribute.
+OPENHANDS_WORK_ITEM_MARKER = 'data-openhands-azure-devops-resolver'
 
 
 def mark_openhands_comment(comment: str) -> str:
@@ -48,57 +53,20 @@ def mark_openhands_comment(comment: str) -> str:
     return f'{OPENHANDS_COMMENT_MARKER}\n{comment}'
 
 
+def mark_openhands_work_item_comment(comment: str) -> str:
+    if OPENHANDS_WORK_ITEM_MARKER in comment:
+        return comment
+    return f'<span {OPENHANDS_WORK_ITEM_MARKER}="1"></span>{comment}'
+
+
 def _is_openhands_comment(comment: str) -> bool:
-    return OPENHANDS_COMMENT_MARKER in comment
+    return OPENHANDS_COMMENT_MARKER in comment or OPENHANDS_WORK_ITEM_MARKER in comment
 
 
 def _strip_ref_prefix(ref_name: str | None) -> str | None:
     if not ref_name:
         return None
     return ref_name.removeprefix('refs/heads/')
-
-
-def _extract_org_from_url(raw_url: str | None) -> str:
-    if not raw_url:
-        return ''
-
-    parsed = urlparse(raw_url)
-    hostname = parsed.hostname or ''
-    path_parts = [part for part in parsed.path.split('/') if part]
-
-    if hostname.endswith('dev.azure.com') and path_parts:
-        return path_parts[0]
-
-    if hostname.endswith('.visualstudio.com'):
-        return hostname.split('.')[0]
-
-    return ''
-
-
-def _extract_org(payload: dict[str, Any]) -> str:
-    resource_containers = payload.get('resourceContainers') or {}
-    for container_name in ('account', 'collection', 'project'):
-        org = _extract_org_from_url(
-            (resource_containers.get(container_name) or {}).get('baseUrl')
-        )
-        if org:
-            return org
-
-    resource = payload.get('resource') or {}
-    for candidate in (
-        ((resource.get('pullRequest') or {}).get('repository') or {}).get('remoteUrl'),
-        ((resource.get('pullRequest') or {}).get('repository') or {}).get('url'),
-        ((resource.get('comment') or {}).get('_links') or {})
-        .get('self', {})
-        .get('href'),
-        ((resource.get('_links') or {}).get('self') or {}).get('href'),
-        resource.get('url'),
-    ):
-        org = _extract_org_from_url(candidate)
-        if org:
-            return org
-
-    return ''
 
 
 def _extract_work_item_comment(payload: dict[str, Any]) -> str:
@@ -147,6 +115,11 @@ def _actor_username(actor: dict[str, Any]) -> str:
 
 def actor_email(actor: dict[str, Any]) -> str:
     unique_name = str(actor.get('uniqueName') or '').strip()
+    # Work item service hooks send "Display Name <uniqueName>". The display
+    # name is free text, so only the trailing <...> part is the account.
+    account = re.search(r'<([^<>\s]+@[^<>\s]+)>$', unique_name)
+    if account:
+        return account.group(1)
     if '@' in unique_name:
         return unique_name
     display_name = str(actor.get('displayName') or '').strip()

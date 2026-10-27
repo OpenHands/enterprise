@@ -27,7 +27,7 @@ const VALID_OSS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -53,7 +53,7 @@ const VALID_SAAS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-        enable_onboarding: false,
+    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -103,6 +103,8 @@ const renderGitSettingsScreen = () => {
             "Installing GitLab webhook, please wait a few minutes.",
           SETTINGS$SAVING: "Saving...",
           ERROR$GENERIC: "An error occurred",
+          SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER:
+            "To offer a Git provider here, add it under <a>Auth Providers</a> with Login IDP turned off.",
         },
       },
     },
@@ -312,7 +314,9 @@ describe("Content", () => {
     await waitFor(() => {
       button = screen.queryByTestId("configure-github-repositories-button");
       expect(button).not.toBeInTheDocument();
-      expect(screen.queryByTestId("gitlab-status-text")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("gitlab-status-text"),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("install-slack-app-button"),
       ).not.toBeInTheDocument();
@@ -347,7 +351,9 @@ describe("Content", () => {
         /Not Connected|SETTINGS\$GITLAB_NOT_CONNECTED/,
       );
       expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
-      expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("install-slack-app-button"),
+      ).toBeInTheDocument();
       expect(screen.queryByTestId("submit-button")).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("disconnect-tokens-button"),
@@ -538,7 +544,10 @@ describe("Form submission", () => {
 
   it("should delete git providers when pressing the disconnect tokens button", async () => {
     const getConfigSpy = vi.spyOn(OptionService, "getConfig");
-    const deleteGitProvidersSpy = vi.spyOn(SecretsService, "deleteGitProviders");
+    const deleteGitProvidersSpy = vi.spyOn(
+      SecretsService,
+      "deleteGitProviders",
+    );
     const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
 
     deleteGitProvidersSpy.mockResolvedValue(true);
@@ -712,7 +721,9 @@ describe("GitLab Webhook Manager Integration", () => {
         screen.queryByTestId("configure-github-repositories-button"),
       ).not.toBeInTheDocument();
       expect(screen.getByTestId("gitlab-status-text")).toBeInTheDocument();
-      expect(screen.getByTestId("install-slack-app-button")).toBeInTheDocument();
+      expect(
+        screen.getByTestId("install-slack-app-button"),
+      ).toBeInTheDocument();
       expect(
         screen.queryByText("GITLAB$WEBHOOK_MANAGER_TITLE"),
       ).not.toBeInTheDocument();
@@ -736,7 +747,9 @@ describe("GitLab Webhook Manager Integration", () => {
 
     // Assert
     await waitFor(() => {
-      expect(screen.queryByTestId("gitlab-status-text")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("gitlab-status-text"),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("install-slack-app-button"),
       ).not.toBeInTheDocument();
@@ -934,5 +947,185 @@ describe("Slack connection status", () => {
 
     // Assert
     expect(screen.queryByTestId("slack-status-text")).not.toBeInTheDocument();
+  });
+});
+
+describe("OAuth v2 provider cards", () => {
+  const V2_CONFIG: WebClientConfig = {
+    ...VALID_SAAS_CONFIG,
+    feature_flags: {
+      ...VALID_SAAS_CONFIG.feature_flags,
+      enable_oauth_v2_login: true,
+      enable_super_admin: true,
+    },
+    // Env-driven config must be ignored when v2 is on.
+    providers_configured: ["bitbucket"],
+    gitlab_enabled: true,
+  };
+
+  const mockV2 = (
+    rows: {
+      id: number;
+      title: string;
+      provider_type: string;
+      connected: boolean;
+    }[],
+    permissions: string[] = [],
+  ) => {
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(V2_CONFIG);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+      ...MOCK_DEFAULT_USER_SETTINGS,
+      provider_tokens_set: {},
+    });
+    return vi.spyOn(openHands, "get").mockImplementation(async (url) => {
+      if (url === "/oauth/git-providers") {
+        return {
+          data: rows.map((row) => ({ icon: null, color: "#000", ...row })),
+        };
+      }
+      if (url === "/api/organizations/org-1/me") {
+        return { data: { permissions } };
+      }
+      return { data: {} };
+    });
+  };
+
+  it("renders cards from auth_providers rather than env-configured providers", async () => {
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+      { id: 2, title: "GitLab", provider_type: "gitlab", connected: false },
+    ]);
+
+    renderGitSettingsScreen();
+
+    expect(await screen.findByTestId("github-status-text")).toHaveTextContent(
+      /Connected|STATUS\$CONNECTED/,
+    );
+    expect(screen.getByTestId("disconnect-github-button")).toBeInTheDocument();
+    expect(screen.getByTestId("connect-gitlab-button")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("bitbucket-status-text"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render an empty extra row under a card with no extra content", async () => {
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+    ]);
+
+    renderGitSettingsScreen();
+
+    const card = (await screen.findByTestId("github-status-text")).closest(
+      "section",
+    );
+    expect(card?.children).toHaveLength(1);
+  });
+
+  it("shows no git provider cards when none are defined", async () => {
+    mockV2([]);
+
+    renderGitSettingsScreen();
+
+    await screen.findByTestId("git-settings-screen");
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("gitlab-status-text"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("bitbucket-status-text"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("points a super admin to Auth Providers when no git provider is defined", async () => {
+    // Arrange
+    mockV2([], ["manage_super_admins"]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    const emptyState = await screen.findByTestId("integrations-empty-state");
+    expect(emptyState).toHaveTextContent("SETTINGS$INTEGRATIONS_EMPTY");
+    expect(
+      await screen.findByRole("link", { name: "Auth Providers" }),
+    ).toHaveAttribute("href", "/super-admin/auth-providers");
+  });
+
+  it("asks other users to contact an administrator when no git provider is defined", async () => {
+    // Arrange
+    mockV2([]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByTestId("integrations-empty-state")).toHaveTextContent(
+        "SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN",
+      ),
+    );
+    expect(
+      screen.queryByRole("link", { name: "Auth Providers" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the empty state when a git provider is defined", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: false },
+    ]);
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await screen.findByTestId("github-status-text");
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("waits for the git providers to load before showing the empty state", async () => {
+    // Arrange
+    let resolveProviders: (response: { data: unknown[] }) => void = () => {};
+    const getSpy = mockV2([]);
+    getSpy.mockImplementation(async (url) =>
+      url === "/oauth/git-providers"
+        ? new Promise((resolve) => {
+            resolveProviders = resolve;
+          })
+        : { data: {} },
+    );
+    renderGitSettingsScreen();
+    await waitFor(() =>
+      expect(getSpy).toHaveBeenCalledWith("/oauth/git-providers"),
+    );
+    expect(
+      screen.queryByTestId("integrations-empty-state"),
+    ).not.toBeInTheDocument();
+
+    // Act
+    resolveProviders({ data: [] });
+
+    // Assert
+    expect(
+      await screen.findByTestId("integrations-empty-state"),
+    ).toBeInTheDocument();
+  });
+
+  it("starts the v2 link flow with the auth_providers id on Connect", async () => {
+    mockV2([
+      { id: 7, title: "GitLab", provider_type: "gitlab", connected: false },
+    ]);
+    const postSpy = vi
+      .spyOn(openHands, "post")
+      .mockResolvedValue({ data: { start_url: "about:blank" } });
+
+    renderGitSettingsScreen();
+    await userEvent.click(await screen.findByTestId("connect-gitlab-button"));
+
+    await waitFor(() => expect(postSpy).toHaveBeenCalledWith("/oauth/7/link"));
   });
 });

@@ -12,13 +12,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
+from openhands.app_server.integrations.service_types import ProviderType
 from storage.auth_provider_details import (
     SP_CERT_COMMON_NAME,
     SP_CERT_VALID_DAYS,
+    OAuthProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
 )
@@ -106,3 +109,64 @@ def test_sp_private_key_is_masked_on_default_serialization():
 def test_sp_private_key_empty_string_normalizes_to_none():
     details = SamlProviderDetails(sp_private_key='')
     assert details.sp_private_key is None
+
+
+def test_legacy_keycloak_type_defaults_to_none():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.ENTERPRISE_SSO, client_id='cid'
+    )
+    assert details.legacy_keycloak_type is None
+
+
+def test_legacy_keycloak_type_accepts_a_git_provider():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.ENTERPRISE_SSO,
+        client_id='cid',
+        legacy_keycloak_type=ProviderType.GITHUB,
+    )
+    assert details.legacy_keycloak_type == ProviderType.GITHUB
+
+
+def test_legacy_keycloak_type_rejects_enterprise_sso():
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.ENTERPRISE_SSO,
+            client_id='cid',
+            legacy_keycloak_type=ProviderType.ENTERPRISE_SSO,
+        )
+
+
+def test_named_secret_defaults_to_none_and_blank_normalizes_to_none():
+    assert (
+        OAuthProviderDetails(provider_type=ProviderType.GITHUB, client_id='cid')
+    ).named_secret is None
+    assert (
+        OAuthProviderDetails(
+            provider_type=ProviderType.GITHUB, client_id='cid', named_secret=''
+        )
+    ).named_secret is None
+
+
+def test_named_secret_accepts_an_env_var_name():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.GITHUB, client_id='cid', named_secret='GITHUB_TOKEN'
+    )
+    assert details.named_secret == 'GITHUB_TOKEN'
+
+
+@pytest.mark.parametrize('name', ['1TOKEN', 'MY-TOKEN', 'LLM_API_KEY', 'WORKER_1'])
+def test_named_secret_rejects_invalid_or_reserved_names(name):
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.GITHUB, client_id='cid', named_secret=name
+        )
+
+
+def test_named_secret_rejected_with_legacy_keycloak_type():
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.ENTERPRISE_SSO,
+            client_id='cid',
+            legacy_keycloak_type=ProviderType.GITHUB,
+            named_secret='GITHUB_TOKEN',
+        )

@@ -10,6 +10,7 @@ from integrations.slack.slack_manager import (
     SLACK_USER_MSG_KEY_PREFIX,
     SlackManager,
 )
+from integrations.slack.slack_types import StartingConvoException
 from integrations.slack.slack_view import SlackNewConversationView
 from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
@@ -1354,3 +1355,99 @@ class TestSlackStatusEndpoint:
 
         # Assert
         assert response.connected is True
+
+
+class TestSlackKeycloakCallback:
+    """Test the OAuth callback that links a Slack user to an OpenHands user."""
+
+    @pytest.mark.asyncio
+    async def test_link_records_the_slack_workspace(
+        self, async_session_maker, create_user
+    ):
+        """Test that the stored link keeps the workspace the user linked from."""
+        from sqlalchemy import select
+
+        from server.routes.integration import slack as slack_routes
+        from storage.slack_team import SlackTeam
+
+        # Arrange
+        user = create_user()
+        jwt_service = MagicMock()
+        jwt_service.verify_jws_token.return_value = {
+            'slack_user_id': 'U1',
+            'bot_access_token': 'test-only',
+            'team_id': 'T1',
+        }
+        token_manager = MagicMock()
+        token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test-access', 'test-refresh')
+        )
+        token_manager.get_user_info = AsyncMock(
+            return_value=MagicMock(sub=str(user.id), identity_provider='github')
+        )
+        token_manager.store_offline_token = AsyncMock()
+        token_manager.store_idp_tokens = AsyncMock()
+        slack_client = MagicMock()
+        slack_client.users_info = AsyncMock(
+            return_value=MagicMock(
+                data={'user': {'profile': {'display_name': 'Test User'}}}
+            )
+        )
+        request = MagicMock()
+        request.url.path = '/slack/keycloak-callback'
+
+        # Act
+        with (
+            patch.object(slack_routes, 'a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.slack_team_store.a_session_maker', async_session_maker),
+            patch.object(slack_routes, 'token_manager', token_manager),
+            patch.object(slack_routes, 'AsyncWebClient', return_value=slack_client),
+            patch.object(slack_routes, 'get_analytics_service', return_value=None),
+        ):
+            await slack_routes.keycloak_callback(
+                request,
+                BackgroundTasks(),
+                code='test-code',
+                state='test-state',
+                jwt_service=jwt_service,
+            )
+
+        # Assert
+        async with async_session_maker() as session:
+            link = (await session.execute(select(SlackUser))).scalar_one()
+            team = (await session.execute(select(SlackTeam))).scalar_one()
+        assert link.team_id == 'T1'
+        assert link.org_id == user.current_org_id
+        assert team.team_id == 'T1'
+
+
+class TestStartJobErrorMessages:
+    """Start failures are relayed to the Slack user instead of a generic error."""
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    @patch.object(
+        SlackNewConversationView,
+        'create_or_update_conversation',
+        new_callable=AsyncMock,
+    )
+    async def test_start_job_posts_conversation_start_failure_detail(
+        self,
+        mock_create_or_update_conversation,
+        mock_send_message,
+        slack_manager,
+        slack_new_conversation_view,
+    ):
+        """A StartingConvoException message is posted instead of the generic error."""
+        # Arrange
+        message = (
+            'Failed to start the conversation: '
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
+        mock_create_or_update_conversation.side_effect = StartingConvoException(message)
+
+        # Act
+        await slack_manager.start_job(slack_new_conversation_view)
+
+        # Assert
+        mock_send_message.assert_awaited_once_with(message, slack_new_conversation_view)

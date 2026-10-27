@@ -29,7 +29,12 @@ from openhands.app_server.config_api.llm_model_service import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.utils.http_session import httpx_verify_option
-from openhands.app_server.utils.llm import ModelsResponse, get_supported_llm_models
+from openhands.app_server.utils.llm import (
+    VERIFIED_PROVIDERS,
+    ModelsResponse,
+    get_supported_llm_models,
+)
+from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 from server.constants import (
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
@@ -179,13 +184,16 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         return config.feature_flags.allow_user_llm_configuration
 
     async def _union_with_catalogue(
-        self, proxy_response: ModelsResponse
+        self, proxy_response: ModelsResponse, *, byok_enabled: bool | None = None
     ) -> ModelsResponse:
         """BYOK on: add the full SDK provider catalogue so users can pick any
         provider and bring their own key (matches SaaS). Proxy models stay the
         managed/verified set; catalogue models land unverified ("Other"). BYOK
-        off: return the managed proxy list unchanged."""
-        if not await self._byok_enabled():
+        off: return the managed proxy list unchanged. ``byok_enabled`` lets a
+        caller that already resolved the flag skip a second config lookup."""
+        if byok_enabled is None:
+            byok_enabled = await self._byok_enabled()
+        if not byok_enabled:
             return proxy_response
         catalogue = get_supported_llm_models()
         proxy_models = set(proxy_response.models)
@@ -206,12 +214,19 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
     def _is_model_verified(
         self, model_name: str, name: str, models_response: ModelsResponse
     ) -> bool:
-        # Managed proxy models are verified; the unioned SDK catalogue (BYOK)
-        # is not. Require the openhands/ prefix so a catalogue model whose bare
-        # name collides with a proxy one (openai/gpt-5 vs proxy gpt-5) isn't
-        # falsely verified.
-        return model_name.startswith(_OPENHANDS_PREFIX) and name in set(
-            models_response.verified_models
+        # Managed proxy models (or, without a gateway, the SDK's OpenHands
+        # Cloud models) are verified; the unioned SDK catalogue (BYOK) is not.
+        # Require the openhands/ prefix so a catalogue model whose bare name
+        # collides with a proxy one (openai/gpt-5 vs proxy gpt-5) isn't falsely
+        # verified.
+        if model_name.startswith(_OPENHANDS_PREFIX):
+            return name in set(models_response.verified_models)
+        # Without a managed proxy the catalogue's providers are the verified
+        # ones, so their SDK-verified models are too.
+        provider = model_name.split('/', 1)[0]
+        return (
+            provider in models_response.verified_providers
+            and super()._is_model_verified(model_name, name, models_response)
         )
 
     async def _litellm_enabled(self) -> bool:
@@ -231,14 +246,23 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
         verified_models: list[str] | None = None,
     ) -> ModelsResponse:
         if not await self._litellm_enabled():
-            # LiteLLM disabled deployment-wide: the OpenHands/managed models
-            # (served through the bundled proxy) are hidden entirely rather
-            # than fetched -- only direct provider configurations (BYOK) are
-            # offered. Never touches the network.
-            direct_only = self._build_response([]).model_copy(
-                update={'default_model': get_default_llm_model()}
+            # LiteLLM disabled deployment-wide: there is no bundled proxy to
+            # discover, so ``openhands/`` keeps the SDK's meaning -- OpenHands
+            # Cloud (https://llm-proxy.app.all-hands.dev) with the user's own
+            # key. Its verified models are offered as a BYOK provider next to
+            # the direct provider catalogue, with the SDK's verified providers
+            # marked verified. Never touches the network.
+            byok_enabled = await self._byok_enabled()
+            openhands_cloud = list(VERIFIED_MODELS['openhands']) if byok_enabled else []
+            direct_only = self._build_response(openhands_cloud).model_copy(
+                update={
+                    'default_model': get_default_llm_model(),
+                    'verified_providers': VERIFIED_PROVIDERS,
+                }
             )
-            return await self._union_with_catalogue(direct_only)
+            return await self._union_with_catalogue(
+                direct_only, byok_enabled=byok_enabled
+            )
 
         cls = LiteLLMProxyModelService
         response = cls._shared_response

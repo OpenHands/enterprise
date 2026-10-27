@@ -228,6 +228,7 @@ function SkillsSettingsScreen() {
               ...skill,
               id: skill.name,
               repository: marketplace?.source || skill.source,
+              marketplaceName: marketplace?.name,
               scope: skillScope,
               isEnabled: !disabledSet.has(skill.name),
               isAutoLoad: !!marketplace?.auto_load,
@@ -251,6 +252,7 @@ function SkillsSettingsScreen() {
             source: `marketplace:${plugin.marketplace}`,
             id: `plugin:${plugin.marketplace}:${plugin.name}`,
             repository: plugin.source,
+            marketplaceName: plugin.marketplace,
             scope: pluginScope,
             isEnabled: autoLoad,
             isAutoLoad: autoLoad,
@@ -311,13 +313,19 @@ function SkillsSettingsScreen() {
   }, [skillsState, t]);
 
   const repositoryOptions = useMemo(() => {
-    const repos = new Set(skillsState.map((s) => s.repository));
+    // Label a source with its marketplace name unless registrations share it.
+    const namesByRepo = new Map<string, Set<string | undefined>>();
+    for (const s of skillsState) {
+      const names = namesByRepo.get(s.repository) ?? new Set();
+      names.add(s.marketplaceName);
+      namesByRepo.set(s.repository, names);
+    }
     return [
       { key: "all", label: t(I18nKey.SETTINGS$ALL_REPOSITORIES) },
-      ...Array.from(repos).map((repo) => ({
-        key: repo,
-        label: repo,
-      })),
+      ...Array.from(namesByRepo).map(([repo, names]) => {
+        const [name] = names;
+        return { key: repo, label: (names.size === 1 && name) || repo };
+      }),
     ];
   }, [skillsState, t]);
 

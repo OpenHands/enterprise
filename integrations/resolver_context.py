@@ -1,3 +1,6 @@
+from collections.abc import Awaitable, Callable
+from types import MappingProxyType
+from typing import cast
 from uuid import UUID
 
 from openhands.app_server.integrations.provider import (
@@ -6,7 +9,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.secret import SecretSource, StaticSecret
 
@@ -55,12 +58,14 @@ class ResolverUserContext(UserContext):
 
         return UserInfo(id=user_id)
 
-    async def _get_provider_handler(self) -> ProviderHandler:
+    async def get_provider_handler(self) -> ProviderHandler:
         """Get or create a ProviderHandler for git operations."""
         if self._provider_handler is None:
             provider_tokens = await self.saas_user_auth.get_provider_tokens()
             if provider_tokens is None:
                 raise ValueError('No provider tokens available')
+            if not isinstance(provider_tokens, MappingProxyType):
+                provider_tokens = MappingProxyType(provider_tokens)
             user_id = await self.saas_user_auth.get_user_id()
             self._provider_handler = ProviderHandler(
                 provider_tokens=provider_tokens, external_auth_id=user_id
@@ -68,11 +73,16 @@ class ResolverUserContext(UserContext):
         return self._provider_handler
 
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
-        provider_handler = await self._get_provider_handler()
+        provider_handler = await self.get_provider_handler()
         url = await provider_handler.get_authenticated_git_url(
-            repository, is_optional=is_optional
+            repository,
+            is_optional=is_optional,
+            specified_provider=specified_provider,
         )
         return url
 
@@ -103,6 +113,26 @@ class ResolverUserContext(UserContext):
                 converted_secrets[key] = secret_source
             return converted_secrets
         return {}
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        get_named_oauth_secrets = getattr(
+            self.saas_user_auth, 'get_named_oauth_secrets', None
+        )
+        if get_named_oauth_secrets is None:
+            return None
+        return await cast(
+            Callable[[], Awaitable[NamedOAuthSecrets | None]], get_named_oauth_secrets
+        )()
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        get_named_oauth_secret_value = getattr(
+            self.saas_user_auth, 'get_named_oauth_secret_value', None
+        )
+        if get_named_oauth_secret_value is None:
+            return None
+        return await cast(
+            Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
+        )(oauth_provider_id)
 
     async def get_mcp_api_key(self) -> str | None:
         return await self.saas_user_auth.get_mcp_api_key()

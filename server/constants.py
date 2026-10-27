@@ -36,6 +36,19 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
 # Accepts both 'true' and '1' (older Helm charts default to '1').
 ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
 
+# When true, ``SetAuthCookieMiddleware`` blocks any authenticated request
+# (outside the email/settings/logout/authenticate allow-list) whose user has
+# not verified their email, raising ``EmailNotVerifiedError``. Defaults to
+# false because not every login IDP's userinfo response reliably asserts
+# ``email_verified`` (see ``server.auth.provider_identity.resolve_or_create_user``),
+# which otherwise locks newly created OAuth v2 users out of the app with no
+# clear recovery path. Accepts both 'true' and '1' (older Helm charts default
+# to '1').
+REQUIRE_VERIFIED_EMAILS = os.getenv('REQUIRE_VERIFIED_EMAILS', 'false').lower() in (
+    'true',
+    '1',
+)
+
 # NOTE: the integrated IDP (email+password login without Keycloak,
 # ``server.routes.idp``) is no longer gated by an env var read here.
 # Migration 179 seeds its ``oauth_providers`` row from ``ENABLE_INTEGRATED_IDP``

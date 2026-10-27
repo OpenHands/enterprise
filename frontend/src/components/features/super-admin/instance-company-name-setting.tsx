@@ -29,12 +29,14 @@ export function InstanceCompanyNameSetting() {
     );
   };
 
+  // Only the input is capped, so the label and hint stay on one line.
   return (
     <SettingsInput
       testId="instance-company-name"
       name="companyName"
       type="text"
-      className="max-w-md"
+      inputClassName="max-w-md"
+      labelClassName="shrink-0"
       label={t(I18nKey.SA_NUX$COMPANY_NAME_LABEL)}
       hint={t(I18nKey.SUPER_ADMIN$INSTANCE_COMPANY_NAME_HINT)}
       placeholder={t(I18nKey.SA_NUX$COMPANY_NAME_PLACEHOLDER)}

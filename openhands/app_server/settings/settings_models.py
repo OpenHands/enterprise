@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from copy import deepcopy
 from enum import Enum
-from typing import Annotated, Any, Sequence
+from typing import Annotated, Any, Literal, Sequence
 
 from fastmcp.mcp_config import MCPConfig
 from fastmcp.mcp_config import MCPConfig as SDKMCPConfig
@@ -36,6 +36,7 @@ from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
     ACPAgentSettings,
@@ -45,6 +46,12 @@ from openhands.sdk.settings import (
     apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
+)
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+    fold_retired_tool_switches,
 )
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
@@ -65,6 +72,12 @@ _GIT_URL_PATTERN = re.compile(
 _UNSAFE_PERCENT_ESCAPE = re.compile(r'%(?:[01][0-9a-fA-F]|7[fF]|2[fF]|5[cC])')
 # - Relative local paths (no absolute paths, no parent traversal)
 _LOCAL_PATH_PATTERN = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_./-]*$')
+# A host name, optional port and path, e.g. 'github.com/owner/repo': a
+# repository URL without its scheme. The agent-server would read it as a
+# sandbox path.
+_HOST_WITHOUT_SCHEME_PATTERN = re.compile(
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?::[0-9]{1,5})?/[^/]'
+)
 
 
 class MarketplaceScope(str, Enum):
@@ -175,6 +188,8 @@ class MarketplaceRegistration(BaseModel):
         if not v or not v.strip():
             raise ValueError('source cannot be empty')
         v = v.strip()
+        if _HOST_WITHOUT_SCHEME_PATTERN.match(v):
+            v = f'https://{v}'
 
         # Check for valid source patterns
         if _GITHUB_SOURCE_PATTERN.match(v):
@@ -643,9 +658,55 @@ def _load_persisted_agent_settings(
     Routes the raw payload through :func:`validate_agent_settings`, which
     applies registered schema migrations, canonicalizes the legacy
     ``agent_kind: 'llm'`` tag to ``'openhands'``, and validates against the
-    discriminated :data:`AgentSettingsConfig` union.
+    discriminated :data:`AgentSettingsConfig` union. Rows without a
+    ``schema_version`` are migrated as legacy rows, not rejected as requests.
     """
-    return validate_agent_settings(data or {})
+    return validate_agent_settings(data or {}, persisted=True)
+
+
+def agent_llm(agent_settings: AgentSettingsConfig) -> LLM | None:
+    """The OpenHands agent's LLM, or None for an ACP agent.
+
+    ACP agents make their own model calls, and SDK 1.56 removed the unused
+    ``llm`` that ACP settings used to carry.
+    """
+    return getattr(agent_settings, 'llm', None)
+
+
+# From this schema version on, rows hold sub-agents in ``tools`` and any
+# retired switch beside them is a stale copy.
+_SWITCHES_FOLDED_SCHEMA_VERSION = 8
+
+
+def normalize_member_agent_settings_diff(diff: dict[str, Any]) -> dict[str, Any]:
+    """Prepare a member's stored agent settings for merging over the org's dump.
+
+    The org's dump is at the current schema version, so a member diff without
+    its own ``schema_version`` gets no SDK migrations once merged. The retired
+    tool switches are folded into ``tools`` when the diff has no version,
+    dropped when ``tools`` already holds them, and otherwise left for the SDK's
+    migrations.
+    """
+    if not any(key in diff for key in RETIRED_TOOL_SWITCHES):
+        return diff
+    version = diff.get('schema_version')
+    if version is None:
+        return fold_retired_tool_switches_into_json(diff)
+    if isinstance(version, int) and version >= _SWITCHES_FOLDED_SCHEMA_VERSION:
+        return drop_retired_tool_switches(diff)
+    return diff
+
+
+def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]:
+    """Fold a sparse diff's retired tool switches into JSON ``tools`` entries."""
+    folded = fold_retired_tool_switches(diff, sparse=True)
+    tools = folded.get('tools')
+    if isinstance(tools, list):
+        folded['tools'] = [
+            tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
+            for tool in tools
+        ]
+    return folded
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
@@ -691,17 +752,20 @@ def grouped_workspace_dir(
 #   inputs, enforce the count cap, and take the per-user lock. Accepting a
 #   raw dict here both bypassed those guards and crashed downstream
 #   serialisation.
-# - ``active_agent_profile_id`` / ``active_agent_profile_revision`` are launch
-#   provenance, not persisted settings — ``store()`` refuses instances that
-#   carry them. The pointer is set via the agent-profiles activate endpoint, so
-#   a client echoing a non-null value back on a settings PUT must be ignored,
-#   not written (which would 500 in ``store()``).
+# - ``active_agent_profile_id`` / ``active_agent_profile_revision`` (and the
+#   scope and ``secret_refs`` snapshot beside them) are launch provenance, not
+#   persisted settings — ``store()`` refuses instances that carry them. The
+#   pointer is set via the agent-profiles activate endpoint, so a client
+#   echoing a non-null value back on a settings PUT must be ignored, not
+#   written (which would 500 in ``store()``).
 _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
     [
         'secrets_store',
         'llm_profiles',
         'active_agent_profile_id',
         'active_agent_profile_revision',
+        'active_agent_profile_scope',
+        'active_agent_profile_secret_refs',
     ]
 )
 
@@ -748,9 +812,11 @@ class Settings(BaseModel):
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
-    sandbox_grouping_strategy: SandboxGroupingStrategy = (
-        SandboxGroupingStrategy.NO_GROUPING
-    )
+    # None means no org/user override is set — the effective strategy falls
+    # back to the deployment-configured default (see
+    # ``LiveStatusAppConversationServiceInjector.sandbox_grouping_strategy``),
+    # and ultimately to ``SandboxGroupingStrategy.NO_GROUPING``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
     default_sandbox_spec_id: str | None = None
     llm_profiles: LLMProfiles = Field(
         default_factory=LLMProfiles,
@@ -768,6 +834,12 @@ class Settings(BaseModel):
     # None and ``store()`` refuses instances that carry them (no backing column).
     active_agent_profile_id: str | None = None
     active_agent_profile_revision: int | None = None
+    # Which collection the launched profile came from, and its ``secret_refs``
+    # allow-list, read by conversation-start's secrets setup: an org-scoped
+    # profile with an explicit list resolves it against the org-shared secrets
+    # only (OHE-3088). Same non-persisted contract as the two fields above.
+    active_agent_profile_scope: Literal['personal', 'org'] | None = None
+    active_agent_profile_secret_refs: list[str] | None = None
 
     # True when this instance came from a resolve-requested load: its
     # agent_settings are the *effective* launch view (possibly an Agent
@@ -826,7 +898,8 @@ class Settings(BaseModel):
 
     @property
     def llm_api_key_is_set(self) -> bool:
-        raw = self.agent_settings.llm.api_key
+        llm = agent_llm(self.agent_settings)
+        raw = llm.api_key if llm is not None else None
         if raw is None:
             return False
         secret_value = (
@@ -869,6 +942,9 @@ class Settings(BaseModel):
 
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
+            # Older clients still send the SDK's retired tool switches, which it
+            # now rejects; fold them into ``tools`` as the SDK used to.
+            agent_update = fold_retired_tool_switches(agent_update, sparse=True)
             coerced: dict[str, Any] = {}
             for key, value in agent_update.items():
                 coerced[key] = (
@@ -1010,9 +1086,12 @@ class Settings(BaseModel):
         # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
         # update value is shared with ``llm_profiles.profiles[name]``.
         llm = self.llm_profiles.require(name)
-        self.agent_settings = self.agent_settings.model_copy(
-            update={'llm': llm.model_copy()}
-        )
+        # ACP settings have no ``llm``; the profile stays active for the
+        # OpenHands agent.
+        if isinstance(self.agent_settings, OpenHandsAgentSettings):
+            self.agent_settings = self.agent_settings.model_copy(
+                update={'llm': llm.model_copy()}
+            )
         self.llm_profiles.active = name
 
     def delete_profile(self, name: str) -> bool:

@@ -1,15 +1,26 @@
 """Tests for BitbucketDCService core: init, headers, get_user, pagination, email."""
 
 import base64
-from unittest.mock import patch
+from types import MappingProxyType
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
     BitbucketDCService,
 )
-from openhands.app_server.integrations.service_types import AuthenticationError, User
+from openhands.app_server.integrations.bitbucket_data_center.service import (
+    base as bbdc_base,
+)
+from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
+from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
+    ProviderType,
+    Repository,
+    User,
+)
 from openhands.app_server.types import AppMode
 
 # ── init / BASE_URL ───────────────────────────────────────────────────────────
@@ -37,12 +48,12 @@ def test_init_explicit_base_domain_overrides_env_var(monkeypatch):
     assert svc.BASE_URL == 'https://explicit.example.com/rest/api/1.0'
 
 
-# ── token wrapping ────────────────────────────────────────────────────────────
+# ── token formats ─────────────────────────────────────────────────────────────
 
 
-def test_token_wraps_simple_token():
+def test_token_kept_as_given():
     svc = BitbucketDCService(token=SecretStr('mytoken'))
-    assert svc.token.get_secret_value() == 'x-token-auth:mytoken'
+    assert svc.token.get_secret_value() == 'mytoken'
 
 
 def test_token_preserves_colon_token():
@@ -60,6 +71,11 @@ def test_user_id_derived_from_username_password_token():
 
 def test_user_id_not_derived_from_xtoken_auth_token():
     svc = BitbucketDCService(token=SecretStr('x-token-auth:mytoken'))
+    assert svc.user_id is None
+
+
+def test_user_id_not_derived_from_bare_token():
+    svc = BitbucketDCService(token=SecretStr('mytoken'))
     assert svc.user_id is None
 
 
@@ -82,14 +98,13 @@ async def test_get_headers_basic_auth():
 
 
 @pytest.mark.asyncio
-async def test_get_headers_xtoken_auth():
-    svc = BitbucketDCService(
-        token=SecretStr('plaintoken'), base_domain='host.example.com'
-    )
-    # plaintoken has no ':' so it gets wrapped as x-token-auth:plaintoken
+@pytest.mark.parametrize('token', ['BBDC-abc', 'x-token-auth:BBDC-abc'])
+async def test_get_headers_bearer_for_access_token(token):
+    # Data Center rejects x-token-auth Basic for personal tokens, and for
+    # project and repository tokens on 8.x; Bearer works for all of them.
+    svc = BitbucketDCService(token=SecretStr(token), base_domain='host.example.com')
     headers = await svc._get_headers()
-    expected = 'Basic ' + base64.b64encode(b'x-token-auth:plaintoken').decode()
-    assert headers['Authorization'] == expected
+    assert headers['Authorization'] == 'Bearer BBDC-abc'
 
 
 @pytest.mark.asyncio
@@ -122,6 +137,188 @@ async def test_get_headers_uses_bearer_for_raw_oauth_token():
 
     headers = await svc._get_headers()
     assert headers['Authorization'] == 'Bearer eyJraWQiOiJyYXctb2F1dGgyLXRva2VuIn0'
+
+
+# ── get_git_credentials ───────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _empty_git_username_cache(monkeypatch):
+    # Tests reuse a server and token with different outcomes.
+    monkeypatch.setattr(bbdc_base, '_git_usernames', {})
+
+
+async def _token_user(url, params=None, **kwargs):
+    """A server whose whoami is empty but whose X-AUSERNAME names the token's user."""
+    if url.endswith('/plugins/servlet/applinks/whoami'):
+        return '', {}
+    return {'values': []}, {'X-AUSERNAME': 'project_7_bot'}
+
+
+def _login_check(status_code: int):
+    """Patch the Basic login check; returns the mock to inspect its headers."""
+    return patch(
+        'httpx.AsyncClient.get',
+        new_callable=AsyncMock,
+        return_value=httpx.Response(status_code),
+    )
+
+
+def _basic(username: str, secret: str) -> str:
+    return 'Basic ' + base64.b64encode(f'{username}:{secret}'.encode()).decode()
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_keep_username_token():
+    svc = BitbucketDCService(
+        token=SecretStr('alice:BBDC-abc'), base_domain='host.example.com'
+    )
+    with _login_check(200) as get:
+        assert await svc.get_git_credentials() == ('alice', 'BBDC-abc')
+    get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('token', ['BBDC-abc', 'x-token-auth:BBDC-abc'])
+async def test_git_credentials_use_x_token_auth_when_accepted(token):
+    # OAuth tokens, and project and repository tokens on 9.x
+    svc = BitbucketDCService(token=SecretStr(token), base_domain='host.example.com')
+    with _login_check(200) as get:
+        assert await svc.get_git_credentials() == ('x-token-auth', 'BBDC-abc')
+    assert get.await_args.kwargs['headers']['Authorization'] == _basic(
+        'x-token-auth', 'BBDC-abc'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('token', ['BBDC-abc', 'x-token-auth:BBDC-abc'])
+async def test_git_credentials_use_token_user_when_x_token_auth_rejected(token):
+    # Personal tokens, and project and repository tokens on 8.x
+    svc = BitbucketDCService(token=SecretStr(token), base_domain='host.example.com')
+    with (
+        _login_check(401),
+        patch.object(svc, '_make_request', side_effect=_token_user),
+    ):
+        assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_fall_back_to_x_token_auth_when_server_unreachable():
+    svc = BitbucketDCService(
+        token=SecretStr('BBDC-abc'), base_domain='host.example.com'
+    )
+    with (
+        patch(
+            'httpx.AsyncClient.get',
+            new_callable=AsyncMock,
+            side_effect=httpx.ConnectError('unreachable'),
+        ),
+        patch.object(svc, '_make_request', side_effect=httpx.ConnectError('down')),
+    ):
+        assert await svc.get_git_credentials() == ('x-token-auth', 'BBDC-abc')
+
+
+def _service(token: str = 'BBDC-abc', domain: str = 'host.example.com'):
+    return BitbucketDCService(token=SecretStr(token), base_domain=domain)
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_reuse_the_answer_for_the_same_server_and_token():
+    # Each request builds its own service, so the answer must outlive one.
+    with (
+        _login_check(401) as get,
+        patch.object(
+            BitbucketDCService, '_make_request', side_effect=_token_user
+        ) as lookup,
+    ):
+        assert await _service().get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+        assert await _service().get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+    get.assert_awaited_once()
+    assert lookup.await_count == 2  # whoami, then X-AUSERNAME, both once
+    assert 'BBDC-abc' not in repr(bbdc_base._git_usernames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'token, domain', [('BBDC-xyz', 'host.example.com'), ('BBDC-abc', 'other.com')]
+)
+async def test_git_credentials_check_again_for_another_token_or_server(token, domain):
+    with _login_check(200) as get:
+        await _service().get_git_credentials()
+        assert await _service(token, domain).get_git_credentials() == (
+            'x-token-auth',
+            token,
+        )
+    assert get.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status_code', [429, 503])
+async def test_git_credentials_check_again_after_an_inconclusive_check(status_code):
+    svc = _service()
+    with (
+        _login_check(status_code) as get,
+        patch.object(svc, '_make_request', side_effect=_token_user),
+    ):
+        assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+        assert await svc.get_git_credentials() == ('project_7_bot', 'BBDC-abc')
+    assert get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_git_credentials_answer_expires_after_ten_minutes():
+    with _login_check(200) as get, patch.object(bbdc_base, 'time') as clock:
+        clock.monotonic.return_value = 1000.0
+        await _service().get_git_credentials()
+        clock.monotonic.return_value = 1599.0
+        await _service().get_git_credentials()
+        assert get.await_count == 1
+        clock.monotonic.return_value = 1600.0
+        await _service().get_git_credentials()
+        assert get.await_count == 2
+        clock.monotonic.return_value = 2200.0
+        await _service('BBDC-xyz').get_git_credentials()
+    # Expired answers are dropped when a new one is kept.
+    assert len(bbdc_base._git_usernames) == 1
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_url_uses_git_credentials():
+    handler = ProviderHandler(
+        provider_tokens=MappingProxyType(
+            {
+                ProviderType.BITBUCKET_DATA_CENTER: ProviderToken(
+                    token=SecretStr('BBDC-a/b'), host='bitbucket.example.com'
+                )
+            }
+        )
+    )
+    repository = Repository(
+        id='1',
+        full_name='PROJ/repo',
+        git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+        is_public=False,
+    )
+    with (
+        patch.object(
+            BitbucketDCService,
+            'get_repository_details_from_repo_name',
+            new_callable=AsyncMock,
+            return_value=repository,
+        ),
+        patch.object(
+            BitbucketDCService,
+            'get_git_credentials',
+            new_callable=AsyncMock,
+            return_value=('project_7_bot', 'BBDC-a/b'),
+        ),
+    ):
+        url = await handler.get_authenticated_git_url(
+            'PROJ/repo', specified_provider=ProviderType.BITBUCKET_DATA_CENTER
+        )
+    assert url == (
+        'https://project_7_bot:BBDC-a%2Fb@bitbucket.example.com/scm/proj/repo.git'
+    )
 
 
 # ── get_user ──────────────────────────────────────────────────────────────────

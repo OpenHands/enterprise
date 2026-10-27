@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import OptionService from "#/api/option-service/option-service.api";
 import { ModelSelector } from "#/components/shared/modals/settings/model-selector";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import type {
   LLMProvider,
   LLMModel,
@@ -12,6 +14,8 @@ const mockProviders: LLMProvider[] = [
   { name: "openai", verified: true },
   { name: "azure", verified: false },
   { name: "vertex_ai", verified: false },
+  // Provider used by the free-model UI tests (DB-driven free flags).
+  { name: "openhands", verified: true },
   // Provider whose model list comes back empty (no entry in
   // mockModelsByProvider) — used by the unavailable-model warning tests.
   { name: "groq", verified: false },
@@ -34,7 +38,13 @@ const mockModelsByProvider: Record<string, LLMModel[]> = {
     { provider: "vertex_ai", name: "chat-bison", verified: false },
     { provider: "vertex_ai", name: "chat-bison-32k", verified: false },
   ],
+  openhands: [
+    { provider: "openhands", name: "free-model", verified: true, free: true },
+    { provider: "openhands", name: "paid-model", verified: true, free: false },
+  ],
 };
+
+const mockState = vi.hoisted(() => ({ hostedDomain: true }));
 
 vi.mock("#/hooks/query/use-search-providers", () => ({
   useSearchProviders: () => ({ data: mockProviders }),
@@ -43,7 +53,17 @@ vi.mock("#/hooks/query/use-search-providers", () => ({
 vi.mock("#/hooks/query/use-provider-models", () => ({
   useProviderModels: (provider: string | null) => ({
     data: provider ? (mockModelsByProvider[provider] ?? []) : [],
+    isLoading: false,
+    error: null,
   }),
+}));
+
+vi.mock("#/utils/domain-gate", () => ({
+  isOpenHandsHostedDomain: () => mockState.hostedDomain,
+}));
+
+vi.mock("#/hooks/use-app-mode", () => ({
+  useAppMode: () => ({ isEnterpriseCloud: false }),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -68,6 +88,30 @@ function renderWithQuery(ui: React.ReactElement) {
     <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
   );
 }
+
+describe("ModelSelector without a LiteLLM gateway", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("labels the openhands provider OpenHands Cloud", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          enable_litellm: false,
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithQuery(<ModelSelector />);
+
+    await user.click(screen.getByLabelText("LLM Provider"));
+
+    expect(await screen.findByText("OpenHands Cloud")).toBeInTheDocument();
+    expect(screen.queryByText("OpenHands")).not.toBeInTheDocument();
+  });
+});
 
 describe("ModelSelector", () => {
   it("should display the provider selector", async () => {
@@ -219,6 +263,124 @@ describe("ModelSelector", () => {
           screen.queryByTestId("model-unavailable-warning"),
         ).not.toBeInTheDocument();
       });
+    });
+  });
+
+  describe("free-model UI", () => {
+    const BADGE = "SETTINGS$FREE_MODEL_BADGE";
+
+    beforeEach(() => {
+      mockState.hostedDomain = true;
+      mockModelsByProvider.openhands = [
+        {
+          provider: "openhands",
+          name: "free-model",
+          verified: true,
+          free: true,
+        },
+        {
+          provider: "openhands",
+          name: "paid-model",
+          verified: true,
+          free: false,
+        },
+      ];
+    });
+
+    it("shows the Free badge only on free options when the list is open", async () => {
+      const user = userEvent.setup();
+      renderWithQuery(<ModelSelector currentModel="openhands/free-model" />);
+
+      const modelSelector = await screen.findByLabelText("LLM Model");
+      await user.click(modelSelector);
+
+      const freeOption = await screen.findByRole("option", {
+        name: /free-model/,
+      });
+      expect(freeOption).toHaveTextContent(BADGE);
+
+      const paidOption = screen.getByRole("option", { name: /paid-model/ });
+      expect(paidOption).not.toHaveTextContent(BADGE);
+    });
+
+    it("renders the free-models note when the openhands provider has free models on a hosted domain", async () => {
+      renderWithQuery(<ModelSelector currentModel="openhands/free-model" />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("openhands-free-models-note"),
+        ).toBeInTheDocument();
+      });
+    });
+
+    it("renders the selected-model Free badge for a selected free model on a hosted domain", async () => {
+      renderWithQuery(<ModelSelector currentModel="openhands/free-model" />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("selected-free-model-badge"),
+        ).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("selected-free-model-badge")).toHaveTextContent(
+        BADGE,
+      );
+    });
+
+    it("hides the selected-model Free badge while the user is typing a search", async () => {
+      const user = userEvent.setup();
+      renderWithQuery(<ModelSelector currentModel="openhands/free-model" />);
+
+      const modelSelector = await screen.findByLabelText("LLM Model");
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("selected-free-model-badge"),
+        ).toBeInTheDocument();
+      });
+
+      await user.click(modelSelector);
+      await user.clear(modelSelector);
+      await user.type(modelSelector, "paid");
+
+      expect(screen.getByLabelText("LLM Model")).toHaveValue("paid");
+      expect(
+        screen.queryByTestId("selected-free-model-badge"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not render any free-model UI on a non-hosted domain", async () => {
+      mockState.hostedDomain = false;
+      renderWithQuery(<ModelSelector currentModel="openhands/free-model" />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("LLM Model")).toHaveValue("free-model");
+      });
+      expect(
+        screen.queryByTestId("openhands-free-models-note"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("selected-free-model-badge"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(BADGE)).not.toBeInTheDocument();
+    });
+
+    it("does not render the note when the openhands provider has no free models", async () => {
+      mockModelsByProvider.openhands = [
+        {
+          provider: "openhands",
+          name: "paid-model",
+          verified: true,
+          free: false,
+        },
+      ];
+      renderWithQuery(<ModelSelector currentModel="openhands/paid-model" />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("LLM Model")).toHaveValue("paid-model");
+      });
+      expect(
+        screen.queryByTestId("openhands-free-models-note"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(BADGE)).not.toBeInTheDocument();
     });
   });
 });

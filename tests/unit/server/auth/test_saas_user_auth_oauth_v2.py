@@ -13,12 +13,14 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import select
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
@@ -31,6 +33,8 @@ from server.auth.saas_user_auth import (
     saas_user_auth_from_oauth_v2_cookie,
 )
 from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.oauth_token import OAuthToken
+from storage.oauth_token_store import OAuthTokenStore
 from storage.user_authorization import UserAuthorizationType
 
 
@@ -42,6 +46,14 @@ def _make_jwt_service() -> JwtService:
 @pytest.fixture
 def jwt_svc():
     return _make_jwt_service()
+
+
+def _active_user() -> MagicMock:
+    user = MagicMock()
+    user.is_disabled = False
+    user.deletion_pending = False
+    user.credentials_revoked_at = None
+    return user
 
 
 def _make_v2_cookie(
@@ -85,14 +97,14 @@ async def test_v2_cookie_decode_builds_auth(jwt_svc):
     cookie = _make_v2_cookie(
         jwt_svc, user_id=user_id, accepted_tos=True, idp_provider_id=7
     )
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -120,14 +132,14 @@ async def test_v2_cookie_decode_marks_legacy_cookie_without_idp_provider_id(jwt_
     behavior instead of assuming "no IDP token to refresh"."""
     user_id = str(uuid4())
     cookie = _make_v2_cookie(jwt_svc, user_id=user_id, omit_idp_provider_id_claim=True)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -155,14 +167,14 @@ async def test_v2_cookie_missing_user_id_raises(jwt_svc):
 async def test_v2_cookie_blacklisted_email_raises(jwt_svc):
     user_id = str(uuid4())
     cookie = _make_v2_cookie(jwt_svc, user_id=user_id)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'bad@evil.com'
     mock_user.email_verified = True
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -181,14 +193,14 @@ async def test_v2_cookie_access_token_expires_at_parsed(jwt_svc):
     cookie = _make_v2_cookie(
         jwt_svc, user_id=user_id, access_token_expires_at=ate, accepted_tos=False
     )
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = None
     mock_user.email_verified = False
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
     ):
@@ -208,7 +220,7 @@ async def test_from_cookie_prefers_v2(jwt_svc):
     """When both cookies are present, the v2 cookie wins."""
     user_id = str(uuid4())
     v2_cookie = _make_v2_cookie(jwt_svc, user_id=user_id)
-    mock_user = MagicMock()
+    mock_user = _active_user()
     mock_user.email = 'a@b.com'
     mock_user.email_verified = True
 
@@ -221,7 +233,7 @@ async def test_from_cookie_prefers_v2(jwt_svc):
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch(
-            'server.auth.saas_user_auth.UserStore.get_user_by_id',
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
             new=AsyncMock(return_value=mock_user),
         ),
         patch(
@@ -573,3 +585,46 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
     assert result is not None
     assert ProviderType.GITHUB in result
     assert result[ProviderType.GITHUB].token.get_secret_value() == 'gh-token'
+
+
+@pytest.mark.asyncio
+async def test_v2_get_provider_tokens_keeps_the_row_on_a_lock_timeout(
+    async_session_maker, create_git_provider, store_oauth_token, create_user
+):
+    """A refresh held by another worker (e.g. a background job) must not cost
+    the user their linked token."""
+    gitlab = await create_git_provider(ProviderType.GITLAB)
+    user = create_user()
+    await store_oauth_token(
+        user.id,
+        gitlab,
+        'glpat-expired',
+        access_token_expires_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    auth = SaasUserAuth(
+        user_id=str(user.id),
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+    )
+    store = OAuthTokenStore(user_id=user.id, oauth_provider_id=gitlab.id)
+
+    async with async_session_maker() as other_worker, other_worker.begin():
+        await other_worker.execute(
+            select(OAuthToken)
+            .where(OAuthToken.oauth_provider_id == gitlab.id)
+            .with_for_update()
+        )
+        with (
+            patch('storage.oauth_token_store.LOCK_TIMEOUT_SECONDS', 1),
+            patch.object(
+                auth,
+                'get_secrets',
+                new=AsyncMock(return_value=MagicMock(provider_tokens={})),
+            ),
+            pytest.raises(AuthError),
+        ):
+            # Bounded: deleting the row would wait on the lock held above.
+            await asyncio.wait_for(auth.get_provider_tokens(), timeout=10)
+
+    assert await store.get_raw() is not None

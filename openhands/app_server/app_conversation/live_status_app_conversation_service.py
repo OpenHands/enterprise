@@ -9,11 +9,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
-import anyio
 import httpx
 from fastapi import HTTPException, Request, status
+from packaging.version import InvalidVersion, Version
 from pydantic import Field, SecretStr, TypeAdapter
 
 from openhands.agent_server.models import (
@@ -67,10 +68,15 @@ from openhands.app_server.app_conversation.conversation_secret_enricher import (
 from openhands.app_server.app_conversation.hook_loader import (
     load_hooks_from_agent_server,
 )
+from openhands.app_server.app_conversation.skill_loader import (
+    azure_devops_user_orgs,
+    get_azure_devops_bearer_token,
+)
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
 )
 from openhands.app_server.config import (
+    AppServerConfig,
     get_event_callback_service,
     resolve_provider_llm_base_url,
 )
@@ -86,18 +92,27 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE, ProviderType
+from openhands.app_server.event_callback.util import agent_server_error_detail
+from openhands.app_server.integrations.provider import (
+    PROVIDER_TOKEN_TYPE,
+    ProviderHandler,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
 )
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_service import SandboxService
+from openhands.app_server.sandbox.sandbox_service import (
+    AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    SandboxService,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
@@ -130,7 +145,7 @@ from openhands.app_server.utils.redis_lock import (
     refresh_lock_periodically,
     try_acquire_redis_lock,
 )
-from openhands.sdk import Agent, AgentContext, LocalWorkspace
+from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -139,27 +154,38 @@ from openhands.sdk.marketplace.registration import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
-from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
+from openhands.sdk.settings import (
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.subagent import get_registered_agent_definitions
 from openhands.sdk.tool import ClientToolSpec
-from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    launch_tool_specs,
+    resolve_tool_specs,
+    selects_tool,
+)
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.preset.default import (
-    get_default_tools,
-    register_builtins_agents,
-)
+from openhands.tools.preset.default import register_builtins_agents
 from openhands.tools.preset.planning import (
     format_plan_structure,
     get_planning_tools,
 )
 
-_conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
@@ -167,8 +193,19 @@ _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # provider, so a slow git provider cannot hold up the conversation start.
 _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 
+# Lifetime of the per-conversation Azure DevOps credential-helper exchange JWT.
+# Sized to a working session (on the order of the sandbox max_session_seconds),
+# not the multi-day resume window: the credential is minted fresh at every
+# conversation start, matching how GitHub/GitLab deliver theirs. A conversation
+# resumed after a pause longer than this can meet an expired credential — the
+# same limit those providers have today; the durable fix is the sandbox-bound
+# credential tracked in ak684/oh#124.
+_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 
-def _resolve_title_llm_profile(user: UserInfo) -> str | None:
+
+def _resolve_title_llm_profile(
+    user: UserInfo, conversation_model: str | None = None
+) -> str | None:
     preference = getattr(user, 'title_llm_profile', None)
     if (
         preference
@@ -179,6 +216,14 @@ def _resolve_title_llm_profile(user: UserInfo) -> str | None:
 
     active = user.llm_profiles.active
     if active and PROFILE_NAME_REGEX.match(active) and user.llm_profiles.has(active):
+        # A conversation started on another model (a picked profile, a model
+        # override or an agent profile) is titled with that model: without a
+        # title profile the agent-server falls back to the agent's LLM.
+        if (
+            conversation_model
+            and user.llm_profiles.require(active).model != conversation_model
+        ):
+            return None
         return active
     return None
 
@@ -240,8 +285,16 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 
 
 def _exception_detail(exc: Exception) -> str:
-    """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
+    """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail.
+
+    httpx.HTTPStatusError.__str__ carries only the status and URL; prefer the
+    agent server's response body so the real cause reaches the caller.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return agent_server_error_detail(exc)
     detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('message'), str):
+        return detail['message']
     return detail if isinstance(detail, str) else str(exc)
 
 
@@ -251,6 +304,53 @@ def append_system_context(existing: str | None, block: str) -> str:
     if block in existing:
         return existing
     return f'{existing.rstrip()}\n\n{block}'
+
+
+def azure_devops_context(
+    selected_repository: str | None,
+    organizations: Sequence[str],
+    git_credentials_configured: bool,
+) -> str:
+    """Describe an Azure DevOps conversation's provider, host and organizations.
+
+    Without it, an agent asked to clone ``org/project/repo`` assumes GitHub. Built
+    only from repository and organization names, never credentials. The plain-git
+    line mirrors the per-organization credential helper, which is installed only
+    when a credential was minted and ``organizations`` is non-empty.
+    """
+    host = ProviderHandler.PROVIDER_DOMAINS[ProviderType.AZURE_DEVOPS]
+    lines = [
+        f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
+    ]
+    parts = (selected_repository or '').split('/')
+    if len(parts) >= 3:
+        org, project, repo = parts[0], parts[1], parts[2]
+        url = (
+            f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
+            f'/_git/{quote(repo, safe="")}'
+        )
+        lines.append(
+            f'Selected repository: organization `{org}`, project `{project}`, '
+            f'repository `{repo}` ({url}).'
+        )
+    lines.append(
+        'An Azure DevOps repository written as ORG/PROJECT/REPO is cloned from '
+        f'https://{host}/ORG/PROJECT/_git/REPO.'
+    )
+    if organizations:
+        names = ', '.join(f'`{org}`' for org in organizations)
+        lines.append(f"The user's Azure DevOps organizations: {names}.")
+        if git_credentials_configured:
+            lines.append(
+                'Git credentials are configured for these organizations: use plain '
+                '`git clone`, `git fetch`, `git pull` and `git push`, and do not put '
+                'tokens in remote URLs or add authentication options.'
+            )
+    lines.append(
+        'For the Azure DevOps REST API and pull requests, use the azure-devops skill.'
+    )
+    body = '\n'.join(lines)
+    return f'<AZURE_DEVOPS_CONTEXT>\n{body}\n</AZURE_DEVOPS_CONTEXT>'
 
 
 def effective_disabled_skills(
@@ -293,6 +393,33 @@ def _to_sdk_marketplace_registrations(
     ]
 
 
+def _apply_profile_secret_scope(
+    secrets: dict[str, Any],
+    user: UserInfo,
+) -> dict[str, Any]:
+    """Filter secrets by the resolved profile allow-list."""
+    refs = getattr(user, 'active_agent_profile_secret_refs', None)
+    if refs is None:
+        return secrets
+    allowed = set(refs)
+    dropped = sorted(set(secrets) - allowed)
+    if dropped:
+        _logger.info(
+            'agent_profile_secret_scope:filtered',
+            extra={'dropped_secret_names': dropped},
+        )
+    return {name: value for name, value in secrets.items() if name in allowed}
+
+
+def _compose_system_message_suffix(
+    profile_suffix: str | None,
+    runtime_suffix: str | None,
+) -> str | None:
+    """Append serving context to the profile suffix."""
+    parts = [part for part in (profile_suffix, runtime_suffix) if part]
+    return '\n\n'.join(parts) if parts else None
+
+
 @dataclass
 class LiveStatusAppConversationService(AppConversationServiceBase):
     """AppConversationService which combines live status info from the sandbox with stored data."""
@@ -321,6 +448,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_ttl_seconds: int = 3600
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
+    enable_child_conversation_launcher: bool = False
+    # Deployment-configured default grouping strategy, used when a user/org
+    # has not set ``sandbox_grouping_strategy`` on their own settings. See
+    # ``_get_sandbox_grouping_strategy``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -334,10 +466,42 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
         return system_message_suffix
 
+    async def _maybe_append_azure_devops_context(
+        self,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+    ) -> str | None:
+        if git_provider != ProviderType.AZURE_DEVOPS:
+            return system_message_suffix
+        # The same organizations the git credential helper is installed for.
+        organizations = await azure_devops_user_orgs(
+            self.user_context, selected_repository
+        )
+        return append_system_context(
+            system_message_suffix,
+            azure_devops_context(
+                selected_repository,
+                organizations,
+                git_credentials_configured=bool(azure_devops_access_token),
+            ),
+        )
+
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
-        """Get the sandbox grouping strategy from user settings."""
+        """Get the effective sandbox grouping strategy.
+
+        Precedence: the user/org-configured value from settings, else this
+        service's deployment-configured default (``self.sandbox_grouping_strategy``,
+        set via ``LiveStatusAppConversationServiceInjector``), else
+        ``NO_GROUPING``.
+        """
         user_info = await self.user_context.get_user_info()
-        return user_info.sandbox_grouping_strategy
+        return (
+            user_info.sandbox_grouping_strategy
+            or self.sandbox_grouping_strategy
+            or SandboxGroupingStrategy.NO_GROUPING
+        )
 
     async def search_app_conversations(
         self,
@@ -413,74 +577,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
-        quota_user_id = await self.user_context.get_user_id()
-        quota_reserved = bool(
-            getattr(self.user_context, '_daily_quota_reserved', False)
-        )
-        if quota_reserved:
-            setattr(self.user_context, '_daily_quota_reserved', False)
-        elif quota_user_id:
-            quota_reserved = await self._reserve_daily_conversation_quota(quota_user_id)
-
-        try:
-            async for task in self._start_app_conversation(request):
-                await self.app_conversation_start_task_service.save_app_conversation_start_task(
-                    task
-                )
-                if quota_reserved:
-                    if task.status == AppConversationStartTaskStatus.ERROR:
-                        with anyio.CancelScope(shield=True):
-                            await self._release_daily_conversation_quota(quota_user_id)
-                        quota_reserved = False
-                    elif task.status == AppConversationStartTaskStatus.READY:
-                        quota_reserved = False
-                yield task
-        except BaseException:
-            if quota_reserved:
-                with anyio.CancelScope(shield=True):
-                    await self._release_daily_conversation_quota(quota_user_id)
-            raise
-
-    async def _reserve_daily_conversation_quota(self, user_id: str) -> bool:
-        try:
-            from openhands.app_server.shared import server_config
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
+        async for task in self._start_app_conversation(request):
+            await self.app_conversation_start_task_service.save_app_conversation_start_task(
+                task
             )
-            from storage.database import a_session_maker
-        except ImportError:
-            return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if server_config.app_mode.value != 'saas' or org_id is None:
-            return False
-        async with a_session_maker() as session:
-            return await DailyConversationQuotaService(session).reserve(user_id, org_id)
-
-    async def _release_daily_conversation_quota(self, user_id: str | None) -> None:
-        if not user_id:
-            return
-        try:
-            from server.services.daily_conversation_quota_service import (
-                DailyConversationQuotaService,
-            )
-            from storage.database import a_session_maker
-
-            async with a_session_maker() as session:
-                await DailyConversationQuotaService(session).release(user_id)
-        except Exception:
-            _logger.exception('Failed to release daily conversation quota reservation')
+            yield task
 
     async def _start_app_conversation(
         self, request: AppConversationStartRequest
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         # Create and yield the start task
         user_id = await self.user_context.get_user_id()
-        # Prefer the user's email as the Laminar trace user id so traces are
-        # immediately attributable in the Laminar UI instead of showing only
-        # a pseudo-anonymous internal id. Falls back to ``user_id`` when no
-        # email is available (e.g. OSS mode).
-        laminar_user_id = await self.user_context.get_user_email() or user_id
 
         # Validate and inherit from parent conversation if provided
         if request.parent_conversation_id:
@@ -510,6 +617,36 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='client_tools are not supported for ACP agent launches',
             )
+        if request.llm_profile:
+            if not isinstance(agent_settings, OpenHandsAgentSettings):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail='llm_profile is not supported for ACP agent launches',
+                )
+            profile_llm = user.llm_profiles.get(request.llm_profile)
+            if profile_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Profile '{request.llm_profile}' not found",
+                )
+            # Imported lazily: settings_router transitively imports this service,
+            # so a module-level import would be circular.
+            from openhands.app_server.settings.settings_router import (
+                LITE_LLM_API_URL,
+            )
+
+            # Resolve the profile as switch_profile does, and copy rather than
+            # mutate: the user context may cache the resolved settings.
+            agent_settings = agent_settings.model_copy(
+                update={
+                    'llm': resolve_profile_llm(
+                        profile_llm,
+                        managed_proxy_url=LITE_LLM_API_URL,
+                        fallback_api_key=agent_settings.llm.api_key,
+                    )
+                }
+            )
+            user = user.model_copy(update={'agent_settings': agent_settings})
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -527,12 +664,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
+            browser_available = await self._ensure_profile_runtime(
+                agent_server_url, sandbox.session_api_key
+            )
 
             # Get the working dir
-            sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
+            sandbox_spec = (
+                await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+                    sandbox.sandbox_spec_id, sandbox_id
+                )
             )
-            assert sandbox_spec is not None
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
@@ -544,6 +685,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 sandbox_grouping_strategy,
                 conversation_id.hex,
             )
+
+            # Mint this conversation's Azure DevOps credential-helper token
+            # before setup runs (the setup flow writes it to the sandbox and the
+            # request builder registers it for masking).
+            await self._mint_azure_devops_access_token(task)
 
             # Run setup scripts
             remote_workspace = AsyncRemoteWorkspace(
@@ -597,8 +743,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     plugins=request.plugins,
                     client_tools=request.client_tools,
                     api_secrets=request.secrets,
+                    azure_devops_access_token=task._azure_devops_access_token,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
+                    browser_available=browser_available,
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
@@ -618,19 +766,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             body_json = start_conversation_request.model_dump(
                 mode='json', context={'expose_secrets': True}
             )
-            # Inject ``user_id`` into the start-conversation body so the
-            # agent-server can call ``Laminar.set_trace_user_id()`` and tag
-            # traces with the authenticated user. The currently pinned
-            # ``openhands-sdk`` release does not yet expose ``user_id`` on
-            # ``StartConversationRequest`` (added in software-agent-sdk#3242),
-            # so passing it to ``create_request(...)`` is silently dropped by
-            # pydantic. The agent-server reads the field directly from the
-            # request body, so injecting it here works regardless of whether
-            # the local SDK model knows about it. Remove this once OpenHands
-            # pins to an SDK release that exposes ``user_id`` on
-            # ``StartConversationRequest``.
-            if laminar_user_id:
-                body_json['user_id'] = laminar_user_id
+            # Keep the agent-server ``user_id`` aligned with app-server and
+            # frontend PostHog identity. The agent-server uses it both for
+            # product analytics distinct_id and Laminar trace_user_id; user
+            # email is added to observability metadata by the request builder
+            # so Laminar traces remain searchable without splitting PostHog
+            # persons.
+            if user.id:
+                body_json['user_id'] = user.id
             headers = (
                 {'X-Session-API-Key': sandbox.session_api_key}
                 if sandbox.session_api_key
@@ -664,6 +807,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # ``agent`` is the source of truth here): the response echoes
             # the same agent back through the AgentBase discriminator.
             request_agent = start_conversation_request.agent
+            if request_agent is None:
+                request_agent = info.agent
             tags: dict[str, str] = {}
             # Pin where the workspace was actually created so the delete-time
             # archive captures the right directory without re-deriving the path
@@ -993,6 +1138,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
+        # Prefer sandboxes whose image runtime-api still advertises, so a new
+        # conversation is not routed into an old-image sandbox when a current
+        # one exists. Keep the full list when none is current or the lookup
+        # fails, rather than starting a new sandbox.
+        current_sandboxes = await self._filter_sandboxes_with_known_spec(
+            available_sandboxes
+        )
+        if current_sandboxes:
+            available_sandboxes = current_sandboxes
+
         if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
             # Return the first available sandbox
             return available_sandboxes[0]
@@ -1044,6 +1199,32 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Return empty counts on error - will default to first sandbox
             return {}
 
+    async def _filter_sandboxes_with_known_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Return the sandboxes whose spec the spec service still resolves.
+
+        After an agent-server image bump runtime-api advertises only the
+        current image, so sandboxes on the previous image resolve to no spec.
+        Returns an empty list when none resolve or the lookup fails; the
+        caller then keeps its full list.
+        """
+        try:
+            # One lookup per distinct spec id; the dynamic spec service caches
+            # the runtime-api listing, so this is at most one request.
+            known: dict[str, bool] = {}
+            for sandbox in sandboxes:
+                spec_id = sandbox.sandbox_spec_id
+                if spec_id not in known:
+                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
+                    known[spec_id] = spec is not None
+            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+        except Exception as e:
+            _logger.warning(
+                f'Error checking sandbox specs for grouping: {e}', exc_info=True
+            )
+            return []
+
     async def _wait_for_sandbox_start(
         self, task: AppConversationStartTask
     ) -> AsyncGenerator[AppConversationStartTask, None]:
@@ -1063,7 +1244,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
 
                 sandbox = await self.sandbox_service.start_sandbox(
-                    sandbox_id=sandbox_id_str
+                    sandbox_id=sandbox_id_str,
                 )
             task.sandbox_id = sandbox.id
         else:
@@ -1112,6 +1293,61 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             timeout=self.sandbox_startup_timeout,
             poll_interval=self.sandbox_startup_poll_frequency,
             httpx_client=self.httpx_client,
+        )
+
+    async def _mint_azure_devops_access_token(
+        self, task: AppConversationStartTask
+    ) -> None:
+        """Mint this conversation's Azure DevOps credential-helper exchange JWT.
+
+        Delivered per conversation (parity with how GitHub/GitLab re-embed their
+        token at every conversation start), not once per sandbox: the setup flow
+        writes it to a file the credential helper reads, and the request builder
+        registers the same string as a masked conversation secret. Because it is
+        minted per conversation, a conversation that reuses a running sandbox gets
+        its own fresh, masked credential. Only set when the user has an Entra (JWT)
+        Azure DevOps token and a ``web_url`` exists (the secrets endpoint lives
+        under it); left unset for every other user.
+        """
+        if not self.web_url:
+            return
+        # Best-effort: a failure to mint must never block conversation start
+        # (Azure DevOps git simply will not be set up), like the credential and
+        # marketplace helpers below.
+        try:
+            token = await get_azure_devops_bearer_token(self.user_context)
+            if not token:
+                return
+            user_id = await self.user_context.get_user_id()
+            if not user_id:
+                return
+            task._azure_devops_access_token = self.jwt_service.create_jws_token(
+                payload={
+                    'user_id': user_id,
+                    'provider_type': ProviderType.AZURE_DEVOPS.value,
+                },
+                expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+            )
+        except Exception as exc:
+            _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+
+    @staticmethod
+    def _register_azure_devops_access_token_secret(
+        secrets: dict, azure_devops_access_token: str | None
+    ) -> None:
+        """Register this conversation's Azure DevOps JWT as a masked secret.
+
+        The helper reads the JWT from a file the agent can also read, so without
+        this it would appear unmasked if the agent printed the file.
+        ``SecretRegistry.mask_secrets_in_output`` resolves and masks every
+        registered secret value. Must be the exact string minted for this
+        conversation (see ``_mint_azure_devops_access_token``).
+        """
+        if not azure_devops_access_token:
+            return
+        secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
+            value=SecretStr(azure_devops_access_token),
+            description='Azure DevOps git credential-helper access token',
         )
 
     async def _seed_sandbox_profiles(
@@ -1209,20 +1445,41 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
         return agent_server_url
 
+    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> bool:
+        """Require a compatible runtime and return its browser availability."""
+        response = await self.httpx_client.get(
+            f'{url}/server_info',
+            headers={'X-Session-API-Key': api_key} if api_key else {},
+            timeout=self.sandbox_startup_timeout,
+        )
+        response.raise_for_status()
+        info = response.json()
+        reported = info.get('sdk_version')
+        try:
+            compatible = isinstance(reported, str) and Version(reported) >= Version(
+                '1.54.0'
+            )
+        except InvalidVersion:
+            compatible = False
+        if not compatible:
+            raise SandboxError(
+                'This sandbox requires openhands-sdk >=1.54.0 for Agent Profiles. '
+                'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+            )
+
+        return BROWSER_TOOL_NAME in info.get('usable_tools', [])
+
     def _inherit_configuration_from_parent(
         self, request: AppConversationStartRequest, parent_info: AppConversationInfo
     ) -> None:
-        """Inherit configuration from parent conversation if not explicitly provided.
+        """Inherit parent settings unless the request overrides them."""
+        inherit_profile = request.agent_profile_id is None
+        parent_profile = parent_info.launched_agent_profile
+        if request.agent_profile_id is None and isinstance(
+            parent_profile, LaunchedAgentProfile
+        ):
+            request.agent_profile_id = str(parent_profile.agent_profile_id)
 
-        This ensures sub-conversations automatically inherit:
-        - Sandbox ID (to share the same workspace/environment)
-        - Git parameters (repository, branch, provider)
-        - LLM model
-
-        Args:
-            request: The conversation start request to modify
-            parent_info: The parent conversation info to inherit from
-        """
         # Inherit sandbox_id from parent to share the same workspace/environment
         if not request.sandbox_id:
             request.sandbox_id = parent_info.sandbox_id
@@ -1236,7 +1493,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             request.git_provider = parent_info.git_provider
 
         # Inherit LLM model from parent if not provided
-        if not request.llm_model and parent_info.llm_model:
+        if inherit_profile and not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
 
     def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
@@ -1303,6 +1560,60 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         return f'{working_dir}/{config_dir}/PLAN.md'
 
+    async def _launch_custom_secrets(self, user: UserInfo) -> dict:
+        """Custom secrets the conversation launches with.
+
+        The member's personal secrets merged with the org's shared ones, as
+        ``user_context.get_secrets()`` returns them — unless the launched Agent
+        Profile is org-scoped and lists its ``secret_refs`` explicitly. An org
+        profile is shared configuration, so those references resolve against
+        the org-shared secrets only, never against a member's personal secret
+        of the same name (OHE-3088); the system-managed ``OPENHANDS_API_KEY``
+        stays available. Org profiles without a list (the seeded ``default``)
+        keep the merged view. Should the effective org be unknown (not a
+        cloud/SaaS context), the org profile gets no custom secrets rather
+        than the member's.
+        """
+        secrets = await self.user_context.get_secrets()
+        secret_refs = getattr(user, 'active_agent_profile_secret_refs', None)
+        if getattr(user, 'active_agent_profile_scope', None) != 'org' or not isinstance(
+            secret_refs, list
+        ):
+            return secrets
+
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        org_id = await get_effective_org_id() if get_effective_org_id else None
+        shared: dict[str, Any] = {}
+        if org_id is None:
+            _logger.warning(
+                'agent_profile_org_secrets:missing_effective_org',
+                extra={'user_id': user.id},
+            )
+        else:
+            from storage.org_secrets_store import OrgSecretsStore
+
+            store = await OrgSecretsStore.get_instance(org_id)
+            shared = await store.load_shared_values()
+        allowed = set(secret_refs)
+        unresolved = sorted(allowed - set(shared))
+        if unresolved:
+            # A ref the org no longer shares (or never did): the agent runs
+            # without that secret, so leave a trace for the operator.
+            _logger.warning(
+                'agent_profile_org_secrets:unresolved_refs',
+                extra={'user_id': user.id, 'secret_names': unresolved},
+            )
+        scoped: dict = {
+            name: StaticSecret(
+                value=secret.secret, description=secret.description or None
+            )
+            for name, secret in shared.items()
+            if name in allowed
+        }
+        if 'OPENHANDS_API_KEY' in secrets:
+            scoped['OPENHANDS_API_KEY'] = secrets['OPENHANDS_API_KEY']
+        return scoped
+
     async def _setup_secrets_for_git_providers(self, user: UserInfo) -> dict:
         """Set up secrets for all git provider authentication.
 
@@ -1312,49 +1623,91 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Dictionary of secrets for the conversation
         """
-        secrets = await self.user_context.get_secrets()
+        secrets = await self._launch_custom_secrets(user)
+        secrets.update(
+            await self._get_provider_token_secrets(user, self._secret_lookup_url())
+        )
+        return secrets
 
-        # Get all provider tokens from user authentication
+    def _secret_lookup_url(self) -> str | None:
+        """The webhook secrets URL, when the sandbox can call back to it."""
+        if not self.web_url:
+            return None
+        if isinstance(self.sandbox_service, RemoteSandboxService) and (
+            urlparse(self.web_url).hostname in ('localhost', '127.0.0.1')
+        ):
+            return None
+        return self.web_url + '/api/v1/webhooks/secrets'
+
+    async def _get_provider_token_secrets(
+        self, user: UserInfo, lookup_url: str | None
+    ) -> dict[str, SecretSource]:
+        """Secrets carrying the user's git provider and OAuth tokens.
+
+        With named OAuth secrets in use, each linked provider's token is
+        exposed under its ``named_secret``; ``<PROVIDER_TYPE>_TOKEN`` remains
+        only for provider types the user has no OAuth v2 token for. Each is a
+        ``LookupSecret`` against ``lookup_url``, or a ``StaticSecret`` holding
+        the current token (which then never refreshes) when it is ``None``.
+        """
+        secrets: dict[str, SecretSource] = {}
         provider_tokens = cast(
             PROVIDER_TOKEN_TYPE | None,
             await self.user_context.get_provider_tokens(),
         )
-        if provider_tokens:
-            # Create secrets for each provider token
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
+        named_oauth_secrets = await self.user_context.get_named_oauth_secrets()
 
-                secret_name = f'{provider_type.name}_TOKEN'
-                description = f'{provider_type.name} authentication token'
+        for provider_type, provider_token in (provider_tokens or {}).items():
+            if not provider_token.token:
+                continue
+            if (
+                named_oauth_secrets is not None
+                and provider_type in named_oauth_secrets.linked_provider_types
+            ):
+                continue
+            secret_name = f'{provider_type.name}_TOKEN'
+            description = f'{provider_type.name} authentication token'
+            if lookup_url:
+                secrets[secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'provider_type': provider_type.value},
+                    description,
+                )
+                continue
+            static_token = await self.user_context.get_latest_token(provider_type)
+            if static_token:
+                secrets[secret_name] = StaticSecret(
+                    value=SecretStr(static_token), description=description
+                )
 
-                if self.web_url:
-                    # Create an access token for web-based authentication
-                    access_token = self.jwt_service.create_jws_token(
-                        payload={
-                            'user_id': user.id,
-                            'provider_type': provider_type.value,
-                        },
-                        expires_in=self.access_token_hard_timeout,
-                    )
-                    headers = {'X-Access-Token': access_token}
-
-                    secrets[secret_name] = LookupSecret(
-                        url=self.web_url + '/api/v1/webhooks/secrets',
-                        headers=headers,
-                        description=description,
-                    )
-                else:
-                    # Use static token for environments without web URL access
-                    static_token = await self.user_context.get_latest_token(
-                        provider_type
-                    )
-                    if static_token:
-                        secrets[secret_name] = StaticSecret(
-                            value=SecretStr(static_token), description=description
-                        )
-
+        for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
+            if lookup_url:
+                secrets[named.secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'oauth_provider_id': named.oauth_provider_id},
+                    named.description,
+                )
+                continue
+            value = await self.user_context.get_named_oauth_secret_value(
+                named.oauth_provider_id
+            )
+            if value:
+                secrets[named.secret_name] = StaticSecret(
+                    value=SecretStr(value), description=named.description
+                )
         return secrets
+
+    def _lookup_secret(
+        self, lookup_url: str, payload: dict[str, Any], description: str
+    ) -> LookupSecret:
+        access_token = self.jwt_service.create_jws_token(
+            payload=payload, expires_in=self.access_token_hard_timeout
+        )
+        return LookupSecret(
+            url=lookup_url,
+            headers={'X-Access-Token': access_token},
+            description=description,
+        )
 
     async def _setup_conversation_secrets(
         self,
@@ -1408,23 +1761,22 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Configured LLM instance
         """
-        model: str = (
-            llm_model
-            or user.agent_settings.llm.model
-            or LLM.model_fields['model'].default
-        )
+        # ACP conversations return before the LLM is configured.
+        assert isinstance(user.agent_settings, OpenHandsAgentSettings)
+        user_llm = user.agent_settings.llm
+        model: str = llm_model or user_llm.model or LLM.model_fields['model'].default
 
         base_url = resolve_provider_llm_base_url(
             model,
-            user.agent_settings.llm.base_url,
+            user_llm.base_url,
             provider_base_url=self.openhands_provider_base_url,
         )
 
-        return user.agent_settings.llm.model_copy(
+        return user_llm.model_copy(
             update={
                 'model': model,
                 'base_url': base_url,
-                'api_key': user.agent_settings.llm.api_key,
+                'api_key': user_llm.api_key,
                 'usage_id': 'agent',
                 # Force streaming on (the SDK LLM defaults stream=False).
                 'stream': True,
@@ -2148,55 +2500,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
+        browser_available: bool = True,
     ) -> StartConversationRequest:
-        """Build a complete StartConversationRequest for a user.
-
-        Resolves LLM, MCP, tools, secrets and agent context, then
-        builds the ``Agent`` via ``AgentSettings.create_agent()``.
-        Server-only overrides (system prompts, LLM tracing metadata,
-        skills, hooks) are applied to the agent after creation.
-        Finally delegates to ``ConversationSettings.create_request()``.
-
-        For ACP agent settings, routes to ``_build_acp_start_conversation_request``.
-
-        Args:
-            user: Resolved launch view (Agent Profile applied)
-            sandbox: Sandbox information
-            conversation_id: Unique conversation identifier
-            initial_message: Optional initial message to send
-            system_message_suffix: Optional suffix for system message
-            git_provider: Optional git provider type
-            working_dir: Working directory path
-            agent_type: Type of agent (DEFAULT or PLAN)
-            llm_model: Optional specific LLM model to use
-            trigger: Optional conversation trigger.
-            remote_workspace: Optional remote workspace instance
-            selected_repository: Optional repository name
-            selected_branch: Optional selected branch name
-            plugins: Optional list of plugins to load
-            client_tools: Optional client-defined tools to register with the runtime.
-            api_secrets: Optional secrets passed directly via the API.
-                These are merged with existing secrets (from database
-                and git providers), with API-provided secrets taking
-                precedence.
-            system_prompt: Optional inline system prompt that replaces the
-                built-in static system prompt verbatim. Ignored (with a
-                warning) for ACP agents, which own their own prompt.
-            disabled_skills: Optional per-request skill deny-list, unioned
-                with the member's and launched profile's deny-lists.
-            request_observability_metadata: Optional caller-provided trace metadata to
-                merge with app-server conversation metadata.
-            request_observability_tags: Optional caller-provided tags to append to the
-                conversation root observability span.
-            request_observability_span_name: Optional named child span to emit
-                under the conversation root.
-        """
-        llm_settings = getattr(user.agent_settings, 'llm', None)
+        """Build a scoped request for runtime finalization."""
+        llm_settings = (
+            None
+            if isinstance(user.agent_settings, ACPAgentSettings)
+            else user.agent_settings.llm
+        )
         _logger.debug(
             'managed_llm_key_refresh:build_request_context',
             extra={
@@ -2255,6 +2572,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 plugins=plugins,
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
+                azure_devops_access_token=azure_devops_access_token,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2301,8 +2619,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
         )
 
         # --- LLM + MCP -----------------------------------------------------
@@ -2329,71 +2660,105 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             else:
                 effective_suffix = web_host_context
 
-        # --- tools ----------------------------------------------------------
         agent_definitions: list[Any] = []
-        if agent_type == AgentType.PLAN:
-            plan_path = None
-            if project_dir:
-                plan_path = self._compute_plan_path(project_dir, git_provider)
-            tools = get_planning_tools(plan_path=plan_path)
-        else:
-            register_builtins_agents(enable_browser=True)
-            tools = get_default_tools(
-                enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
+        selected_tools = user.agent_settings.tools
+        tools = selected_tools
+        if agent_type == AgentType.PLAN and selected_tools is None:
+            plan_path = (
+                self._compute_plan_path(project_dir, git_provider)
+                if project_dir
+                else None
             )
-            if user.agent_settings.enable_sub_agents:
-                agent_definitions = list(get_registered_agent_definitions())
+            tools = get_planning_tools(plan_path=plan_path)
+            tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
+        register_builtins_agents(enable_browser=browser_available)
+        if tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME):
+            agent_definitions = list(get_registered_agent_definitions())
+        if (
+            selected_tools is None
+            and agent_type != AgentType.PLAN
+            and self.enable_child_conversation_launcher
+            and self.web_url
+        ):
+            # Add the optional launcher only to the default toolset.
+            try:
+                from openhands.tools.child_conversation import (
+                    StartChildConversationTool,
+                )
+            except ImportError:
+                _logger.warning(
+                    'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
+                    'openhands-sdk has no start_child_conversation tool; '
+                    'conversation %s starts without it',
+                    conversation_id,
+                )
+            else:
+                tools = resolve_tool_specs(None, enable_browser=browser_available)
+                tools.append(
+                    Tool(
+                        name=StartChildConversationTool.name,
+                        params={
+                            'launch_url': (
+                                f'{self.web_url}/api/v1/webhooks/'
+                                f'conversations/{conversation_id}/children'
+                            )
+                        },
+                    )
+                )
 
         # --- build AgentSettings and create agent ---------------------------
+        resolved_context = user.agent_settings.agent_context or AgentContext()
         # When enterprise persistent memory is enabled, stamp load_memory=True
         # so the SDK's LocalConversation reads MEMORY.md from disk at session
         # start. The memory file itself is written to the sandbox by
         # maybe_inject_memory_context() in run_setup_scripts.
-        agent_context_kwargs: dict[str, Any] = {
-            'system_message_suffix': effective_suffix,
-            'secrets': secrets,
+        agent_context_update: dict[str, Any] = {
+            'system_message_suffix': _compose_system_message_suffix(
+                resolved_context.system_message_suffix,
+                effective_suffix,
+            ),
+            'secrets': None,
             'registered_marketplaces': _to_sdk_marketplace_registrations(
                 registered_marketplaces
             ),
         }
         if getattr(user, 'enable_memory_context', False):
-            agent_context_kwargs['load_memory'] = True
+            agent_context_update['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
-                'tools': tools,
+                'tools': launch_tool_specs(tools, browser_available=browser_available),
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(**agent_context_kwargs),
+                'agent_context': resolved_context.model_copy(
+                    update=agent_context_update
+                ),
             }
         )
-        agent = configured_agent_settings.create_agent()
-
-        # SaaS profiles live on the user/org record, not the sandbox
-        # filesystem, so we attach the agent's built-in switch_llm tool
-        # ourselves rather than relying on create_agent()'s gating. Enabled
-        # whenever there are at least two valid saved profiles (a switch needs
-        # a target).
-        valid_profile_names = [
-            name
-            for name in user.llm_profiles.profiles
-            if PROFILE_NAME_REGEX.match(name)
-        ]
-        if (
-            len(valid_profile_names) >= 2
-            and SwitchLLMTool.__name__ not in agent.include_default_tools
-        ):
-            agent = agent.model_copy(
+        if should_set_litellm_extra_body(llm.model):
+            configured_agent_settings = configured_agent_settings.model_copy(
                 update={
-                    'include_default_tools': [
-                        *agent.include_default_tools,
-                        SwitchLLMTool.__name__,
-                    ]
+                    'llm': llm.model_copy(
+                        update={
+                            'litellm_extra_body': {
+                                'metadata': get_llm_metadata(
+                                    model_name=llm.model,
+                                    llm_type=llm.usage_id or 'agent',
+                                    conversation_id=conversation_id,
+                                    user_id=user.id,
+                                    repo_name=selected_repository,
+                                    git_provider=git_provider.value
+                                    if git_provider
+                                    else None,
+                                    selected_branch=selected_branch,
+                                )
+                            }
+                        }
+                    )
                 }
             )
-
+        # SDK settings cannot carry the sandbox prompt flag or planning presets.
         agent = self._apply_server_agent_overrides(
-            agent,
+            configured_agent_settings.create_agent(),
             agent_type,
             conversation_id,
             user.id,
@@ -2461,15 +2826,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # Pass agent explicitly — it has server-only overrides (system
         # prompts, LLM metadata, skills) applied after create_agent().
-        # ``user_id`` is forwarded so the agent-server can attach it to
-        # observability spans (see software-agent-sdk#3242). We prefer the
-        # user's email so Laminar traces are immediately attributable, and
-        # fall back to the internal user id when no email is available.
-        # The kwarg is dropped silently by pydantic on SDK versions that
-        # don't yet expose the field; the start-conversation POST also
-        # injects it directly into the JSON body as a forward-compatible
-        # fallback.
-        laminar_user_id = await self.user_context.get_user_email() or user.id
+        # ``user_id`` must be the stable app user id because the agent-server
+        # reuses it as both Laminar trace_user_id and PostHog distinct_id.
+        # Keep email as trace metadata only so Laminar remains searchable
+        # without splitting product analytics identity.
+        user_email = await self.user_context.get_user_email()
         resolved_observability_metadata = await self._build_observability_metadata(
             remote_workspace,
             project_dir,
@@ -2488,10 +2849,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
-        create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': laminar_user_id}
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
+        create_kwargs: dict[str, Any] = {
+            'user_id': user.id,
+            'secrets': secrets,
+            'agent': agent,
+        }
         if client_tools:
             create_kwargs['client_tools'] = client_tools
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = _resolve_title_llm_profile(user, llm.model)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -2538,25 +2907,27 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         disabled_skills: list[str] | None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
     ) -> StartConversationRequest:
-        """Load workspace skills onto a conversation request's agent.
-
-        Used by both the LLM and ACP arms of
-        ``_build_start_conversation_request_for_user`` so that skill-loading
-        semantics only need to change in one place.
-        """
+        """Load workspace skills into the launch source."""
         try:
-            updated_agent = await self._load_skills_and_update_agent(
+            field = 'agent' if request.agent is not None else 'agent_settings'
+            source = request.agent or validate_agent_settings(request.agent_settings)
+            updated = await self._load_skills_and_update_agent(
                 sandbox,
-                request.agent,
+                source,
                 remote_workspace,
                 selected_repository,
                 project_dir,
                 disabled_skills=disabled_skills,
                 registered_marketplaces=registered_marketplaces,
             )
-            return request.model_copy(update={'agent': updated_agent})
-        except Exception as e:
-            _logger.warning(f'Failed to load skills: {e}', exc_info=True)
+            payload = (
+                updated
+                if field == 'agent'
+                else updated.model_dump(mode='json', context={'expose_secrets': True})
+            )
+            return request.model_copy(update={field: payload})
+        except Exception as exc:
+            _logger.warning('Failed to load skills: %s', type(exc).__name__)
             return request
 
     async def _build_acp_start_conversation_request(
@@ -2575,46 +2946,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         plugins: list[PluginSpec] | None = None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
+        azure_devops_access_token: str | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
-        """Build a StartConversationRequest for ACP agent conversations.
-
-        User secrets (Secrets panel + git provider tokens) flow through
-        ``request.secrets`` — the canonical cipher-protected wire channel.
-        In SaaS mode each secret is a ``LookupSecret`` pointing at
-        ``/api/v1/webhooks/custom-secret`` with a per-secret scoped JWT, so
-        values are never materialised in this process.  In OSS mode (no
-        ``web_url``) they remain ``StaticSecret``.  Secrets are passed
-        directly as ``secrets=`` to ``create_request()``; no ``AgentContext``
-        relay is needed (software-agent-sdk #3464;
-        OpenHands/agent-canvas#1039).
-
-        Args:
-            user: Resolved launch view (Agent Profile applied)
-            sandbox: Sandbox information
-            conversation_id: Unique conversation identifier
-            initial_message: Optional initial message to send
-            working_dir: Working directory path
-            system_message_suffix: Optional suffix for system message.
-            trigger: Optional conversation trigger.
-            git_provider: Optional git provider type
-            selected_repository: Optional repository name
-            selected_branch: Optional selected branch name
-            remote_workspace: Optional remote workspace instance, used to
-                resolve the HEAD commit for the Laminar trace metadata.
-            plugins: Optional list of plugins to load
-            registered_marketplaces: Optional marketplace registrations for
-                plugin resolution and runtime loading.
-            api_secrets: Optional secrets passed directly via the API.
-            request_observability_metadata: Optional caller-provided trace metadata to
-                merge with app-server conversation metadata.
-            request_observability_tags: Optional caller-provided tags to append to the
-                conversation root observability span.
-            request_observability_span_name: Optional named child span to emit
-                under the conversation root.
-        """
+        """Build a scoped ACP settings request for runtime finalization."""
         project_dir = get_project_dir(working_dir, selected_repository)
         workspace = LocalWorkspace(working_dir=project_dir)
 
@@ -2625,22 +2962,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # causing provider auth to silently fail at subprocess launch.
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
-        secrets: dict = await self.user_context.get_secrets()
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
-        if provider_tokens:
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
-                secret_name = f'{provider_type.name}_TOKEN'
-                static_token = await self.user_context.get_latest_token(provider_type)
-                if static_token:
-                    secrets[secret_name] = StaticSecret(
-                        value=SecretStr(static_token),
-                        description=f'{provider_type.name} authentication token',
-                    )
+        secrets: dict = await self._launch_custom_secrets(user)
+        secrets.update(await self._get_provider_token_secrets(user, lookup_url=None))
 
         enrichment = await self.conversation_secret_enricher.enrich(
             user_context=self.user_context,
@@ -2674,8 +2997,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
+        self._register_azure_devops_access_token_secret(
+            secrets, azure_devops_access_token
+        )
+
         system_message_suffix = self._maybe_append_shallow_clone_context(
             user, selected_repository, system_message_suffix
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
         )
 
         # --- build the ACP agent ------------------------------------------
@@ -2685,14 +3021,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Isolate the CLI data dir onto the durable /workspace tree so the SDK
         # self-resumes the provider session (session/load from base_state.json)
         # across pause/resume — matching the regular-agent lifecycle (#1274).
-        # Strip llm.api_key/base_url to prevent proxy settings from leaking
-        # into the subprocess env (ACP CLIs handle their own LLM calls).
-        settings_update: dict[str, Any] = {
-            'acp_isolate_data_dir': True,
-            'llm': acp_settings.llm.model_copy(
-                update={'api_key': None, 'base_url': None}
-            ),
-        }
+        # ACP settings carry no LLM: ACP CLIs handle their own LLM calls.
+        settings_update: dict[str, Any] = {'acp_isolate_data_dir': True}
         # Forward the resolved profile's / user's custom MCP servers to the ACP
         # subprocess (#15044 §7). Only custom servers — the system OpenHands MCP
         # server (Tavily proxy) is runtime-internal and unreachable by an external
@@ -2703,7 +3033,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_update['mcp_config'] = acp_mcp_servers
         context_updates: dict[str, Any] = {}
         if system_message_suffix:
-            context_updates['system_message_suffix'] = system_message_suffix
+            context_updates['system_message_suffix'] = _compose_system_message_suffix(
+                acp_settings.agent_context.system_message_suffix
+                if acp_settings.agent_context
+                else None,
+                system_message_suffix,
+            )
         if registered_marketplaces is not None:
             context_updates['registered_marketplaces'] = (
                 _to_sdk_marketplace_registrations(registered_marketplaces)
@@ -2714,7 +3049,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 update=context_updates
             )
         acp_settings_for_agent = acp_settings.model_copy(update=settings_update)
-        acp_agent = acp_settings_for_agent.create_agent()
 
         sdk_plugins: list[PluginSource] | None = None
         if plugins:
@@ -2744,11 +3078,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'plugins': sdk_plugins,
             }
         )
-        # ``user_id`` is forwarded for observability; see the LLM path above
-        # for behavior on SDK versions that don't yet expose the field. We
-        # prefer email over the internal id so Laminar traces are immediately
-        # attributable, falling back to ``user.id`` when no email is available.
-        laminar_user_id = await self.user_context.get_user_email() or user.id
+        # ``user_id`` must be the stable app user id; see the LLM path above
+        # for why email stays in trace metadata instead of the identity field.
+        user_email = await self.user_context.get_user_email()
         resolved_observability_metadata = await self._build_observability_metadata(
             remote_workspace,
             project_dir,
@@ -2767,9 +3099,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             self._extend_observability_tags(
                 observability_tags, request_observability_tags
             )
+        self._extend_observability_metadata(
+            observability_metadata,
+            {'user_email': user_email},
+        )
         create_kwargs: dict[str, Any] = {
-            'agent': acp_agent,
-            'user_id': laminar_user_id,
+            'agent_settings': acp_settings_for_agent.model_dump(
+                mode='json', context={'expose_secrets': True}
+            ),
+            'user_id': user.id,
             'secrets': secrets,
         }
         title_llm_profile = _resolve_title_llm_profile(user)
@@ -3341,6 +3679,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         return b''.join(chunks)
 
 
+def get_sandbox_web_url(
+    config: AppServerConfig, sandbox_service: SandboxService
+) -> str | None:
+    """Return the URL the sandbox uses to reach OpenHands."""
+    web_url = config.sandbox_web_url or config.web_url
+    # If no web url has been set and we are using docker, we can use host.docker.internal
+    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
+        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    return web_url
+
+
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
     sandbox_startup_timeout: int = Field(
         default=120, description='The max timeout time for sandbox startup'
@@ -3386,6 +3735,14 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             'SAAS mode and best-effort elsewhere.'
         ),
     )
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = Field(
+        default=None,
+        description=(
+            'Deployment-wide default sandbox grouping strategy, used when a '
+            'user/org has not explicitly configured one. Falls back to '
+            'NO_GROUPING when unset.'
+        ),
+    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -3426,11 +3783,8 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 )
             config = get_global_config()
 
-            # If no web url has been set and we are using docker, we can use host.docker.internal
-            web_url = config.web_url
-            if web_url is None:
-                if isinstance(sandbox_service, DockerSandboxService):
-                    web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+            # Every use of web_url in this service is a URL the sandbox calls.
+            web_url = get_sandbox_web_url(config, sandbox_service)
 
             # Get app_mode for SaaS mode
             app_mode = None
@@ -3466,10 +3820,14 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 max_num_conversations_per_sandbox=self.max_num_conversations_per_sandbox,
                 httpx_client=httpx_client,
                 web_url=web_url,
+                enable_child_conversation_launcher=(
+                    config.enable_child_conversation_launcher
+                ),
                 openhands_provider_base_url=config.openhands_provider_base_url,
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,
                 app_mode=app_mode,
+                sandbox_grouping_strategy=self.sandbox_grouping_strategy,
                 export_max_events=self.export_max_events,
                 export_lock_ttl_seconds=self.export_lock_ttl_seconds,
                 export_lock_refresh_interval_seconds=(

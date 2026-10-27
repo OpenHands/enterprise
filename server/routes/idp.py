@@ -99,6 +99,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
@@ -125,6 +126,7 @@ from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_w
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import PasswordProviderDetails
 from storage.auth_provider_store import AuthProviderStore
+from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
@@ -275,7 +277,9 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
 
 
-async def _get_integrated_idp_provider() -> AuthProvider | None:
+async def _get_integrated_idp_provider(
+    *, enabled_only: bool = True
+) -> AuthProvider | None:
     """Return the integrated/password IDP's ``auth_providers`` row, if any.
 
     The single source of truth for whether the integrated IDP is available
@@ -283,8 +287,19 @@ async def _get_integrated_idp_provider() -> AuthProvider | None:
     this module (``is_idp_available`` / ``_require_idp_available``) and to
     resolve the id baked into the ``openhands_auth`` cookie at login
     (``_complete_idp_login``), so the two can never disagree.
+
+    ``enabled_only`` defaults to ``True``: an admin can switch this IDP off
+    through the ``auth_providers`` admin API, which must hide it from the
+    login screen and 404 its routes. Pass ``False`` when resolving a session
+    that was already established -- disabling the row must not invalidate
+    existing logins.
     """
-    return await AuthProviderStore().get_first_by_kind(PasswordProviderDetails.__name__)
+    provider = await AuthProviderStore().get_first_by_kind(
+        PasswordProviderDetails.__name__
+    )
+    if provider is not None and enabled_only and not provider.enabled:
+        return None
+    return provider
 
 
 async def is_idp_available() -> bool:
@@ -292,8 +307,8 @@ async def is_idp_available() -> bool:
 
     Governed solely by whether migration 179 seeded an ``auth_providers``
     row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
-    migration time). Whether a real IDP is *also* configured does not affect
-    availability.
+    migration time) and whether an admin has since enabled that row. Whether
+    a real IDP is *also* configured does not affect availability.
     """
     return await _get_integrated_idp_provider() is not None
 
@@ -489,12 +504,30 @@ def _render_invite_form(
     )
 
 
-async def _require_idp_available() -> None:
-    if not await is_idp_available():
+async def _require_idp_available() -> AuthProvider:
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
         )
+    return provider
+
+
+async def _find_existing_user(provider: AuthProvider, email: str) -> User | None:
+    """Resolve the user behind a password-IDP identity (the normalized email).
+
+    The ``auth_provider_users`` link is checked first; accounts that predate
+    it are found by derived id, then by email, and get linked on their next
+    successful login (``_complete_idp_login``).
+    """
+    link = await AuthProviderUserStore().get(provider.id, email)
+    if link is not None:
+        return await UserStore.get_user_by_id(str(link.user_id))
+    user = await UserStore.get_user_by_id(derive_idp_user_id(email))
+    if user is None:
+        user = await UserStore.get_user_by_email(email)
+    return user
 
 
 def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
@@ -587,15 +620,13 @@ async def idp_login(
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if not await UserStore.has_super_admin_with_password():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
-    user = await UserStore.get_user_by_id(derive_idp_user_id(email_str))
-    if user is None:
-        user = await UserStore.get_user_by_email(email_str)
+    user = await _find_existing_user(provider, email_str)
 
     if (
         user is None
@@ -645,7 +676,7 @@ async def idp_signup(
     (password already set), a too-short password, or a confirm-password
     mismatch.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
@@ -672,9 +703,12 @@ async def idp_signup(
         )
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
+
+    if existing is not None and (existing.is_disabled or existing.deletion_pending):
+        return RedirectResponse(
+            url=f'{web_url}/login?account_disabled=true', status_code=302
+        )
 
     # If the user already has a password, the account is claimed — don't
     # allow overwriting it via sign-up (would be a password-reset bypass).
@@ -829,7 +863,7 @@ async def idp_invite_accept(
     — a no-op if they're already a member — while
     ``_SIGNUP_LINK_ROLE_SUPERADMIN`` instead grants the super-admin role.
     """
-    await _require_idp_available()
+    provider = await _require_idp_available()
     web_url = get_web_url(request)
     try:
         link = _verify_signup_link_token(token)
@@ -846,9 +880,12 @@ async def idp_invite_accept(
         return _invite_form_redirect(web_url, token=token, error='password_too_short')
 
     user_id = derive_idp_user_id(email_str)
-    existing = await UserStore.get_user_by_id(user_id)
-    if existing is None:
-        existing = await UserStore.get_user_by_email(email_str)
+    existing = await _find_existing_user(provider, email_str)
+
+    if existing is not None and (existing.is_disabled or existing.deletion_pending):
+        return RedirectResponse(
+            url=f'{web_url}/login?account_disabled=true', status_code=302
+        )
 
     hashed = hash_password(password)
 
@@ -939,7 +976,9 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
 
     try:
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
-        llm_api_key_secret = settings.agent_settings.llm.api_key
+        llm_api_key_secret = getattr(
+            agent_llm(settings.agent_settings), 'api_key', None
+        )
         llm_api_key = (
             llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
         )
@@ -1090,6 +1129,10 @@ async def _complete_idp_login(
     Shared by ``idp_login`` (existing account) and ``idp_signup``
     (brand-new account) so both end up with identical post-auth behavior.
     """
+    if user.is_disabled or user.deletion_pending:
+        return RedirectResponse(
+            url=f'{get_web_url(request)}/login?account_disabled=true', status_code=302
+        )
     provider = await _get_integrated_idp_provider()
     if provider is None:
         # Should not happen -- every route reaching here already passed
@@ -1102,6 +1145,15 @@ async def _complete_idp_login(
 
     user_id = str(user.id)
     has_accepted_tos = user.accepted_tos is not None
+
+    link_store = AuthProviderUserStore()
+    if await link_store.get(provider.id, email) is None:
+        await link_store.link(
+            oauth_provider_id=provider.id,
+            user_id=user.id,
+            external_subject_id=email,
+            external_email=email,
+        )
 
     await UserStore.record_login(user_id)
 

@@ -28,6 +28,7 @@ export default [
     route("settings", "routes/settings.tsx", [
       index("routes/llm-settings.tsx"),
       route("agent", "routes/agent-settings.tsx"),
+      route("agent-context", "routes/agent-context-settings.tsx"),
       route("condenser", "routes/condenser-settings.tsx"),
       route("verification", "routes/verification-settings.tsx"),
       route("org-defaults", "routes/org-default-llm-settings.tsx"),
@@ -65,6 +66,14 @@ export default [
       route("usage", "routes/super-admin-usage.tsx"),
       route("instance", "routes/super-admin-instance.tsx"),
       route("auth-providers", "routes/super-admin-auth-providers.tsx"),
+      route(
+        "auth-providers/:providerId",
+        "routes/super-admin-auth-provider-edit.tsx",
+      ),
+      route(
+        "auth-providers/:providerId/users",
+        "routes/super-admin-auth-provider-users.tsx",
+      ),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),
