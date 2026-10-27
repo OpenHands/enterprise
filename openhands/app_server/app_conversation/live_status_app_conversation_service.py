@@ -91,6 +91,7 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
+from openhands.app_server.event_callback.util import agent_server_error_detail
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
@@ -275,7 +276,13 @@ The selected repository was cloned as a shallow clone. Git history may be incomp
 
 
 def _exception_detail(exc: Exception) -> str:
-    """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail."""
+    """HTTPException.__str__ prepends '<status>: '; prefer its clean .detail.
+
+    httpx.HTTPStatusError.__str__ carries only the status and URL; prefer the
+    agent server's response body so the real cause reaches the caller.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return agent_server_error_detail(exc)
     detail = getattr(exc, 'detail', None)
     if isinstance(detail, dict) and isinstance(detail.get('message'), str):
         return detail['message']
