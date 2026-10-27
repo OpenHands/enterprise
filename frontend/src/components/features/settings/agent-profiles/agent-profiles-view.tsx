@@ -157,9 +157,10 @@ export function AgentProfilesView() {
     () => ({
       acpProviders,
       toolConcurrencyField,
+      schema: schema ?? null,
       defaultLlmProfileRef,
     }),
-    [acpProviders, toolConcurrencyField, defaultLlmProfileRef],
+    [acpProviders, toolConcurrencyField, schema, defaultLlmProfileRef],
   );
   const mcpConfigRaw = settings?.agent_settings?.mcp_config;
   const mcpServers = useMemo(
@@ -407,6 +408,7 @@ export function AgentProfilesView() {
         acpProviders={acpProviders}
         llmProfiles={llmProfiles}
         toolConcurrencyField={toolConcurrencyField}
+        schema={schema ?? null}
         mcpServers={mcpServers}
         secrets={secretItems}
         credentialForm={credentialForm}

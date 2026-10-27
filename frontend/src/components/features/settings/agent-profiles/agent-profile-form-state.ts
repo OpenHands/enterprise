@@ -4,11 +4,12 @@ import type {
   AgentProfileSaveInput,
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
-import type { SettingsFieldSchema } from "#/types/settings";
+import type { SettingsFieldSchema, SettingsSchema } from "#/types/settings";
 import { CUSTOM_PRESET, detectPreset } from "#/utils/acp-agent-form";
 import {
   coerceFieldValue,
   normalizeFieldValue,
+  type SettingsFormValues,
 } from "#/utils/sdk-settings-schema";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
 import {
@@ -16,6 +17,19 @@ import {
   buildProfileTools,
   readToolToggles,
 } from "./agent-profile-tools";
+import {
+  fromBehaviorFormValues,
+  toBehaviorFormValues,
+} from "./profile-behavior-form";
+
+/**
+ * How the profile shapes the system prompt: the OpenHands default, the
+ * default plus appended instructions (``system_message_suffix``), or a
+ * custom persona replacing the built-in one (``persona``).
+ */
+export type SystemPromptMode = "standard" | "append" | "custom";
+/** SDK ``OpenHandsAgentProfile.persona`` / ``system_message_suffix`` limit. */
+export const SYSTEM_PROMPT_MAX_LENGTH = 65536;
 
 /** Backend rule (SDK ``PROFILE_NAME_PATTERN``): leading alphanumeric, 1–64 chars. */
 export const AGENT_PROFILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -46,6 +60,12 @@ export interface AgentProfileFormState {
   enableSwitchLlmTool: boolean;
   /** ``SchemaField`` value for ``tool_concurrency_limit`` ("" when unknown). */
   toolConcurrency: string | boolean;
+  systemPromptMode: SystemPromptMode;
+  systemPromptText: string;
+  /** ``SchemaField`` values of the profile's condenser section, by field key. */
+  condenser: SettingsFormValues;
+  /** ``SchemaField`` values of the profile's verification section, by field key. */
+  verification: SettingsFormValues;
   mcpMode: ProfileScopeMode;
   mcpSelected: string[];
   secretsMode: ProfileScopeMode;
@@ -58,6 +78,8 @@ export interface AgentProfileFormState {
 export interface AgentProfileFormDeps {
   acpProviders: ACPProviderConfig[];
   toolConcurrencyField?: SettingsFieldSchema;
+  /** The agent-settings schema; its condenser / verification sections are edited per profile. */
+  schema?: SettingsSchema | null;
   defaultLlmProfileRef: string;
 }
 
@@ -72,6 +94,10 @@ export function newAgentProfileFormState(
     toolConcurrency: deps.toolConcurrencyField
       ? normalizeFieldValue(deps.toolConcurrencyField, undefined)
       : "",
+    systemPromptMode: "standard",
+    systemPromptText: "",
+    condenser: toBehaviorFormValues(deps.schema, "condenser", undefined),
+    verification: toBehaviorFormValues(deps.schema, "verification", undefined),
     mcpMode: "standard",
     mcpSelected: [],
     secretsMode: "standard",
@@ -79,6 +105,16 @@ export function newAgentProfileFormState(
     acpCommandText: "",
     acpModel: "",
   };
+}
+
+/** A persona replaces the default prompt; a suffix extends it. */
+function systemPromptModeFor(
+  persona: string,
+  suffix: string,
+): SystemPromptMode {
+  if (persona) return "custom";
+  if (suffix) return "append";
+  return "standard";
 }
 
 /** Seed the editor from a stored profile (the inverse of the builder below). */
@@ -118,6 +154,8 @@ export function agentProfileFormStateFromProfile(
   }
 
   const toggles = readToolToggles(profile.tools);
+  const persona = profile.persona ?? "";
+  const suffix = profile.system_message_suffix ?? "";
   return {
     ...base,
     ...scoped,
@@ -131,14 +169,35 @@ export function agentProfileFormStateFromProfile(
           profile.tool_concurrency_limit,
         )
       : "",
+    systemPromptMode: systemPromptModeFor(persona, suffix),
+    systemPromptText: persona || suffix,
+    condenser: toBehaviorFormValues(
+      deps.schema,
+      "condenser",
+      profile.condenser,
+    ),
+    verification: toBehaviorFormValues(
+      deps.schema,
+      "verification",
+      profile.verification,
+    ),
   };
+}
+
+/** A non-default system prompt mode needs text to save. */
+export function isSystemPromptMissing(state: AgentProfileFormState): boolean {
+  return (
+    state.agentKind === "openhands" &&
+    state.systemPromptMode !== "standard" &&
+    state.systemPromptText.trim().length === 0
+  );
 }
 
 export function isAgentProfileFormValid(state: AgentProfileFormState): boolean {
   if (state.agentKind === "acp") {
     return tokenizeCommand(state.acpCommandText).length > 0;
   }
-  return state.llmProfileRef.trim().length > 0;
+  return state.llmProfileRef.trim().length > 0 && !isSystemPromptMissing(state);
 }
 
 /**
@@ -192,7 +251,33 @@ export function buildAgentProfileSaveInput(
     ),
     mcp_server_refs: mcpServerRefs,
     secret_refs: secretRefs,
+    // One of the two carries the text; the other is cleared so a mode
+    // switch never leaves both set.
+    system_message_suffix:
+      state.systemPromptMode === "append" && state.systemPromptText.trim()
+        ? state.systemPromptText
+        : null,
+    persona:
+      state.systemPromptMode === "custom" && state.systemPromptText.trim()
+        ? state.systemPromptText
+        : null,
   };
+  // Only sections the schema exposes are rewritten; otherwise the stored
+  // objects ride along through the whole-profile merge untouched.
+  if (Object.keys(state.condenser).length > 0) {
+    input.condenser = fromBehaviorFormValues(
+      deps.schema,
+      "condenser",
+      state.condenser,
+    );
+  }
+  if (Object.keys(state.verification).length > 0) {
+    input.verification = fromBehaviorFormValues(
+      deps.schema,
+      "verification",
+      state.verification,
+    );
+  }
   if (deps.toolConcurrencyField) {
     const coerced = coerceFieldValue(
       deps.toolConcurrencyField,

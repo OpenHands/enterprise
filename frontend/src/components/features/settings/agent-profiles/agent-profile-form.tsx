@@ -9,7 +9,7 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import type { AcpCredentialForm } from "#/hooks/use-acp-credential-form";
 import { I18nKey } from "#/i18n/declaration";
-import type { SettingsFieldSchema } from "#/types/settings";
+import type { SettingsFieldSchema, SettingsSchema } from "#/types/settings";
 import { Typography } from "#/ui/typography";
 import {
   CUSTOM_MODEL_KEY,
@@ -22,12 +22,20 @@ import {
   formControlSwitchDescriptionClassName,
   formControlSwitchFieldClassName,
 } from "#/utils/form-control-classes";
+import { isSettingsFieldVisible } from "#/utils/sdk-settings-schema";
 import { formatCommand } from "#/utils/shell-tokenize";
 import { cn } from "#/utils/utils";
-import type {
-  AgentProfileFormState,
-  ProfileScopeMode,
+import {
+  SYSTEM_PROMPT_MAX_LENGTH,
+  isSystemPromptMissing,
+  type AgentProfileFormState,
+  type ProfileScopeMode,
+  type SystemPromptMode,
 } from "./agent-profile-form-state";
+import {
+  PROFILE_BEHAVIOR_SECTIONS,
+  profileBehaviorFields,
+} from "./profile-behavior-form";
 import { ProfileScopeList, type ProfileScopeItem } from "./profile-scope-list";
 
 interface AgentProfileFormProps {
@@ -40,6 +48,8 @@ interface AgentProfileFormProps {
   llmProfiles: LlmProfileSummary[];
   /** ``tool_concurrency_limit`` from the agent-settings schema, when exposed. */
   toolConcurrencyField?: SettingsFieldSchema;
+  /** The agent-settings schema, for the per-profile condenser / verification fields. */
+  schema?: SettingsSchema | null;
   /** The member's configured MCP servers (user-scoped). */
   mcpServers: ProfileScopeItem[];
   /** The member's saved secrets (user-scoped). */
@@ -67,12 +77,14 @@ export function AgentProfileForm({
   acpProviders,
   llmProfiles,
   toolConcurrencyField,
+  schema,
   mcpServers,
   secrets,
   credentialForm,
 }: AgentProfileFormProps) {
   const { t } = useTranslation();
   const isAcp = state.agentKind === "acp";
+  const systemPromptMissing = isSystemPromptMissing(state);
 
   // ── ACP derived state ─────────────────────────────────────────────────────
   const selectedPreset = detectPreset(state.acpCommandText, acpProviders);
@@ -219,6 +231,78 @@ export function AgentProfileForm({
             </Typography.Paragraph>
           </div>
         </section>
+      )}
+
+      {/* OpenHands: system prompt — default, default + instructions, or persona */}
+      {!isAcp && (
+        <div
+          className="flex flex-col gap-2.5"
+          data-testid="agent-profile-system-prompt-section"
+        >
+          <SettingsDropdownInput
+            testId="agent-profile-system-prompt-mode"
+            name="agent-profile-system-prompt-mode"
+            label={t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT)}
+            items={[
+              {
+                key: "standard",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_STANDARD),
+              },
+              {
+                key: "append",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_APPEND),
+              },
+              {
+                key: "custom",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_CUSTOM),
+              },
+            ]}
+            selectedKey={state.systemPromptMode}
+            isDisabled={isDisabled}
+            onSelectionChange={(key) => {
+              if (key) onChange({ systemPromptMode: key as SystemPromptMode });
+            }}
+          />
+          {state.systemPromptMode !== "standard" ? (
+            <textarea
+              data-testid="agent-profile-system-prompt"
+              aria-label={t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT)}
+              className={cn(
+                formControlMultilineFieldClassName,
+                "min-h-48 font-mono placeholder:italic",
+              )}
+              value={state.systemPromptText}
+              maxLength={SYSTEM_PROMPT_MAX_LENGTH}
+              placeholder={t(
+                state.systemPromptMode === "custom"
+                  ? I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_PLACEHOLDER
+                  : I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_APPEND_PLACEHOLDER,
+              )}
+              disabled={isDisabled}
+              onChange={(e) => onChange({ systemPromptText: e.target.value })}
+            />
+          ) : null}
+          {systemPromptMissing ? (
+            <Typography.Text
+              testId="agent-profile-system-prompt-required"
+              className="text-xs text-red-400"
+            >
+              {t(I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_REQUIRED)}
+            </Typography.Text>
+          ) : null}
+          <Typography.Text className="text-xs text-tertiary-alt">
+            {t(
+              {
+                standard:
+                  I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_STANDARD_HINT,
+                append:
+                  I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_APPEND_HINT,
+                custom:
+                  I18nKey.SETTINGS$AGENT_PROFILE_SYSTEM_PROMPT_CUSTOM_HINT,
+              }[state.systemPromptMode],
+            )}
+          </Typography.Text>
+        </div>
       )}
 
       {/* OpenHands: parallel tool calls — only when the schema exposes it */}
@@ -429,6 +513,49 @@ export function AgentProfileForm({
           )}
         </Typography.Text>
       </div>
+
+      {/* OpenHands: condenser and verification, from the agent-settings schema */}
+      {!isAcp &&
+        PROFILE_BEHAVIOR_SECTIONS.map((section) => {
+          const fields = profileBehaviorFields(schema, section);
+          if (fields.length === 0) return null;
+          const values = state[section];
+          return (
+            <div
+              key={section}
+              className="flex flex-col gap-2.5"
+              data-testid={`agent-profile-${section}`}
+            >
+              <Typography.Text className="text-sm">
+                {t(
+                  section === "condenser"
+                    ? I18nKey.SETTINGS$NAV_CONDENSER
+                    : I18nKey.SETTINGS$NAV_VERIFICATION,
+                )}
+              </Typography.Text>
+              <div className="grid gap-4 xl:grid-cols-2">
+                {fields
+                  .filter((field) => isSettingsFieldVisible(field, values))
+                  .map((field) => (
+                    <SchemaField
+                      key={field.key}
+                      field={field}
+                      value={values[field.key] ?? ""}
+                      isDisabled={isDisabled}
+                      onChange={(value) => {
+                        const next = { ...values, [field.key]: value };
+                        onChange(
+                          section === "condenser"
+                            ? { condenser: next }
+                            : { verification: next },
+                        );
+                      }}
+                    />
+                  ))}
+              </div>
+            </div>
+          );
+        })}
 
       {/* Secrets (both kinds): no restriction, or an explicit subset */}
       <div className="flex flex-col gap-2.5">
