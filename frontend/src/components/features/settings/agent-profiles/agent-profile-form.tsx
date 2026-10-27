@@ -31,10 +31,12 @@ import { cn } from "#/utils/utils";
 import {
   SYSTEM_PROMPT_MAX_LENGTH,
   isSystemPromptMissing,
+  isToolSelectionMissing,
   type AgentProfileFormState,
   type ProfileScopeMode,
   type SystemPromptMode,
 } from "./agent-profile-form-state";
+import { standardToolNames, toolTogglesFromNames } from "./agent-profile-tools";
 import {
   PROFILE_BEHAVIOR_SECTIONS,
   profileBehaviorFields,
@@ -53,6 +55,12 @@ interface AgentProfileFormProps {
   toolConcurrencyField?: SettingsFieldSchema;
   /** The agent-settings schema, for the per-profile condenser / verification fields. */
   schema?: SettingsSchema | null;
+  /** The server's tool catalog (user-selectable entries), for the tools picker. */
+  tools: ProfileScopeItem[];
+  /** True while the tool catalog is still being fetched. */
+  toolsLoading?: boolean;
+  /** True when the tool catalog could not be loaded. */
+  toolsLoadFailed?: boolean;
   /** The member's configured MCP servers (user-scoped). */
   mcpServers: ProfileScopeItem[];
   /** The member's saved secrets (user-scoped). */
@@ -79,8 +87,8 @@ function toggleName(list: string[], name: string, checked: boolean): string[] {
 /**
  * The fields of one Agent Profile. Controlled: the owning view holds the
  * state and persists it. Mirrors the Agent Canvas profile editor for the
- * settings OHE supports (agent kind, LLM profile, sub-agents, LLM switching,
- * parallel tool calls, MCP server and secret scopes, ACP launch), narrowed
+ * settings OHE supports (agent kind, LLM profile, tools, parallel tool calls,
+ * system prompt, MCP server and secret scopes, skills, ACP launch), narrowed
  * to organization-scoped settings for an org profile.
  */
 export function AgentProfileForm({
@@ -92,6 +100,9 @@ export function AgentProfileForm({
   llmProfiles,
   toolConcurrencyField,
   schema,
+  tools,
+  toolsLoading = false,
+  toolsLoadFailed = false,
   mcpServers,
   secrets,
   skills,
@@ -103,6 +114,7 @@ export function AgentProfileForm({
   const isAcp = state.agentKind === "acp";
   const isOrg = profileScope === "org";
   const systemPromptMissing = isSystemPromptMissing(state);
+  const toolsMissing = isToolSelectionMissing(state);
 
   // ── ACP derived state ─────────────────────────────────────────────────────
   const selectedPreset = detectPreset(state.acpCommandText, acpProviders);
@@ -120,6 +132,18 @@ export function AgentProfileForm({
 
   // ── Scope catalogs ────────────────────────────────────────────────────────
   // A stored ref whose server/secret is gone rides along so it can be cleared.
+  // Same for a pinned tool this server's catalog does not list; it is only
+  // flagged as unknown once the catalog has actually loaded.
+  const knownTools = new Set(tools.map(({ name }) => name));
+  const unlistedTools =
+    state.toolsMode === "custom"
+      ? state.toolsSelected.filter((name) => !knownTools.has(name))
+      : [];
+  const unknownTools = toolsLoading || toolsLoadFailed ? [] : unlistedTools;
+  const toolCatalog: ProfileScopeItem[] = [
+    ...tools,
+    ...unlistedTools.map((name) => ({ name, description: null })),
+  ];
   const knownMcp = new Set(mcpServers.map(({ name }) => name));
   const danglingMcpRefs =
     state.mcpMode === "custom"
@@ -215,48 +239,150 @@ export function AgentProfileForm({
         </section>
       )}
 
-      {/* OpenHands: sub-agents + LLM switching */}
+      {/* OpenHands: tools — the standard set shaped by two switches, or a hand-picked list */}
       {!isAcp && (
-        <section className="flex flex-col gap-4">
-          <div className={formControlSwitchFieldClassName}>
-            <SettingsSwitch
-              testId="agent-profile-enable-sub-agents"
-              isToggled={state.enableSubAgents}
-              isDisabled={isDisabled}
-              onToggle={(enableSubAgents) => onChange({ enableSubAgents })}
-            >
-              {t(I18nKey.SCHEMA$ENABLE_SUB_AGENTS$LABEL)}
-            </SettingsSwitch>
-            <Typography.Paragraph
-              className={cn(
-                formControlSwitchDescriptionClassName,
-                "text-tertiary-alt text-xs leading-5",
-              )}
-            >
-              {t(I18nKey.SCHEMA$ENABLE_SUB_AGENTS$DESCRIPTION)}
-            </Typography.Paragraph>
-          </div>
-          <div className={formControlSwitchFieldClassName}>
-            <SettingsSwitch
-              testId="agent-profile-enable-switch-llm-tool"
-              isToggled={state.enableSwitchLlmTool}
-              isDisabled={isDisabled}
-              onToggle={(enableSwitchLlmTool) =>
-                onChange({ enableSwitchLlmTool })
+        <div
+          className="flex flex-col gap-2.5"
+          data-testid="agent-profile-tools-section"
+        >
+          <Typography.Text className="text-sm">
+            {t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS)}
+          </Typography.Text>
+          <SettingsDropdownInput
+            testId="agent-profile-tools-mode"
+            name="agent-profile-tools-mode"
+            items={[
+              {
+                key: "standard",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_STANDARD),
+              },
+              {
+                key: "custom",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_CHOOSE),
+              },
+            ]}
+            selectedKey={state.toolsMode}
+            isDisabled={isDisabled}
+            onSelectionChange={(key) => {
+              if (!key || key === state.toolsMode) return;
+              const toolsMode = key as ProfileScopeMode;
+              // Each mode starts from what the other launches with: the
+              // picker is seeded with the standard set as the switches shape
+              // it, and the switches are read back from the picked list.
+              if (toolsMode === "custom") {
+                onChange({
+                  toolsMode,
+                  toolsSelected: standardToolNames({
+                    enableSubAgents: state.enableSubAgents,
+                    enableSwitchLlmTool: state.enableSwitchLlmTool,
+                  }),
+                });
+              } else {
+                onChange({
+                  toolsMode,
+                  ...toolTogglesFromNames(state.toolsSelected),
+                });
               }
-            >
-              {t(I18nKey.SCHEMA$ENABLE_SWITCH_LLM_TOOL$LABEL)}
-            </SettingsSwitch>
-            <Typography.Paragraph
-              className={cn(
-                formControlSwitchDescriptionClassName,
-                "text-tertiary-alt text-xs leading-5",
-              )}
-            >
-              {t(I18nKey.SCHEMA$ENABLE_SWITCH_LLM_TOOL$DESCRIPTION)}
-            </Typography.Paragraph>
-          </div>
-        </section>
+            }}
+          />
+          {state.toolsMode === "standard" ? (
+            <section className="flex flex-col gap-4">
+              <div className={formControlSwitchFieldClassName}>
+                <SettingsSwitch
+                  testId="agent-profile-enable-sub-agents"
+                  isToggled={state.enableSubAgents}
+                  isDisabled={isDisabled}
+                  onToggle={(enableSubAgents) => onChange({ enableSubAgents })}
+                >
+                  {t(I18nKey.SCHEMA$ENABLE_SUB_AGENTS$LABEL)}
+                </SettingsSwitch>
+                <Typography.Paragraph
+                  className={cn(
+                    formControlSwitchDescriptionClassName,
+                    "text-tertiary-alt text-xs leading-5",
+                  )}
+                >
+                  {t(I18nKey.SCHEMA$ENABLE_SUB_AGENTS$DESCRIPTION)}
+                </Typography.Paragraph>
+              </div>
+              <div className={formControlSwitchFieldClassName}>
+                <SettingsSwitch
+                  testId="agent-profile-enable-switch-llm-tool"
+                  isToggled={state.enableSwitchLlmTool}
+                  isDisabled={isDisabled}
+                  onToggle={(enableSwitchLlmTool) =>
+                    onChange({ enableSwitchLlmTool })
+                  }
+                >
+                  {t(I18nKey.SCHEMA$ENABLE_SWITCH_LLM_TOOL$LABEL)}
+                </SettingsSwitch>
+                <Typography.Paragraph
+                  className={cn(
+                    formControlSwitchDescriptionClassName,
+                    "text-tertiary-alt text-xs leading-5",
+                  )}
+                >
+                  {t(I18nKey.SCHEMA$ENABLE_SWITCH_LLM_TOOL$DESCRIPTION)}
+                </Typography.Paragraph>
+              </div>
+            </section>
+          ) : (
+            <>
+              {toolCatalog.length > 0 ? (
+                <div className="max-h-80 overflow-y-auto pr-1">
+                  <ProfileScopeList
+                    testId="agent-profile-tool"
+                    items={toolCatalog}
+                    selected={state.toolsSelected}
+                    isDisabled={isDisabled}
+                    onToggle={(name, checked) =>
+                      onChange({
+                        toolsSelected: toggleName(
+                          state.toolsSelected,
+                          name,
+                          checked,
+                        ),
+                      })
+                    }
+                  />
+                </div>
+              ) : null}
+              {toolsLoadFailed ? (
+                <Typography.Text
+                  testId="agent-profile-tools-load-failed"
+                  className="text-xs text-red-400"
+                >
+                  {t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_LOAD_FAILED)}
+                </Typography.Text>
+              ) : null}
+              {toolsMissing ? (
+                <Typography.Text
+                  testId="agent-profile-tools-required"
+                  className="text-xs text-red-400"
+                >
+                  {t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_REQUIRED)}
+                </Typography.Text>
+              ) : null}
+              {unknownTools.length > 0 ? (
+                <Typography.Text
+                  testId="agent-profile-tools-unknown"
+                  className="text-xs text-red-400"
+                >
+                  {t(I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_UNKNOWN, {
+                    names: unknownTools.join(", "),
+                  })}
+                </Typography.Text>
+              ) : null}
+            </>
+          )}
+          <Typography.Text className="text-xs text-tertiary-alt">
+            {t(
+              state.toolsMode === "custom"
+                ? I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_CHOOSE_HINT
+                : I18nKey.SETTINGS$AGENT_PROFILE_TOOLS_STANDARD_HINT,
+            )}
+          </Typography.Text>
+        </div>
       )}
 
       {/* OpenHands: system prompt — default, default + instructions, or persona */}
