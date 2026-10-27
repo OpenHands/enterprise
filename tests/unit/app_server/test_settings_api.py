@@ -326,6 +326,60 @@ async def test_search_api_key_explicit_clear(test_client):
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trip_for_acp_agent(test_client):
+    """ACP settings save and load: they have no LLM, so none is returned."""
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {'agent_kind': 'acp', 'acp_server': 'claude-code'}
+        },
+    )
+    assert response.status_code == 200
+
+    response = test_client.get('/api/v1/settings')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['agent_settings']['agent_kind'] == 'acp'
+    assert 'llm' not in body['agent_settings']
+    assert body['llm_api_key_set'] is False
+
+
+@pytest.mark.asyncio
+async def test_retired_sub_agents_switch_is_folded_into_tools(test_client):
+    """Clients that still send ``enable_sub_agents`` keep working.
+
+    ``True`` selects the task tool set. An older settings page always sends
+    ``False`` with its other fields, which must not turn sub-agents off.
+    """
+
+    def tool_names():
+        response = test_client.get('/api/v1/settings')
+        assert response.status_code == 200
+        tools = response.json()['agent_settings']['tools'] or []
+        return {tool['name'] for tool in tools}
+
+    response = test_client.post(
+        '/api/v1/settings', json={'agent_settings_diff': {'enable_sub_agents': True}}
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'enable_sub_agents': False,
+                'tool_concurrency_limit': 3,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+    response = test_client.get('/api/v1/settings')
+    assert response.json()['agent_settings']['tool_concurrency_limit'] == 3
+
+
+@pytest.mark.asyncio
 async def test_disabled_skills_persistence(test_client):
     """Test that disabled_skills can be saved and retrieved via the settings API."""
     response = test_client.post(

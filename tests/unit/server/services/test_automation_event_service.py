@@ -976,6 +976,54 @@ class TestSendToAutomationService:
             github_url = mock_session_instance.post.call_args_list[0][0][0]
             assert github_url.endswith('/github')
 
+    @staticmethod
+    def _jira_dc_metadata(org_ids: list[uuid.UUID]):
+        from server.services.automation_event_service import (
+            EventDetectionRule,
+            RequestedEventTypesCacheEntry,
+        )
+
+        return RequestedEventTypesCacheEntry(
+            event_types={'comment_created', 'jira:issue_created'},
+            event_detection_rules=[
+                EventDetectionRule(
+                    event_type=event_type,
+                    jmespath=f"webhookEvent == '{event_type}'",
+                )
+                for event_type in ('comment_created', 'jira:issue_created')
+            ],
+            loaded_at=0,
+            org_ids=org_ids,
+        )
+
+    async def _forward_jira_dc(
+        self, mock_token_manager, org_id, payload, metadata
+    ) -> AsyncMock:
+        from server.services.automation_event_service import AutomationEventService
+
+        with (
+            patch.object(
+                AutomationEventService,
+                '_get_requested_event_metadata',
+                new_callable=AsyncMock,
+                return_value=metadata,
+            ),
+            patch.object(
+                AutomationEventService,
+                '_send_source_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = create_service(mock_token_manager)
+            await service.forward_jira_dc_event(
+                org_id=org_id,
+                payload=payload,
+                workspace_name='jira.company.com',
+                connection_id=7,
+                delivery_id='sig123',
+            )
+        return mock_send
+
     @pytest.mark.asyncio
     async def test_forward_jira_dc_event_uses_jira_dc_source(self, mock_token_manager):
         """
@@ -986,30 +1034,147 @@ class TestSendToAutomationService:
         org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
         payload = {'webhookEvent': 'comment_created'}
 
-        with patch(
-            'server.services.automation_event_service.AutomationEventService._send_source_to_automation_service',
-            new_callable=AsyncMock,
-        ) as mock_send:
-            service = create_service(mock_token_manager)
-            await service.forward_jira_dc_event(
-                org_id=org_id,
-                payload=payload,
-                workspace_name='jira.company.com',
-                connection_id=7,
-                delivery_id='sig123',
-            )
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager, org_id, payload, self._jira_dc_metadata([])
+        )
 
-            mock_send.assert_awaited_once()
-            assert mock_send.call_args.kwargs['source'] == 'jira_dc'
-            assert mock_send.call_args.kwargs['org_id'] == org_id
-            assert mock_send.call_args.kwargs['payload'] == {
-                'organization': {
-                    'jira_dc_workspace': 'jira.company.com',
-                    'jira_dc_connection_id': 7,
-                    'openhands_org_id': str(org_id),
-                },
-                'payload': payload,
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['source'] == 'jira_dc'
+        assert mock_send.call_args.kwargs['org_id'] == org_id
+        assert mock_send.call_args.kwargs['payload'] == {
+            'organization': {
+                'jira_dc_workspace': 'jira.company.com',
+                'jira_dc_connection_id': 7,
+                'openhands_org_id': str(org_id),
+            },
+            'payload': payload,
+        }
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_reaches_every_org_with_an_automation(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: Two orgs besides the workspace's have Jira DC automations
+        WHEN: forward_jira_dc_event is called
+        THEN: Each org receives the event once, with its own org id
+        """
+        workspace_org = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+        third_org = uuid.UUID('11111111-2222-3333-4444-555555555555')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            workspace_org,
+            {'webhookEvent': 'comment_created'},
+            self._jira_dc_metadata([other_org, workspace_org, third_org]),
+        )
+
+        sent = [call.kwargs for call in mock_send.call_args_list]
+        assert [kwargs['org_id'] for kwargs in sent] == [
+            workspace_org,
+            other_org,
+            third_org,
+        ]
+        assert [
+            kwargs['payload']['organization']['openhands_org_id'] for kwargs in sent
+        ] == [str(workspace_org), str(other_org), str(third_org)]
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_without_workspace_org(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: An install-wide workspace (no org) and an org with an automation
+        WHEN: forward_jira_dc_event is called
+        THEN: That org still receives the event
+        """
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            None,
+            {'webhookEvent': 'jira:issue_created'},
+            self._jira_dc_metadata([other_org]),
+        )
+
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['org_id'] == other_org
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_skips_events_no_automation_can_match(
+        self, mock_token_manager
+    ):
+        """An event type outside the automation service's catalog is not sent."""
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            uuid.UUID('12345678-1234-5678-1234-567812345678'),
+            {'webhookEvent': 'jira:worklog_updated'},
+            self._jira_dc_metadata([uuid.UUID('87654321-4321-8765-4321-876543218765')]),
+        )
+
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_falls_back_to_workspace_org(
+        self, mock_token_manager
+    ):
+        """Without metadata (an older automation service) only the workspace's
+        org receives the event, as before."""
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager, org_id, {'webhookEvent': 'comment_created'}, None
+        )
+
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['org_id'] == org_id
+
+    @pytest.mark.asyncio
+    async def test_fetch_requested_event_metadata_reads_org_ids(
+        self, mock_token_manager
+    ):
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(
+            return_value={
+                'source': 'jira_dc',
+                'event_types': ['comment_created'],
+                'event_detection_rules': [
+                    {
+                        'event_type': 'comment_created',
+                        'jmespath': "webhookEvent == 'comment_created'",
+                    }
+                ],
+                'org_ids': [str(other_org), 'not-a-uuid'],
             }
+        )
+        mock_get_context = MagicMock()
+        mock_get_context.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get_context.__aexit__ = AsyncMock(return_value=None)
+        mock_session_instance = MagicMock()
+        mock_session_instance.get = MagicMock(return_value=mock_get_context)
+        mock_session_context = MagicMock()
+        mock_session_context.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_context.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_URL',
+                'https://automation.example.com',
+            ),
+            patch(
+                'server.services.automation_event_service.aiohttp.ClientSession',
+                return_value=mock_session_context,
+            ),
+        ):
+            service = create_service(mock_token_manager)
+            metadata = await service._fetch_requested_event_metadata('jira_dc')
+
+        assert metadata is not None
+        assert metadata.org_ids == [other_org]
+        assert metadata.event_types == {'comment_created'}
 
     @pytest.mark.asyncio
     async def test_send_no_url_configured(self, mock_token_manager):

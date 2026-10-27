@@ -68,7 +68,7 @@ def test_settings_loads_persisted_settings_via_sdk_loaders():
             conversation_settings={'legacy': True},
         )
 
-    agent_loader.assert_called_once_with({'legacy': True})
+    agent_loader.assert_called_once_with({'legacy': True}, persisted=True)
     conversation_loader.assert_called_once_with({'legacy': True})
     assert settings.agent_settings.agent == 'migrated-agent'
     assert settings.conversation_settings.max_iterations == 77

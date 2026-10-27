@@ -3,6 +3,7 @@
 import asyncio
 from uuid import UUID
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import (
     Permission,
@@ -367,7 +368,9 @@ class OrgInvitationService:
                 )
                 continue
 
-            llm_api_key_secret = settings.agent_settings.llm.api_key
+            llm_api_key_secret = getattr(
+                agent_llm(settings.agent_settings), 'api_key', None
+            )
             llm_api_key = (
                 llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
             )
@@ -546,7 +549,9 @@ class OrgInvitationService:
         # Step 5: Add user to organization. New members start with no
         # personal agent-setting overrides so future org default changes
         # continue to flow through automatically.
-        llm_api_key_secret = settings.agent_settings.llm.api_key
+        llm_api_key_secret = getattr(
+            agent_llm(settings.agent_settings), 'api_key', None
+        )
         llm_api_key = (
             llm_api_key_secret.get_secret_value() if llm_api_key_secret else ''  # type: ignore[union-attr]
         )
