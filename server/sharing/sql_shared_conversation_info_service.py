@@ -2,8 +2,10 @@
 
 This implementation provides read-only access to shared conversations:
 - Direct database access without the per-user conversation filters
-- Serves conversations marked public, plus automation-triggered conversations
-  in an org the (optional) authenticated viewer is a member of
+- Serves conversations marked public: anyone can read one shared from a
+  personal workspace, while one shared from a team org is only served to
+  members of that org. Automation-triggered conversations are also served
+  to members of their org
 - Full async/await support using SQL async db_sessions
 """
 
@@ -50,7 +52,8 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
 
     db_session: AsyncSession
     # Authenticated caller, if any. Anonymous viewers only see public
-    # conversations; org members also see their org's automation conversations.
+    # conversations shared from a personal workspace; org members also see
+    # their org's public and automation conversations.
     viewer_user_id: UUID | None = None
 
     async def get_shared_conversation_info(
@@ -73,12 +76,14 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
     def _visible_select_with_saas_metadata(self):
         """Create a select query that returns conversations visible to the viewer.
 
-        A conversation is visible when it is public or, for an authenticated
-        viewer, when it was triggered by an automation in an org the viewer is
-        a member of. This joins with conversation_metadata_saas to retrieve the
-        user_id needed for constructing the correct event storage path (and the
-        org_id for the membership check). Uses LEFT OUTER JOIN to support
-        conversations that may not have SAAS metadata (e.g., in tests).
+        A public conversation shared from a personal workspace (the org whose
+        id is its owner's id) is visible to anyone. A public conversation
+        shared from a team org, and an automation-triggered conversation, are
+        only visible to an authenticated viewer who is a member of that org.
+        This joins with conversation_metadata_saas to retrieve the user_id
+        needed for constructing the correct event storage path (and the org_id
+        for the workspace and membership checks). Uses LEFT OUTER JOIN to
+        support conversations that may not have SAAS metadata (e.g., in tests).
         """
         query = (
             select(StoredConversationMetadata, StoredConversationMetadataSaas)
@@ -93,17 +98,28 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
             )
         )
         is_public = StoredConversationMetadata.public == True  # noqa: E712
+        # A personal workspace is the org whose id is its owner's id (see
+        # storage/user_store.py). Rows without SAAS metadata keep the
+        # public-to-anyone behaviour.
+        is_personal_workspace = or_(
+            StoredConversationMetadataSaas.org_id.is_(None),
+            StoredConversationMetadataSaas.org_id
+            == StoredConversationMetadataSaas.user_id,
+        )
+        is_public_link = and_(is_public, is_personal_workspace)
         if self.viewer_user_id is None:
-            return query.where(is_public)
+            return query.where(is_public_link)
 
         viewer_org_ids = select(OrgMember.org_id).where(
             OrgMember.user_id == self.viewer_user_id
         )
+        in_viewer_org = StoredConversationMetadataSaas.org_id.in_(viewer_org_ids)
+        is_org_shared = and_(is_public, in_viewer_org)
         is_org_automation = and_(
             StoredConversationMetadata.trigger == ConversationTrigger.AUTOMATION.value,
-            StoredConversationMetadataSaas.org_id.in_(viewer_org_ids),
+            in_viewer_org,
         )
-        return query.where(or_(is_public, is_org_automation))
+        return query.where(or_(is_public_link, is_org_shared, is_org_automation))
 
     def _to_shared_conversation(
         self,
@@ -195,10 +211,10 @@ async def resolve_viewer_user_id(
     """Best-effort identity of the caller of a sharing endpoint.
 
     Authentication is optional on the sharing endpoints. ``None`` means an
-    anonymous viewer, who only sees public conversations. Any failure to
-    establish the identity degrades to anonymous instead of failing the
-    request, so public share links keep working and a resolution error can
-    never widen access.
+    anonymous viewer, who only sees public conversations shared from a
+    personal workspace. Any failure to establish the identity degrades to
+    anonymous instead of failing the request, so public share links keep
+    working and a resolution error can never widen access.
     """
     if request is None:
         return None
