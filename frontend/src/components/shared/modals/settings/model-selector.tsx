@@ -14,6 +14,7 @@ import { PRODUCT_URL } from "#/utils/constants";
 import { useSearchProviders } from "#/hooks/query/use-search-providers";
 import { useProviderModels } from "#/hooks/query/use-provider-models";
 import { useAppMode } from "#/hooks/use-app-mode";
+import { useConfig } from "#/hooks/query/use-config";
 import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { heroUiAutocompleteSelectorButtonClassName } from "#/ui/combobox-caret";
 import { isOpenHandsHostedDomain } from "#/utils/domain-gate";
@@ -54,8 +55,12 @@ export function ModelSelector({
     isLoading: isLoadingModels,
     error: modelsError,
   } = useProviderModels(selectedProvider);
-  // The OpenHands-account CTA points at the cloud product; only show it there.
+  // The OpenHands-account CTA points at the cloud product: enterprise cloud,
+  // or an install without a LiteLLM gateway, where the openhands provider is
+  // OpenHands Cloud itself.
   const { isEnterpriseCloud } = useAppMode();
+  const { data: config } = useConfig();
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
 
   const verifiedProviders = React.useMemo(
     () => providers.filter((p) => p.verified),
@@ -224,7 +229,7 @@ export function ModelSelector({
                   data-testid={`provider-item-${provider.name}`}
                   key={provider.name}
                 >
-                  {mapProvider(provider.name)}
+                  {mapProvider(provider.name, litellmEnabled)}
                 </AutocompleteItem>
               ))}
             </AutocompleteSection>
@@ -238,7 +243,7 @@ export function ModelSelector({
               >
                 {unverifiedProviders.map((provider) => (
                   <AutocompleteItem key={provider.name}>
-                    {mapProvider(provider.name)}
+                    {mapProvider(provider.name, litellmEnabled)}
                   </AutocompleteItem>
                 ))}
               </AutocompleteSection>
@@ -247,16 +252,17 @@ export function ModelSelector({
         </fieldset>
       ) : null}
 
-      {selectedProvider === "openhands" && isEnterpriseCloud && (
-        <HelpLink
-          testId="openhands-account-help"
-          text={t(I18nKey.SETTINGS$NEED_OPENHANDS_ACCOUNT)}
-          linkText={t(I18nKey.SETTINGS$CLICK_HERE)}
-          href={PRODUCT_URL.PRODUCTION}
-          size="settings"
-          linkColor="white"
-        />
-      )}
+      {selectedProvider === "openhands" &&
+        (isEnterpriseCloud || !litellmEnabled) && (
+          <HelpLink
+            testId="openhands-account-help"
+            text={t(I18nKey.SETTINGS$NEED_OPENHANDS_ACCOUNT)}
+            linkText={t(I18nKey.SETTINGS$CLICK_HERE)}
+            href={PRODUCT_URL.PRODUCTION}
+            size="settings"
+            linkColor="white"
+          />
+        )}
 
       <fieldset className="flex flex-col gap-2.5 w-full">
         <label className={cn("text-sm", labelClassName)}>

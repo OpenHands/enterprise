@@ -1,4 +1,6 @@
+from collections.abc import Awaitable, Callable
 from types import MappingProxyType
+from typing import cast
 from uuid import UUID
 
 from openhands.app_server.integrations.provider import (
@@ -7,7 +9,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.secret import SecretSource, StaticSecret
 
@@ -111,6 +113,26 @@ class ResolverUserContext(UserContext):
                 converted_secrets[key] = secret_source
             return converted_secrets
         return {}
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        get_named_oauth_secrets = getattr(
+            self.saas_user_auth, 'get_named_oauth_secrets', None
+        )
+        if get_named_oauth_secrets is None:
+            return None
+        return await cast(
+            Callable[[], Awaitable[NamedOAuthSecrets | None]], get_named_oauth_secrets
+        )()
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        get_named_oauth_secret_value = getattr(
+            self.saas_user_auth, 'get_named_oauth_secret_value', None
+        )
+        if get_named_oauth_secret_value is None:
+            return None
+        return await cast(
+            Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
+        )(oauth_provider_id)
 
     async def get_mcp_api_key(self) -> str | None:
         return await self.saas_user_auth.get_mcp_api_key()

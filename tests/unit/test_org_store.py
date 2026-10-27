@@ -2270,6 +2270,39 @@ class TestUsesManagedDefaultLlm:
         ):
             assert OrgStore._uses_managed_default_llm(org) is True
 
+    def test_openhands_cloud_on_public_proxy_is_byok_without_gateway(self):
+        # No gateway: the public OpenHands proxy is OpenHands Cloud with the
+        # org's own key, so the gateway-off repair must leave it alone.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_openhands_model_on_public_proxy_is_managed_with_gateway(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
     @pytest.mark.parametrize(
         ('model', 'llm_base_url'),
         [

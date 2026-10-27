@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr, ValidationError
@@ -61,6 +62,7 @@ from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxSer
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -77,7 +79,11 @@ from openhands.app_server.settings.settings_models import (
     grouped_workspace_dir,
 )
 from openhands.app_server.user.user_context import UserContext
-from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user.user_models import (
+    NamedOAuthSecret,
+    NamedOAuthSecrets,
+    UserInfo,
+)
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
@@ -392,6 +398,7 @@ class TestLiveStatusAppConversationService:
         self.mock_user_auth = Mock()
         self.mock_user_context.user_auth = self.mock_user_auth
         self.mock_user_context.get_user_email = AsyncMock(return_value=None)
+        self.mock_user_context.get_named_oauth_secrets = AsyncMock(return_value=None)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
@@ -898,6 +905,119 @@ class TestLiveStatusAppConversationService:
         assert 'MY_SECRET' in result
         assert isinstance(result['MY_SECRET'], StaticSecret)
         assert result['MY_SECRET'].description == ''
+
+    def _use_named_oauth_secrets(self):
+        """A v2 user linked to GitHub (named ``GH_PAT``) and holding a legacy
+        GitLab token with no OAuth v2 link."""
+        self.mock_user_context.get_secrets.return_value = {}
+        self.mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('github_token')),
+                ProviderType.GITLAB: ProviderToken(token=SecretStr('gitlab_token')),
+            }
+        )
+        self.mock_user_context.get_named_oauth_secrets = AsyncMock(
+            return_value=NamedOAuthSecrets(
+                secrets=[
+                    NamedOAuthSecret(
+                        secret_name='GH_PAT',
+                        oauth_provider_id=7,
+                        description='GitHub OAuth access token',
+                    )
+                ],
+                linked_provider_types={ProviderType.GITHUB},
+            )
+        )
+        self.mock_user_context.get_named_oauth_secret_value = AsyncMock(
+            return_value='oauth_value'
+        )
+        self.mock_user_context.get_latest_token = AsyncMock(return_value='legacy_value')
+        self.mock_jwt_service.create_jws_token.side_effect = (
+            lambda payload, expires_in: f'jwt-{sorted(payload.items())}'
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_named_oauth_secrets_replace_linked_provider_tokens(
+        self,
+    ):
+        self._use_named_oauth_secrets()
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert set(result) == {'GH_PAT', 'GITLAB_TOKEN'}
+        named = result['GH_PAT']
+        assert isinstance(named, LookupSecret)
+        assert named.url == 'https://test.example.com/api/v1/webhooks/secrets'
+        assert named.description == 'GitHub OAuth access token'
+        self.mock_jwt_service.create_jws_token.assert_any_call(
+            payload={'user_id': self.mock_user.id, 'oauth_provider_id': 7},
+            expires_in=None,
+        )
+        assert isinstance(result['GITLAB_TOKEN'], LookupSecret)
+        self.mock_jwt_service.create_jws_token.assert_any_call(
+            payload={'user_id': self.mock_user.id, 'provider_type': 'gitlab'},
+            expires_in=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_named_oauth_secrets_static_without_web_url(self):
+        self._use_named_oauth_secrets()
+        self.service.web_url = None
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert isinstance(result['GH_PAT'], StaticSecret)
+        assert result['GH_PAT'].value.get_secret_value() == 'oauth_value'
+        self.mock_user_context.get_named_oauth_secret_value.assert_awaited_once_with(7)
+        assert result['GITLAB_TOKEN'].value.get_secret_value() == 'legacy_value'
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_named_oauth_secret_without_value_is_skipped(self):
+        self._use_named_oauth_secrets()
+        self.service.web_url = None
+        self.mock_user_context.get_named_oauth_secret_value.return_value = None
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert set(result) == {'GITLAB_TOKEN'}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'web_url', ['http://localhost:3000', 'http://127.0.0.1:3000']
+    )
+    async def test_setup_secrets_remote_sandbox_with_localhost_web_url_is_static(
+        self, web_url
+    ):
+        self._use_named_oauth_secrets()
+        self.service.sandbox_service = Mock(spec=RemoteSandboxService)
+        self.service.web_url = web_url
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert isinstance(result['GH_PAT'], StaticSecret)
+        assert isinstance(result['GITLAB_TOKEN'], StaticSecret)
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_remote_sandbox_with_public_web_url_uses_lookup(
+        self,
+    ):
+        self._use_named_oauth_secrets()
+        self.service.sandbox_service = Mock(spec=RemoteSandboxService)
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert isinstance(result['GH_PAT'], LookupSecret)
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_localhost_web_url_uses_lookup_outside_remote_sandbox(
+        self,
+    ):
+        self._use_named_oauth_secrets()
+        self.service.web_url = 'http://localhost:3000'
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        assert isinstance(result['GH_PAT'], LookupSecret)
 
     @staticmethod
     def _install_managed_key_refresh_modules(
@@ -4047,6 +4167,52 @@ class TestLiveStatusAppConversationService:
 
         assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
         assert tasks[-1].detail == 'No sandbox specs available!'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.is_custom_sandbox_spec',
+        return_value=False,
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_agent_server_error_body(
+        self,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
+        _mock_is_custom_sandbox_spec,
+    ):
+        """A create rejected by the agent server fails the start task with the
+        response body's message, not just the HTTP status and URL."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = httpx.Request('POST', 'http://agent-server:8000/api/conversations')
+        self.mock_httpx_client.post = AsyncMock(
+            return_value=httpx.Response(
+                500,
+                request=request,
+                json={
+                    'detail': 'Internal Server Error',
+                    'exception': 'Unsupported or missing $schema in plugin.json',
+                    'error_id': 'abc123',
+                },
+            )
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='Broken plugin')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert tasks[-1].detail == (
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
@@ -7276,6 +7442,17 @@ def test_exception_detail_unwraps_dict_message():
         },
     )
     assert _exception_detail(exc) == 'Daily sandbox limit of 3 reached.'
+
+
+def test_exception_detail_without_agent_server_body_omits_url():
+    """An agent server error with no readable body reports the status, not
+    httpx's message with the sandbox URL."""
+    request = httpx.Request('POST', 'http://agent-server:8000/api/conversations')
+    response = httpx.Response(502, request=request, text='<html>Bad Gateway</html>')
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        response.raise_for_status()
+
+    assert _exception_detail(exc_info.value) == 'Agent server error: HTTP 502'
 
 
 class TestACPProviderAllowlistAtServiceStart:

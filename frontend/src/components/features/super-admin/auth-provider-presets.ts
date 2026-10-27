@@ -6,6 +6,7 @@ import type {
   OAuthProviderDetails,
 } from "#/api/auth-providers-service/auth-providers.types";
 import { I18nKey } from "#/i18n/declaration";
+import { defaultNamedSecret } from "./auth-provider-form";
 
 export type AuthProviderPresetKey =
   | "google"
@@ -34,7 +35,11 @@ const whiteIcon = (svg: string) =>
 function oauthDetails(
   details: Omit<
     OAuthProviderDetails,
-    "kind" | "client_id" | "permitted_drift_seconds" | "legacy_keycloak_type"
+    | "kind"
+    | "client_id"
+    | "permitted_drift_seconds"
+    | "legacy_keycloak_type"
+    | "named_secret"
   >,
 ): OAuthProviderDetails {
   return {
@@ -42,6 +47,7 @@ function oauthDetails(
     client_id: PLACEHOLDER_CLIENT_ID,
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
+    named_secret: defaultNamedSecret(details.provider_type),
     ...details,
   };
 }
