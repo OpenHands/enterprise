@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 199 (the ``service_account`` role row)."""
+"""Real-DB tests for migration 201 (the ``service_account`` role row)."""
 
 from __future__ import annotations
 
@@ -23,20 +23,20 @@ def _service_account_role(engine: Engine) -> tuple[int, int] | None:
     return None if row is None else (row.id, row.rank)
 
 
-def _upgrade_from_198(test_database: postgres_testdb.TestDatabase) -> None:
-    # The test template truncates ``role``, so re-run 199 to seed the row.
+def _upgrade_from_200(test_database: postgres_testdb.TestDatabase) -> None:
+    # The test template truncates ``role``, so re-run 201 to seed the row.
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '198'
+        test_database.server, test_database.name, 'downgrade', '200'
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '199'
+        test_database.server, test_database.name, 'upgrade', '201'
     )
 
 
 def test_upgrade_inserts_service_account_role_after_member(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
-    _upgrade_from_198(test_database)
+    _upgrade_from_200(test_database)
 
     role = _service_account_role(engine)
     assert role is not None
@@ -46,10 +46,10 @@ def test_upgrade_inserts_service_account_role_after_member(
 def test_downgrade_removes_unused_service_account_role(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
-    _upgrade_from_198(test_database)
+    _upgrade_from_200(test_database)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '198'
+        test_database.server, test_database.name, 'downgrade', '200'
     )
 
     assert _service_account_role(engine) is None
@@ -60,7 +60,7 @@ def test_downgrade_refuses_while_a_member_has_the_role(
     session_maker: sessionmaker,
     test_database: postgres_testdb.TestDatabase,
 ):
-    _upgrade_from_198(test_database)
+    _upgrade_from_200(test_database)
     # The ORM models match head, so seed rows there; downgrading to 198
     # passes through the later migrations first.
     postgres_testdb.run_alembic(
@@ -90,7 +90,7 @@ def test_downgrade_refuses_while_a_member_has_the_role(
         postgres_testdb.PostgresUnavailableError, match='service_account'
     ):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'downgrade', '198'
+            test_database.server, test_database.name, 'downgrade', '200'
         )
 
     assert _service_account_role(engine) == role
