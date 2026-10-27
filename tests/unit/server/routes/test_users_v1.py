@@ -523,7 +523,11 @@ class TestSdkCompatFields:
                         'linked': LLM(
                             model='anthropic/test-model',
                             provider_connection_id='proxy',
-                        )
+                        ),
+                        'dangling': LLM(
+                            model='anthropic/test-model',
+                            provider_connection_id='gone',
+                        ),
                     }
                 ),
             )
@@ -547,9 +551,11 @@ class TestSdkCompatFields:
                 x_session_api_key='session-key',
             )
 
-        profile = json.loads(result.body)['llm_profiles']['profiles']['linked']
-        assert profile['base_url'] == 'https://llm-proxy.example.test'
-        assert profile['api_key'] == 'sk-connection-key'
+        profiles = json.loads(result.body)['llm_profiles']['profiles']
+        assert profiles['linked']['base_url'] == 'https://llm-proxy.example.test'
+        assert profiles['linked']['api_key'] == 'sk-connection-key'
+        # /me is not strict: one dangling profile must not fail the whole run.
+        assert profiles['dangling']['api_key'] == 'sk-effective-key'
 
     @pytest.mark.asyncio
     async def test_non_expose_response_does_not_resolve_profile_keys(

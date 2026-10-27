@@ -144,8 +144,9 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        # ``org_id`` is the effective org, already checked for membership or a
-        # super role.
+        # No membership check here: the profiles come from a settings load of the
+        # same effective org, which needs a membership row, so a caller without
+        # one has no profiles to resolve.
         org = (
             await OrgStore.get_org_by_id(UUID(user_info.org_id))
             if user_info.org_id
