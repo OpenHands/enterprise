@@ -10,6 +10,7 @@ from integrations.slack.slack_manager import (
     SLACK_USER_MSG_KEY_PREFIX,
     SlackManager,
 )
+from integrations.slack.slack_types import StartingConvoException
 from integrations.slack.slack_view import SlackNewConversationView
 from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
@@ -1419,3 +1420,34 @@ class TestSlackKeycloakCallback:
         assert link.team_id == 'T1'
         assert link.org_id == user.current_org_id
         assert team.team_id == 'T1'
+
+
+class TestStartJobErrorMessages:
+    """Start failures are relayed to the Slack user instead of a generic error."""
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    @patch.object(
+        SlackNewConversationView,
+        'create_or_update_conversation',
+        new_callable=AsyncMock,
+    )
+    async def test_start_job_posts_conversation_start_failure_detail(
+        self,
+        mock_create_or_update_conversation,
+        mock_send_message,
+        slack_manager,
+        slack_new_conversation_view,
+    ):
+        """A StartingConvoException message is posted instead of the generic error."""
+        # Arrange
+        message = (
+            'Failed to start the conversation: '
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
+        mock_create_or_update_conversation.side_effect = StartingConvoException(message)
+
+        # Act
+        await slack_manager.start_job(slack_new_conversation_view)
+
+        # Assert
+        mock_send_message.assert_awaited_once_with(message, slack_new_conversation_view)

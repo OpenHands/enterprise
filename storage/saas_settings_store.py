@@ -26,12 +26,14 @@ from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
 )
 from openhands.sdk.profiles import ProfileNotFound
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     drop_retired_tool_switches,
 )
+from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
@@ -123,10 +125,22 @@ def managed_llm_key_config_from_model(
     it is never classified as managed even when its ``base_url`` is the managed
     proxy. Callers that hold an LLM pass the id through so this decision lives
     in one place rather than at each call site.
+
+    With the LiteLLM gateway off, an ``openhands/`` model on the public OpenHands
+    proxy is OpenHands Cloud with a user-owned key (BYOK), so it is not managed
+    either.
     """
     if provider_connection_id:
         return None
     openhands_type = is_openhands_model(llm_model)
+    if (
+        openhands_type
+        and not constants.ENABLE_LEGACY_LITELLM
+        and is_openhands_proxy_base_url(llm_base_url)
+    ):
+        # No gateway: ``openhands/`` on the public proxy is OpenHands Cloud with
+        # the user's own key, not a managed LiteLLM key.
+        return None
     normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
     normalized_managed_base_url = (
         LITE_LLM_API_URL.rstrip('/') if LITE_LLM_API_URL else None

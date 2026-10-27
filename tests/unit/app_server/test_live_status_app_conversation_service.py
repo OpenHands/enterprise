@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr, ValidationError
@@ -4347,6 +4348,52 @@ class TestLiveStatusAppConversationService:
         assert tasks[-1].detail == 'No sandbox specs available!'
 
     @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.is_custom_sandbox_spec',
+        return_value=False,
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_app_conversation_reports_agent_server_error_body(
+        self,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
+        _mock_is_custom_sandbox_spec,
+    ):
+        """A create rejected by the agent server fails the start task with the
+        response body's message, not just the HTTP status and URL."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = httpx.Request('POST', 'http://agent-server:8000/api/conversations')
+        self.mock_httpx_client.post = AsyncMock(
+            return_value=httpx.Response(
+                500,
+                request=request,
+                json={
+                    'detail': 'Internal Server Error',
+                    'exception': 'Unsupported or missing $schema in plugin.json',
+                    'error_id': 'abc123',
+                },
+            )
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(title='Broken plugin')
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert tasks[-1].detail == (
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
+
+    @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
     @patch(
@@ -7674,6 +7721,17 @@ class TestProfileSystemMessageSuffix:
     def test_empty_strings_are_dropped_rather_than_joined(self):
         assert _compose_system_message_suffix('', 'Shallow clone.') == 'Shallow clone.'
         assert _compose_system_message_suffix('Read-only.', '') == 'Read-only.'
+
+
+def test_exception_detail_without_agent_server_body_omits_url():
+    """An agent server error with no readable body reports the status, not
+    httpx's message with the sandbox URL."""
+    request = httpx.Request('POST', 'http://agent-server:8000/api/conversations')
+    response = httpx.Response(502, request=request, text='<html>Bad Gateway</html>')
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        response.raise_for_status()
+
+    assert _exception_detail(exc_info.value) == 'Agent server error: HTTP 502'
 
 
 class TestACPProviderAllowlistAtServiceStart:

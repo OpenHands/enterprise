@@ -3069,6 +3069,23 @@ def test_managed_llm_key_config_treats_linked_llm_as_byok():
     )
 
 
+def test_managed_llm_key_config_treats_openhands_cloud_as_byok_without_gateway():
+    """With the LiteLLM gateway off, an ``openhands/`` model on the public
+    OpenHands proxy is OpenHands Cloud with a user-owned key, so it is not a
+    managed key. Without an explicit base_url it still counts as managed, so
+    the gateway-off repair of leftover defaults is unchanged."""
+    from storage.saas_settings_store import managed_llm_key_config_from_model
+
+    with patch('server.constants.ENABLE_LEGACY_LITELLM', False):
+        assert (
+            managed_llm_key_config_from_model(
+                'openhands/claude', 'https://llm-proxy.app.all-hands.dev'
+            )
+            is None
+        )
+        assert managed_llm_key_config_from_model('openhands/claude', None) is not None
+
+
 @pytest.mark.asyncio
 async def test_member_diff_without_tools_keeps_the_org_tool_selection(
     session_maker, async_session_maker, org_with_multiple_members_fixture
