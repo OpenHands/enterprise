@@ -63,8 +63,6 @@ _FORWARDED_AUTH_HEADERS = (
     'x-session-api-key',
     'x-access-token',
 )
-# The Automation Service caps a page at 100 automations.
-_AUTOMATION_PAGE_SIZE = 100
 
 
 def _log(op: str, caller_user_id: str, org_id: UUID, sa_id: UUID | None) -> None:
@@ -93,8 +91,8 @@ async def _owns_automation(org_id: UUID, sa_id: UUID, request: Request) -> bool:
 
     Automations live in that service's own database. The caller's own
     credentials are forwarded, as in ``instance_admin._org_has_automation``.
-    ``GET /v1`` has no owner filter, so this pages through the org's
-    automations and compares ``user_id`` here.
+    The ``owner_id`` filter of ``GET /v1`` makes ``total`` the number of
+    automations the account owns.
 
     If no Automation Service URL is configured, no automation can exist, so
     the answer is ``False``. Fails closed otherwise: any error reaching the
@@ -108,26 +106,17 @@ async def _owns_automation(org_id: UUID, sa_id: UUID, request: Request) -> bool:
         if (value := request.headers.get(name))
     }
     headers['X-Org-Id'] = str(org_id)
-    url = f'{AUTOMATION_SERVICE_URL.rstrip("/")}/v1'
-    offset = 0
     try:
         async with httpx.AsyncClient(
             verify=httpx_verify_option(), timeout=_AUTOMATION_CHECK_TIMEOUT_SECONDS
         ) as client:
-            while True:
-                response = await client.get(
-                    url,
-                    params={'limit': _AUTOMATION_PAGE_SIZE, 'offset': offset},
-                    headers=headers,
-                )
-                response.raise_for_status()
-                body = response.json()
-                automations = body['automations']
-                if any(a['user_id'] == str(sa_id) for a in automations):
-                    return True
-                offset += len(automations)
-                if not automations or offset >= body['total']:
-                    return False
+            response = await client.get(
+                f'{AUTOMATION_SERVICE_URL.rstrip("/")}/v1',
+                params={'owner_id': str(sa_id), 'limit': 1},
+                headers=headers,
+            )
+            response.raise_for_status()
+            return response.json()['total'] > 0
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning(
             'org:service_accounts:automation_check_failed',
