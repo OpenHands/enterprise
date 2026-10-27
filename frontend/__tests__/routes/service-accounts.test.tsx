@@ -475,10 +475,14 @@ describe("Service accounts route", () => {
     await deleteSecret();
     await userEvent.click(await screen.findByTestId("cancel-button"));
     await waitFor(() =>
-      expect(screen.queryByTestId("confirmation-modal")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByTestId("confirmation-modal"),
+      ).not.toBeInTheDocument(),
     );
     expect(deletes).toBe(0);
-    expect(screen.getByTestId("service-account-secret-item")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("service-account-secret-item"),
+    ).toBeInTheDocument();
 
     await deleteSecret();
     await userEvent.click(await screen.findByTestId("confirm-button"));
