@@ -5,8 +5,8 @@ refused refresh), so the Integrations page can ask the user to reconnect
 instead of showing a dead token as connected. ``NULL`` means not known to be
 invalid; storing a new token clears it.
 
-Revision ID: 198
-Revises: 197
+Revision ID: 201
+Revises: 200
 Create Date: 2026-10-23 00:00:00.000000
 """
 
@@ -15,8 +15,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '198'
-down_revision: str | None = '197'
+revision: str = '201'
+down_revision: str | None = '200'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
