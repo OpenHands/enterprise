@@ -810,9 +810,11 @@ class Settings(BaseModel):
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
-    sandbox_grouping_strategy: SandboxGroupingStrategy = (
-        SandboxGroupingStrategy.NO_GROUPING
-    )
+    # None means no org/user override is set — the effective strategy falls
+    # back to the deployment-configured default (see
+    # ``LiveStatusAppConversationServiceInjector.sandbox_grouping_strategy``),
+    # and ultimately to ``SandboxGroupingStrategy.NO_GROUPING``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
     default_sandbox_spec_id: str | None = None
     llm_profiles: LLMProfiles = Field(
         default_factory=LLMProfiles,

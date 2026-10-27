@@ -18,7 +18,7 @@ from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
-from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth, get_user_auth
 from openhands.sdk.secret import SecretSource, StaticSecret
 
@@ -201,6 +201,26 @@ class AuthUserContext(UserContext):
     async def get_default_sandbox_spec_id(self) -> str | None:
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        get_named_oauth_secrets = getattr(
+            self.user_auth, 'get_named_oauth_secrets', None
+        )
+        if get_named_oauth_secrets is None:
+            return None
+        return await cast(
+            Callable[[], Awaitable[NamedOAuthSecrets | None]], get_named_oauth_secrets
+        )()
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        get_named_oauth_secret_value = getattr(
+            self.user_auth, 'get_named_oauth_secret_value', None
+        )
+        if get_named_oauth_secret_value is None:
+            return None
+        return await cast(
+            Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
+        )(oauth_provider_id)
 
     async def get_effective_org_id(self) -> UUID | None:
         get_effective_org_id = getattr(self.user_auth, 'get_effective_org_id', None)

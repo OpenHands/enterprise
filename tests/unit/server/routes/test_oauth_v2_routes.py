@@ -63,6 +63,22 @@ def client(app):
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def no_email_match():
+    """Login callbacks that assert an email find no existing user to link to."""
+    with patch.object(
+        oauth_v2.UserStore,
+        'count_users_with_email',
+        new=AsyncMock(return_value=0),
+    ):
+        with patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_email',
+            new=AsyncMock(return_value=None),
+        ):
+            yield
+
+
 def _override_user_context(app, user_id):
     """Override ``get_user_id`` so the route sees ``user_id`` (or ``None``)."""
     app.dependency_overrides[get_user_id] = lambda: (str(user_id) if user_id else None)
@@ -76,12 +92,14 @@ def _fake_provider(
     client_secret: str | None = 'secret',
     userinfo_url: str | None = 'https://example.com/user',
     legacy_keycloak_type: str | None = None,
+    enabled: bool = True,
 ):
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = OAuthProviderDetails.__name__
     provider.title = category.title()
     provider.is_idp = is_idp
+    provider.enabled = enabled
     provider.details = OAuthProviderDetails(
         provider_type=ProviderType(category),
         client_id='cid',
@@ -104,6 +122,7 @@ def _fake_saml_provider(*, provider_id: int = 5):
     provider.kind = SamlProviderDetails.__name__
     provider.title = 'Acme SSO'
     provider.is_idp = True
+    provider.enabled = True
     provider.details = SamlProviderDetails()
     return provider
 
@@ -174,6 +193,63 @@ def test_login_unknown_provider_404(client, jwt_svc):
         ),
     ):
         response = client.get('/oauth/9999/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_login_disabled_provider_404(client, jwt_svc):
+    """A provider an admin switched off must not start a login flow, even
+    for someone who bookmarked the old ``/login`` URL."""
+    provider = _fake_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get('/oauth/1/login', follow_redirects=False)
+    assert response.status_code == 404
+    assert response.json()['detail'] == 'Provider 1 is disabled'
+
+
+def test_callback_disabled_provider_404(client, jwt_svc):
+    """Fails closed: a callback for a provider disabled mid-flow is refused
+    before any token exchange or user creation happens."""
+    provider = _fake_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+    assert response.status_code == 404
+
+
+def test_link_disabled_provider_404(app, client, jwt_svc):
+    """A disabled git provider cannot be newly linked, but unlinking an
+    existing link still works (``DELETE`` does not check ``enabled``)."""
+    provider = _fake_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        _override_user_context(app, uuid4())
+        response = client.post('/oauth/1/link')
     assert response.status_code == 404
 
 
@@ -387,6 +463,99 @@ def test_list_git_providers_empty_when_none_defined(client, app, jwt_svc):
         response = client.get('/oauth/git-providers')
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_list_git_providers_hides_disabled_unless_already_connected(
+    client, app, jwt_svc
+):
+    """A disabled provider is no longer offered for linking, but a user who
+    linked it before it was disabled keeps the card (so they can unlink) and
+    keeps the token itself working."""
+    _override_user_context(app, uuid4())
+    enabled = _fake_provider(provider_id=1, category='github')
+    disabled_unlinked = _fake_provider(provider_id=2, category='gitlab')
+    disabled_linked = _fake_provider(provider_id=3, category='bitbucket')
+    for provider in (enabled, disabled_unlinked, disabled_linked):
+        provider.icon = None
+        provider.color = '#000000'
+    disabled_unlinked.enabled = False
+    disabled_linked.enabled = False
+
+    async def fake_get_raw(store):
+        return object() if store.oauth_provider_id == 3 else None
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_git_providers',
+            new=AsyncMock(return_value=[enabled, disabled_unlinked, disabled_linked]),
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'get_raw', new=fake_get_raw),
+    ):
+        response = client.get('/oauth/git-providers')
+
+    assert response.status_code == 200
+    assert [(p['id'], p['connected']) for p in response.json()] == [
+        (1, False),
+        (3, True),
+    ]
+
+
+def test_list_idp_providers_hides_disabled(client, jwt_svc):
+    """The unauthenticated login screen must not offer a disabled IDP."""
+    enabled = _fake_provider(provider_id=1, category='enterprise_sso', is_idp=True)
+    disabled = _fake_provider(provider_id=2, category='enterprise_sso', is_idp=True)
+    disabled.enabled = False
+    for provider in (enabled, disabled):
+        provider.icon = None
+        provider.color = '#000000'
+
+    with patch.object(
+        oauth_v2.AuthProviderStore,
+        'get_idp_providers',
+        new=AsyncMock(return_value=[enabled]),
+    ) as get_idp_providers:
+        response = client.get('/oauth/idp-providers')
+
+    assert response.status_code == 200
+    assert [p['id'] for p in response.json()] == [1]
+    # Filtering happens in the store, so a disabled row never reaches the
+    # public response.
+    get_idp_providers.assert_awaited_once_with()
+
+
+def test_idp_login_skips_disabled_providers(client, jwt_svc):
+    """``/oauth/idp-login`` redirects to the enabled IDP, not merely the
+    newest one."""
+    provider = _fake_provider(provider_id=4, category='enterprise_sso', is_idp=True)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_first_idp',
+            new=AsyncMock(return_value=provider),
+        ) as get_first_idp,
+    ):
+        response = client.get('/oauth/idp-login', follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/oauth/4/login')
+    get_first_idp.assert_awaited_once_with()
+
+
+def test_idp_login_404_when_only_disabled_providers(client, jwt_svc):
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_first_idp',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        response = client.get('/oauth/idp-login', follow_redirects=False)
+
+    assert response.status_code == 404
 
 
 # ── callback login flow ──────────────────���──────────────────────────────

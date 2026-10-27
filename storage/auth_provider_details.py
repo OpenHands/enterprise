@@ -52,9 +52,12 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
+from openhands.app_server.constants import validate_secret_name
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.env_var_validation import validate_env_var_name
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from storage.encrypt_utils import decrypt_value, encrypt_value
 
@@ -194,6 +197,12 @@ class OAuthProviderDetails(AuthProviderDetails):
     # (``TokenManager.get_idp_tokens_from_keycloak``) and stored under the
     # git-provider row of that ``provider_type``.
     legacy_keycloak_type: ProviderType | None = None
+    # Name of the conversation secret that exposes a linked user's access
+    # token for this provider to the sandbox (with OAuth v2 login enabled).
+    # ``None`` keeps the token out of the sandbox. Several rows may share a
+    # name; a user linked to more than one gets a single secret, see
+    # ``SaasUserAuth.get_named_oauth_secrets``.
+    named_secret: str | None = None
 
     @field_validator('legacy_keycloak_type')
     @classmethod
@@ -203,6 +212,24 @@ class OAuthProviderDetails(AuthProviderDetails):
         if value == ProviderType.ENTERPRISE_SSO:
             raise ValueError('legacy_keycloak_type must be a git provider')
         return value
+
+    @field_validator('named_secret', mode='before')
+    @classmethod
+    def _validate_named_secret(cls, value: Any) -> str | None:
+        if value is None or value == '':
+            return None
+        validate_env_var_name(value, 'named_secret')
+        validate_secret_name(value)
+        return value
+
+    @model_validator(mode='after')
+    def _no_named_secret_for_keycloak_tokens(self) -> OAuthProviderDetails:
+        # The token stored under such a row is Keycloak's own session token.
+        if self.named_secret and self.legacy_keycloak_type:
+            raise ValueError(
+                'named_secret cannot be set on a row with legacy_keycloak_type'
+            )
+        return self
 
     @field_validator('client_secret', mode='before')
     @classmethod

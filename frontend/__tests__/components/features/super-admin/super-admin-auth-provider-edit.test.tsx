@@ -30,6 +30,7 @@ const NEW_OAUTH_PROVIDER: AuthProvider = {
     scopes: ["openid", "email"],
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
+    named_secret: null,
   },
 };
 
@@ -125,17 +126,59 @@ describe("Super Admin Auth Provider edit page", () => {
     ).toBeInTheDocument();
   });
 
-  it("returns to the list when cancelled", async () => {
-    const user = userEvent.setup();
+  it("has no cancel button, leaving the back link as the way out", async () => {
     const form = await renderEditPage(GITHUB_PROVIDER);
 
+    expect(
+      within(form).queryByRole("button", { name: "BUTTON$CANCEL" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("returns to the list once changes are saved", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(authProvidersService, "updateAuthProvider").mockResolvedValue(
+      GITHUB_PROVIDER,
+    );
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-title"),
+      " SSO",
+    );
     await user.click(
-      within(form).getByTestId("super-admin-auth-provider-form-cancel"),
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
     );
 
     expect(
       await screen.findByTestId("auth-providers-list"),
     ).toBeInTheDocument();
+  });
+
+  it("stays on the edit page when saving fails", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockRejectedValue(new Error("boom"));
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-title"),
+      " SSO",
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() => expect(updateAuthProvider).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      ).toBeEnabled(),
+    );
+    expect(screen.queryByTestId("auth-providers-list")).not.toBeInTheDocument();
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-title"),
+    ).toHaveValue("GitHub SSO");
   });
 
   it("only enables saving once something has changed", async () => {
@@ -223,6 +266,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "Log in with Google",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -237,6 +281,7 @@ describe("Super Admin Auth Provider edit page", () => {
           scopes: ["openid", "email"],
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
+          named_secret: null,
         },
       }),
     );
@@ -264,6 +309,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "GitHub Enterprise",
         is_idp: false,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -346,6 +392,56 @@ describe("Super Admin Auth Provider edit page", () => {
             scopes: ["openid"],
             legacy_keycloak_type: "github",
           }),
+        }),
+      ),
+    );
+  });
+
+  it("loads named_secret and sends the edited value", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const namedSecretInput = within(form).getByTestId(
+      "super-admin-auth-provider-named-secret",
+    );
+    expect(namedSecretInput).toHaveValue("GITHUB_TOKEN");
+    await user.clear(namedSecretInput);
+    await user.type(namedSecretInput, "GH_PAT");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({ named_secret: "GH_PAT" }),
+        }),
+      ),
+    );
+  });
+
+  it("sends named_secret as null when the field is cleared", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.clear(
+      within(form).getByTestId("super-admin-auth-provider-named-secret"),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ named_secret: null }),
         }),
       ),
     );
@@ -465,6 +561,7 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "GitHub",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: true,
         allow_match_by_email: true,
@@ -688,10 +785,32 @@ describe("Super Admin Auth Provider edit page", () => {
         title: "Okta SAML",
         is_idp: true,
         icon: null,
+        enabled: true,
         color: DEFAULT_AUTH_PROVIDER_COLOR,
         allow_registration: false,
         allow_match_by_email: true,
       }),
+    );
+  });
+
+  it("sends the enabled flag when an admin switches the provider off", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, enabled: false });
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-enabled"),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, enabled: false }),
+      ),
     );
   });
 
@@ -740,18 +859,21 @@ describe("Super Admin Auth Provider edit page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT",
       "super-admin-auth-provider-is-idp",
     ],
-  ])("explains the %s toggle without toggling it", async (copy, toggleTestId) => {
-    const user = userEvent.setup();
-    const form = await renderEditPage(GITHUB_PROVIDER);
+  ])(
+    "explains the %s toggle without toggling it",
+    async (copy, toggleTestId) => {
+      const user = userEvent.setup();
+      const form = await renderEditPage(GITHUB_PROVIDER);
 
-    const toggle = within(form).getByTestId(toggleTestId) as HTMLInputElement;
-    const checkedBefore = toggle.checked;
-    const hintIcon = within(toggle.closest("label")!).getByLabelText(copy);
-    expect(hintIcon).toBeInTheDocument();
+      const toggle = within(form).getByTestId(toggleTestId) as HTMLInputElement;
+      const checkedBefore = toggle.checked;
+      const hintIcon = within(toggle.closest("label")!).getByLabelText(copy);
+      expect(hintIcon).toBeInTheDocument();
 
-    await user.click(hintIcon);
-    expect(toggle.checked).toBe(checkedBefore);
-  });
+      await user.click(hintIcon);
+      expect(toggle.checked).toBe(checkedBefore);
+    },
+  );
 
   it("sends details wholesale when a SAML field is changed", async () => {
     const user = userEvent.setup();

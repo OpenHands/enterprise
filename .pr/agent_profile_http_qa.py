@@ -214,7 +214,12 @@ async def main():
             openhands_provider_base_url=None,
             access_token_hard_timeout=None,
         )
-        await service._ensure_profile_runtime(RUNTIME_URL, RUNTIME_KEY)
+        browser_available = await service._ensure_profile_runtime(
+            RUNTIME_URL, RUNTIME_KEY
+        )
+        if body.get('child_launcher'):
+            service.enable_child_conversation_launcher = True
+            service.web_url = 'https://qa.example.com'
         user.conversation_settings = user.conversation_settings.model_copy(
             update={'autotitle': False}
         )
@@ -227,6 +232,7 @@ async def main():
             git_provider=None,
             working_dir=os.environ.get('QA_WORKSPACE', str(ROOT / '.pr' / 'workspace')),
             agent_type=AgentType(body.get('agent_type', 'default')),
+            browser_available=browser_available,
             api_secrets={'DENIED_API_QA': SecretStr('denied-api-value')},
         )
         payload = request.model_dump(mode='json', context={'expose_secrets': True})
@@ -236,6 +242,17 @@ async def main():
         response.raise_for_status()
         data = response.json()
         agent = data['agent']
+        sandbox_security_policy = None
+        if agent['kind'] == 'Agent':
+            from openhands.sdk import Agent
+
+            runtime_agent = Agent.model_validate(agent)
+            prompt = runtime_agent.static_system_message
+            sandbox_security_policy = (
+                'Container-scoped edits and installs.' in prompt
+                and 'Project-scoped edits or execution.' not in prompt
+            )
+            assert sandbox_security_policy
         runtime_secret_names = sorted(data['secret_registry']['secret_sources'])
         assert runtime_secret_names == sorted(request.secrets)
         record = {
@@ -248,6 +265,9 @@ async def main():
             'runtime_secret_names': runtime_secret_names,
             'agent_kind': agent['kind'],
             'tools': [t['name'] for t in agent.get('tools', [])],
+            'include_default_tools': agent.get('include_default_tools'),
+            'sandbox_security_policy': sandbox_security_policy,
+            'browser_available': browser_available,
             'mcp_servers': sorted(agent.get('mcp_config', {})),
             'persona': agent.get('persona'),
             'suffix': (agent.get('agent_context') or {}).get('system_message_suffix'),
@@ -313,7 +333,7 @@ async def main():
                 assert record['tools'] == [] and record['mcp_servers'] == ['qa']
                 assert record['suffix'] == 'PROFILE_SUFFIX\n\nRUNTIME_SUFFIX'
                 assert record['request_secret_names'] == ['ALLOWED_QA']
-                assert record['wire_source'] == 'agent_settings'
+                assert record['wire_source'] == 'agent'
                 results['cases'].append({'name': name, 'preview_valid': True, **record})
             for name, selection in (
                 (
@@ -321,6 +341,7 @@ async def main():
                     [{'name': n} for n in ('terminal', 'file_editor', 'task_tracker')],
                 ),
                 ('default-tools', None),
+                ('child-launcher-defaults', None),
             ):
                 response = await client.post(
                     f'/api/agent-profiles/{name}',
@@ -338,7 +359,11 @@ async def main():
                 preview.raise_for_status()
                 assert preview.json()['valid'] is True
                 response = await client.post(
-                    '/_qa/launch', json={'profile_id': profile_id}
+                    '/_qa/launch',
+                    json={
+                        'profile_id': profile_id,
+                        'child_launcher': name == 'child-launcher-defaults',
+                    },
                 )
                 response.raise_for_status()
                 record = response.json()
@@ -347,12 +372,17 @@ async def main():
                     assert record['tools'] == [t['name'] for t in selection]
                     assert 'browser_tool_set' not in record['tools']
                 else:
-                    assert (
-                        'terminal' in record['tools']
-                        and 'browser_tool_set' in record['tools']
-                    )
+                    assert 'terminal' in record['tools']
+                    assert ('browser_tool_set' in record['tools']) == record[
+                        'browser_available'
+                    ]
+                    assert 'SwitchLLMTool' in record['include_default_tools']
+                    if name == 'child-launcher-defaults':
+                        assert 'start_child_conversation' in record['tools']
                 assert record['persona'] == profile['persona']
-                assert record['mcp_servers'] == []
+                assert record['mcp_servers'] == (
+                    ['default'] if name == 'child-launcher-defaults' else []
+                )
                 results['cases'].append({'name': name, 'preview_valid': True, **record})
             before = len(launches)
             response = await client.post(

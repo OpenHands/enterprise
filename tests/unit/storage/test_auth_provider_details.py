@@ -134,3 +134,39 @@ def test_legacy_keycloak_type_rejects_enterprise_sso():
             client_id='cid',
             legacy_keycloak_type=ProviderType.ENTERPRISE_SSO,
         )
+
+
+def test_named_secret_defaults_to_none_and_blank_normalizes_to_none():
+    assert (
+        OAuthProviderDetails(provider_type=ProviderType.GITHUB, client_id='cid')
+    ).named_secret is None
+    assert (
+        OAuthProviderDetails(
+            provider_type=ProviderType.GITHUB, client_id='cid', named_secret=''
+        )
+    ).named_secret is None
+
+
+def test_named_secret_accepts_an_env_var_name():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.GITHUB, client_id='cid', named_secret='GITHUB_TOKEN'
+    )
+    assert details.named_secret == 'GITHUB_TOKEN'
+
+
+@pytest.mark.parametrize('name', ['1TOKEN', 'MY-TOKEN', 'LLM_API_KEY', 'WORKER_1'])
+def test_named_secret_rejects_invalid_or_reserved_names(name):
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.GITHUB, client_id='cid', named_secret=name
+        )
+
+
+def test_named_secret_rejected_with_legacy_keycloak_type():
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.ENTERPRISE_SSO,
+            client_id='cid',
+            legacy_keycloak_type=ProviderType.GITHUB,
+            named_secret='GITHUB_TOKEN',
+        )

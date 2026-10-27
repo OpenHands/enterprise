@@ -277,7 +277,9 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
 
 
-async def _get_integrated_idp_provider() -> AuthProvider | None:
+async def _get_integrated_idp_provider(
+    *, enabled_only: bool = True
+) -> AuthProvider | None:
     """Return the integrated/password IDP's ``auth_providers`` row, if any.
 
     The single source of truth for whether the integrated IDP is available
@@ -285,8 +287,19 @@ async def _get_integrated_idp_provider() -> AuthProvider | None:
     this module (``is_idp_available`` / ``_require_idp_available``) and to
     resolve the id baked into the ``openhands_auth`` cookie at login
     (``_complete_idp_login``), so the two can never disagree.
+
+    ``enabled_only`` defaults to ``True``: an admin can switch this IDP off
+    through the ``auth_providers`` admin API, which must hide it from the
+    login screen and 404 its routes. Pass ``False`` when resolving a session
+    that was already established -- disabling the row must not invalidate
+    existing logins.
     """
-    return await AuthProviderStore().get_first_by_kind(PasswordProviderDetails.__name__)
+    provider = await AuthProviderStore().get_first_by_kind(
+        PasswordProviderDetails.__name__
+    )
+    if provider is not None and enabled_only and not provider.enabled:
+        return None
+    return provider
 
 
 async def is_idp_available() -> bool:
@@ -294,8 +307,8 @@ async def is_idp_available() -> bool:
 
     Governed solely by whether migration 179 seeded an ``auth_providers``
     row for it (which it only does when ``ENABLE_INTEGRATED_IDP`` was set at
-    migration time). Whether a real IDP is *also* configured does not affect
-    availability.
+    migration time) and whether an admin has since enabled that row. Whether
+    a real IDP is *also* configured does not affect availability.
     """
     return await _get_integrated_idp_provider() is not None
 
@@ -737,9 +750,7 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(
-            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
-        )
+        user = await UserStore.create_user(user_id, user_info)
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -891,9 +902,7 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(
-            user_id, user_info, allow_match_by_email=provider.allow_match_by_email
-        )
+        user = await UserStore.create_user(user_id, user_info)
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(

@@ -56,6 +56,7 @@ from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import User
 from storage.user_store import SuperAdminRevokeResult, UserStore
+from utils.identity import display_name_for_user
 
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
@@ -205,11 +206,7 @@ class SetupStateUpdate(BaseModel):
 
 
 def _display_name(user: User) -> str | None:
-    if user.git_user_name and user.git_user_name.strip():
-        return user.git_user_name.strip()
-    if user.email and '@' in user.email:
-        return user.email.split('@', 1)[0]
-    return user.email
+    return display_name_for_user(user.git_user_name, user.email)
 
 
 def _plain_llm_api_key(settings: object) -> str:

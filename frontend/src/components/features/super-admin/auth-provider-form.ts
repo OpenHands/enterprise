@@ -45,6 +45,13 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
 
 export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
 
+/** The ``named_secret`` a new provider of ``brand`` starts with -- the
+ * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
+ * (migration 198 backfills it). Login-only brands expose no token. */
+export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
+  return brand === "enterprise_sso" ? null : `${brand.toUpperCase()}_TOKEN`;
+}
+
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
     option.key !== "enterprise_sso",
@@ -107,6 +114,10 @@ export interface AuthProviderFormState {
   /** CSS color string for this provider's login button -- defaults to
    * ``DEFAULT_AUTH_PROVIDER_COLOR`` (black), mirroring the backend. */
   color: string;
+  /** Whether this provider may be used for a new login or link. Off by
+   * default (mirroring the backend), so a new row stays inert until an
+   * admin has finished configuring it. */
+  enabled: boolean;
   /** Whether a brand-new user may be created the first time someone
    * authenticates through this provider, or only an already-linked account
    * may sign in through it. */
@@ -125,6 +136,8 @@ export interface AuthProviderFormState {
   permittedDriftSeconds: string;
   /** ``""`` when unset -- see ``OAuthProviderDetails.legacy_keycloak_type``. */
   legacyKeycloakType: LegacyKeycloakType | "";
+  /** ``""`` when unset -- see ``OAuthProviderDetails.named_secret``. */
+  namedSecret: string;
   metadataUrl: string;
   idpEntityId: string;
   ssoUrl: string;
@@ -152,6 +165,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   isIdp: true,
   icon: "",
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: false,
   allowRegistration: true,
   allowMatchByEmail: true,
   providerType: "enterprise_sso",
@@ -163,6 +177,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   scopes: "",
   permittedDriftSeconds: DEFAULT_PERMITTED_DRIFT_SECONDS,
   legacyKeycloakType: "",
+  namedSecret: "",
   metadataUrl: "",
   idpEntityId: "",
   ssoUrl: "",
@@ -184,6 +199,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       isIdp: provider.is_idp,
       icon: provider.icon ?? "",
       color: provider.color,
+      enabled: provider.enabled,
       allowRegistration: provider.allow_registration,
       allowMatchByEmail: provider.allow_match_by_email,
       providerType: details.provider_type,
@@ -194,6 +210,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       scopes: details.scopes?.join(" ") ?? "",
       permittedDriftSeconds: String(details.permitted_drift_seconds),
       legacyKeycloakType: details.legacy_keycloak_type ?? "",
+      namedSecret: details.named_secret ?? "",
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -205,6 +222,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       isIdp: true,
       icon: provider.icon ?? "",
       color: provider.color,
+      enabled: provider.enabled,
       allowRegistration: provider.allow_registration,
       allowMatchByEmail: provider.allow_match_by_email,
       metadataUrl: details.metadata_url ?? "",
@@ -225,6 +243,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
     isIdp: true,
     icon: provider.icon ?? "",
     color: provider.color,
+    enabled: provider.enabled,
     allowRegistration: provider.allow_registration,
     allowMatchByEmail: provider.allow_match_by_email,
   };
@@ -246,7 +265,8 @@ function oauthDetailsUnchanged(
     form.scopes.trim() === initial.scopes.trim() &&
     form.permittedDriftSeconds.trim() ===
       initial.permittedDriftSeconds.trim() &&
-    form.legacyKeycloakType === initial.legacyKeycloakType
+    form.legacyKeycloakType === initial.legacyKeycloakType &&
+    form.namedSecret.trim() === initial.namedSecret.trim()
   );
 }
 
@@ -310,6 +330,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       ? Number(form.permittedDriftSeconds)
       : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
     legacy_keycloak_type: form.legacyKeycloakType || null,
+    named_secret: form.namedSecret.trim() || null,
   };
 }
 
@@ -340,6 +361,7 @@ export function buildUpdatePayload(
     is_idp: form.isIdp,
     icon: form.icon.trim() || null,
     color: form.color.trim() || DEFAULT_AUTH_PROVIDER_COLOR,
+    enabled: form.enabled,
     allow_registration: form.allowRegistration,
     allow_match_by_email: form.allowMatchByEmail,
     ...(detailsChanged && { details: buildDetails(form) }),

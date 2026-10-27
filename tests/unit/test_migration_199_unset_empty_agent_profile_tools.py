@@ -7,12 +7,12 @@ MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
     / 'versions'
-    / '196_unset_empty_agent_profile_tools.py'
+    / '199_unset_empty_agent_profile_tools.py'
 )
-spec = spec_from_file_location('migration_196', MIGRATION_PATH)
+spec = spec_from_file_location('migration_199', MIGRATION_PATH)
 assert spec is not None and spec.loader is not None
-migration_196 = module_from_spec(spec)
-spec.loader.exec_module(migration_196)
+migration_199 = module_from_spec(spec)
+spec.loader.exec_module(migration_199)
 
 
 def _profiles(**profiles):
@@ -41,8 +41,8 @@ def _run_upgrade(monkeypatch, rows, raw_rows=None):
                 encrypt_utils.decrypt_value(params['agent_profiles'])
             )
 
-    monkeypatch.setattr(migration_196, 'op', SimpleNamespace(get_bind=Bind))
-    migration_196.upgrade()
+    monkeypatch.setattr(migration_199, 'op', SimpleNamespace(get_bind=Bind))
+    migration_199.upgrade()
     return updates
 
 

@@ -1,0 +1,211 @@
+{
+  "sdk_version": "1.58.1",
+  "identity": "Local bearer identity fixture; real org permissions, PostgreSQL, router, resolver and builder. No deployed Keycloak or Cloud orchestration.",
+  "cases": [
+    {
+      "name": "default",
+      "preview_valid": true,
+      "id": "a595f179-060b-4848-8589-76d26506d413",
+      "status": 201,
+      "wire_source": "agent",
+      "profile_id": "fcc8a94f-bc65-4564-b6c1-f2703658fdaa",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "include_default_tools": [
+        "FinishTool",
+        "ThinkTool"
+      ],
+      "sandbox_security_policy": true,
+      "browser_available": true,
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "default-copy",
+      "preview_valid": true,
+      "id": "65da35de-1f91-40be-9117-3c2b2106a833",
+      "status": 201,
+      "wire_source": "agent",
+      "profile_id": "5bcef2b0-ba35-46e0-85f1-d20ef9ac1fbf",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [],
+      "include_default_tools": [
+        "FinishTool",
+        "ThinkTool"
+      ],
+      "sandbox_security_policy": true,
+      "browser_available": true,
+      "mcp_servers": [
+        "qa"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "coding-no-browser",
+      "preview_valid": true,
+      "id": "fe200560-c020-4005-ac86-06e1fc0f2322",
+      "status": 201,
+      "wire_source": "agent",
+      "profile_id": "ceff5efe-d127-41c2-aac9-ae6bba7222d8",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker"
+      ],
+      "include_default_tools": [
+        "FinishTool",
+        "ThinkTool"
+      ],
+      "sandbox_security_policy": true,
+      "browser_available": true,
+      "mcp_servers": [],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "default-tools",
+      "preview_valid": true,
+      "id": "b8b93a1a-e412-4d5d-bb39-0891529186b0",
+      "status": 201,
+      "wire_source": "agent",
+      "profile_id": "724a8c20-ecd7-4adf-8433-2fe709da3daa",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set"
+      ],
+      "include_default_tools": [
+        "FinishTool",
+        "ThinkTool",
+        "SwitchLLMTool"
+      ],
+      "sandbox_security_policy": true,
+      "browser_available": true,
+      "mcp_servers": [],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX"
+    },
+    {
+      "name": "child-launcher-defaults",
+      "preview_valid": true,
+      "id": "569e5e73-d369-42dc-a361-6c20f4d79a0f",
+      "status": 201,
+      "wire_source": "agent",
+      "profile_id": "a01163a2-b6e5-4ffb-9632-9c66e136d3d2",
+      "revision": 0,
+      "request_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "runtime_secret_names": [
+        "ALLOWED_QA"
+      ],
+      "agent_kind": "Agent",
+      "tools": [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "start_child_conversation"
+      ],
+      "include_default_tools": [
+        "FinishTool",
+        "ThinkTool",
+        "SwitchLLMTool"
+      ],
+      "sandbox_security_policy": true,
+      "browser_available": true,
+      "mcp_servers": [
+        "default"
+      ],
+      "persona": "Use only the requested tools.",
+      "suffix": "PROFILE_SUFFIX\n\nRUNTIME_SUFFIX\n\n<HOST>\nhttps://qa.example.com\n</HOST>"
+    },
+    {
+      "name": "dangling_mcp",
+      "status": 422,
+      "detail": {
+        "code": "unresolved_profile_references",
+        "message": "MCP server(s) not configured: missing",
+        "dangling_llm_profile_ref": null,
+        "dangling_mcp_server_refs": [
+          "missing"
+        ],
+        "dangling_meta_profile_ref": null,
+        "dangling_meta_profile_llm_refs": []
+      },
+      "runtime_launches": 0
+    },
+    {
+      "name": "unknown_profile",
+      "status": 404,
+      "settings_readable": true,
+      "runtime_launches": 0
+    },
+    {
+      "name": "acp_create_without_inference",
+      "id": "44b003c8-6a87-4f94-9058-5fdff12f50f6",
+      "status": 201,
+      "wire_source": "agent_settings",
+      "profile_id": "32e7c952-c1b7-4f5a-98b2-a4555eb89fca",
+      "revision": 0,
+      "request_secret_names": [],
+      "runtime_secret_names": [],
+      "agent_kind": "ACPAgent",
+      "tools": [],
+      "include_default_tools": [],
+      "sandbox_security_policy": null,
+      "browser_available": true,
+      "mcp_servers": [],
+      "persona": null,
+      "suffix": "RUNTIME_SUFFIX"
+    },
+    {
+      "name": "opaque_profile_preserved_and_active_launch_rejected",
+      "status": 422,
+      "opaque_preserved": true,
+      "settings_readable": true
+    },
+    {
+      "name": "real_model_mcp",
+      "model": "openai/deepseek-v4-1-flash",
+      "execution_status": "finished",
+      "tool": "qa_echo",
+      "marker": "ENTERPRISE_PROFILE_QA_OK"
+    }
+  ]
+}

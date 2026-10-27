@@ -1,28 +1,14 @@
-# Development override: build `app` and `worker` from this checkout instead of
-# pulling the released enterprise-server image.
-#
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml up --build
-#
-# or, to make that the default for this checkout, put this in `.env`:
-#
-#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
-#
-# The locally built image gets its own name so it never overwrites the local
-# copy of a released tag (and APP_IMAGE is ignored while this file is layered
-# on). Agent Canvas and the automation service are unaffected: they still use
-# released images unless AGENT_CANVAS_IMAGE / AUTOMATION_IMAGE say otherwise,
-# e.g. AGENT_CANVAS_IMAGE=ghcr.io/openhands/agent-canvas:main.
-
+# This file builds app and worker from this checkout instead of pulling the released image.
 x-app-build: &app-build
   context: .
   dockerfile: containers/app/Dockerfile
 
 services:
   app:
+    # The local tag keeps the build from overwriting a pulled release image.
     image: openhands/enterprise-server:local
     build: *app-build
 
-  # Same build as `app`, so BuildKit reuses its layers instead of rebuilding.
   worker:
     image: openhands/enterprise-server:local
     build: *app-build

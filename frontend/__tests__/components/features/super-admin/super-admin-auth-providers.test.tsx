@@ -183,6 +183,30 @@ describe("Super Admin Auth Providers page", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("toggles a provider's enabled flag from the table", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, enabled: false });
+    renderAuthProvidersPage();
+
+    // Act
+    await user.click(
+      await screen.findByRole("switch", {
+        name: "SUPER_ADMIN$COL_ENABLED: GitHub",
+      }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledExactlyOnceWith({
+        id: 1,
+        enabled: false,
+      }),
+    );
+  });
+
   it("only asks for a provider type when adding a provider", async () => {
     const user = userEvent.setup();
     renderAuthProvidersPage();
@@ -236,6 +260,7 @@ describe("Super Admin Auth Providers page", () => {
         title: "Log in with Google",
         is_idp: true,
         icon: null,
+        enabled: false,
         color: "#1a73e8",
         allow_registration: true,
         allow_match_by_email: true,
@@ -249,6 +274,7 @@ describe("Super Admin Auth Providers page", () => {
           scopes: ["openid", "email"],
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
+          named_secret: null,
         },
       }),
     );
@@ -353,6 +379,7 @@ describe("Super Admin Auth Providers page", () => {
           token_url: "https://github.com/login/oauth/access_token",
           userinfo_url: "https://api.github.com/user",
           legacy_keycloak_type: null,
+          named_secret: "GITHUB_TOKEN",
         }),
       }),
     );
@@ -479,6 +506,7 @@ describe("Super Admin Auth Providers page", () => {
         title: "Login with Password",
         is_idp: true,
         icon: null,
+        enabled: false,
         color: "#03A956",
         allow_registration: true,
         allow_match_by_email: true,

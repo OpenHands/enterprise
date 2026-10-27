@@ -8,6 +8,7 @@ export const GITHUB_PROVIDER: AuthProvider = {
   is_idp: false,
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: true,
   allow_registration: true,
   allow_match_by_email: true,
   details: {
@@ -21,6 +22,7 @@ export const GITHUB_PROVIDER: AuthProvider = {
     scopes: ["repo"],
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
+    named_secret: "GITHUB_TOKEN",
   },
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
@@ -33,6 +35,7 @@ export const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
   is_idp: true,
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: true,
   allow_registration: true,
   allow_match_by_email: true,
   details: {
@@ -46,6 +49,7 @@ export const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
     scopes: ["openid", "email", "profile"],
     permitted_drift_seconds: 60,
     legacy_keycloak_type: "github",
+    named_secret: null,
   },
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
@@ -58,6 +62,7 @@ export const PASSWORD_PROVIDER: AuthProvider = {
   is_idp: true,
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: true,
   allow_registration: true,
   allow_match_by_email: true,
   details: { kind: "PasswordProviderDetails" },
@@ -72,6 +77,7 @@ export const SAML_PROVIDER: AuthProvider = {
   is_idp: true,
   icon: null,
   color: DEFAULT_AUTH_PROVIDER_COLOR,
+  enabled: true,
   allow_registration: true,
   allow_match_by_email: true,
   details: {

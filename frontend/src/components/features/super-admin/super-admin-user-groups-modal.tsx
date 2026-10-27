@@ -477,7 +477,7 @@ export function SuperAdminUserGroupsModal({
   return (
     <OrgModal
       testId="super-admin-groups-modal"
-      className="max-h-[85vh] w-[36rem] max-w-[calc(100vw-2rem)] overflow-visible"
+      className="max-h-[85vh] w-[36rem] max-w-[calc(100vw-2rem)] overflow-y-auto"
       title={t(I18nKey.SUPER_ADMIN$MANAGE_USER)}
       ariaLabel={user.name}
       primaryButtonText={t(I18nKey.BUTTON$CLOSE)}

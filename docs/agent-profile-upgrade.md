@@ -1,6 +1,6 @@
 # Upgrade Enterprise Agent Profiles
 
-This release adopts the SDK 1.58.0 launch contract. The Enterprise Python SDK,
+This release adopts the SDK 1.58.1 launch contract. The Enterprise Python SDK,
 agent-server and tools packages, the lint environment, and the bundled sandbox
 image must use the same released version. External Helm/runtime-api image pins
 must be updated by their deployment owner as well.
@@ -17,7 +17,7 @@ must be updated by their deployment owner as well.
    An exit status of 2 requires repair or a compatible newer release before
    proceeding. Never delete opaque profiles to make the audit pass.
 4. Run `uv run alembic heads` and verify one head. The profile-tools migration is
-   revision 196 after 195. Do not reuse or edit the released revision 175.
+   revision 199 after 198. Do not reuse or edit the released revision 175.
 
 A rolling update with unrestricted old writers is unsafe: older releases can
 remove profiles they cannot parse when saving an envelope. The new release
@@ -27,7 +27,7 @@ cutover, rather than relying on mixed-version saves.
 
 ## Migration and cutover
 
-Run `uv run alembic upgrade head` with the writes still frozen. Revision 196
+Run `uv run alembic upgrade head` with the writes still frozen. Revision 199
 changes only OpenHands profiles at a known legacy schema version (missing, 1 or
 2) whose `tools` is `[]`: those old Cloud profiles always launched the standard
 set, so they become `tools: null`. Current profiles at version 3 retain a
@@ -63,11 +63,14 @@ of an old empty tool list and is not a data rollback.
 
 ## Compatibility boundaries
 
-Ordinary OpenHands and ACP launches forward resolved settings; the sandbox SDK
-finalizes runtime fields. PLAN and request-level raw prompts retain the supported
-raw-agent transport because SDK 1.58.0 settings cannot represent those prompt
-presets. The sandbox still finalizes that source. Profile tool selections and
-persona/context restrictions remain authoritative in both paths.
+OpenHands launches use the supported raw-agent transport because SDK 1.58.1
+settings cannot carry the web sandbox's `cli_mode: false` security prompt flag,
+PLAN presets or request-level raw prompts. The app builds from resolved profile
+settings and uses the sandbox's advertised browser availability with the SDK tool
+resolver. Explicit tool selections remain authoritative; defaults retain model
+switching even when the optional child-conversation launcher is enabled. The
+sandbox still finalizes runtime context (including time, memory and skills).
+ACP launches continue to forward resolved settings for runtime finalization.
 
 Profile secret selection filters stored, integration and request-provided secrets.
 The Azure DevOps credential-helper token written during repository setup remains

@@ -210,10 +210,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    updateProvider.mutate({
-      id: providerId,
-      ...buildUpdatePayload(form, initial),
-    });
+    updateProvider.mutate(
+      {
+        id: providerId,
+        ...buildUpdatePayload(form, initial),
+      },
+      { onSuccess: () => navigate(SUPER_ADMIN_PATHS.authProviders) },
+    );
   };
 
   return (
@@ -276,6 +279,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           rows={3}
           showOptionalTag
         />
+        <SettingsSwitch
+          testId="super-admin-auth-provider-enabled"
+          isToggled={form.enabled}
+          onToggle={(value) => setForm((prev) => ({ ...prev, enabled: value }))}
+        >
+          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ENABLED)}
+        </SettingsSwitch>
         <SettingsSwitch
           testId="super-admin-auth-provider-allow-registration"
           isToggled={form.allowRegistration}
@@ -441,6 +451,18 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
             >
               {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT)}
             </p>
+            <SettingsInput
+              testId="super-admin-auth-provider-named-secret"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET)}
+              type="text"
+              value={form.namedSecret}
+              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET_HINT)}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, namedSecret: value }))
+              }
+              showOptionalTag
+              autoComplete="off"
+            />
           </>
         ) : null}
         {form.kind === KIND_SAML ? (
@@ -618,24 +640,15 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
           </>
         ) : null}
       </div>
-      <div className="flex gap-2">
-        <BrandButton
-          testId="super-admin-auth-provider-form-submit"
-          type="submit"
-          variant="primary"
-          isDisabled={!canSubmit || !isDirty || updateProvider.isPending}
-        >
-          {t(I18nKey.SETTINGS$SAVE_CHANGES)}
-        </BrandButton>
-        <BrandButton
-          testId="super-admin-auth-provider-form-cancel"
-          type="button"
-          variant="secondary"
-          onClick={() => navigate(SUPER_ADMIN_PATHS.authProviders)}
-        >
-          {t(I18nKey.BUTTON$CANCEL)}
-        </BrandButton>
-      </div>
+      <BrandButton
+        testId="super-admin-auth-provider-form-submit"
+        type="submit"
+        variant="primary"
+        className="self-start"
+        isDisabled={!canSubmit || !isDirty || updateProvider.isPending}
+      >
+        {t(I18nKey.SETTINGS$SAVE_CHANGES)}
+      </BrandButton>
     </form>
   );
 }

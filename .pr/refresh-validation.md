@@ -1,6 +1,13 @@
-# PR #763 refresh — October 23, 2026
+# PR #763 validation
 
-## Current published candidate: SDK 1.58
+## Current candidate: October 27 review fixes
+
+See [review fixes and current evidence](review-fixes.md). This candidate includes
+main at `e410f7acb1c33713f7d452daa90fc042c487eca4`, SDK 1.58.1 and migration 199.
+It restores the sandbox security prompt and default model switching while
+preserving profile tool restrictions. Results below describe earlier candidates.
+
+## Earlier published candidate: SDK 1.58
 
 Before publication, main advanced to `eadd43d1d59e349b2a8a95717cc4d348aacc55fd`.
 The two new commits (SDK 1.58 and auth-provider help text) were merged, retaining

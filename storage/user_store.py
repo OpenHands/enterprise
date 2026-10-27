@@ -79,12 +79,8 @@ class UserStore:
         user_id: str,
         user_info: dict,
         role_id: Optional[int] = None,
-        allow_match_by_email: bool = False,
     ) -> User | None:
         """Create a new user.
-
-        ``allow_match_by_email`` sets the initial value of the one-time
-        ``User.allow_match_by_email`` identity-seeding flag.
 
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
@@ -184,7 +180,6 @@ class UserStore:
                 id=user_uuid,
                 current_org_id=org.id,
                 role_id=role_id,
-                allow_match_by_email=allow_match_by_email,
                 **user_kwargs,
             )
             user.email = user_info.get('email')
@@ -842,50 +837,11 @@ class UserStore:
                 await UserStore._release_user_creation_lock(user_id)
 
     @staticmethod
-    async def get_user_by_email_opted_in(email: str) -> Optional[User]:
-        """Get a user by email who has opted in to one-time email-match seeding.
+    async def count_users_with_email(email: str) -> int:
+        """Count users whose ``email`` matches (normalized).
 
-        Filters on ``User.email == email.lower().strip()``,
-        ``User.allow_match_by_email == True`` AND ``User.email_verified == True``.
-        Returns the matched ``User`` or ``None``.
-
-        Only verified emails match: an unverified ``User.email`` is an address
-        nobody has proven they own, so binding a new IDP identity to it could
-        hand the address's real owner an account someone else registered.
-
-        Callers must guard against duplicates (see
-        :meth:`count_opted_in_users_with_email`): ``User.email`` has no unique
-        constraint, so more than one opted-in user can share an email. When the
-        count is > 1 the caller must refuse to auto-link and surface a
-        manual-resolution outcome instead of calling this method and picking
-        ``.first()``.
-        """
-        if not email:
-            return None
-
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(User)
-                .options(selectinload(User.org_members))
-                .filter(
-                    User.email == email.lower().strip(),
-                    User.allow_match_by_email.is_(True),
-                    User.email_verified.is_(True),
-                )
-            )
-            return result.scalars().first()
-
-    @staticmethod
-    async def count_opted_in_users_with_email(email: str) -> int:
-        """Count users with ``allow_match_by_email`` set and a verified ``email``.
-
-        Unverified rows are excluded so they can neither match nor block a
-        verified user's link with a spurious duplicate.
-
-        Defense-in-depth for the duplicate-email guard: ``User.email`` has no
-        unique constraint, so the bulk-set operation and the match-time check
-        both use this to refuse auto-linking when > 1 opted-in user has the
-        same email.
+        ``User.email`` has no unique constraint, so email-matching callers use
+        this to refuse to auto-link when more than one user shares the email.
         """
         if not email:
             return 0
@@ -894,80 +850,8 @@ class UserStore:
             return await session.scalar(
                 select(func.count())
                 .select_from(User)
-                .where(
-                    User.email == email.lower().strip(),
-                    User.allow_match_by_email.is_(True),
-                    User.email_verified.is_(True),
-                )
+                .where(User.email == email.lower().strip())
             )
-
-    @staticmethod
-    async def clear_allow_match_by_email(user_id: str) -> None:
-        """Self-clear the one-time ``allow_match_by_email`` flag.
-
-        Called after a successful email-match link so the seeding window is
-        exactly one login wide per user. Subsequent logins resolve via the
-        ``auth_provider_users`` ``sub`` lookup only.
-        """
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(User).filter(User.id == uuid.UUID(user_id))
-            )
-            user = result.scalars().first()
-            if user is None:
-                logger.warning(
-                    'clear_allow_match_by_email:user_not_found',
-                    extra={'user_id': user_id},
-                )
-                return
-            user.allow_match_by_email = False
-            await session.commit()
-            logger.info(
-                'clear_allow_match_by_email:cleared',
-                extra={'user_id': user_id},
-            )
-
-    @staticmethod
-    async def bulk_set_allow_match_by_email(value: bool = True) -> dict:
-        """Bulk-set ``allow_match_by_email`` on all users.
-
-        Used at the IDP swap-over moment by an operator. Returns a dict with
-        ``updated`` (count of rows touched) and ``duplicate_emails`` (a list of
-        emails that appear on more than one user row, so the operator can
-        resolve them before users log in).
-
-        The duplicate-email list is informational here (the match-time guard
-        in :meth:`get_user_by_email_opted_in` /
-        :meth:`count_opted_in_users_with_email` is the hard defense), but
-        surfacing it at bulk-set time lets an operator clean up *before* the
-        one-login-wide window opens.
-        """
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(User.email, func.count(User.id))
-                .where(User.email.isnot(None))
-                .group_by(User.email)
-                .having(func.count(User.id) > 1)
-            )
-            duplicate_emails = [row[0] for row in result.all()]
-
-            update_result = await session.execute(
-                sa.update(User).values(allow_match_by_email=value)
-            )
-            await session.commit()
-
-            logger.info(
-                'bulk_set_allow_match_by_email:done',
-                extra={
-                    'value': value,
-                    'updated': update_result.rowcount,
-                    'duplicate_email_count': len(duplicate_emails),
-                },
-            )
-            return {
-                'updated': update_result.rowcount,
-                'duplicate_emails': duplicate_emails,
-            }
 
     @staticmethod
     async def get_user_by_email(email: str) -> Optional[User]:

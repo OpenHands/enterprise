@@ -35,9 +35,9 @@ def main():
             )
             env.pop('STRIPE_API_KEY', None)
             for args, expected in (
-                (('upgrade', 'head'), '196'),
-                (('downgrade', '-1'), '195'),
-                (('upgrade', 'head'), '196'),
+                (('upgrade', 'head'), '199'),
+                (('downgrade', '-1'), '198'),
+                (('upgrade', 'head'), '199'),
             ):
                 result = subprocess.run(
                     [sys.executable, '-m', 'alembic', *args],

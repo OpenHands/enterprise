@@ -74,10 +74,13 @@ export function MarketplaceTable({
         >
           <colgroup>
             <col className="w-[17%]" />
-            <col className="w-[21%]" />
+            {/* Repository takes whatever width the sized columns leave. */}
+            <col />
             <col className="w-[15%]" />
             <col className="w-[15%]" />
-            <col className="w-[11%]" />
+            {/* Fixed so the widest scope badge ("Organization") plus cell
+                padding never spills under the Auto-Load toggle. */}
+            <col className="w-32" />
             <col className="w-[10%]" />
             <col className="w-[11%]" />
           </colgroup>

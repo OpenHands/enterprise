@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -102,6 +102,7 @@ from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
 )
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
@@ -153,7 +154,7 @@ from openhands.sdk.marketplace.registration import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
-from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 from openhands.sdk.settings import (
     ACPAgentSettings,
     OpenHandsAgentSettings,
@@ -162,8 +163,11 @@ from openhands.sdk.settings import (
 from openhands.sdk.subagent import get_registered_agent_definitions
 from openhands.sdk.tool import ClientToolSpec
 from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
+    launch_tool_specs,
+    resolve_tool_specs,
     selects_tool,
 )
 from openhands.sdk.utils.redact import (
@@ -172,7 +176,7 @@ from openhands.sdk.utils.redact import (
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.preset.default import get_default_tools, register_builtins_agents
+from openhands.tools.preset.default import register_builtins_agents
 from openhands.tools.preset.planning import (
     format_plan_structure,
     get_planning_tools,
@@ -438,6 +442,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     export_lock_refresh_interval_seconds: int = 30
     export_lock_required: bool | None = None
     enable_child_conversation_launcher: bool = False
+    # Deployment-configured default grouping strategy, used when a user/org
+    # has not set ``sandbox_grouping_strategy`` on their own settings. See
+    # ``_get_sandbox_grouping_strategy``.
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = None
 
     def _maybe_append_shallow_clone_context(
         self,
@@ -474,9 +482,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         )
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
-        """Get the sandbox grouping strategy from user settings."""
+        """Get the effective sandbox grouping strategy.
+
+        Precedence: the user/org-configured value from settings, else this
+        service's deployment-configured default (``self.sandbox_grouping_strategy``,
+        set via ``LiveStatusAppConversationServiceInjector``), else
+        ``NO_GROUPING``.
+        """
         user_info = await self.user_context.get_user_info()
-        return user_info.sandbox_grouping_strategy
+        return (
+            user_info.sandbox_grouping_strategy
+            or self.sandbox_grouping_strategy
+            or SandboxGroupingStrategy.NO_GROUPING
+        )
 
     async def search_app_conversations(
         self,
@@ -639,29 +657,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
-            await self._ensure_profile_runtime(
+            browser_available = await self._ensure_profile_runtime(
                 agent_server_url, sandbox.session_api_key
             )
 
             # Get the working dir
-            sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-                sandbox.sandbox_spec_id
+            sandbox_spec = (
+                await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+                    sandbox.sandbox_spec_id, sandbox_id
+                )
             )
-            if sandbox_spec is None:
-                # Runtime-api advertises only the current agent-server image, so a
-                # sandbox created before an image bump has no spec. Only
-                # ``working_dir`` is read from it, and the default shares it.
-                sandbox_spec = (
-                    await self.sandbox_spec_service.get_default_sandbox_spec()
-                )
-                _logger.warning(
-                    'Sandbox spec %s not found for sandbox %s; using default spec '
-                    '%s (working_dir=%s)',
-                    sandbox.sandbox_spec_id,
-                    sandbox_id,
-                    sandbox_spec.id,
-                    sandbox_spec.working_dir,
-                )
 
             # Set up conversation id
             conversation_id = request.conversation_id or uuid4()
@@ -734,6 +739,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     azure_devops_access_token=task._azure_devops_access_token,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
+                    browser_available=browser_available,
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
@@ -1432,15 +1438,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
         return agent_server_url
 
-    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> None:
-        """Require a runtime that supports the resolved settings contract."""
+    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> bool:
+        """Require a compatible runtime and return its browser availability."""
         response = await self.httpx_client.get(
             f'{url}/server_info',
             headers={'X-Session-API-Key': api_key} if api_key else {},
             timeout=self.sandbox_startup_timeout,
         )
         response.raise_for_status()
-        reported = response.json().get('sdk_version')
+        info = response.json()
+        reported = info.get('sdk_version')
         try:
             compatible = isinstance(reported, str) and Version(reported) >= Version(
                 '1.54.0'
@@ -1452,6 +1459,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'This sandbox requires openhands-sdk >=1.54.0 for Agent Profiles. '
                 'Upgrade its image and start a new sandbox; existing conversations remain readable.'
             )
+
+        return BROWSER_TOOL_NAME in info.get('usable_tools', [])
 
     def _inherit_configuration_from_parent(
         self, request: AppConversationStartRequest, parent_info: AppConversationInfo
@@ -1554,48 +1563,90 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             Dictionary of secrets for the conversation
         """
         secrets = await self.user_context.get_secrets()
+        secrets.update(
+            await self._get_provider_token_secrets(user, self._secret_lookup_url())
+        )
+        return secrets
 
-        # Get all provider tokens from user authentication
+    def _secret_lookup_url(self) -> str | None:
+        """The webhook secrets URL, when the sandbox can call back to it."""
+        if not self.web_url:
+            return None
+        if isinstance(self.sandbox_service, RemoteSandboxService) and (
+            urlparse(self.web_url).hostname in ('localhost', '127.0.0.1')
+        ):
+            return None
+        return self.web_url + '/api/v1/webhooks/secrets'
+
+    async def _get_provider_token_secrets(
+        self, user: UserInfo, lookup_url: str | None
+    ) -> dict[str, SecretSource]:
+        """Secrets carrying the user's git provider and OAuth tokens.
+
+        With named OAuth secrets in use, each linked provider's token is
+        exposed under its ``named_secret``; ``<PROVIDER_TYPE>_TOKEN`` remains
+        only for provider types the user has no OAuth v2 token for. Each is a
+        ``LookupSecret`` against ``lookup_url``, or a ``StaticSecret`` holding
+        the current token (which then never refreshes) when it is ``None``.
+        """
+        secrets: dict[str, SecretSource] = {}
         provider_tokens = cast(
             PROVIDER_TOKEN_TYPE | None,
             await self.user_context.get_provider_tokens(),
         )
-        if provider_tokens:
-            # Create secrets for each provider token
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
+        named_oauth_secrets = await self.user_context.get_named_oauth_secrets()
 
-                secret_name = f'{provider_type.name}_TOKEN'
-                description = f'{provider_type.name} authentication token'
+        for provider_type, provider_token in (provider_tokens or {}).items():
+            if not provider_token.token:
+                continue
+            if (
+                named_oauth_secrets is not None
+                and provider_type in named_oauth_secrets.linked_provider_types
+            ):
+                continue
+            secret_name = f'{provider_type.name}_TOKEN'
+            description = f'{provider_type.name} authentication token'
+            if lookup_url:
+                secrets[secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'provider_type': provider_type.value},
+                    description,
+                )
+                continue
+            static_token = await self.user_context.get_latest_token(provider_type)
+            if static_token:
+                secrets[secret_name] = StaticSecret(
+                    value=SecretStr(static_token), description=description
+                )
 
-                if self.web_url:
-                    # Create an access token for web-based authentication
-                    access_token = self.jwt_service.create_jws_token(
-                        payload={
-                            'user_id': user.id,
-                            'provider_type': provider_type.value,
-                        },
-                        expires_in=self.access_token_hard_timeout,
-                    )
-                    headers = {'X-Access-Token': access_token}
-
-                    secrets[secret_name] = LookupSecret(
-                        url=self.web_url + '/api/v1/webhooks/secrets',
-                        headers=headers,
-                        description=description,
-                    )
-                else:
-                    # Use static token for environments without web URL access
-                    static_token = await self.user_context.get_latest_token(
-                        provider_type
-                    )
-                    if static_token:
-                        secrets[secret_name] = StaticSecret(
-                            value=SecretStr(static_token), description=description
-                        )
-
+        for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
+            if lookup_url:
+                secrets[named.secret_name] = self._lookup_secret(
+                    lookup_url,
+                    {'user_id': user.id, 'oauth_provider_id': named.oauth_provider_id},
+                    named.description,
+                )
+                continue
+            value = await self.user_context.get_named_oauth_secret_value(
+                named.oauth_provider_id
+            )
+            if value:
+                secrets[named.secret_name] = StaticSecret(
+                    value=SecretStr(value), description=named.description
+                )
         return secrets
+
+    def _lookup_secret(
+        self, lookup_url: str, payload: dict[str, Any], description: str
+    ) -> LookupSecret:
+        access_token = self.jwt_service.create_jws_token(
+            payload=payload, expires_in=self.access_token_hard_timeout
+        )
+        return LookupSecret(
+            url=lookup_url,
+            headers={'X-Access-Token': access_token},
+            description=description,
+        )
 
     async def _setup_conversation_secrets(
         self,
@@ -2359,6 +2410,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
+        browser_available: bool = True,
     ) -> StartConversationRequest:
         """Build a scoped request for runtime finalization."""
         llm_settings = (
@@ -2523,7 +2575,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             tools = get_planning_tools(plan_path=plan_path)
             tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
-        register_builtins_agents(enable_browser=True)
+        register_builtins_agents(enable_browser=browser_available)
         if tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME):
             agent_definitions = list(get_registered_agent_definitions())
         if (
@@ -2545,7 +2597,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     conversation_id,
                 )
             else:
-                tools = get_default_tools(enable_browser=True)
+                tools = resolve_tool_specs(None, enable_browser=browser_available)
                 tools.append(
                     Tool(
                         name=StartChildConversationTool.name,
@@ -2579,7 +2631,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
-                'tools': tools,
+                'tools': launch_tool_specs(tools, browser_available=browser_available),
                 'mcp_config': mcp_config if mcp_config else {},
                 'agent_context': resolved_context.model_copy(
                     update=agent_context_update
@@ -2608,19 +2660,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 }
             )
-        agent = None
-        if agent_type == AgentType.PLAN or system_prompt is not None:
-            # The SDK settings wire format cannot carry planning presets or raw prompts.
-            agent = self._apply_server_agent_overrides(
-                configured_agent_settings.create_agent(),
-                agent_type,
-                conversation_id,
-                user.id,
-                repo_name=selected_repository,
-                git_provider=git_provider,
-                selected_branch=selected_branch,
-                system_prompt=system_prompt,
-            )
+        # SDK settings cannot carry the sandbox prompt flag or planning presets.
+        agent = self._apply_server_agent_overrides(
+            configured_agent_settings.create_agent(),
+            agent_type,
+            conversation_id,
+            user.id,
+            repo_name=selected_repository,
+            git_provider=git_provider,
+            selected_branch=selected_branch,
+            system_prompt=system_prompt,
+        )
 
         # --- hooks (require remote workspace; must precede request build) -----
         hook_config: HookConfig | None = None
@@ -2710,13 +2760,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         create_kwargs: dict[str, Any] = {
             'user_id': user.id,
             'secrets': secrets,
+            'agent': agent,
         }
-        if agent is not None:
-            create_kwargs['agent'] = agent
-        else:
-            create_kwargs['agent_settings'] = configured_agent_settings.model_dump(
-                mode='json', context={'expose_secrets': True}
-            )
         if client_tools:
             create_kwargs['client_tools'] = client_tools
         title_llm_profile = _resolve_title_llm_profile(user, llm.model)
@@ -2822,21 +2867,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Use raw custom secrets, static git provider tokens, and static
         # integration-scoped secrets for ACP conversations.
         secrets: dict = await self.user_context.get_secrets()
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
-        if provider_tokens:
-            for provider_type, provider_token in provider_tokens.items():
-                if not provider_token.token:
-                    continue
-                secret_name = f'{provider_type.name}_TOKEN'
-                static_token = await self.user_context.get_latest_token(provider_type)
-                if static_token:
-                    secrets[secret_name] = StaticSecret(
-                        value=SecretStr(static_token),
-                        description=f'{provider_type.name} authentication token',
-                    )
+        secrets.update(await self._get_provider_token_secrets(user, lookup_url=None))
 
         enrichment = await self.conversation_secret_enricher.enrich(
             user_context=self.user_context,
@@ -3608,6 +3639,14 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
             'SAAS mode and best-effort elsewhere.'
         ),
     )
+    sandbox_grouping_strategy: SandboxGroupingStrategy | None = Field(
+        default=None,
+        description=(
+            'Deployment-wide default sandbox grouping strategy, used when a '
+            'user/org has not explicitly configured one. Falls back to '
+            'NO_GROUPING when unset.'
+        ),
+    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -3692,6 +3731,7 @@ class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
                 access_token_hard_timeout=access_token_hard_timeout,
                 conversation_secret_enricher=conversation_secret_enricher,
                 app_mode=app_mode,
+                sandbox_grouping_strategy=self.sandbox_grouping_strategy,
                 export_max_events=self.export_max_events,
                 export_lock_ttl_seconds=self.export_lock_ttl_seconds,
                 export_lock_refresh_interval_seconds=(
