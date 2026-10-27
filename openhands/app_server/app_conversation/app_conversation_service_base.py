@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 from uuid import UUID
 
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
+
 if TYPE_CHECKING:
     import httpx
 
@@ -323,7 +325,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
     async def _load_skills_and_update_agent(
         self,
         sandbox: SandboxInfo,
-        agent: Agent,
+        agent: Agent | OpenHandsAgentSettings | ACPAgentSettings,
         remote_workspace: AsyncRemoteWorkspace,
         selected_repository: str | None,
         project_dir: str,

@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import HTTPException, Request, status
+from packaging.version import InvalidVersion, Version
 from pydantic import Field, SecretStr, TypeAdapter
 
 from openhands.agent_server.models import (
@@ -144,7 +145,7 @@ from openhands.app_server.utils.redis_lock import (
     refresh_lock_periodically,
     try_acquire_redis_lock,
 )
-from openhands.sdk import Agent, AgentContext, LocalWorkspace
+from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -153,22 +154,30 @@ from openhands.sdk.marketplace.registration import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
+from openhands.sdk.profiles import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec, Tool
-from openhands.sdk.tool.builtins import SwitchLLMTool
-from openhands.sdk.tool.defaults import selects_tool
+from openhands.sdk.tool import ClientToolSpec
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    launch_tool_specs,
+    resolve_tool_specs,
+    selects_tool,
+)
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
     sanitize_config,
 )
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from openhands.tools.preset.default import (
-    get_default_tools,
-    register_builtins_agents,
-)
+from openhands.tools.preset.default import register_builtins_agents
 from openhands.tools.preset.planning import (
     format_plan_structure,
     get_planning_tools,
@@ -382,6 +391,33 @@ def _to_sdk_marketplace_registrations(
         )
         for registration in registrations
     ]
+
+
+def _apply_profile_secret_scope(
+    secrets: dict[str, Any],
+    user: UserInfo,
+) -> dict[str, Any]:
+    """Filter secrets by the resolved profile allow-list."""
+    refs = getattr(user, 'active_agent_profile_secret_refs', None)
+    if refs is None:
+        return secrets
+    allowed = set(refs)
+    dropped = sorted(set(secrets) - allowed)
+    if dropped:
+        _logger.info(
+            'agent_profile_secret_scope:filtered',
+            extra={'dropped_secret_names': dropped},
+        )
+    return {name: value for name, value in secrets.items() if name in allowed}
+
+
+def _compose_system_message_suffix(
+    profile_suffix: str | None,
+    runtime_suffix: str | None,
+) -> str | None:
+    """Append serving context to the profile suffix."""
+    parts = [part for part in (profile_suffix, runtime_suffix) if part]
+    return '\n\n'.join(parts) if parts else None
 
 
 @dataclass
@@ -628,6 +664,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
+            browser_available = await self._ensure_profile_runtime(
+                agent_server_url, sandbox.session_api_key
+            )
 
             # Get the working dir
             sandbox_spec = (
@@ -707,6 +746,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     azure_devops_access_token=task._azure_devops_access_token,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
+                    browser_available=browser_available,
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
@@ -767,6 +807,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # ``agent`` is the source of truth here): the response echoes
             # the same agent back through the AgentBase discriminator.
             request_agent = start_conversation_request.agent
+            if request_agent is None:
+                request_agent = info.agent
             tags: dict[str, str] = {}
             # Pin where the workspace was actually created so the delete-time
             # archive captures the right directory without re-deriving the path
@@ -1403,20 +1445,41 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
         return agent_server_url
 
+    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> bool:
+        """Require a compatible runtime and return its browser availability."""
+        response = await self.httpx_client.get(
+            f'{url}/server_info',
+            headers={'X-Session-API-Key': api_key} if api_key else {},
+            timeout=self.sandbox_startup_timeout,
+        )
+        response.raise_for_status()
+        info = response.json()
+        reported = info.get('sdk_version')
+        try:
+            compatible = isinstance(reported, str) and Version(reported) >= Version(
+                '1.54.0'
+            )
+        except InvalidVersion:
+            compatible = False
+        if not compatible:
+            raise SandboxError(
+                'This sandbox requires openhands-sdk >=1.54.0 for Agent Profiles. '
+                'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+            )
+
+        return BROWSER_TOOL_NAME in info.get('usable_tools', [])
+
     def _inherit_configuration_from_parent(
         self, request: AppConversationStartRequest, parent_info: AppConversationInfo
     ) -> None:
-        """Inherit configuration from parent conversation if not explicitly provided.
+        """Inherit parent settings unless the request overrides them."""
+        inherit_profile = request.agent_profile_id is None
+        parent_profile = parent_info.launched_agent_profile
+        if request.agent_profile_id is None and isinstance(
+            parent_profile, LaunchedAgentProfile
+        ):
+            request.agent_profile_id = str(parent_profile.agent_profile_id)
 
-        This ensures sub-conversations automatically inherit:
-        - Sandbox ID (to share the same workspace/environment)
-        - Git parameters (repository, branch, provider)
-        - LLM model
-
-        Args:
-            request: The conversation start request to modify
-            parent_info: The parent conversation info to inherit from
-        """
         # Inherit sandbox_id from parent to share the same workspace/environment
         if not request.sandbox_id:
             request.sandbox_id = parent_info.sandbox_id
@@ -1430,7 +1493,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             request.git_provider = parent_info.git_provider
 
         # Inherit LLM model from parent if not provided
-        if not request.llm_model and parent_info.llm_model:
+        if inherit_profile and not request.llm_model and parent_info.llm_model:
             request.llm_model = parent_info.llm_model
 
     def _apply_default_trigger(self, request: AppConversationStartRequest) -> None:
@@ -2354,50 +2417,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
+        browser_available: bool = True,
     ) -> StartConversationRequest:
-        """Build a complete StartConversationRequest for a user.
-
-        Resolves LLM, MCP, tools, secrets and agent context, then
-        builds the ``Agent`` via ``AgentSettings.create_agent()``.
-        Server-only overrides (system prompts, LLM tracing metadata,
-        skills, hooks) are applied to the agent after creation.
-        Finally delegates to ``ConversationSettings.create_request()``.
-
-        For ACP agent settings, routes to ``_build_acp_start_conversation_request``.
-
-        Args:
-            user: Resolved launch view (Agent Profile applied)
-            sandbox: Sandbox information
-            conversation_id: Unique conversation identifier
-            initial_message: Optional initial message to send
-            system_message_suffix: Optional suffix for system message
-            git_provider: Optional git provider type
-            working_dir: Working directory path
-            agent_type: Type of agent (DEFAULT or PLAN)
-            llm_model: Optional specific LLM model to use
-            trigger: Optional conversation trigger.
-            remote_workspace: Optional remote workspace instance
-            selected_repository: Optional repository name
-            selected_branch: Optional selected branch name
-            plugins: Optional list of plugins to load
-            client_tools: Optional client-defined tools to register with the runtime.
-            api_secrets: Optional secrets passed directly via the API.
-                These are merged with existing secrets (from database
-                and git providers), with API-provided secrets taking
-                precedence.
-            system_prompt: Optional inline system prompt that replaces the
-                built-in static system prompt verbatim. Ignored (with a
-                warning) for ACP agents, which own their own prompt.
-            disabled_skills: Optional per-request skill deny-list, unioned
-                with the member's and launched profile's deny-lists.
-            request_observability_metadata: Optional caller-provided trace metadata to
-                merge with app-server conversation metadata.
-            request_observability_tags: Optional caller-provided tags to append to the
-                conversation root observability span.
-            request_observability_span_name: Optional named child span to emit
-                under the conversation root.
-        """
-        llm_settings = getattr(user.agent_settings, 'llm', None)
+        """Build a scoped request for runtime finalization."""
+        llm_settings = (
+            None
+            if isinstance(user.agent_settings, ACPAgentSettings)
+            else user.agent_settings.llm
+        )
         _logger.debug(
             'managed_llm_key_refresh:build_request_context',
             extra={
@@ -2503,6 +2530,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
         )
@@ -2541,108 +2571,105 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             else:
                 effective_suffix = web_host_context
 
-        # --- tools ----------------------------------------------------------
         agent_definitions: list[Any] = []
-        if agent_type == AgentType.PLAN:
-            plan_path = None
-            if project_dir:
-                plan_path = self._compute_plan_path(project_dir, git_provider)
+        selected_tools = user.agent_settings.tools
+        tools = selected_tools
+        if agent_type == AgentType.PLAN and selected_tools is None:
+            plan_path = (
+                self._compute_plan_path(project_dir, git_provider)
+                if project_dir
+                else None
+            )
             tools = get_planning_tools(plan_path=plan_path)
-        else:
-            register_builtins_agents(enable_browser=True)
-            # Sub-agents are on when the saved tools include the task tool set,
-            # as the SDK's retired ``enable_sub_agents`` property decided.
-            enable_sub_agents = user.agent_settings.tools is not None and selects_tool(
-                user.agent_settings.tools, SUB_AGENT_TOOL_NAME
-            )
-            tools = get_default_tools(
-                enable_browser=True,
-                enable_sub_agents=enable_sub_agents,
-            )
-            if enable_sub_agents:
-                agent_definitions = list(get_registered_agent_definitions())
-            if self.enable_child_conversation_launcher and self.web_url:
-                # Server-side child launches: the tool runs inside the sandbox
-                # and calls back into this app server, which provisions the
-                # child through the normal lifecycle (see
-                # child_conversation_router). Gated because every sandbox
-                # image must carry the tool before it is attached, and Agent
-                # Canvas must know how to treat server-launched children on
-                # Cloud. Imported here: the pinned openhands-sdk may predate
-                # the tool, in which case the launcher is skipped.
-                try:
-                    from openhands.tools.child_conversation import (
-                        StartChildConversationTool,
+            tools.append(Tool(name=SWITCH_LLM_TOOL_NAME))
+        register_builtins_agents(enable_browser=browser_available)
+        if tools is not None and selects_tool(tools, SUB_AGENT_TOOL_NAME):
+            agent_definitions = list(get_registered_agent_definitions())
+        if (
+            selected_tools is None
+            and agent_type != AgentType.PLAN
+            and self.enable_child_conversation_launcher
+            and self.web_url
+        ):
+            # Add the optional launcher only to the default toolset.
+            try:
+                from openhands.tools.child_conversation import (
+                    StartChildConversationTool,
+                )
+            except ImportError:
+                _logger.warning(
+                    'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
+                    'openhands-sdk has no start_child_conversation tool; '
+                    'conversation %s starts without it',
+                    conversation_id,
+                )
+            else:
+                tools = resolve_tool_specs(None, enable_browser=browser_available)
+                tools.append(
+                    Tool(
+                        name=StartChildConversationTool.name,
+                        params={
+                            'launch_url': (
+                                f'{self.web_url}/api/v1/webhooks/'
+                                f'conversations/{conversation_id}/children'
+                            )
+                        },
                     )
-                except ImportError:
-                    _logger.warning(
-                        'OH_ENABLE_CHILD_CONVERSATION_LAUNCHER is set but this '
-                        'openhands-sdk has no start_child_conversation tool; '
-                        'conversation %s starts without it',
-                        conversation_id,
-                    )
-                else:
-                    tools.append(
-                        Tool(
-                            name=StartChildConversationTool.name,
-                            params={
-                                'launch_url': (
-                                    f'{self.web_url}/api/v1/webhooks/'
-                                    f'conversations/{conversation_id}/children'
-                                )
-                            },
-                        )
-                    )
+                )
 
         # --- build AgentSettings and create agent ---------------------------
+        resolved_context = user.agent_settings.agent_context or AgentContext()
         # When enterprise persistent memory is enabled, stamp load_memory=True
         # so the SDK's LocalConversation reads MEMORY.md from disk at session
         # start. The memory file itself is written to the sandbox by
         # maybe_inject_memory_context() in run_setup_scripts.
-        agent_context_kwargs: dict[str, Any] = {
-            'system_message_suffix': effective_suffix,
-            'secrets': secrets,
+        agent_context_update: dict[str, Any] = {
+            'system_message_suffix': _compose_system_message_suffix(
+                resolved_context.system_message_suffix,
+                effective_suffix,
+            ),
+            'secrets': None,
             'registered_marketplaces': _to_sdk_marketplace_registrations(
                 registered_marketplaces
             ),
         }
         if getattr(user, 'enable_memory_context', False):
-            agent_context_kwargs['load_memory'] = True
+            agent_context_update['load_memory'] = True
         configured_agent_settings = user.agent_settings.model_copy(
             update={
                 'llm': llm,
-                'tools': tools,
+                'tools': launch_tool_specs(tools, browser_available=browser_available),
                 'mcp_config': mcp_config if mcp_config else {},
-                'agent_context': AgentContext(**agent_context_kwargs),
+                'agent_context': resolved_context.model_copy(
+                    update=agent_context_update
+                ),
             }
         )
-        agent = configured_agent_settings.create_agent()
-
-        # SaaS profiles live on the user/org record, not the sandbox
-        # filesystem, so we attach the agent's built-in switch_llm tool
-        # ourselves rather than relying on create_agent()'s gating. Enabled
-        # whenever there are at least two valid saved profiles (a switch needs
-        # a target).
-        valid_profile_names = [
-            name
-            for name in user.llm_profiles.profiles
-            if PROFILE_NAME_REGEX.match(name)
-        ]
-        if (
-            len(valid_profile_names) >= 2
-            and SwitchLLMTool.__name__ not in agent.include_default_tools
-        ):
-            agent = agent.model_copy(
+        if should_set_litellm_extra_body(llm.model):
+            configured_agent_settings = configured_agent_settings.model_copy(
                 update={
-                    'include_default_tools': [
-                        *agent.include_default_tools,
-                        SwitchLLMTool.__name__,
-                    ]
+                    'llm': llm.model_copy(
+                        update={
+                            'litellm_extra_body': {
+                                'metadata': get_llm_metadata(
+                                    model_name=llm.model,
+                                    llm_type=llm.usage_id or 'agent',
+                                    conversation_id=conversation_id,
+                                    user_id=user.id,
+                                    repo_name=selected_repository,
+                                    git_provider=git_provider.value
+                                    if git_provider
+                                    else None,
+                                    selected_branch=selected_branch,
+                                )
+                            }
+                        }
+                    )
                 }
             )
-
+        # SDK settings cannot carry the sandbox prompt flag or planning presets.
         agent = self._apply_server_agent_overrides(
-            agent,
+            configured_agent_settings.create_agent(),
             agent_type,
             conversation_id,
             user.id,
@@ -2737,7 +2764,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             observability_metadata,
             {'user_email': user_email},
         )
-        create_kwargs: dict[str, Any] = {'agent': agent, 'user_id': user.id}
+        create_kwargs: dict[str, Any] = {
+            'user_id': user.id,
+            'secrets': secrets,
+            'agent': agent,
+        }
         if client_tools:
             create_kwargs['client_tools'] = client_tools
         title_llm_profile = _resolve_title_llm_profile(user, llm.model)
@@ -2787,25 +2818,27 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         disabled_skills: list[str] | None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
     ) -> StartConversationRequest:
-        """Load workspace skills onto a conversation request's agent.
-
-        Used by both the LLM and ACP arms of
-        ``_build_start_conversation_request_for_user`` so that skill-loading
-        semantics only need to change in one place.
-        """
+        """Load workspace skills into the launch source."""
         try:
-            updated_agent = await self._load_skills_and_update_agent(
+            field = 'agent' if request.agent is not None else 'agent_settings'
+            source = request.agent or validate_agent_settings(request.agent_settings)
+            updated = await self._load_skills_and_update_agent(
                 sandbox,
-                request.agent,
+                source,
                 remote_workspace,
                 selected_repository,
                 project_dir,
                 disabled_skills=disabled_skills,
                 registered_marketplaces=registered_marketplaces,
             )
-            return request.model_copy(update={'agent': updated_agent})
-        except Exception as e:
-            _logger.warning(f'Failed to load skills: {e}', exc_info=True)
+            payload = (
+                updated
+                if field == 'agent'
+                else updated.model_dump(mode='json', context={'expose_secrets': True})
+            )
+            return request.model_copy(update={field: payload})
+        except Exception as exc:
+            _logger.warning('Failed to load skills: %s', type(exc).__name__)
             return request
 
     async def _build_acp_start_conversation_request(
@@ -2829,42 +2862,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
     ) -> StartConversationRequest:
-        """Build a StartConversationRequest for ACP agent conversations.
-
-        User secrets (Secrets panel + git provider tokens) flow through
-        ``request.secrets`` — the canonical cipher-protected wire channel.
-        In SaaS mode each secret is a ``LookupSecret`` pointing at
-        ``/api/v1/webhooks/custom-secret`` with a per-secret scoped JWT, so
-        values are never materialised in this process.  In OSS mode (no
-        ``web_url``) they remain ``StaticSecret``.  Secrets are passed
-        directly as ``secrets=`` to ``create_request()``; no ``AgentContext``
-        relay is needed (software-agent-sdk #3464;
-        OpenHands/agent-canvas#1039).
-
-        Args:
-            user: Resolved launch view (Agent Profile applied)
-            sandbox: Sandbox information
-            conversation_id: Unique conversation identifier
-            initial_message: Optional initial message to send
-            working_dir: Working directory path
-            system_message_suffix: Optional suffix for system message.
-            trigger: Optional conversation trigger.
-            git_provider: Optional git provider type
-            selected_repository: Optional repository name
-            selected_branch: Optional selected branch name
-            remote_workspace: Optional remote workspace instance, used to
-                resolve the HEAD commit for the Laminar trace metadata.
-            plugins: Optional list of plugins to load
-            registered_marketplaces: Optional marketplace registrations for
-                plugin resolution and runtime loading.
-            api_secrets: Optional secrets passed directly via the API.
-            request_observability_metadata: Optional caller-provided trace metadata to
-                merge with app-server conversation metadata.
-            request_observability_tags: Optional caller-provided tags to append to the
-                conversation root observability span.
-            request_observability_span_name: Optional named child span to emit
-                under the conversation root.
-        """
+        """Build a scoped ACP settings request for runtime finalization."""
         project_dir = get_project_dir(working_dir, selected_repository)
         workspace = LocalWorkspace(working_dir=project_dir)
 
@@ -2910,6 +2908,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     )
                 secrets[name] = StaticSecret(value=value)
 
+        secrets = _apply_profile_secret_scope(secrets, user)
+        # Setup already wrote this credential-helper token to the sandbox.
+        # Keep it registered for output masking even with a scoped profile.
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
         )
@@ -2943,7 +2944,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             settings_update['mcp_config'] = acp_mcp_servers
         context_updates: dict[str, Any] = {}
         if system_message_suffix:
-            context_updates['system_message_suffix'] = system_message_suffix
+            context_updates['system_message_suffix'] = _compose_system_message_suffix(
+                acp_settings.agent_context.system_message_suffix
+                if acp_settings.agent_context
+                else None,
+                system_message_suffix,
+            )
         if registered_marketplaces is not None:
             context_updates['registered_marketplaces'] = (
                 _to_sdk_marketplace_registrations(registered_marketplaces)
@@ -2954,7 +2960,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 update=context_updates
             )
         acp_settings_for_agent = acp_settings.model_copy(update=settings_update)
-        acp_agent = acp_settings_for_agent.create_agent()
 
         sdk_plugins: list[PluginSource] | None = None
         if plugins:
@@ -3010,7 +3015,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             {'user_email': user_email},
         )
         create_kwargs: dict[str, Any] = {
-            'agent': acp_agent,
+            'agent_settings': acp_settings_for_agent.model_dump(
+                mode='json', context={'expose_secrets': True}
+            ),
             'user_id': user.id,
             'secrets': secrets,
         }

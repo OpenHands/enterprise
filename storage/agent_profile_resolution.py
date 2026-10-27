@@ -15,13 +15,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.app_server.settings.agent_profiles import AgentProfiles
-from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.launch import AgentLaunchError, LaunchStores
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+)
 from openhands.sdk.mcp.config import MCPServer
+from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from storage.mcp_config import coerce_persisted_mcp_config
 
 if TYPE_CHECKING:
@@ -42,7 +47,9 @@ def load_agent_profiles(org: Org) -> AgentProfiles:
     try:
         return AgentProfiles.model_validate(org.agent_profiles)
     except ValidationError as exc:
-        logger.warning('Failed to load org agent profiles for %s: %s', org.id, exc)
+        logger.warning(
+            'Failed to load org agent profiles for %s: %s', org.id, type(exc).__name__
+        )
         return AgentProfiles()
 
 
@@ -63,7 +70,7 @@ def load_member_agent_profiles(member: OrgMember) -> AgentProfiles:
             'Failed to load personal agent profiles for member %s in org %s: %s',
             member.user_id,
             member.org_id,
-            exc,
+            type(exc).__name__,
         )
         return AgentProfiles()
 
@@ -96,7 +103,9 @@ def load_provider_connections(org: Org) -> ProviderConnections:
         return ProviderConnections()
 
 
-def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str, Any]:
+def apply_provider_connection(
+    org: Org, llm_payload: dict[str, Any], *, strict: bool = False
+) -> dict[str, Any]:
     """Overlay a linked provider connection's credentials onto an LLM payload.
 
     Read-at-use resolution for the settings load path: when ``llm_payload``
@@ -113,6 +122,10 @@ def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str
         return llm_payload
     connection = load_provider_connections(org).get(connection_id)
     if connection is None:
+        if strict:
+            raise AgentLaunchError(
+                'The LLM profile references a missing provider connection'
+            )
         logger.warning(
             'LLM settings reference missing provider connection %s on org %s',
             connection_id,
@@ -135,15 +148,56 @@ class OrgLLMProfileLoader:
     ``cipher`` arg is accepted for Protocol parity and ignored.
     """
 
-    def __init__(self, profiles: LLMProfiles) -> None:
+    def __init__(
+        self,
+        profiles: LLMProfiles,
+        *,
+        org: Org | None = None,
+        fallback_api_key: SecretStr | None = None,
+    ) -> None:
         self._profiles = profiles
+        self._org = org
+        self._fallback_api_key = fallback_api_key
 
     def load(self, name: str, *, cipher: Cipher | None = None) -> LLM:
         llm = self._profiles.get(name)
         if llm is None:
             # The resolver maps this to ProfileNotFound (HTTP 4xx).
             raise FileNotFoundError(f'LLM profile {name!r} not found')
+        if self._org is not None:
+            llm = resolve_profile_llm(
+                llm,
+                managed_proxy_url=LITE_LLM_API_URL,
+                fallback_api_key=self._fallback_api_key,
+            )
+            payload = canonicalize_bundled_proxy_llm(
+                canonicalize_openhands_llm_payload(
+                    llm.model_dump(mode='json', context={'expose_secrets': True})
+                )
+            )
+            llm = type(llm).model_validate(
+                apply_provider_connection(self._org, payload, strict=True)
+            )
         return llm
+
+
+def org_launch_stores(
+    org: Org,
+    mcp_config: dict[str, MCPServer],
+    *,
+    llm_profiles: LLMProfiles | None = None,
+    fallback_api_key: SecretStr | None = None,
+) -> LaunchStores:
+    """Adapt organization catalogs to the SDK launch resolver."""
+    profiles = llm_profiles if llm_profiles is not None else load_llm_profiles(org)
+    return LaunchStores(
+        llm_profiles=OrgLLMProfileLoader(
+            profiles, org=org, fallback_api_key=fallback_api_key
+        ),
+        llm_profile_names=lambda: list(profiles.profiles),
+        mcp_config=mcp_config,
+        skills=lambda: [],
+    )
 
 
 class OrgLLMProfileMutator:

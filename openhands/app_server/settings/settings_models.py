@@ -763,6 +763,7 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
         'llm_profiles',
         'active_agent_profile_id',
         'active_agent_profile_revision',
+        'active_agent_profile_secret_refs',
     ]
 )
 
@@ -831,6 +832,7 @@ class Settings(BaseModel):
     # None and ``store()`` refuses instances that carry them (no backing column).
     active_agent_profile_id: str | None = None
     active_agent_profile_revision: int | None = None
+    active_agent_profile_secret_refs: list[str] | None = None
 
     # True when this instance came from a resolve-requested load: its
     # agent_settings are the *effective* launch view (possibly an Agent
