@@ -31,6 +31,7 @@ from storage.mcp_config import coerce_persisted_mcp_config
 
 if TYPE_CHECKING:
     from openhands.sdk.llm import LLM
+    from openhands.sdk.profiles import AgentProfile
     from openhands.sdk.utils.cipher import Cipher
     from storage.org import Org
     from storage.org_member import OrgMember
@@ -73,6 +74,24 @@ def load_member_agent_profiles(member: OrgMember) -> AgentProfiles:
             type(exc).__name__,
         )
         return AgentProfiles()
+
+
+def locate_agent_profile(
+    org: Org, member: OrgMember, profile_id: str
+) -> tuple[AgentProfile, AgentProfileScope] | None:
+    """Find ``profile_id`` in the member's collection, then the org's.
+
+    Ids are UUIDs minted per save, so the order is only a tiebreak; it lets a
+    member pointer or a launch override reference either scope. Returns the
+    profile together with the scope it was found in, or ``None``.
+    """
+    personal = load_member_agent_profiles(member).profiles.get(profile_id)
+    if personal is not None:
+        return personal, 'personal'
+    shared = load_agent_profiles(org).profiles.get(profile_id)
+    if shared is not None:
+        return shared, 'org'
+    return None
 
 
 def load_llm_profiles(org: Org) -> LLMProfiles:

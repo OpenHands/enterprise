@@ -56,6 +56,7 @@ from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
     load_member_agent_profiles,
+    locate_agent_profile,
     org_launch_stores,
 )
 from storage.database import a_session_maker
@@ -650,6 +651,13 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
                 kwargs['active_agent_profile_secret_refs'] = resolved_secret_refs
+                # Which collection the launched profile came from, read by
+                # conversation-start's secrets setup: an org-scoped profile
+                # with an explicit list resolves it against the org-shared
+                # secrets only (OHE-3088).
+                located = locate_agent_profile(org, org_member, resolved_id)
+                if located is not None:
+                    kwargs['active_agent_profile_scope'] = located[1]
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
