@@ -321,10 +321,11 @@ async def delete_service_account(
     request: Request,
     user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
 ) -> Response:
-    """Delete a service account that owns no automation and no sandbox.
+    """Delete a service account that owns no automation, and its sandboxes.
 
-    409 while it owns an automation or a sandbox. 503 if the Automation
-    Service cannot be reached; retry.
+    409 while it owns an automation. Its sandboxes, paused ones included, are
+    deleted first. 503 if the Automation Service cannot be reached or a
+    sandbox could not be deleted; retry.
     """
     await _get_or_404(org_id, sa_id)
     if await _owns_automation(org_id, sa_id, request):
