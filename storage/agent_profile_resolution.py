@@ -176,7 +176,7 @@ def apply_provider_connection(
 
 
 def resolve_org_profile_llm(
-    org: Org,
+    org: Org | None,
     llm: LLM,
     *,
     fallback_api_key: SecretStr | None,
@@ -186,10 +186,12 @@ def resolve_org_profile_llm(
 
     Fills the provider-default ``base_url`` and the fallback key
     (``resolve_profile_llm``), canonicalizes bundled-proxy models, then applies
-    a linked provider connection, whose ``api_key`` and ``base_url`` win.
-    ``strict`` raises ``AgentLaunchError`` for a missing connection; otherwise
-    it is logged and the profile stays as resolved. Shared by agent-profile
-    launch (``OrgLLMProfileLoader``) and the ``/api/v1/users/me`` overlay.
+    a linked provider connection of ``org``, whose ``api_key`` and ``base_url``
+    win. Without an org there are no connections, so that last step is
+    skipped. ``strict`` raises ``AgentLaunchError`` for a missing connection;
+    otherwise it is logged and the profile stays as resolved. Shared by
+    agent-profile launch (``OrgLLMProfileLoader``) and the
+    ``/api/v1/users/me`` overlay.
     """
     resolved = resolve_profile_llm(
         llm,
@@ -201,9 +203,9 @@ def resolve_org_profile_llm(
             resolved.model_dump(mode='json', context={'expose_secrets': True})
         )
     )
-    return type(resolved).model_validate(
-        apply_provider_connection(org, payload, strict=strict)
-    )
+    if org is not None:
+        payload = apply_provider_connection(org, payload, strict=strict)
+    return type(resolved).model_validate(payload)
 
 
 class OrgLLMProfileLoader:

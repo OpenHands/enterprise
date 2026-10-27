@@ -27,13 +27,11 @@ from openhands.app_server.config import (
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
-from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 from storage.agent_profile_resolution import resolve_org_profile_llm
 from storage.org import Org
@@ -82,28 +80,20 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> N
     verbatim from this response's ``llm_profiles``, so without this overlay a
     profile-pinned run (e.g. SaaS automations) gets no usable credentials.
 
-    With the caller's org, each profile resolves as agent-profile launch does
+    Each profile resolves as agent-profile launch does
     (``resolve_org_profile_llm``): provider-default ``base_url``, the effective
     settings key for keyless profiles, and a linked provider connection's key
-    and ``base_url``. A missing connection is logged, not raised, so one bad
-    profile does not break the others. Without an org there is nothing to
-    link, so only the ``base_url`` and fallback key are resolved.
+    and ``base_url`` when the caller has an org. A missing connection is
+    logged, not raised, so one bad profile does not break the others.
     """
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
     fallback_api_key = getattr(settings_llm, 'api_key', None)
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
-        if org is None:
-            profiles[name] = resolve_profile_llm(
-                profile_llm,
-                managed_proxy_url=LITE_LLM_API_URL,
-                fallback_api_key=fallback_api_key,
-            )
-        else:
-            profiles[name] = resolve_org_profile_llm(
-                org, profile_llm, fallback_api_key=fallback_api_key
-            )
+        profiles[name] = resolve_org_profile_llm(
+            org, profile_llm, fallback_api_key=fallback_api_key
+        )
 
 
 @saas_users_v1_router.get('/me')
