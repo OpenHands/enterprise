@@ -5,6 +5,7 @@ import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { OptionalTag } from "#/components/features/settings/optional-tag";
+import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import { useServiceAccountSecrets } from "#/hooks/query/use-service-account-secrets";
 import {
   useDeleteServiceAccountSecret,
@@ -23,7 +24,7 @@ import {
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 
-/** `null` is "add a new secret"; a secret is "edit" (its value is replaced). */
+/** The open secret form: add a new secret, or edit one (its value is replaced). */
 type FormState =
   | { mode: "add" }
   | { mode: "edit"; secret: CustomSecretWithoutValue };
@@ -141,6 +142,26 @@ export function ServiceAccountSecrets({ saId }: { saId: string }) {
   const { mutate: deleteSecret, isPending: isDeleting } =
     useDeleteServiceAccountSecret(saId);
   const [form, setForm] = React.useState<FormState | null>(null);
+  // The secret waiting for delete confirmation. A value cannot be read back,
+  // so a delete asks first, as on the Secrets page.
+  const [pendingDelete, setPendingDelete] = React.useState<string | null>(null);
+  // The shared modal has no busy state: a second Confirm click must not send a
+  // second delete. A ref, because state updates land after the second click.
+  const deleteInFlight = React.useRef(false);
+
+  const onConfirmDelete = () => {
+    if (!pendingDelete || deleteInFlight.current) return;
+    deleteInFlight.current = true;
+    deleteSecret(
+      { name: pendingDelete },
+      {
+        onSettled: () => {
+          deleteInFlight.current = false;
+          setPendingDelete(null);
+        },
+      },
+    );
+  };
 
   return (
     <section className="flex flex-col gap-2">
@@ -216,7 +237,7 @@ export function ServiceAccountSecrets({ saId }: { saId: string }) {
                   })}
                   disabled={isDeleting}
                   className={settingsListIconActionButtonClassName}
-                  onClick={() => deleteSecret({ name: secret.name })}
+                  onClick={() => setPendingDelete(secret.name)}
                 >
                   <DeleteIcon width={16} height={16} />
                 </button>
@@ -224,6 +245,13 @@ export function ServiceAccountSecrets({ saId }: { saId: string }) {
             </li>
           ))}
         </ul>
+      )}
+      {pendingDelete && (
+        <ConfirmationModal
+          text={t(I18nKey.SECRETS$CONFIRM_DELETE_KEY)}
+          onConfirm={onConfirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
       )}
     </section>
   );

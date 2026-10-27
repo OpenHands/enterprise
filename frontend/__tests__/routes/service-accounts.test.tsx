@@ -304,6 +304,7 @@ describe("Service accounts route", () => {
         "delete-service-account-secret",
       ),
     );
+    await userEvent.click(await screen.findByTestId("confirm-button"));
     await waitFor(() => {
       expect(
         screen.queryByTestId("service-account-secret-item"),
@@ -431,7 +432,51 @@ describe("Service accounts route", () => {
     expect(posts).toBe(1);
   });
 
-  it("deletes a secret once when the button is clicked twice", async () => {
+  it("deletes a secret only after confirmation", async () => {
+    renderPage();
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "manage-service-account",
+      ),
+    );
+    await userEvent.click(
+      await screen.findByTestId("add-service-account-secret-button"),
+    );
+    await userEvent.type(
+      await screen.findByTestId("service-account-secret-name-input"),
+      "API_TOKEN",
+    );
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-value-input"),
+      "v",
+    );
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+    const deleteSecret = async () =>
+      userEvent.click(
+        within(
+          await screen.findByTestId("service-account-secret-item"),
+        ).getByTestId("delete-service-account-secret"),
+      );
+
+    // Cancel keeps the secret: its value cannot be read back.
+    await deleteSecret();
+    await userEvent.click(await screen.findByTestId("cancel-button"));
+    expect(
+      await screen.findByTestId("service-account-secret-item"),
+    ).toBeInTheDocument();
+
+    await deleteSecret();
+    await userEvent.click(await screen.findByTestId("confirm-button"));
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("service-account-secret-item"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("deletes a secret once when Confirm is clicked twice", async () => {
     let deletes = 0;
     server.use(
       http.delete(
@@ -468,11 +513,15 @@ describe("Service accounts route", () => {
     const deleteButton = await within(
       await screen.findByTestId("service-account-secret-item"),
     ).findByTestId("delete-service-account-secret");
+    await userEvent.click(deleteButton);
 
-    await userEvent.dblClick(deleteButton);
+    await userEvent.dblClick(await screen.findByTestId("confirm-button"));
 
-    // The request is done once the button is enabled again.
-    await waitFor(() => expect(deleteButton).toBeEnabled());
+    // The request is done once the modal has closed (it closes when the
+    // delete settles); this handler only counts, it keeps the secret.
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-button")).not.toBeInTheDocument(),
+    );
     expect(deletes).toBe(1);
   });
 
