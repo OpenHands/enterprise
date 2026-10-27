@@ -114,6 +114,25 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
     section: "personal",
   },
+  // OHE-3456: supersedes the Agent item once ``enable_agent_profiles_page``
+  // is on (``use-settings-nav-items.ts`` drops ``/settings/agent`` then).
+  {
+    icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agents",
+    text: "SETTINGS$NAV_AGENT_PROFILES",
+    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
+    section: "personal",
+  },
+  {
+    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agent-context",
+    text: "SETTINGS$AGENT_CONTEXT",
+    subtitle: "SETTINGS$PAGE_AGENT_CONTEXT_SUBLINE",
+    section: "personal",
+    // Persistent memory only applies to the OpenHands agent, as the inline
+    // section this page replaces did.
+    disabledByAcp: true,
+  },
   {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",

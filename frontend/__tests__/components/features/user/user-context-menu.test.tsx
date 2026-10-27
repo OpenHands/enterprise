@@ -213,6 +213,13 @@ describe("UserContextMenu", () => {
       "/settings/condenser",
       "/settings/verification",
     ]);
+    // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
+    // until enable_agent_context_page / enable_agent_profiles_page are on,
+    // and this config leaves both off.
+    const flagGatedPaths = new Set([
+      "/settings/agent-context",
+      "/settings/agents",
+    ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
@@ -223,7 +230,8 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/budgets" &&
         item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
-        !personalLlmPaths.has(item.to),
+        !personalLlmPaths.has(item.to) &&
+        !flagGatedPaths.has(item.to),
     );
 
     await waitFor(() => {

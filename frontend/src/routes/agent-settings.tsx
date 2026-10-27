@@ -21,12 +21,20 @@ import {
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { isAgentContextPageEnabled } from "#/utils/settings-utils";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import {
   coerceFieldValue,
   getAgentSettingValue,
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
+import {
+  CUSTOM_MODEL_KEY,
+  CUSTOM_PRESET,
+  detectPreset,
+  isKnownModel,
+  toStringArray,
+} from "#/utils/acp-agent-form";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
 import {
   formControlMultilineFieldClassName,
@@ -37,37 +45,7 @@ import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
 const TOOL_CONCURRENCY_FIELD_KEY = "tool_concurrency_limit";
-const CUSTOM_PRESET = "custom";
-const CUSTOM_MODEL_KEY = "__custom__";
 const EMPTY_ACP_PROVIDERS: ACPProviderConfig[] = [];
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is string => typeof v === "string")
-    : [];
-}
-
-function detectPreset(
-  commandText: string,
-  providers: ACPProviderConfig[],
-): string {
-  const normalized = tokenizeCommand(commandText).join(" ");
-  for (const provider of providers) {
-    if (normalized === provider.default_command.join(" ")) {
-      return provider.key;
-    }
-  }
-  return CUSTOM_PRESET;
-}
-
-function isKnownModel(
-  provider: ACPProviderConfig | undefined,
-  model: string,
-): boolean {
-  return (
-    provider?.available_models?.some(({ id }) => id === model.trim()) ?? false
-  );
-}
 
 export const clientLoader = createPermissionGuard("view_llm_settings");
 
@@ -82,6 +60,11 @@ export default function AgentSettingsScreen() {
 
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
   const acpProviders = config?.acp_providers ?? EMPTY_ACP_PROVIDERS;
+  // OHE-3456: once the dedicated (SaaS-only) Agent Context page is on, the
+  // memory toggle lives there and this page no longer shows it.
+  const hasAgentContextPage =
+    config?.app_mode === "saas" &&
+    isAgentContextPageEnabled(config?.feature_flags);
 
   // ── Parallel tool calls (OpenHands mode) ─────────────────────────────────
   // Surfaced only when the backend schema exposes the field, so older
@@ -317,7 +300,7 @@ export default function AgentSettingsScreen() {
         ) : null}
 
         {/* Agent Context: persistent memory toggle (OpenHands mode) */}
-        {!isAcp && (
+        {!isAcp && !hasAgentContextPage && (
           <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
             <h3 className="text-lg font-medium mb-2">
               {t(I18nKey.SETTINGS$AGENT_CONTEXT)}

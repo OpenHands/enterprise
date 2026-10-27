@@ -170,10 +170,22 @@ class AuthProviderDetails(DiscriminatedUnionMixin, ABC):
     """Base class for protocol-specific ``auth_providers.details`` payloads."""
 
 
+GIT_PROVIDER_TYPES: frozenset[ProviderType] = frozenset(
+    {
+        ProviderType.GITHUB,
+        ProviderType.GITLAB,
+        ProviderType.BITBUCKET,
+        ProviderType.BITBUCKET_DATA_CENTER,
+        ProviderType.FORGEJO,
+        ProviderType.AZURE_DEVOPS,
+    }
+)
+
+
 class OAuthProviderDetails(AuthProviderDetails):
-    """OAuth2/OIDC configuration -- covers both real login IDPs
-    (``provider_type=ProviderType.ENTERPRISE_SSO``) and git providers
-    (``provider_type`` one of the other ``ProviderType`` values). Brand
+    """OAuth2/OIDC configuration. A row is a git provider when its
+    ``provider_type`` is in ``GIT_PROVIDER_TYPES``, whether or not it is also a
+    login IDP (``AuthProvider.is_idp``). Brand
     (github/gitlab/.../enterprise_sso) used to be the SQL ``provider_category``
     column; it now lives here since it is OAuth-specific, not a property of
     every ``auth_providers`` row.

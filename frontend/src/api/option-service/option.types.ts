@@ -71,6 +71,15 @@ export interface WebClientFeatureFlags {
    *  managed/OpenHands models, managed LLM key create/refresh) and show a
    *  "Please enable LiteLLM to use this feature" placeholder instead. */
   enable_litellm?: boolean;
+  /** When true, Personal Settings shows the dedicated Agent Context page
+   *  (``/settings/agent-context``). Off by default until bug bash. */
+  enable_agent_context_page?: boolean;
+  /** When true, the personal ``Agent`` page is replaced by Agent Profiles
+   *  (``/settings/agents``). Off by default until bug bash. */
+  enable_agent_profiles_page?: boolean;
+  /** When true, org admins can add, edit and delete the organization's
+   *  shared Agent Profiles on the Agent Profiles page. Off by default. */
+  enable_org_agent_profiles?: boolean;
   /** When true, the org "Model Router" settings page is shown and the
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
