@@ -47,9 +47,11 @@ def _fake_provider(*, token_url='https://example.com/token', client_secret='sec'
     return provider
 
 
-def _patch_httpx(token_response: dict, content_type='application/json'):
+def _patch_httpx(
+    token_response: dict, content_type='application/json', status_code=200
+):
     response = MagicMock()
-    response.status_code = 200
+    response.status_code = status_code
     response.headers = {'content-type': content_type}
     response.json.return_value = token_response
     if content_type != 'application/json':
@@ -140,6 +142,34 @@ async def test_refresh_oauth_token_failure_raises(jwt_svc):
     ):
         with pytest.raises(ValueError, match='Token refresh failed'):
             await oauth_v2_refresh.refresh_oauth_token(provider, 'old-rt')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status_code', 'body', 'content_type'),
+    [
+        # RFC 6749: a dead refresh token is a 400 ``invalid_grant``.
+        (400, {'error': 'invalid_grant'}, 'application/json'),
+        (400, {'error': 'invalid_grant'}, 'application/x-www-form-urlencoded'),
+        # GitHub reports it with a 200.
+        (200, {'error': 'bad_refresh_token'}, 'application/json'),
+    ],
+)
+async def test_refresh_oauth_token_rejected_refresh_token(
+    status_code, body, content_type
+):
+    with _patch_httpx(body, content_type=content_type, status_code=status_code):
+        with pytest.raises(oauth_v2_refresh.RefreshTokenRejectedError):
+            await oauth_v2_refresh.refresh_oauth_token(_fake_provider(), 'old-rt')
+
+
+@pytest.mark.asyncio
+async def test_refresh_oauth_token_server_error_is_not_a_rejection():
+    """A provider outage must not read as a dead refresh token."""
+    with _patch_httpx({'error': 'server_error'}, status_code=503):
+        with pytest.raises(ValueError, match='Token refresh failed') as exc_info:
+            await oauth_v2_refresh.refresh_oauth_token(_fake_provider(), 'old-rt')
+    assert not isinstance(exc_info.value, oauth_v2_refresh.RefreshTokenRejectedError)
 
 
 @pytest.mark.asyncio
