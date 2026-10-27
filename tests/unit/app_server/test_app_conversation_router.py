@@ -1016,6 +1016,19 @@ def _make_agent_server_context(
     )
 
 
+def _make_user_context(connections=None) -> MagicMock:
+    """A user context whose org has ``connections`` (none by default)."""
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
+
+    user_context = MagicMock()
+    user_context.get_provider_connections = AsyncMock(
+        return_value=connections or ProviderConnections()
+    )
+    return user_context
+
+
 def _make_httpx_client(post_return=None, post_side_effect=None) -> AsyncMock:
     client = AsyncMock(spec=httpx.AsyncClient)
     if post_side_effect is not None:
@@ -1037,6 +1050,7 @@ class TestSwitchConversationProfile:
                 conversation_id=uuid4(),
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=None,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
                 sandbox_service=MagicMock(),
@@ -1056,6 +1070,7 @@ class TestSwitchConversationProfile:
                 conversation_id=uuid4(),
                 request=SwitchProfileRequest(profile_name='ghost'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
                 sandbox_service=MagicMock(),
@@ -1080,6 +1095,7 @@ class TestSwitchConversationProfile:
                     conversation_id=uuid4(),
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1108,6 +1124,7 @@ class TestSwitchConversationProfile:
                     conversation_id=uuid4(),
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1142,6 +1159,7 @@ class TestSwitchConversationProfile:
                     conversation_id=conv_id,
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1171,6 +1189,7 @@ class TestSwitchConversationProfile:
                     conversation_id=conv_id,
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1214,6 +1233,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1262,6 +1282,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='managed'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1300,6 +1321,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='managed'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1343,6 +1365,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1379,12 +1402,110 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
+
+    async def test_linked_profile_uses_the_connection_key_and_base_url(self):
+        """OHE-3290: a linked profile switches with its connection's key and
+        base_url, not the settings key at the provider's default endpoint."""
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnection,
+            ProviderConnections,
+        )
+
+        conv_id = uuid4()
+        settings = Settings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/active', api_key='managed-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'eval': LLM(
+                        model='litellm_proxy/anthropic/claude-haiku',
+                        provider_connection_id='eval_proxy',
+                    )
+                }
+            ),
+        )
+        connections = ProviderConnections(
+            connections={
+                'eval_proxy': ProviderConnection(
+                    id='eval_proxy',
+                    display_name='Eval proxy',
+                    api_key=SecretStr('sk-eval-proxy'),
+                    base_url='https://llm-proxy.eval.example.test',
+                )
+            }
+        )
+        ctx = _make_agent_server_context(conv_id)
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.raise_for_status = MagicMock()
+        client = _make_httpx_client(post_return=ok_response)
+        info_service = MagicMock()
+        info_service.get_app_conversation_info = AsyncMock(return_value=None)
+        info_service.save_app_conversation_info = AsyncMock()
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await switch_conversation_profile(
+                conversation_id=conv_id,
+                request=SwitchProfileRequest(profile_name='eval'),
+                user_settings=settings,
+                user_context=_make_user_context(connections),
+                app_conversation_service=MagicMock(),
+                app_conversation_info_service=info_service,
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        llm = client.post.await_args.kwargs['json']['llm']
+        assert llm['api_key'] == 'sk-eval-proxy'
+        assert llm['base_url'] == 'https://llm-proxy.eval.example.test'
+
+    async def test_returns_422_when_linked_connection_is_missing(self):
+        """A dangling connection is a config problem: 422 with the same message
+        as the org activate route, before any call to the agent server."""
+        settings = Settings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/active', api_key='managed-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'eval': LLM(
+                        model='anthropic/claude-haiku',
+                        provider_connection_id='gone',
+                    )
+                }
+            ),
+        )
+        client = _make_httpx_client()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await switch_conversation_profile(
+                conversation_id=uuid4(),
+                request=SwitchProfileRequest(profile_name='eval'),
+                user_settings=settings,
+                user_context=_make_user_context(),
+                app_conversation_service=MagicMock(),
+                app_conversation_info_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "provider connection 'gone'" in exc_info.value.detail
+        client.post.assert_not_awaited()
 
 
 def _make_get_httpx_client(get_return=None, get_side_effect=None) -> AsyncMock:

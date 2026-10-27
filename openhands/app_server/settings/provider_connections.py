@@ -79,6 +79,14 @@ class ProviderConnectionNotFoundError(LookupError):
         self.connection_id = connection_id
         super().__init__(f"Provider connection '{connection_id}' not found")
 
+    @property
+    def profile_detail(self) -> str:
+        """The 422 detail for a profile that links to this missing connection."""
+        return (
+            f"Profile references provider connection '{self.connection_id}', "
+            'which does not exist. Update the profile or recreate the connection.'
+        )
+
 
 class ProviderConnectionLimitExceededError(ValueError):
     """Raised when creating a connection would exceed the configured limit."""

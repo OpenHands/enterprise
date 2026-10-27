@@ -124,6 +124,25 @@ def _runtime_agent(request):
     ).agent
 
 
+def _eval_proxy_connections():
+    """Org provider connections with one linked-profile target."""
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnection,
+        ProviderConnections,
+    )
+
+    return ProviderConnections(
+        connections={
+            'eval_proxy': ProviderConnection(
+                id='eval_proxy',
+                display_name='Eval proxy',
+                api_key=SecretStr('sk-eval-proxy'),
+                base_url='https://llm-proxy.eval.example.test',
+            )
+        }
+    )
+
+
 class _AsyncSessionContext:
     def __init__(self, session):
         self.session = session
@@ -645,6 +664,58 @@ class TestLiveStatusAppConversationService:
         # The profile deleted on the app-server is pruned from the sandbox.
         self.mock_httpx_client.delete.assert_awaited_once()
         assert self.mock_httpx_client.delete.await_args.args[0] == f'{base}/Gone'
+
+    async def test_seed_sandbox_profiles_resolves_linked_profiles(self):
+        """A linked profile is seeded with its connection's key and base_url and
+        without the link: the agent server's profile store drops inline
+        credentials from any profile that still has ``provider_connection_id``.
+        A profile whose connection is missing is seeded with no key."""
+        user = SimpleNamespace(
+            id='member-user',
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'Eval': LLM(
+                        model='litellm_proxy/anthropic/claude-haiku',
+                        provider_connection_id='eval_proxy',
+                        usage_id='p',
+                    ),
+                    'Dangling': LLM(
+                        model='anthropic/claude-haiku',
+                        provider_connection_id='gone',
+                        usage_id='p',
+                    ),
+                }
+            ),
+            agent_settings=SimpleNamespace(
+                llm=LLM(model='openhands/gpt-5.5', api_key=SecretStr('managed-key'))
+            ),
+        )
+        self.mock_user_context.get_user_info = AsyncMock(return_value=user)
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=_eval_proxy_connections()
+        )
+        self.service._maybe_refresh_managed_llm_key = AsyncMock(
+            return_value=user.agent_settings.llm
+        )
+        ok = Mock(raise_for_status=Mock())
+        listing = Mock(raise_for_status=Mock())
+        listing.json = Mock(return_value={'profiles': []})
+        self.mock_httpx_client.post = AsyncMock(return_value=ok)
+        self.mock_httpx_client.get = AsyncMock(return_value=listing)
+
+        await self.service._seed_sandbox_profiles('http://agent.test', 'sess-key')
+
+        base = 'http://agent.test/api/profiles'
+        pushed = {
+            call.args[0]: call.kwargs['json']['llm']
+            for call in self.mock_httpx_client.post.call_args_list
+        }
+        assert pushed[f'{base}/Eval']['api_key'] == 'sk-eval-proxy'
+        assert pushed[f'{base}/Eval']['base_url'] == (
+            'https://llm-proxy.eval.example.test'
+        )
+        assert 'provider_connection_id' not in pushed[f'{base}/Eval']
+        assert 'api_key' not in pushed[f'{base}/Dangling']
 
     def test_apply_suggested_task_sets_prompt_and_trigger(self):
         """Test suggested task prompts populate initial message and trigger."""
@@ -5073,6 +5144,83 @@ class TestLiveStatusAppConversationService:
             'sk-profile'
         )
         assert self.mock_user.agent_settings.llm.model == 'openai/gpt-4o'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_runs_linked_llm_profile_on_its_connection(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """OHE-3290: a linked llm_profile runs with its connection's key and
+        base_url, not the member's settings key."""
+        profiles = LLMProfiles()
+        profiles.save(
+            'eval',
+            LLM(
+                model='litellm_proxy/anthropic/claude-haiku',
+                provider_connection_id='eval_proxy',
+            ),
+        )
+        self.mock_user = UserInfo(
+            id='member-1',
+            agent_settings={'llm': {'model': 'openai/gpt-4o', 'api_key': 'sk-member'}},
+            llm_profiles=profiles,
+        )
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=_eval_proxy_connections()
+        )
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest(llm_profile='eval')
+        ):
+            pass
+
+        launched_llm = (
+            self.service._build_start_conversation_request_for_user.call_args.args[
+                0
+            ].agent_settings.llm
+        )
+        assert launched_llm.base_url == 'https://llm-proxy.eval.example.test'
+        assert launched_llm.api_key.get_secret_value() == 'sk-eval-proxy'
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_missing_connection_before_sandbox(
+        self,
+    ):
+        """A linked llm_profile whose connection is missing fails fast with
+        422, before any sandbox work."""
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnections,
+        )
+
+        profiles = LLMProfiles()
+        profiles.save(
+            'eval', LLM(model='anthropic/claude-haiku', provider_connection_id='gone')
+        )
+        self.mock_user.llm_profiles = profiles
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=ProviderConnections()
+        )
+        self.service._wait_for_sandbox_start = Mock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in self.service._start_app_conversation(
+                AppConversationStartRequest(llm_profile='eval')
+            ):
+                pass
+
+        assert exc_info.value.status_code == 422
+        assert "provider connection 'gone'" in exc_info.value.detail
+        self.service._wait_for_sandbox_start.assert_not_called()
 
     @pytest.mark.parametrize(
         ('acp', 'llm_profile', 'detail'),

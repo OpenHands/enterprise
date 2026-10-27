@@ -93,6 +93,9 @@ from openhands.app_server.settings.llm_profiles import resolve_profile_llm
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
 )
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
+)
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
@@ -777,6 +780,7 @@ async def _persist_conversation_model(
     responses={
         404: {'description': 'Conversation, sandbox, or profile not found'},
         409: {'description': 'Sandbox is not running'},
+        422: {'description': 'Profile links to a missing provider connection'},
         502: {'description': 'Agent server returned an error'},
     },
 )
@@ -784,6 +788,7 @@ async def switch_conversation_profile(
     conversation_id: UUID,
     request: SwitchProfileRequest,
     user_settings: Settings | None = Depends(get_user_settings),
+    user_context: UserContext = user_context_dependency,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -817,12 +822,22 @@ async def switch_conversation_profile(
     # plus the effective settings key when the profile carries none (managed
     # profiles persist a masked key, so without this the agent server would hit
     # the litellm proxy unauthenticated). Locally, profiles carry their own key.
+    # A linked profile takes its key and base_url from its provider connection;
+    # a missing connection is a config problem, so 422 before the switch.
     settings_llm = getattr(user_settings.agent_settings, 'llm', None)
-    profile_llm = resolve_profile_llm(
-        profile_llm,
-        managed_proxy_url=LITE_LLM_API_URL,
-        fallback_api_key=getattr(settings_llm, 'api_key', None),
-    )
+    try:
+        profile_llm = resolve_profile_llm(
+            profile_llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            fallback_api_key=getattr(settings_llm, 'api_key', None),
+            connections=await user_context.get_provider_connections(),
+            strict=True,
+        )
+    except ProviderConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.profile_detail,
+        ) from exc
 
     # The agent-server's LLM registry is first-write-wins by ``usage_id``:
     # ``switch_llm`` returns the cached entry under that key and silently

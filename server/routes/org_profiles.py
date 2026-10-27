@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,9 @@ from openhands.app_server.settings.llm_profiles import (
     ProfileLimitExceededError,
     ProfileNotFoundError,
     StrictLLM,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
@@ -156,8 +159,8 @@ async def _load_profiles_with_live_default(
 def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     """Apply a referenced provider connection's credentials to ``llm``.
 
-    Read-at-use resolution at the single activation choke point, mirroring the
-    SDK's ``LLMProfileStore._resolve_provider_connection``:
+    Read-at-use resolution at the single activation choke point, with the
+    shared rule (``ProviderConnections.apply``, strict):
 
     - no ``provider_connection_id`` -> unchanged (byte-identical old path).
     - connection found -> its ``api_key`` / ``base_url`` win (``base_url`` is
@@ -169,25 +172,13 @@ def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     the caller. Rotating a shared key therefore takes effect the next time a
     linked profile is activated — it is not pushed retroactively.
     """
-    connection_id = getattr(llm, 'provider_connection_id', None)
-    if not connection_id:
-        return llm
-
-    connection = _load_connections(org).get(connection_id)
-    if connection is None:
+    try:
+        return _load_connections(org).apply(llm, strict=True)
+    except ProviderConnectionNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Profile references provider connection '{connection_id}', "
-                'which does not exist. Update the profile or recreate the '
-                'connection.'
-            ),
-        )
-    updates: dict[str, Any] = {'base_url': connection.base_url}
-    api_key = connection.api_key_value()
-    if api_key is not None:
-        updates['api_key'] = SecretStr(api_key)
-    return llm.model_copy(update=updates)
+            detail=exc.profile_detail,
+        ) from exc
 
 
 def _load_profiles(org: Org) -> LLMProfiles:
