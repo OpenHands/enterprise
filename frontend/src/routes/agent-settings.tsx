@@ -21,6 +21,7 @@ import {
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { isAgentContextPageEnabled } from "#/utils/settings-utils";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import {
   coerceFieldValue,
@@ -82,6 +83,11 @@ export default function AgentSettingsScreen() {
 
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
   const acpProviders = config?.acp_providers ?? EMPTY_ACP_PROVIDERS;
+  // OHE-3456: once the dedicated (SaaS-only) Agent Context page is on, the
+  // memory toggle lives there and this page no longer shows it.
+  const hasAgentContextPage =
+    config?.app_mode === "saas" &&
+    isAgentContextPageEnabled(config?.feature_flags);
 
   // ── Parallel tool calls (OpenHands mode) ─────────────────────────────────
   // Surfaced only when the backend schema exposes the field, so older
@@ -317,7 +323,7 @@ export default function AgentSettingsScreen() {
         ) : null}
 
         {/* Agent Context: persistent memory toggle (OpenHands mode) */}
-        {!isAcp && (
+        {!isAcp && !hasAgentContextPage && (
           <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
             <h3 className="text-lg font-medium mb-2">
               {t(I18nKey.SETTINGS$AGENT_CONTEXT)}

@@ -196,7 +196,7 @@ export function Budgets() {
     setSlackChannel(budgetData.slack_channel ?? "");
     setThresholds(
       budgetData.thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
+        percentage: String(threshold.percentage),
         email_enabled: threshold.email_enabled,
         slack_enabled: threshold.slack_enabled,
       })),
@@ -260,8 +260,27 @@ export function Budgets() {
     ? parseFloat(defaultAmount).toLocaleString()
     : "0";
 
+  // Mirrors the server rule: a whole number from 1 to 100, unique per org.
+  const thresholdErrors = thresholds.map((threshold, index) => {
+    const value = Number(threshold.percentage);
+    if (!threshold.percentage || value < 1 || value > 100) {
+      return translate(I18nKey.SETTINGS$BUDGETS_THRESHOLD_RANGE_ERROR);
+    }
+    const duplicate = thresholds.some(
+      (other, otherIndex) =>
+        otherIndex !== index && Number(other.percentage) === value,
+    );
+    return duplicate
+      ? translate(I18nKey.SETTINGS$BUDGETS_THRESHOLD_DUPLICATE_ERROR)
+      : null;
+  });
+  // Thresholds are only sent while an alert channel is available.
+  const hasInvalidThreshold =
+    (emailIntegrationEnabled || slackConnected) &&
+    thresholdErrors.some(Boolean);
+
   const handleSaveOrgBudget = () => {
-    if (!organizationId || !isMonthlyLimitValid) return;
+    if (!organizationId || !isMonthlyLimitValid || hasInvalidThreshold) return;
     updateBudgets.mutate({
       enabled: true,
       monthly_limit: monthlyLimitValue,
@@ -270,7 +289,7 @@ export function Budgets() {
       ...(emailIntegrationEnabled || slackConnected
         ? {
             thresholds: thresholds.map((threshold) => ({
-              percentage: threshold.percentage,
+              percentage: Number(threshold.percentage),
               email_enabled: threshold.email_enabled,
               slack_enabled: threshold.slack_enabled,
             })),
@@ -288,19 +307,19 @@ export function Budgets() {
   };
 
   const handleAddThreshold = () => {
-    const used = new Set(thresholds.map((t) => t.percentage));
-    const candidates = [50, 60, 70, 75, 85, 95];
-    const next = candidates.find((value) => !used.has(value));
-    if (!next) return;
-    setThresholds((prev) =>
-      [
-        ...prev,
-        {
-          percentage: next,
-          email_enabled: emailIntegrationEnabled,
-          slack_enabled: !emailIntegrationEnabled && slackConnected,
-        },
-      ].sort((a, b) => a.percentage - b.percentage),
+    setThresholds((prev) => [
+      ...prev,
+      {
+        percentage: "",
+        email_enabled: emailIntegrationEnabled,
+        slack_enabled: !emailIntegrationEnabled && slackConnected,
+      },
+    ]);
+  };
+
+  const handleThresholdPercentageChange = (index: number, value: string) => {
+    setThresholds(
+      thresholds.map((t, i) => (i === index ? { ...t, percentage: value } : t)),
     );
   };
 
@@ -498,7 +517,10 @@ export function Budgets() {
           nextReset={nextReset}
           resetDayChanged={resetDayChanged && Boolean(budgetData?.enabled)}
           thresholds={thresholds}
+          thresholdErrors={thresholdErrors}
+          hasInvalidThreshold={hasInvalidThreshold}
           onAddThreshold={handleAddThreshold}
+          onThresholdPercentageChange={handleThresholdPercentageChange}
           onDeleteThreshold={handleDeleteThreshold}
           onToggleEmail={handleToggleEmail}
           onToggleSlack={handleToggleSlack}

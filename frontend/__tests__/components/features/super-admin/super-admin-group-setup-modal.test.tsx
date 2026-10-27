@@ -33,13 +33,17 @@ const renderModal = () =>
     <RouterStub initialEntries={["/settings/org-defaults"]} />,
   );
 
-function mockConfig(allowUserLlmConfiguration?: boolean) {
+function mockConfig(
+  allowUserLlmConfiguration?: boolean,
+  featureFlags: Record<string, unknown> = {},
+) {
   vi.spyOn(OptionService, "getConfig").mockResolvedValue(
     createMockWebClientConfig({
       app_mode: "saas",
       feature_flags: {
         ...createMockWebClientConfig().feature_flags,
         allow_user_llm_configuration: allowUserLlmConfiguration,
+        ...featureFlags,
       },
     }),
   );
@@ -48,9 +52,10 @@ function mockConfig(allowUserLlmConfiguration?: boolean) {
 async function chooseModel(
   user: ReturnType<typeof userEvent.setup>,
   model?: string,
+  providerLabel = "Anthropic",
 ) {
   await user.click(await screen.findByTestId("sa-nux-llm-provider"));
-  await user.click(await screen.findByText("Anthropic"));
+  await user.click(await screen.findByText(providerLabel));
   const modelButton = screen.getByTestId("sa-nux-llm-model");
   await waitFor(() => expect(modelButton).toBeEnabled());
   await user.click(modelButton);
@@ -292,6 +297,36 @@ describe("SuperAdminGroupSetupModal", () => {
 
     // Assert
     expect(screen.queryByTestId("sa-nux-llm-api-key")).not.toBeInTheDocument();
+  });
+
+  it("lists the openhands provider as OpenHands Cloud when the install has no LiteLLM gateway", async () => {
+    // Arrange
+    mockConfig(undefined, { enable_litellm: false });
+    const user = userEvent.setup();
+    renderModal();
+
+    // Act
+    await user.click(await screen.findByTestId("sa-nux-llm-provider"));
+
+    // Assert
+    const options = screen
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(options).toContain("OpenHands Cloud");
+    expect(options).not.toContain("OpenHands");
+  });
+
+  it("asks for an API key for OpenHands Cloud when the install has no LiteLLM gateway", async () => {
+    // Arrange
+    mockConfig(undefined, { enable_litellm: false });
+    const user = userEvent.setup();
+    renderModal();
+
+    // Act
+    await chooseModel(user, "claude-sonnet-4-5", "OpenHands Cloud");
+
+    // Assert
+    expect(screen.getByTestId("sa-nux-llm-api-key")).toBeVisible();
   });
 
   it("tells the admin that Get started saves the LLM and opens the automation step", async () => {
