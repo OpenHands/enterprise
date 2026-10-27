@@ -102,9 +102,23 @@ async def test_lists_named_secrets_for_linked_providers(patched_db, create_user)
     # A git provider wins a shared name over a login IDP.
     assert by_name['GITHUB_TOKEN'].oauth_provider_id == github_git.id
     assert by_name['OKTA_TOKEN'].description == 'Login with Okta OAuth access token'
-    # Login IDPs never supplied ``<PROVIDER_TYPE>_TOKEN``, so only the git
-    # providers' types are replaced.
+    # Only git provider types are replaced, whether or not the row is a login
+    # IDP; ``enterprise_sso`` never supplied ``<PROVIDER_TYPE>_TOKEN``.
     assert result.linked_provider_types == {ProviderType.GITHUB, ProviderType.GITLAB}
+
+
+@pytest.mark.asyncio
+async def test_a_git_provider_login_idp_counts_as_a_linked_provider_type(
+    patched_db, create_user
+):
+    user_id = create_user().id
+    github_login = await _provider(ProviderType.GITHUB, is_idp=True)
+    await _link(user_id, github_login, 'github-access')
+
+    result = await _auth(user_id).get_named_oauth_secrets()
+
+    assert result is not None
+    assert result.linked_provider_types == {ProviderType.GITHUB}
 
 
 @pytest.mark.asyncio

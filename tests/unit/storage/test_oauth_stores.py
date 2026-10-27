@@ -26,7 +26,11 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_details import (
+    OAuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+)
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.oauth_token import OAuthToken
@@ -368,6 +372,36 @@ class TestAuthProviderStore:
 
         assert {p.id for p in visible} == {enabled.id}
         assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_git_providers_matches_on_provider_type_not_is_idp(
+        self, patched_session, make_provider, async_session_maker
+    ):
+        github = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        bbdc = await make_provider(
+            category=ProviderType.BITBUCKET_DATA_CENTER, is_idp=False
+        )
+        gitlab_login = await make_provider(category=ProviderType.GITLAB, is_idp=True)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=False)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        async with async_session_maker() as session:
+            session.add(
+                AuthProvider(
+                    title='SAML',
+                    is_idp=False,
+                    enabled=True,
+                    details=SamlProviderDetails(
+                        idp_entity_id='https://idp.example.com',
+                        sso_url='https://idp.example.com/sso',
+                        idp_x509_cert='cert',
+                    ),
+                )
+            )
+            await session.commit()
+
+        gits = await AuthProviderStore().get_git_providers()
+
+        assert {p.id for p in gits} == {github.id, bbdc.id, gitlab_login.id}
 
     @pytest.mark.asyncio
     async def test_upsert_insert_then_update(self, patched_session):
