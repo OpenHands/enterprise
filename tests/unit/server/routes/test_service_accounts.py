@@ -410,6 +410,50 @@ async def test_delete_fails_closed_when_automation_service_unreachable(
     lifecycle.delete_service_account.assert_not_awaited()
 
 
+def _real_response(status_code: int, **kwargs) -> httpx.Response:
+    """A real response, so ``raise_for_status`` and ``json`` behave as in prod."""
+    request = httpx.Request('GET', 'http://automation/v1')
+    return httpx.Response(status_code, request=request, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'response',
+    [
+        pytest.param(_real_response(500, json={'total': 0}), id='5xx-status'),
+        pytest.param(_real_response(200, json={'automations': []}), id='no-total'),
+        pytest.param(_real_response(200, json={'total': None}), id='null-total'),
+        pytest.param(_real_response(200, content=b'<html>not json'), id='non-json'),
+    ],
+)
+async def test_delete_fails_closed_on_a_bad_automation_service_answer(
+    client, as_admin, svc, lifecycle, response
+):
+    get = AsyncMock(return_value=response)
+    url_patch, client_patch = _patch_automation_service(get)
+
+    with url_patch, client_patch:
+        async with client as c:
+            resp = await c.delete(_url())
+
+    assert resp.status_code == 503
+    lifecycle.delete_service_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_cleanup_failure_returns_503(
+    client, as_admin, svc, lifecycle
+):
+    lifecycle.delete_service_account.side_effect = LifecycleCleanupError('retry')
+
+    with patch(f'{MODULE}.AUTOMATION_SERVICE_URL', ''):
+        async with client as c:
+            resp = await c.delete(_url())
+
+    assert resp.status_code == 503
+    lifecycle.delete_service_account.assert_awaited_once_with(str(SA_ID))
+
+
 @pytest.mark.asyncio
 async def test_delete_succeeds_when_no_automation_is_owned(
     client, as_admin, svc, lifecycle
