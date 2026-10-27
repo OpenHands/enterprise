@@ -89,7 +89,10 @@ from openhands.app_server.services.httpx_client_injector import (
     set_httpx_client_keep_open,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
 )
@@ -838,6 +841,7 @@ async def switch_conversation_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=exc.profile_detail,
         ) from exc
+    profile_llm = detach_provider_connection(profile_llm)
 
     # The agent-server's LLM registry is first-write-wins by ``usage_id``:
     # ``switch_llm`` returns the cached entry under that key and silently

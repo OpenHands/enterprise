@@ -191,6 +191,9 @@ def resolve_org_profile_llm(
         raise AgentLaunchError(
             'The LLM profile references a missing provider connection'
         ) from exc
+    # Canonicalize after the connection is applied: it only renames the model
+    # and drops a base_url that the SDK fills back with the same proxy, so the
+    # connection's host and key still win.
     payload = canonicalize_bundled_proxy_llm(
         canonicalize_openhands_llm_payload(
             resolved.model_dump(mode='json', context={'expose_secrets': True})

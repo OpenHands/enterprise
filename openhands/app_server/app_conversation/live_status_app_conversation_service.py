@@ -135,7 +135,10 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
 )
@@ -1611,11 +1614,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     fallback_api_key=fallback_api_key,
                     connections=connections,
                 )
-                # Send the resolved LLM without the link: the agent server's
-                # profile store drops inline credentials from any profile that
-                # still has ``provider_connection_id``, and it has no copy of
-                # the org's connections to resolve it again.
-                resolved = resolved.model_copy(update={'provider_connection_id': None})
+                resolved = detach_provider_connection(resolved)
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
                     json={

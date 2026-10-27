@@ -95,6 +95,17 @@ def resolve_profile_llm(
     return resolved
 
 
+def detach_provider_connection(resolved_llm: LLM) -> LLM:
+    """Drop ``provider_connection_id`` from an LLM sent to an agent server.
+
+    Call it after ``resolve_profile_llm`` has applied the connection. The agent
+    server has no copy of the org's provider connections: it would resolve the
+    link again against its own empty store, and its profile store drops inline
+    credentials from a linked profile.
+    """
+    return resolved_llm.model_copy(update={'provider_connection_id': None})
+
+
 def _resolve_base_url(profile_llm: LLM, managed_proxy_url: str) -> LLM:
     """Fill the provider-default ``base_url`` and force streaming."""
     return profile_llm.model_copy(

@@ -1471,6 +1471,9 @@ class TestSwitchConversationProfile:
         llm = client.post.await_args.kwargs['json']['llm']
         assert llm['api_key'] == 'sk-eval-proxy'
         assert llm['base_url'] == 'https://llm-proxy.eval.example.test'
+        # Sent without the link: the agent server would resolve it again
+        # against its own store, which has no copy of the org's connections.
+        assert llm.get('provider_connection_id') is None
 
     async def test_returns_422_when_linked_connection_is_missing(self):
         """A dangling connection is a config problem: 422 with the same message
