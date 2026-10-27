@@ -101,7 +101,8 @@ def conversation_pr_keys(
     """(provider, repository, number) of each pull request of a conversation.
 
     A PR recorded with its repository in ``pull_requests`` uses that repository;
-    the rest of ``pr_numbers`` are the main repository's.
+    the rest of ``pr_numbers`` are the main repository's. The PR tools take the
+    name in any casing, so a PR in the main repository keeps its stored name.
     """
     keys: list[tuple[str, str, int]] = []
     remaining = list(pr_numbers or [])
@@ -110,6 +111,12 @@ def conversation_pr_keys(
         provider = pr.get('git_provider')
         number = pr.get('number')
         if repository and provider and isinstance(number, int):
+            if (
+                selected_repository
+                and provider == git_provider
+                and repository.lower() == selected_repository.lower()
+            ):
+                repository = selected_repository
             keys.append((provider, repository, number))
             if number in remaining:
                 remaining.remove(number)

@@ -748,3 +748,53 @@ def test_web_client_advertises_the_flag(monkeypatch, value, expected):
         monkeypatch.setenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, value)
 
     assert _get_feature_flags().enable_multi_repository_conversations is expected
+
+
+def test_pr_in_the_main_repository_keeps_its_stored_casing():
+    # GitHub accepts any casing in the PR tool; openhands_prs stores the canonical name.
+    keys = conversation_pr_keys(
+        'OpenHands/enterprise',
+        'github',
+        [5],
+        [{'number': 5, 'repository': 'openhands/enterprise', 'git_provider': 'github'}],
+    )
+
+    assert keys == [('github', 'OpenHands/enterprise', 5)]
+
+
+@pytest.mark.asyncio
+async def test_main_path_rules_are_rescoped_when_no_additional_repository_cloned():
+    service = MagicMock()
+    service.user_context = MagicMock()
+    service._configure_marketplace_git_credentials = AsyncMock()
+    service.load_and_merge_all_skills = MethodType(
+        AppConversationServiceBase.load_and_merge_all_skills, service
+    )
+    main_rule = _skill(
+        'agents:server',
+        '/workspace/project/app/server/AGENTS.md',
+        PathTrigger(paths=['server/**']),
+    )
+    base = 'openhands.app_server.app_conversation.app_conversation_service_base'
+    with (
+        patch(
+            f'{base}.load_skills_from_agent_server',
+            AsyncMock(return_value=[main_rule]),
+        ) as load,
+        patch(f'{base}.build_org_configs', AsyncMock(return_value=[])),
+        patch(f'{base}.build_sandbox_config', return_value=None),
+        patch(f'{base}.authenticate_marketplace_sources', AsyncMock(return_value=None)),
+    ):
+        skills = await service.load_and_merge_all_skills(
+            Mock(session_api_key='k', exposed_urls=[]),
+            'org1/p/app',
+            '/workspace/project/app',
+            'http://agent',
+            additional_repositories=[
+                _repo('org3/p/x', 'x', AdditionalRepositoryStatus.FAILED)
+            ],
+        )
+
+    # The agent works from the parent folder, so the main rule must name its folder.
+    assert skills[0].trigger.paths == ['app/server/**']
+    assert load.await_count == 1

@@ -298,7 +298,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 for repo in additional_repositories
                 if repo.status == AdditionalRepositoryStatus.CLONED
             ]
-            if cloned and selected_repository:
+            # The agent works from the parent folder whenever additional
+            # repositories were requested, even if none of them cloned.
+            if additional_repositories and selected_repository:
                 per_repository = await asyncio.gather(
                     *(
                         load_skills_from_agent_server(
