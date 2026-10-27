@@ -410,9 +410,7 @@ async def test_set_user_quota_works_for_a_member_of_the_key_org(
     mock_app.dependency_overrides[resolve_effective_org_id] = lambda: org.id
 
     async with _client(mock_app) as client:
-        resp = await client.put(
-            _user_url(user.id), json={'daily_sandbox_limit': 25}
-        )
+        resp = await client.put(_user_url(user.id), json={'daily_sandbox_limit': 25})
 
     assert resp.status_code == 200
     assert resp.json()['account_type'] == account_type
@@ -431,9 +429,7 @@ async def test_set_user_quota_hides_a_user_of_another_org(
     mock_app.dependency_overrides[resolve_effective_org_id] = lambda: key_org.id
 
     async with _client(mock_app) as client:
-        resp = await client.put(
-            _user_url(user.id), json={'daily_sandbox_limit': 25}
-        )
+        resp = await client.put(_user_url(user.id), json={'daily_sandbox_limit': 25})
 
     assert resp.status_code == 404
     assert resp.json()['detail'] == 'User not found'
