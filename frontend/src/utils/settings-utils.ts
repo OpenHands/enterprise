@@ -64,6 +64,12 @@ export function isSettingsPageHidden(
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
     return true;
+  // The org Model Router page (OHE-3508) stays hidden until its flag is on.
+  if (
+    !featureFlags?.enable_model_router &&
+    path === "/settings/org-defaults/model-router"
+  )
+    return true;
   return false;
 }
 
