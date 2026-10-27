@@ -74,6 +74,8 @@ class AdminUserLifecycleService:
         Does nothing for a user that is not a service account. Each sandbox
         is deleted and committed on its own, so a failure keeps the ones that
         are already gone. The sandbox service is scoped to this one user.
+        A sandbox it cannot see is logged and skipped; the cleanup check
+        then blocks the delete.
         """
         # Local imports to avoid circular dependencies.
         from openhands.app_server.config import get_sandbox_service
@@ -101,7 +103,7 @@ class AdminUserLifecycleService:
             setattr(state, USER_CONTEXT_ATTR, SpecifyUserContext(user_id=str(uid)))
             try:
                 async with get_sandbox_service(state) as sandbox_service:
-                    await sandbox_service.delete_sandbox(sandbox_id)
+                    deleted = await sandbox_service.delete_sandbox(sandbox_id)
             except Exception as exc:
                 logger.exception(
                     'Service account sandbox delete failed',
@@ -110,6 +112,14 @@ class AdminUserLifecycleService:
                 raise LifecycleCleanupError(
                     'Sandbox cleanup incomplete; retry DELETE.'
                 ) from exc
+            if not deleted:
+                # The row is not visible to the sandbox service (e.g. it
+                # belongs to another backend). Keep going: the cleanup check
+                # in ``_operate`` still blocks the delete while it remains.
+                logger.warning(
+                    'Service account sandbox not deleted: not visible',
+                    extra={'user_id': str(uid), 'sandbox_id': sandbox_id},
+                )
 
     async def _operate(
         self, user_id: str, operation: str, service_account: bool = False

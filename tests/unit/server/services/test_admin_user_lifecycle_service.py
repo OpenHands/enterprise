@@ -509,3 +509,30 @@ async def test_delete_user_still_blocked_by_sandboxes_and_deletes_none(
 
     assert await _sandbox_ids(async_session_maker) == {'h-1'}
     assert sandbox_service.states == []
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_warns_when_a_sandbox_is_not_visible(
+    create_user, service, async_session_maker, sandbox_service
+):
+    """GIVEN a sandbox row the sandbox service cannot see WHEN deleted THEN a warning is logged and the cleanup check still blocks the delete."""
+    sa = create_user(account_type='service')
+    await _add_sandbox(async_session_maker, 'sa-1', sa.id)
+
+    with (
+        patch.object(
+            RemoteSandboxService, 'delete_sandbox', AsyncMock(return_value=False)
+        ),
+        patch('server.services.admin_user_lifecycle_service.logger') as log,
+    ):
+        with pytest.raises(UserCleanupConflict):
+            await service.delete_service_account(str(sa.id))
+
+    log.warning.assert_called_once()
+    assert log.warning.call_args.kwargs['extra'] == {
+        'user_id': str(sa.id),
+        'sandbox_id': 'sa-1',
+    }
+    assert await _sandbox_ids(async_session_maker) == {'sa-1'}
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is not None
