@@ -31,7 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
+from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ class SkillInfo(BaseModel):
     name: str
     content: str
     triggers: list[str] = []
+    paths: list[str] = []
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -883,9 +884,13 @@ def _convert_skill_info_to_skill(skill_info: SkillInfo) -> Skill:
     Returns:
         Skill object
     """
-    trigger: TaskTrigger | KeywordTrigger | None = None
+    trigger: PathTrigger | TaskTrigger | KeywordTrigger | None = None
 
-    if skill_info.triggers:
+    if skill_info.paths:
+        # Path-triggered rule: injected on file-touch. As in the SDK loader,
+        # paths take precedence over keyword/task triggers.
+        trigger = PathTrigger(paths=skill_info.paths)
+    elif skill_info.triggers:
         # Determine trigger type based on content
         if any(t.startswith('/') for t in skill_info.triggers):
             trigger = TaskTrigger(triggers=skill_info.triggers)
