@@ -1,7 +1,7 @@
 """Persist the organization that authorizes sandbox credential lookups.
 
-Revision ID: 193
-Revises: 192
+Revision ID: 203
+Revises: 202
 
 Leave legacy rows unbound: the owner's current org is not evidence of origin.
 No foreign key so deleting an org cannot erase or retarget this identity.
@@ -12,8 +12,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '193'
-down_revision: str | None = '192'
+revision: str = '203'
+down_revision: str | None = '202'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

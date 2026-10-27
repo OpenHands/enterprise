@@ -8,7 +8,14 @@ may reuse a sandbox only in that organization, including grouping, explicit
 `sandbox_id` requests and inherited parent sandbox IDs. In Enterprise, an unbound
 legacy sandbox cannot be assigned to a new conversation.
 
-Apply migration 193 before upgrading application writers. Complete the upgrade
+When a sandbox webhook first records a conversation, its organization comes from
+the matching owner's persisted sandbox binding. A later owner organization switch
+therefore cannot put that conversation in a different organization from its
+credential lookups. Existing conversation organization records are preserved.
+For legacy or unrecorded sandboxes, metadata retains its previous current-org
+fallback; this does not backfill a credential binding or restore secret access.
+
+Apply migration 203 (after revision 202) before upgrading application writers. Complete the upgrade
 of all application servers before considering the binding enforced; old writers
 and lookup handlers do not enforce it during a mixed-version rollout. Coordinate
 migration numbering and ancestry with other pending migrations before merging.

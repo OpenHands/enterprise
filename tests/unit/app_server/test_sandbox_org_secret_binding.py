@@ -299,6 +299,7 @@ async def test_explicit_sandbox_requires_caller_org(
     org_lookup, binding, paused, inherited
 ):
     from types import SimpleNamespace
+    from uuid import uuid4
 
     from openhands.app_server.errors import SandboxError
     from openhands.app_server.user.auth_user_context import AuthUserContext
@@ -315,12 +316,15 @@ async def test_explicit_sandbox_requires_caller_org(
         sandbox.status = SandboxStatus.PAUSED
     service = conversation_service(AuthUserContext(user_auth=auth), sandbox, None)
     from openhands.app_server.app_conversation.app_conversation_models import (
+        AppConversationInfo,
         AppConversationStartRequest,
     )
 
     request = AppConversationStartRequest(sandbox_id=None if inherited else sandbox.id)
     if inherited:
-        parent = SimpleNamespace(
+        parent = AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=str(user.id),
             sandbox_id=sandbox.id,
             selected_repository=None,
             selected_branch=None,
