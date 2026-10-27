@@ -595,8 +595,24 @@ async def test_team_usage_lists_people_only(async_session_maker, create_user):
     )
     async with async_session_maker() as session:
         await _conversation(session, 'person', 'label', 1.0, 10, 10)
+        # 'bot-legacy' has no cost events (legacy query); 'bot-ledger' has one
+        # (ledger query), so both team usage queries are exercised.
         await _conversation(
-            session, 'bot', 'label', 2.0, 10, 10, user_id=service_account_id
+            session, 'bot-legacy', 'label', 2.0, 10, 10, user_id=service_account_id
+        )
+        await _conversation(
+            session, 'bot-ledger', 'label', 0.0, 0, 0, user_id=service_account_id
+        )
+        session.add(
+            StoredConversationCostEvent(
+                conversation_id='bot-ledger',
+                cost_delta=4.0,
+                occurred_at=datetime.now(UTC) - timedelta(hours=1),
+                usage_id='agent',
+                llm_model='label',
+                prompt_tokens=10,
+                completion_tokens=10,
+            )
         )
         await session.commit()
 
@@ -606,5 +622,7 @@ async def test_team_usage_lists_people_only(async_session_maker, create_user):
             org_id=ORG_ID, days=7
         )
 
-    # Assert
+    # Assert: the per-user view lists people only, while org spend still
+    # counts the service account (1.0 + 2.0 + 4.0).
     assert [row.user_id for row in stats.team_usage] == [str(USER_ID)]
+    assert stats.estimated_spend == pytest.approx(7.0)
