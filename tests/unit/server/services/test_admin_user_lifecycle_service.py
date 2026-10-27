@@ -371,6 +371,18 @@ async def test_delete_refuses_service_account_but_disable_enable_work(
     # Disable and enable stay allowed: they are the kill switch.
     await service.disable_user(str(user.id))
     await service.enable_user(str(user.id))
+    # A service account has no Keycloak identity to update.
+    service.remote.disable.assert_awaited_once_with(str(user.id), idp_user=False)
+    service.remote.enable.assert_awaited_once_with(str(user.id), idp_user=False)
+
+
+@pytest.mark.asyncio
+async def test_human_lifecycle_updates_the_idp_identity(create_user, service):
+    user = create_user()
+    await service.disable_user(str(user.id))
+    await service.enable_user(str(user.id))
+    service.remote.disable.assert_awaited_once_with(str(user.id), idp_user=True)
+    service.remote.enable.assert_awaited_once_with(str(user.id), idp_user=True)
 
 
 @pytest.mark.asyncio
@@ -385,7 +397,8 @@ async def test_delete_service_account_removes_it_and_refuses_humans(
 
     async with async_session_maker() as session:
         assert await session.get(User, sa.id) is None
-    service.remote.delete.assert_awaited_once_with(str(sa.id))
+    service.remote.disable.assert_awaited_once_with(str(sa.id), idp_user=False)
+    service.remote.delete.assert_awaited_once_with(str(sa.id), idp_user=False)
     with pytest.raises(ValueError):
         await service.delete_service_account(str(human.id))
     async with async_session_maker() as session:

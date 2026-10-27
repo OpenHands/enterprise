@@ -160,6 +160,8 @@ class AdminUserLifecycleService:
                 if service_account and user.account_type != ACCOUNT_TYPE_SERVICE:
                     raise ValueError('User is not a service account')
                 result = UserLifecycleResult(str(uid), user.email)
+                # A service account has no Keycloak identity to update.
+                idp_user = user.account_type != ACCOUNT_TYPE_SERVICE
                 if operation == 'enable':
                     if user.deletion_pending:
                         raise UserCleanupConflict(
@@ -207,11 +209,11 @@ class AdminUserLifecycleService:
                 await session.commit()
             try:
                 if operation == 'enable':
-                    await self.remote.enable(str(uid))
+                    await self.remote.enable(str(uid), idp_user=idp_user)
                 else:
-                    await self.remote.disable(str(uid))
+                    await self.remote.disable(str(uid), idp_user=idp_user)
                     if operation == 'delete':
-                        await self.remote.delete(str(uid))
+                        await self.remote.delete(str(uid), idp_user=idp_user)
                 async with self.session_factory() as session:
                     if operation == 'enable':
                         user = await session.get(User, uid, with_for_update=True)
