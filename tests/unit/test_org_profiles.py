@@ -1679,6 +1679,65 @@ class TestOrgDefaultsLinkedConnectionReachesMembers:
             'sk-connection-key',
         )
 
+    @pytest.mark.asyncio
+    async def test_member_gets_no_key_when_the_connection_is_gone(
+        self, async_session_maker, patch_route_db
+    ):
+        """A linked org default whose connection row is gone must not send the
+        member's key to the provider's default host; settings still load."""
+        from server.routes.org_models import OrgUpdate
+        from storage.org_store import OrgStore
+
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            session.add(
+                User(
+                    id=MEMBER_USER_ID,
+                    current_org_id=org_id,
+                    user_consents_to_analytics=True,
+                )
+            )
+            session.add(
+                OrgMember(
+                    org_id=org_id,
+                    user_id=MEMBER_USER_ID,
+                    role_id=10,
+                    llm_api_key='member-own-key',
+                    has_custom_llm_api_key=True,
+                    agent_settings_diff={},
+                    conversation_settings_diff={},
+                    status='active',
+                )
+            )
+            await session.commit()
+
+        with (
+            patch('storage.org_store.a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        ):
+            # The delete route blocks a referenced connection (409), so a
+            # dangling id comes from a row that is gone or failed validation.
+            await OrgStore.update_org(
+                org_id=org_id,
+                update_data=OrgUpdate(
+                    agent_settings_diff={
+                        'llm': {
+                            'model': 'azure/gpt-4o',
+                            'base_url': None,
+                            'provider_connection_id': 'gone',
+                        }
+                    }
+                ),
+                user_id=str(ADMIN_USER_ID),
+            )
+
+            member = await SaasSettingsStore(str(MEMBER_USER_ID)).load()
+
+        llm = member.agent_settings.llm
+        assert llm.model == 'azure/gpt-4o'
+        assert llm.api_key is None
+
 
 class TestSaveLinkedProfileStripsInlineCredentials:
     """Linking a profile must not leave a stale inline key or base_url stored

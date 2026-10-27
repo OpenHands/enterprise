@@ -479,7 +479,9 @@ class TestApplyProviderConnection:
         payload = {'model': 'openai/gpt-4o', 'api_key': 'own-key'}
         assert apply_provider_connection(self._org(None), payload) is payload
 
-    def test_dangling_link_leaves_payload_unchanged(self):
+    def test_dangling_link_drops_the_composed_key(self):
+        """The composed key must not go to the provider's default host, which
+        the linked LLM never chose; the rest of the payload is kept."""
         from storage.agent_profile_resolution import apply_provider_connection
 
         payload = {
@@ -487,10 +489,10 @@ class TestApplyProviderConnection:
             'api_key': 'own-key',
             'provider_connection_id': 'missing',
         }
-        assert (
-            apply_provider_connection(self._org({'connections': {}}), payload)
-            == payload
-        )
+        out = apply_provider_connection(self._org({'connections': {}}), payload)
+        assert out.get('api_key') is None
+        assert out['model'] == 'openai/gpt-4o'
+        assert out['provider_connection_id'] == 'missing'
 
 
 class TestResolveOrgProfileLlm:
@@ -502,6 +504,14 @@ class TestResolveOrgProfileLlm:
         from types import SimpleNamespace
 
         return SimpleNamespace(id=uuid.uuid4(), provider_connections=connections)
+
+    @staticmethod
+    def _connections(raw):
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnections,
+        )
+
+        return ProviderConnections.model_validate(raw or {})
 
     @staticmethod
     def _proxy_org():
@@ -527,7 +537,7 @@ class TestResolveOrgProfileLlm:
         # A provider model with no base_url: without the connection it would
         # go to the provider's default endpoint with the fallback key.
         llm = resolve_org_profile_llm(
-            self._proxy_org(),
+            self._connections(self._proxy_org().provider_connections),
             LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
             fallback_api_key=SecretStr('sk-settings'),
         )
@@ -543,7 +553,7 @@ class TestResolveOrgProfileLlm:
         from storage.agent_profile_resolution import resolve_org_profile_llm
 
         llm = resolve_org_profile_llm(
-            self._org(None),
+            self._connections(None),
             LLM(model='anthropic/claude-test'),
             fallback_api_key=SecretStr('sk-settings'),
         )
@@ -560,22 +570,8 @@ class TestResolveOrgProfileLlm:
         # The fallback key must not go to the provider's default host, which
         # the profile never chose.
         llm = resolve_org_profile_llm(
-            self._org({'connections': {}}),
+            self._connections({'connections': {}}),
             LLM(model='anthropic/claude-test', provider_connection_id='gone'),
-            fallback_api_key=SecretStr('sk-settings'),
-        )
-
-        assert llm.api_key is None
-
-    def test_linked_profile_without_an_org_gets_no_key(self):
-        from pydantic import SecretStr
-
-        from openhands.sdk.llm import LLM
-        from storage.agent_profile_resolution import resolve_org_profile_llm
-
-        llm = resolve_org_profile_llm(
-            None,
-            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
             fallback_api_key=SecretStr('sk-settings'),
         )
 
@@ -590,7 +586,7 @@ class TestResolveOrgProfileLlm:
 
         with pytest.raises(AgentLaunchError):
             resolve_org_profile_llm(
-                self._org({'connections': {}}),
+                self._connections({'connections': {}}),
                 LLM(model='anthropic/claude-test', provider_connection_id='gone'),
                 fallback_api_key=SecretStr('sk-settings'),
                 strict=True,

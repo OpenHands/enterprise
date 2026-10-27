@@ -21,7 +21,10 @@ from pydantic import SecretStr, ValidationError
 from openhands.app_server.settings.agent_profiles import AgentProfiles
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
 from openhands.app_server.settings.meta_profiles import OrgMetaProfiles
-from openhands.app_server.settings.provider_connections import ProviderConnections
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
+    ProviderConnections,
+)
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.launch import AgentLaunchError, LaunchStores
 from openhands.sdk.llm.utils.openhands_provider import (
@@ -139,9 +142,7 @@ def load_meta_profiles(org: Org) -> OrgMetaProfiles:
         return OrgMetaProfiles()
 
 
-def apply_provider_connection(
-    org: Org, llm_payload: dict[str, Any], *, strict: bool = False
-) -> dict[str, Any]:
+def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str, Any]:
     """Overlay a linked provider connection's credentials onto an LLM payload.
 
     Read-at-use resolution for the settings load path: when ``llm_payload``
@@ -149,35 +150,20 @@ def apply_provider_connection(
     ``base_url`` win over whatever the composed settings hold, so every member
     launching with a linked LLM (the org default or an activated profile) uses
     the shared credential, and rotating the connection applies on the next
-    load. A dangling id is logged and the payload returned unchanged, so a
-    deleted connection degrades to the stored settings instead of bricking
-    the load.
+    load. A dangling id drops the composed key, so it is not sent to a
+    provider host the linked LLM never chose; the load still works. The rule
+    is ``ProviderConnections.apply_to_payload``.
     """
-    connection_id = llm_payload.get('provider_connection_id')
-    if not connection_id:
-        return llm_payload
-    connection = load_provider_connections(org).get(connection_id)
-    if connection is None:
-        if strict:
-            raise AgentLaunchError(
-                'The LLM profile references a missing provider connection'
-            )
-        logger.warning(
-            'LLM settings reference missing provider connection %s on org %s',
-            connection_id,
-            org.id,
-        )
-        return llm_payload
-    resolved = dict(llm_payload)
-    resolved['base_url'] = connection.base_url
-    api_key = connection.api_key_value()
-    if api_key is not None:
-        resolved['api_key'] = api_key
+    resolved = load_provider_connections(org).apply_to_payload(llm_payload)
+    api_key = resolved.get('api_key')
+    if isinstance(api_key, SecretStr):
+        # The settings payload carries plain strings.
+        resolved['api_key'] = api_key.get_secret_value()
     return resolved
 
 
 def resolve_org_profile_llm(
-    org: Org | None,
+    connections: ProviderConnections,
     llm: LLM,
     *,
     fallback_api_key: SecretStr | None,
@@ -185,33 +171,31 @@ def resolve_org_profile_llm(
 ) -> LLM:
     """Turn a saved org LLM profile into the LLM a run launches with.
 
-    Fills the provider-default ``base_url`` and the fallback key
-    (``resolve_profile_llm``), canonicalizes bundled-proxy models, then applies
-    a linked provider connection of ``org``, whose ``api_key`` and ``base_url``
-    win. Without an org there are no connections, so that last step is
-    skipped. ``strict`` raises ``AgentLaunchError`` for a missing connection;
-    otherwise it is logged and the profile stays as resolved. Shared by
+    ``resolve_profile_llm`` with the org's ``connections`` (the shared rule:
+    provider-default ``base_url``, fallback key for unlinked keyless profiles,
+    a linked connection's key and ``base_url``), then the canonical model name
+    for bundled-proxy models. ``strict`` raises ``AgentLaunchError`` for a
+    missing connection; otherwise the profile resolves with no key. Shared by
     agent-profile launch (``OrgLLMProfileLoader``) and the
     ``/api/v1/users/me`` overlay.
-
-    A linked profile never takes ``fallback_api_key``: its key comes only from
-    the connection. With the connection missing (or no org), it resolves with
-    no key, so the settings key is not sent to a provider host the profile
-    never chose.
     """
-    linked = bool(llm.provider_connection_id)
-    resolved = resolve_profile_llm(
-        llm,
-        managed_proxy_url=LITE_LLM_API_URL,
-        fallback_api_key=None if linked else fallback_api_key,
-    )
+    try:
+        resolved = resolve_profile_llm(
+            llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            fallback_api_key=fallback_api_key,
+            connections=connections,
+            strict=strict,
+        )
+    except ProviderConnectionNotFoundError as exc:
+        raise AgentLaunchError(
+            'The LLM profile references a missing provider connection'
+        ) from exc
     payload = canonicalize_bundled_proxy_llm(
         canonicalize_openhands_llm_payload(
             resolved.model_dump(mode='json', context={'expose_secrets': True})
         )
     )
-    if org is not None:
-        payload = apply_provider_connection(org, payload, strict=strict)
     return type(resolved).model_validate(payload)
 
 
@@ -241,7 +225,10 @@ class OrgLLMProfileLoader:
             raise FileNotFoundError(f'LLM profile {name!r} not found')
         if self._org is not None:
             llm = resolve_org_profile_llm(
-                self._org, llm, fallback_api_key=self._fallback_api_key, strict=True
+                load_provider_connections(self._org),
+                llm,
+                fallback_api_key=self._fallback_api_key,
+                strict=True,
             )
         return llm
 

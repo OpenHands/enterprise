@@ -201,27 +201,51 @@ class ProviderConnections(BaseModel):
     def apply(self, llm: LLM, *, strict: bool = False) -> LLM:
         """Overlay the linked connection's ``api_key`` and ``base_url`` on ``llm``.
 
-        Unlinked LLMs are returned unchanged. The connection's values win, and
-        its ``base_url`` is applied as-is, including ``None``. A missing
-        connection raises ``ProviderConnectionNotFoundError`` when ``strict``;
-        otherwise it is logged and ``llm`` is returned unchanged.
+        Same rule as :meth:`apply_to_payload`, for an ``LLM``.
         """
-        connection_id = llm.provider_connection_id
-        if not connection_id:
+        if not llm.provider_connection_id:
             return llm
+        payload = self.apply_to_payload(
+            {'provider_connection_id': llm.provider_connection_id}, strict=strict
+        )
+        return llm.model_copy(
+            update={
+                'base_url': payload.get('base_url', llm.base_url),
+                'api_key': payload.get('api_key'),
+            }
+        )
+
+    def apply_to_payload(
+        self, llm_payload: dict[str, Any], *, strict: bool = False
+    ) -> dict[str, Any]:
+        """The provider connection rule, on an LLM payload (e.g. a settings dict).
+
+        - No ``provider_connection_id``: returned unchanged.
+        - Connection found: its ``api_key`` and ``base_url`` win. ``base_url``
+          is applied as-is, including ``None``. A connection with no key leaves
+          the payload with no key.
+        - Connection missing: raises ``ProviderConnectionNotFoundError`` when
+          ``strict``; otherwise logs and drops ``api_key``, so no other key is
+          sent to a host the linked LLM never chose.
+        """
+        connection_id = llm_payload.get('provider_connection_id')
+        if not connection_id:
+            return llm_payload
+        resolved = {k: v for k, v in llm_payload.items() if k != 'api_key'}
         connection = self.get(connection_id)
         if connection is None:
             if strict:
                 raise ProviderConnectionNotFoundError(connection_id)
             logger.warning(
-                'LLM profile references missing provider connection %s',
+                'LLM settings reference missing provider connection %s',
                 connection_id,
             )
-            return llm
-        updates: dict[str, Any] = {'base_url': connection.base_url}
-        if connection.api_key_value() is not None:
-            updates['api_key'] = connection.api_key
-        return llm.model_copy(update=updates)
+            return resolved
+        resolved['base_url'] = connection.base_url
+        api_key = connection.api_key_value()
+        if api_key is not None:
+            resolved['api_key'] = connection.api_key
+        return resolved
 
     def all(self) -> list[ProviderConnection]:
         return list(self.connections.values())
