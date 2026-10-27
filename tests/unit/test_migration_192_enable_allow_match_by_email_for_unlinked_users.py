@@ -1,8 +1,11 @@
 """Tests for migration 192 (enable ``allow_match_by_email`` for unlinked users).
 
 Runs the migration's ``upgrade()`` against a real Postgres database seeded with
-users in each state the migration distinguishes. The database is first
-downgraded to 196, since migration 197 drops the column again.
+users in each state the migration distinguishes. Migration 197 drops the column
+again, so each test first re-adds it through that migration's ``downgrade()``
+while the rest of the schema stays at head: later migrations add columns the
+ORM fixtures insert through (e.g. 199 ``org.meta_profiles``), which a full
+downgrade to 196 would remove.
 """
 
 import json
@@ -11,28 +14,31 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from tests import postgres_testdb
+VERSIONS_DIR = Path(__file__).resolve().parents[2] / 'migrations' / 'versions'
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / 'migrations'
-    / 'versions'
-    / '192_enable_allow_match_by_email_for_unlinked_users.py'
-)
-spec = spec_from_file_location('migration_192', MIGRATION_PATH)
-assert spec is not None and spec.loader is not None
-migration_192 = module_from_spec(spec)
-spec.loader.exec_module(migration_192)
+
+def _load_migration(filename: str):
+    spec = spec_from_file_location(filename.split('_', 1)[0], VERSIONS_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+migration_192 = _load_migration('192_enable_allow_match_by_email_for_unlinked_users.py')
+migration_197 = _load_migration('197_drop_user_allow_match_by_email.py')
 
 
 @pytest.fixture(autouse=True)
-def _before_column_dropped(test_database: postgres_testdb.TestDatabase):
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '196'
-    )
+def _before_column_dropped(engine: Engine):
+    with engine.begin() as conn:
+        migration_197.op = Operations(MigrationContext.configure(conn))
+        migration_197.downgrade()
 
 
 def _flag(engine: Engine, user_id) -> bool:

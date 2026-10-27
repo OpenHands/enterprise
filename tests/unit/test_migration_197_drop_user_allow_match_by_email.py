@@ -2,10 +2,36 @@
 
 from __future__ import annotations
 
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from tests import postgres_testdb
+
+MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / 'migrations'
+    / 'versions'
+    / '197_drop_user_allow_match_by_email.py'
+)
+spec = spec_from_file_location('migration_197', MIGRATION_PATH)
+assert spec is not None and spec.loader is not None
+migration_197 = module_from_spec(spec)
+spec.loader.exec_module(migration_197)
+
+
+def _run(engine: Engine, step: str) -> None:
+    """Run ``migration_197.upgrade`` / ``downgrade`` alone, keeping the rest of
+    the schema at head: later migrations add columns the ORM fixtures insert
+    through (e.g. 199 ``org.meta_profiles``), which ``alembic downgrade 196``
+    would remove."""
+    with engine.begin() as conn:
+        migration_197.op = Operations(MigrationContext.configure(conn))
+        getattr(migration_197, step)()
 
 
 def _user_columns(engine: Engine) -> set[str]:
@@ -20,12 +46,8 @@ def _user_columns(engine: Engine) -> set[str]:
         )
 
 
-def test_upgrade_drops_column(
-    engine: Engine, test_database: postgres_testdb.TestDatabase, create_user
-):
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '196'
-    )
+def test_upgrade_drops_column(engine: Engine, create_user):
+    _run(engine, 'downgrade')
     user = create_user(email='kept@example.com')
     with engine.begin() as conn:
         conn.execute(
@@ -33,9 +55,7 @@ def test_upgrade_drops_column(
             {'id': user.id},
         )
 
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '197'
-    )
+    _run(engine, 'upgrade')
 
     assert 'allow_match_by_email' not in _user_columns(engine)
     with engine.connect() as conn:
