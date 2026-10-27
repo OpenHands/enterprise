@@ -61,7 +61,7 @@ def test_downgrade_refuses_while_a_member_has_the_role(
     test_database: postgres_testdb.TestDatabase,
 ):
     _upgrade_from_200(test_database)
-    # The ORM models match head, so seed rows there; downgrading to 198
+    # The ORM models match head, so seed rows there; downgrading to 200
     # passes through the later migrations first.
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'upgrade', 'head'
