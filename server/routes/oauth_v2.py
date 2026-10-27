@@ -45,7 +45,11 @@ from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.secrets.secrets_models import Secrets
-from openhands.app_server.user_auth import get_secrets, get_user_id, reject_service_account
+from openhands.app_server.user_auth import (
+    get_secrets,
+    get_user_id,
+    reject_service_account,
+)
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
