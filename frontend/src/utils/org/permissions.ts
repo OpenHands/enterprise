@@ -11,7 +11,6 @@ type ViewBillingPermission = "view_billing";
 
 type ManageSecretsPermission = "manage_secrets";
 type ManageOrgSecretsPermission = "manage_org_secrets";
-type ManageOrgAgentProfilesPermission = "manage_org_agent_profiles";
 type ManageMCPPermission = "manage_mcp";
 type ManageIntegrationsPermission = "manage_integrations";
 type ManageIntegrationProvidersPermission = "manage_integration_providers";
@@ -45,7 +44,6 @@ export type PermissionKey =
   | ViewBillingPermission
   | ManageSecretsPermission
   | ManageOrgSecretsPermission
-  | ManageOrgAgentProfilesPermission
   | ManageMCPPermission
   | ManageIntegrationsPermission
   | ManageIntegrationProvidersPermission
