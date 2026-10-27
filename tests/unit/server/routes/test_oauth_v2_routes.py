@@ -578,6 +578,19 @@ def test_check_git_provider_reports_result(
     check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
 
 
+def test_check_git_provider_accepts_git_provider_that_is_also_the_idp(client, app):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=3, category='github', is_idp=True)
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/3/check')
+
+    assert response.status_code == 200
+    assert response.json() == {'id': 3, 'status': 'valid', 'needs_reconnect': False}
+    check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
+
+
 def test_check_git_provider_uses_the_users_stored_host(client, app):
     _override_user_context(app, uuid4())
     _override_secrets(
@@ -610,8 +623,8 @@ def test_check_git_provider_not_linked(client, app):
 @pytest.mark.parametrize(
     'provider',
     [
-        _fake_provider(provider_id=7, category='github', is_idp=True),
         _fake_provider(provider_id=7, category='enterprise_sso'),
+        _fake_provider(provider_id=7, category='enterprise_sso', is_idp=True),
         _fake_saml_provider(provider_id=7),
     ],
 )

@@ -843,9 +843,8 @@ async def oauth_v2_check_git_provider(
     provider = await _get_provider(provider_id)
     details = provider.details
     if (
-        provider.is_idp
-        or not isinstance(details, OAuthProviderDetails)
-        or details.provider_type == ProviderType.ENTERPRISE_SSO
+        not isinstance(details, OAuthProviderDetails)
+        or details.provider_type not in GIT_PROVIDER_TYPES
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
