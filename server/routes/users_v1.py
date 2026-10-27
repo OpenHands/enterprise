@@ -28,10 +28,6 @@ from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
-from openhands.app_server.settings.provider_connections import (
-    ProviderConnectionNotFoundError,
-    ProviderConnections,
-)
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
@@ -39,13 +35,8 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
-from server.routes.org_models import OrgNotFoundError
-from server.routes.org_provider_connections import (
-    _load_connections as load_provider_connections,
-)
 from storage.agent_profile_resolution import resolve_org_profile_llm
 from storage.org import Org
-from storage.org_service import OrgService
 from storage.org_store import OrgStore
 
 _logger = logging.getLogger(__name__)
@@ -113,42 +104,6 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> N
             profiles[name] = resolve_org_profile_llm(
                 org, profile_llm, fallback_api_key=fallback_api_key
             )
-
-
-async def _load_provider_connections_for_user(
-    user_info: SaasUserInfo, user_context: UserContext
-) -> ProviderConnections:
-    if not user_info.org_id:
-        return ProviderConnections()
-    try:
-        org_id = UUID(user_info.org_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f'Invalid organization id: {user_info.org_id}',
-        ) from exc
-
-    user_id = await user_context.get_user_id()
-    if user_id is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
-
-    try:
-        org = await OrgService.get_org_by_id(org_id=org_id, user_id=user_id)
-    except OrgNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    return load_provider_connections(org)
-
-
-def _provider_connection_422(exc: ProviderConnectionNotFoundError) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail=(
-            f"Profile references provider connection '{exc.connection_id}', "
-            'which does not exist. Update the profile or recreate the connection.'
-        ),
-    )
 
 
 @saas_users_v1_router.get('/me')
