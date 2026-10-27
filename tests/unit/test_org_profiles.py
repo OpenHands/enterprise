@@ -666,6 +666,19 @@ class TestProfileLifecycleIntegration:
         self, async_session_maker, patch_route_db
     ):
         org_id = patch_route_db
+        # The save route accepts only a link to an existing connection.
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.provider_connections = {
+                'connections': {
+                    'conn-1': {
+                        'id': 'conn-1',
+                        'display_name': 'Conn',
+                        'api_key': 'sk-conn',
+                    }
+                }
+            }
+            await session.commit()
 
         await save_profile(
             org_id=org_id,

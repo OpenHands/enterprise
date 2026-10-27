@@ -325,7 +325,20 @@ async def save_profile(
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
-        if getattr(llm, 'provider_connection_id', None):
+        if llm.provider_connection_id:
+            # Catch a typo when the link is set or changed. Keeping a link that
+            # is already stored stays allowed, so a profile whose connection
+            # went missing can still be edited (the UI shows it to unlink).
+            relinked = existing is None or (
+                existing.provider_connection_id != llm.provider_connection_id
+            )
+            if relinked and not _load_connections(org).has(llm.provider_connection_id):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=ProviderConnectionNotFoundError(
+                        llm.provider_connection_id
+                    ).profile_detail,
+                )
             # A linked profile reads its credentials from the connection at
             # activation/load time. Never keep an inline key or base_url
             # underneath the link: a stale key would resurface silently on

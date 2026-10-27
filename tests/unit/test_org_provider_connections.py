@@ -391,26 +391,87 @@ class TestResolutionAtActivation:
         assert resp.llm['base_url'] == 'https://prov'
 
     @pytest.mark.asyncio
-    async def test_activate_dangling_reference_returns_422(self, patch_route_db):
+    async def test_activate_dangling_reference_returns_422(
+        self, patch_route_db, async_session_maker
+    ):
         from server.routes.org_profiles import activate_profile
 
         org_id = patch_route_db
-        await save_profile(
-            org_id=org_id,
-            name='dangling',
-            request=SaveProfileRequest(
-                llm=StrictLLM(
-                    model='anthropic/claude-3-5-sonnet',
-                    provider_connection_id='does-not-exist',
-                )
-            ),
-            user_id=str(ADMIN_USER_ID),
-        )
+        # The save route rejects an unknown id, so plant the dangling link on
+        # the row, as a connection row that fails validation would leave it.
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.llm_profiles = {
+                'profiles': {
+                    'dangling': {
+                        'model': 'anthropic/claude-3-5-sonnet',
+                        'provider_connection_id': 'does-not-exist',
+                    }
+                }
+            }
+            await session.commit()
         with pytest.raises(HTTPException) as exc:
             await activate_profile(
                 org_id=org_id, name='dangling', user_id=str(ADMIN_USER_ID)
             )
         assert exc.value.status_code == 422
+
+
+class TestSaveRejectsUnknownConnection:
+    """A profile cannot link to a connection that does not exist: the save is
+    the place to catch a typo, not the next run."""
+
+    @pytest.mark.asyncio
+    async def test_save_with_unknown_connection_returns_422(self, patch_route_db):
+        org_id = patch_route_db
+        with pytest.raises(HTTPException) as exc:
+            await save_profile(
+                org_id=org_id,
+                name='typo',
+                request=SaveProfileRequest(
+                    llm=StrictLLM(
+                        model='anthropic/claude-3-5-sonnet',
+                        provider_connection_id='corp-prox',
+                    )
+                ),
+                user_id=str(ADMIN_USER_ID),
+            )
+        assert exc.value.status_code == 422
+        assert "provider connection 'corp-prox'" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_editing_a_profile_keeps_its_orphaned_link(
+        self, patch_route_db, async_session_maker
+    ):
+        """A profile whose connection went missing can still be edited (e.g. a
+        model change); the UI shows the orphaned link so it can be cleared."""
+        org_id = patch_route_db
+        async with async_session_maker() as session:
+            org = await session.get(Org, org_id)
+            org.llm_profiles = {
+                'profiles': {
+                    'orphan': {
+                        'model': 'anthropic/claude-3-5-sonnet',
+                        'provider_connection_id': 'gone',
+                    }
+                }
+            }
+            await session.commit()
+
+        await save_profile(
+            org_id=org_id,
+            name='orphan',
+            request=SaveProfileRequest(
+                llm=StrictLLM(
+                    model='anthropic/claude-3-7-sonnet', provider_connection_id='gone'
+                )
+            ),
+            user_id=str(ADMIN_USER_ID),
+        )
+
+        org = await _read_org(async_session_maker, org_id)
+        saved = org.llm_profiles['profiles']['orphan']
+        assert saved['model'] == 'anthropic/claude-3-7-sonnet'
 
 
 class TestApiKeyWhitespace:
