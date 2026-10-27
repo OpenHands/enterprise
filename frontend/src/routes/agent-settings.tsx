@@ -28,6 +28,13 @@ import {
   getAgentSettingValue,
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
+import {
+  CUSTOM_MODEL_KEY,
+  CUSTOM_PRESET,
+  detectPreset,
+  isKnownModel,
+  toStringArray,
+} from "#/utils/acp-agent-form";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
 import {
   formControlMultilineFieldClassName,
@@ -38,37 +45,7 @@ import { cn } from "#/utils/utils";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 
 const TOOL_CONCURRENCY_FIELD_KEY = "tool_concurrency_limit";
-const CUSTOM_PRESET = "custom";
-const CUSTOM_MODEL_KEY = "__custom__";
 const EMPTY_ACP_PROVIDERS: ACPProviderConfig[] = [];
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is string => typeof v === "string")
-    : [];
-}
-
-function detectPreset(
-  commandText: string,
-  providers: ACPProviderConfig[],
-): string {
-  const normalized = tokenizeCommand(commandText).join(" ");
-  for (const provider of providers) {
-    if (normalized === provider.default_command.join(" ")) {
-      return provider.key;
-    }
-  }
-  return CUSTOM_PRESET;
-}
-
-function isKnownModel(
-  provider: ACPProviderConfig | undefined,
-  model: string,
-): boolean {
-  return (
-    provider?.available_models?.some(({ id }) => id === model.trim()) ?? false
-  );
-}
 
 export const clientLoader = createPermissionGuard("view_llm_settings");
 
