@@ -878,7 +878,9 @@ class GitProviderCheckResult(BaseModel):
 
 
 @oauth_v2_router.post(
-    '/git-providers/{provider_id}/check', response_model=GitProviderCheckResult
+    '/git-providers/{provider_id}/check',
+    response_model=GitProviderCheckResult,
+    dependencies=[Depends(reject_service_account)],
 )
 async def oauth_v2_check_git_provider(
     provider_id: int,

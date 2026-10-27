@@ -58,6 +58,7 @@ GUARDED = [
     (email_router, 'POST', '/api/email'),
     (oauth_v2_router, 'POST', '/oauth/{provider_id}/link'),
     (oauth_v2_router, 'DELETE', '/oauth/{provider_id}'),
+    (oauth_v2_router, 'POST', '/oauth/git-providers/{provider_id}/check'),
     (oauth_device_router, 'POST', '/oauth/device/verify-authenticated'),
     (billing_router, 'POST', '/api/billing/create-customer-setup-session'),
     (billing_router, 'POST', '/api/billing/create-checkout-session'),
