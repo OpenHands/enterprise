@@ -15,8 +15,9 @@ This package contains functionality for sharing conversations.
 ## Features
 
 - Read-only access to shared conversations
-- Public conversations are visible to anyone; automation-triggered conversations
-  are also visible to authenticated members of their org
+- Public conversations shared from a personal workspace are visible to anyone;
+  public conversations shared from a team org, and automation-triggered
+  conversations, are only visible to authenticated members of their org
 - Event access for shared conversations
 - Search and filtering capabilities
 - Pagination support

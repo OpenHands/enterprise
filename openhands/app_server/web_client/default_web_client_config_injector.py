@@ -217,7 +217,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, and ENABLE_OAUTH_V2_LOGIN from
+    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
+    ENABLE_AGENT_CONTEXT_PAGE, and ENABLE_AGENT_PROFILES_PAGE from
     environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
@@ -256,6 +257,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
         enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
+        enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
+        enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
     )
 
 
