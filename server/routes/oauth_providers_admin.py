@@ -1,7 +1,8 @@
 """Admin REST API for the ``auth_providers`` table.
 
 Exposes CRUD for login/integration provider configuration rows -- login IDPs
-(``is_idp=True``) and git providers (``is_idp=False``), see
+(``is_idp=True``) and git providers (``OAuthProviderDetails`` with a git
+``provider_type``; a row can be both), see
 ``storage.auth_provider`` for the row shape and ``storage.auth_provider_details``
 for the ``details`` discriminated union. Every endpoint requires the
 ``Permission.MANAGE_OAUTH_PROVIDERS`` permission, which -- like
@@ -99,7 +100,9 @@ class CreateAuthProviderRequest(BaseModel):
 
     title: str = Field(..., min_length=1)
     is_idp: bool = Field(
-        default=False, description='True for login IDPs, False for git providers.'
+        default=False,
+        description='True to offer this row as a login IDP. Independent of '
+        'whether it is a git provider (that is set by provider_type).',
     )
     icon: str | None = Field(
         default=None, description="Raw SVG markup for this provider's login button."

@@ -16,8 +16,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import GIT_PROVIDER_TYPES, OAuthProviderDetails
 from storage.database import a_session_maker
 from storage.oauth_token import OAuthToken
+
+# Independent of ``is_idp``: a login IDP can also be a git provider.
+GIT_PROVIDER_CONDITIONS = (
+    AuthProvider.kind == OAuthProviderDetails.__name__,
+    AuthProvider.details['provider_type']
+    .as_string()
+    .in_([t.value for t in GIT_PROVIDER_TYPES]),
+)
 
 
 @dataclass
@@ -107,14 +116,14 @@ class AuthProviderStore:
     async def get_git_providers(
         self, *, enabled_only: bool = True
     ) -> list[AuthProvider]:
-        """Return git providers (``is_idp=False``).
+        """Return OAuth rows whose ``provider_type`` is in ``GIT_PROVIDER_TYPES``.
 
         ``enabled_only`` mirrors :meth:`get_idp_providers`: pass ``False``
         when resolving tokens for a user who linked the provider while it was
         still enabled.
         """
         async with a_session_maker() as session:
-            query = select(AuthProvider).where(AuthProvider.is_idp.is_(False))
+            query = select(AuthProvider).where(*GIT_PROVIDER_CONDITIONS)
             if enabled_only:
                 query = query.where(AuthProvider.enabled.is_(True))
             result = await session.execute(query)
@@ -149,7 +158,7 @@ class AuthProviderStore:
                 .join(OAuthToken, OAuthToken.oauth_provider_id == AuthProvider.id)
                 .where(
                     OAuthToken.user_id == user_id,
-                    AuthProvider.is_idp.is_(False),
+                    *GIT_PROVIDER_CONDITIONS,
                     AuthProvider.details['provider_type'].as_string() == provider_type,
                 )
                 .order_by(AuthProvider.id.desc())
@@ -160,7 +169,7 @@ class AuthProviderStore:
     async def get_linked_oauth_providers(self, user_id: UUID) -> list[AuthProvider]:
         """OAuth rows the user holds an ``oauth_tokens`` row for.
 
-        Git providers come before login IDPs, then the highest ``id`` first.
+        Non-IDP rows come before IDP rows, then the highest ``id`` first.
         """
         async with a_session_maker() as session:
             result = await session.execute(
@@ -312,7 +321,7 @@ class _ScopedProviderStore:
 
     async def get_git_providers(self) -> list[AuthProvider]:
         result = await self._session.execute(
-            select(AuthProvider).where(AuthProvider.is_idp.is_(False))
+            select(AuthProvider).where(*GIT_PROVIDER_CONDITIONS)
         )
         return list(result.scalars().all())
 

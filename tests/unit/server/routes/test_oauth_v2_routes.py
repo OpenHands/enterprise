@@ -1497,7 +1497,7 @@ def test_callback_error_param_400(client, jwt_svc):
     [
         ('gitlab', False, 'oauth_v2_login_on', True),
         ('github', False, 'oauth_v2_login_on', False),
-        ('gitlab', True, 'oauth_v2_login_on', False),
+        ('gitlab', True, 'oauth_v2_login_on', True),
         ('gitlab', False, 'oauth_v2_login_off', False),
     ],
 )
@@ -1653,8 +1653,14 @@ def test_link_requires_auth(app, client, jwt_svc):
     assert response.status_code == 401
 
 
-def test_link_idp_provider_400(app, client, jwt_svc):
-    provider = _fake_provider(is_idp=True)
+@pytest.mark.parametrize(
+    ('category', 'expected_status'),
+    [('enterprise_sso', 400), ('github', 200)],
+)
+def test_link_idp_provider_only_if_git_provider(
+    app, client, jwt_svc, category, expected_status
+):
+    provider = _fake_provider(category=category, is_idp=True)
     user_id = uuid4()
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -1666,7 +1672,7 @@ def test_link_idp_provider_400(app, client, jwt_svc):
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
-    assert response.status_code == 400
+    assert response.status_code == expected_status
 
 
 def test_link_unknown_provider_kind_404(app, client, jwt_svc):

@@ -77,6 +77,7 @@ from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
+    GIT_PROVIDER_TYPES,
     OAuthProviderDetails,
     PasswordProviderDetails,
     SamlProviderDetails,
@@ -560,7 +561,7 @@ async def oauth_v2_callback(
         is_oauth_v2_login_enabled()
         and isinstance(details, OAuthProviderDetails)
         and (
-            (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
+            details.provider_type == ProviderType.GITLAB
             or details.legacy_keycloak_type == ProviderType.GITLAB
         )
     ):
@@ -657,7 +658,10 @@ async def oauth_v2_link(
             detail='Authentication required to link a provider',
         )
     provider = await _get_provider(provider_id)
-    if provider.is_idp:
+    if provider.is_idp and not (
+        isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type in GIT_PROVIDER_TYPES
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
