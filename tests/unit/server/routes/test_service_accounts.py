@@ -373,12 +373,10 @@ def _patch_automation_service(get: AsyncMock, url: str = 'http://automation'):
 
 @pytest.mark.asyncio
 async def test_delete_blocked_by_owned_automation(client, as_admin, svc, lifecycle):
-    """The owner is found on the second page; other users' automations are ignored."""
-    page1 = _automation_response(
-        [{'user_id': str(uuid.uuid4())} for _ in range(100)], total=101
+    """The check filters by owner in one request and does not page."""
+    get = AsyncMock(
+        return_value=_automation_response([{'user_id': str(SA_ID)}], total=1)
     )
-    page2 = _automation_response([{'user_id': str(SA_ID)}], total=101)
-    get = AsyncMock(side_effect=[page1, page2])
     url_patch, client_patch = _patch_automation_service(get)
 
     with url_patch, client_patch:
@@ -389,11 +387,12 @@ async def test_delete_blocked_by_owned_automation(client, as_admin, svc, lifecyc
 
     assert resp.status_code == 409
     lifecycle.delete_service_account.assert_not_awaited()
-    first_call = get.await_args_list[0]
-    assert first_call.args[0] == 'http://automation/v1'
-    assert first_call.kwargs['headers']['authorization'] == 'Bearer k'
-    assert first_call.kwargs['headers']['X-Org-Id'] == str(ORG_ID)
-    assert get.await_args_list[1].kwargs['params']['offset'] == 100
+    get.assert_awaited_once()
+    call = get.await_args_list[0]
+    assert call.args[0] == 'http://automation/v1'
+    assert call.kwargs['params']['owner_id'] == str(SA_ID)
+    assert call.kwargs['headers']['authorization'] == 'Bearer k'
+    assert call.kwargs['headers']['X-Org-Id'] == str(ORG_ID)
 
 
 @pytest.mark.asyncio
@@ -415,9 +414,7 @@ async def test_delete_fails_closed_when_automation_service_unreachable(
 async def test_delete_succeeds_when_no_automation_is_owned(
     client, as_admin, svc, lifecycle
 ):
-    get = AsyncMock(
-        return_value=_automation_response([{'user_id': str(uuid.uuid4())}], total=1)
-    )
+    get = AsyncMock(return_value=_automation_response([], total=0))
     url_patch, client_patch = _patch_automation_service(get)
 
     with url_patch, client_patch:
@@ -425,6 +422,7 @@ async def test_delete_succeeds_when_no_automation_is_owned(
             resp = await c.delete(_url())
 
     assert resp.status_code == 204
+    assert get.await_args_list[0].kwargs['params']['owner_id'] == str(SA_ID)
     lifecycle.delete_service_account.assert_awaited_once_with(str(SA_ID))
 
 
