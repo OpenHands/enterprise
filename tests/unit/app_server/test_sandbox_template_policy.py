@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 from starlette.datastructures import State
 
+from integrations.resolver_context import ResolverUserContext
 from openhands.app_server import config as app_config
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
@@ -145,6 +146,51 @@ async def test_helm_policy_and_flag_use_only_authenticated_org(monkeypatch):
         async with app_config.get_sandbox_spec_service(state) as service:
             result = await get_sandbox_selection_options(service)
         assert [item.id for item in result.items] == [expected_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selector_enabled', [False, True])
+async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
+    monkeypatch, selector_enabled
+):
+    org_id = uuid4()
+    monkeypatch.setenv(
+        ORG_TEMPLATES_ENV,
+        json.dumps(
+            {str(org_id): {'template_ids': ['large'], 'default_template_id': 'large'}}
+        ),
+    )
+    monkeypatch.setattr(
+        feature_flag_service, 'is_enabled', AsyncMock(return_value=selector_enabled)
+    )
+    # Integration routing, rather than the user's currently active organization,
+    # owns the policy used for this conversation.
+    auth = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=uuid4()))
+    context = ResolverUserContext(saas_user_auth=auth, resolver_org_id=org_id)
+
+    @asynccontextmanager
+    async def discovery_context(*args):
+        yield scoped('standard').delegate
+
+    configuration = SimpleNamespace(
+        sandbox_spec=SimpleNamespace(context=discovery_context),
+        user=AuthUserContextInjector(),
+    )
+    monkeypatch.setattr(app_config, 'get_global_config', lambda: configuration)
+    state = State({'user_context': context})
+    async with app_config.get_sandbox_spec_service(state) as service:
+        assert service.selection_enabled is selector_enabled
+        assert service.allow_sandbox_reuse is False
+        assert (await service.get_default_sandbox_spec()).id == 'large'
+        # Ignore an out-of-policy saved preference, but reject an explicit one.
+        resolved = await resolve_sandbox_spec(
+            None, 'testing', service, logging.getLogger(__name__)
+        )
+        assert resolved.id == 'large'
+        with pytest.raises(ValueError, match="Sandbox Spec 'testing' not found"):
+            await resolve_sandbox_spec(
+                'testing', None, service, logging.getLogger(__name__)
+            )
 
 
 @pytest.mark.parametrize(
