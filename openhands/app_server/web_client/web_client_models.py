@@ -82,6 +82,11 @@ class WebClientFeatureFlags(BaseModel):
     # UI-level only -- the agent-profiles API is not gated.
     enable_agent_context_page: bool = False
     enable_agent_profiles_page: bool = False
+    # ``enable_org_agent_profiles`` lets org admins add, edit and delete the
+    # organization's shared Agent Profiles on that page (OHE-3088). Set from
+    # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
+    # its org-scope constraints are not gated.
+    enable_org_agent_profiles: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

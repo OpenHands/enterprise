@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import AgentProfilesService, {
   AgentProfile,
   AgentProfileSaveInput,
+  AgentProfileScope,
   AgentProfileSummary,
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
@@ -16,7 +17,9 @@ import { useSaveAgentProfile } from "#/hooks/mutation/use-save-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
-import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import { useOrgSecrets, useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSkills } from "#/hooks/query/use-skills";
 import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
 import SkillsService from "#/api/skills-service";
@@ -74,6 +77,27 @@ function configuredMcpServers(raw: unknown): ProfileScopeItem[] {
   return items;
 }
 
+/**
+ * The org editor's view of a profile's scopes: no MCP servers, and an explicit
+ * secrets list -- every org-shared secret when the stored profile had no list
+ * (OHE-3088). The save body enforces the same shape.
+ */
+function withOrgScopes(
+  state: AgentProfileFormState,
+  stored: AgentProfile | null,
+  orgSecretNames: string[],
+): AgentProfileFormState {
+  return {
+    ...state,
+    mcpMode: "custom",
+    mcpSelected: [],
+    secretsMode: "custom",
+    secretsSelected: Array.isArray(stored?.secret_refs)
+      ? state.secretsSelected
+      : orgSecretNames,
+  };
+}
+
 /** Serialized save body, or ``null`` while the form holds an invalid value. */
 function snapshotInput(
   state: AgentProfileFormState,
@@ -88,10 +112,11 @@ function snapshotInput(
 }
 
 /**
- * The personal Agent Profiles page: the member's profile library with an
- * in-place create/edit editor, mirroring the Agent Canvas experience. Every
- * write targets ``scope=personal``; the org's shared profiles are listed for
- * activation only.
+ * The Agent Profiles page: the member's profile library with an in-place
+ * create/edit editor, mirroring the Agent Canvas experience. Writes carry the
+ * scope of the collection being edited: a member's own profiles, or -- for an
+ * org admin with the org-profiles flag on -- the organization's shared ones,
+ * which the editor narrows to organization-scoped settings (OHE-3088).
  */
 export function AgentProfilesView() {
   const { t } = useTranslation();
@@ -104,6 +129,9 @@ export function AgentProfilesView() {
   const { data: llmProfilesData } = useLlmProfiles();
   // Same query as the ACP credential form, so the list is fetched once.
   const secretsQuery = useSearchSecrets();
+  const orgSecrets = useOrgSecrets();
+  const { data: me } = useMe();
+  const { hasPermission } = usePermission(me?.role ?? "member");
   const { data: skills, isError: skillsLoadFailed } = useSkills();
   const saveProfile = useSaveAgentProfile();
   const renameProfile = useRenameAgentProfile();
@@ -112,6 +140,9 @@ export function AgentProfilesView() {
   const isEditorReady = !!settings;
 
   const [viewMode, setViewMode] = useState<ViewMode>("list");
+  // The collection the open editor writes to.
+  const [editingScope, setEditingScope] =
+    useState<AgentProfileScope>("personal");
   const [profileName, setProfileName] = useState("");
   const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(
     null,
@@ -149,6 +180,16 @@ export function AgentProfilesView() {
 
   const acpProviders = config?.acp_providers ?? EMPTY_ACP_PROVIDERS;
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
+  // Org admins manage the organization's shared profiles here when the
+  // org-profiles flag is on; everyone else only sets one as their default.
+  const canManageOrg =
+    !!config?.feature_flags?.enable_org_agent_profiles &&
+    hasPermission("manage_org_agent_profiles");
+  const isOrgEditor = editingScope === "org";
+  // The org editor seeds its secrets list from the org's shared secrets, so
+  // it also waits for that list to have loaded.
+  const isOrgEditorReady =
+    isEditorReady && !orgSecrets.isLoading && !orgSecrets.isError;
   const fields = useMemo(
     () => schema?.sections.flatMap((section) => section.fields),
     [schema],
@@ -165,8 +206,15 @@ export function AgentProfilesView() {
       toolConcurrencyField,
       schema: schema ?? null,
       defaultLlmProfileRef,
+      profileScope: editingScope,
     }),
-    [acpProviders, toolConcurrencyField, schema, defaultLlmProfileRef],
+    [
+      acpProviders,
+      toolConcurrencyField,
+      schema,
+      defaultLlmProfileRef,
+      editingScope,
+    ],
   );
   const mcpConfigRaw = settings?.agent_settings?.mcp_config;
   const mcpServers = useMemo(
@@ -184,6 +232,21 @@ export function AgentProfilesView() {
       })),
     [secretsQuery.data],
   );
+  // An org profile may only reference the organization's shared secrets,
+  // listed under the raw names the org endpoints use.
+  const orgSecretItems = useMemo<ProfileScopeItem[]>(
+    () =>
+      orgSecrets.data.map((secret) => ({
+        name: secret.name,
+        description: secret.description ?? null,
+        scope: "organization" as const,
+      })),
+    [orgSecrets.data],
+  );
+  const orgSecretNames = useMemo(
+    () => orgSecretItems.map(({ name }) => name),
+    [orgSecretItems],
+  );
 
   // Skills with the scope of the marketplace they come from, as the Skills
   // page derives it; organization-marketplace skills get the badge.
@@ -194,9 +257,14 @@ export function AgentProfilesView() {
   // editor is open.
   const inheritedMarketplaces = settings?.inherited_marketplaces;
   const registeredMarketplaces = settings?.registered_marketplaces;
+  // An org profile loads organization and instance skills only, so its
+  // picker leaves out the member's own marketplaces and skills.
   const marketplaces = useMemo<MarketplaceRegistration[]>(
-    () => [...(inheritedMarketplaces ?? []), ...(registeredMarketplaces ?? [])],
-    [inheritedMarketplaces, registeredMarketplaces],
+    () => [
+      ...(inheritedMarketplaces ?? []),
+      ...(isOrgEditor ? [] : (registeredMarketplaces ?? [])),
+    ],
+    [inheritedMarketplaces, registeredMarketplaces, isOrgEditor],
   );
   const { data: marketplaceSkills, isError: isMarketplaceSkillsError } =
     useQuery({
@@ -233,7 +301,19 @@ export function AgentProfilesView() {
   const skillItems = useMemo<ProfileScopeItem[]>(() => {
     const items: ProfileScopeItem[] = [];
     const seen = new Set<string>();
-    for (const skill of skills ?? []) {
+    // An org profile loads organization and instance skills only: the
+    // server's global skills and those of the inherited marketplaces, never
+    // the member's own.
+    const marketplaceSources = new Set(
+      marketplaces.map((mp) => `marketplace:${mp.name}`),
+    );
+    const serverSkills = (skills ?? []).filter(
+      (skill) =>
+        !isOrgEditor ||
+        skill.source === "global" ||
+        marketplaceSources.has(skill.source),
+    );
+    for (const skill of serverSkills) {
       if (!seen.has(skill.name)) {
         seen.add(skill.name);
         items.push({ name: skill.name });
@@ -252,7 +332,7 @@ export function AgentProfilesView() {
       }
     }
     return items;
-  }, [skills, marketplaceSkills, marketplaces]);
+  }, [skills, marketplaceSkills, marketplaces, isOrgEditor]);
 
   // ACP credentials are global secrets keyed by the selected preset.
   const selectedPreset =
@@ -282,32 +362,50 @@ export function AgentProfilesView() {
   // ── Navigation between list and editor ───────────────────────────────────
   const handleBackToList = useCallback(() => {
     setViewMode("list");
+    setEditingScope("personal");
     setEditingProfile(null);
     setProfileName("");
     setFormState(null);
     setInitialInput(null);
   }, []);
 
-  const handleAddProfile = useCallback(() => {
-    if (!isEditorReady) return;
-    setEditingProfile(null);
-    setProfileName("");
-    setFormState(newAgentProfileFormState(deps));
-    setInitialInput(null);
-    setViewMode("create");
-  }, [deps, isEditorReady]);
+  const handleAddProfile = useCallback(
+    (scope: AgentProfileScope) => {
+      if (scope === "org" ? !isOrgEditorReady : !isEditorReady) return;
+      const scopedDeps = { ...deps, profileScope: scope };
+      let state = newAgentProfileFormState(scopedDeps);
+      if (scope === "org") state = withOrgScopes(state, null, orgSecretNames);
+      setEditingScope(scope);
+      setEditingProfile(null);
+      setProfileName("");
+      setFormState(state);
+      setInitialInput(null);
+      setViewMode("create");
+    },
+    [deps, isEditorReady, isOrgEditorReady, orgSecretNames],
+  );
 
   const handleEditProfile = useCallback(
     async (summary: AgentProfileSummary) => {
-      if (!isEditorReady) return;
+      // A summary without a scope (an older backend) is an org profile.
+      const scope: AgentProfileScope =
+        summary.scope === "personal" ? "personal" : "org";
+      if (scope === "org" ? !isOrgEditorReady : !isEditorReady) return;
+      const scopedDeps = { ...deps, profileScope: scope };
       try {
         const detail = await AgentProfilesService.getProfile(
           summary.name,
-          "personal",
+          scope,
         );
         const { profile } = detail;
-        const storedState = agentProfileFormStateFromProfile(profile, deps);
+        const storedState = agentProfileFormStateFromProfile(
+          profile,
+          scopedDeps,
+        );
         let state = storedState;
+        if (scope === "org") {
+          state = withOrgScopes(state, profile, orgSecretNames);
+        }
         if (profile.agent_kind === "openhands") {
           // A profile can reference an LLM profile that has since been
           // deleted; fall back to the default so a dangling ref self-heals
@@ -321,12 +419,21 @@ export function AgentProfilesView() {
             state = { ...state, llmProfileRef: defaultLlmProfileRef };
           }
         }
+        setEditingScope(scope);
         setEditingProfile(profile);
         setProfileName(profile.name);
         setFormState(state);
-        // Dirty-tracking compares against what is stored, so a healed ref
-        // counts as a change the user can save.
-        setInitialInput(snapshotInput(storedState, deps, profile));
+        // Dirty-tracking compares against the profile as stored (hence no
+        // org enforcement in these deps), so a healed ref, or the org
+        // editor's shape forced onto a legacy org profile, counts as a
+        // change the user can save.
+        setInitialInput(
+          snapshotInput(
+            storedState,
+            { ...scopedDeps, profileScope: undefined },
+            profile,
+          ),
+        );
         setViewMode("edit");
       } catch (error) {
         const message = retrieveAxiosErrorMessage(error as AxiosError);
@@ -336,9 +443,11 @@ export function AgentProfilesView() {
     [
       deps,
       isEditorReady,
+      isOrgEditorReady,
       llmProfilesData,
       llmProfiles,
       defaultLlmProfileRef,
+      orgSecretNames,
       t,
     ],
   );
@@ -381,7 +490,7 @@ export function AgentProfilesView() {
         await renameProfile.mutateAsync({
           name: originalName,
           newName: trimmedName,
-          scope: "personal",
+          scope: editingScope,
         });
         // The rename is committed even if the save below fails: remember the
         // new name so a retry saves instead of renaming again.
@@ -395,7 +504,7 @@ export function AgentProfilesView() {
       await saveProfile.mutateAsync({
         name: trimmedName,
         profile,
-        scope: "personal",
+        scope: editingScope,
       });
 
       displaySuccessToast(
@@ -419,6 +528,8 @@ export function AgentProfilesView() {
         onAddProfile={handleAddProfile}
         onEditProfile={handleEditProfile}
         isAddDisabled={!isEditorReady}
+        isAddOrgDisabled={!isOrgEditorReady}
+        canManageOrg={canManageOrg}
       />
     );
   }
@@ -430,6 +541,14 @@ export function AgentProfilesView() {
     snapshotInput(formState, deps, editingProfile) !== initialInput;
   const hasUnsavedChanges =
     viewMode === "create" || nameDirty || formDirty || credentialForm.isDirty;
+  // An org profile saved before the org editor existed still lets members
+  // use their own secrets and MCP servers; saving it here changes that.
+  const isLegacyOrgProfile =
+    isOrgEditor &&
+    viewMode === "edit" &&
+    !!editingProfile &&
+    (!Array.isArray(editingProfile.mcp_server_refs) ||
+      !Array.isArray(editingProfile.secret_refs));
 
   return (
     <div data-testid="agent-profile-editor" className="flex flex-col gap-6">
@@ -451,6 +570,22 @@ export function AgentProfilesView() {
         {viewMode === "create" ? (
           <p className="text-sm leading-5 text-muted">
             {t(I18nKey.SETTINGS$AGENT_PROFILE_SAVE_HINT)}
+          </p>
+        ) : null}
+        {isOrgEditor ? (
+          <p
+            data-testid="org-agent-profile-editor-hint"
+            className="text-sm leading-5 text-muted"
+          >
+            {t(I18nKey.SETTINGS$ORG_AGENT_PROFILE_EDITOR_HINT)}
+          </p>
+        ) : null}
+        {isLegacyOrgProfile ? (
+          <p
+            data-testid="org-agent-profile-legacy-warning"
+            className="text-sm leading-5 text-yellow-400"
+          >
+            {t(I18nKey.SETTINGS$ORG_AGENT_PROFILE_LEGACY_WARNING)}
           </p>
         ) : null}
       </div>
@@ -488,10 +623,11 @@ export function AgentProfilesView() {
         toolsLoading={isToolCatalogPending}
         toolsLoadFailed={isToolCatalogError}
         mcpServers={mcpServers}
-        secrets={secretItems}
+        secrets={isOrgEditor ? orgSecretItems : secretItems}
         skills={skillItems}
         skillsLoadFailed={skillsLoadFailed || isMarketplaceSkillsError}
         credentialForm={credentialForm}
+        profileScope={editingScope}
       />
 
       <div className="flex justify-start gap-3 pt-4">

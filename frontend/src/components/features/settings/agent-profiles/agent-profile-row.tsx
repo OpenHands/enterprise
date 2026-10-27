@@ -18,6 +18,8 @@ interface AgentProfileRowProps {
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
+  /** True when the viewer may edit and delete the organization's profiles. */
+  canManageOrg?: boolean;
 }
 
 export function AgentProfileRow({
@@ -27,15 +29,19 @@ export function AgentProfileRow({
   onEdit,
   onDelete,
   isActivating,
+  canManageOrg = false,
 }: AgentProfileRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // Only the member's own profiles are editable here; the org's shared ones
-  // (listed in their own section) are managed by admins and can just be set
-  // as this member's default.
-  const canManage = profile.scope === "personal";
+  // The member's own profiles are always editable here. The org's shared ones
+  // (listed in their own section) are managed by admins; other members can
+  // just set one as their default. A legacy ACP org profile can only be
+  // deleted: the org editor supports the OpenHands agent alone.
+  const isOrgProfile = profile.scope !== "personal";
+  const canDelete = !isOrgProfile || canManageOrg;
+  const canEdit = canDelete && !(isOrgProfile && profile.agent_kind === "acp");
   // Secondary label: the referenced LLM profile (OpenHands) or the ACP kind.
   const secondary =
     profile.agent_kind === "openhands"
@@ -90,9 +96,9 @@ export function AgentProfileRow({
         {menuOpen && (
           <ProfileActionsMenu
             anchorRef={triggerRef}
-            onEdit={canManage ? () => onEdit(profile) : undefined}
+            onEdit={canEdit ? () => onEdit(profile) : undefined}
             onSetActive={() => onActivate(profile)}
-            onDelete={canManage ? () => onDelete(profile) : undefined}
+            onDelete={canDelete ? () => onDelete(profile) : undefined}
             isActive={isActive}
             isActivating={isActivating}
             onClose={() => setMenuOpen(false)}

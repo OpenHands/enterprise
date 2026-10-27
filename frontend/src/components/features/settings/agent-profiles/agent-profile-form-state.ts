@@ -2,6 +2,7 @@ import type {
   AgentKind,
   AgentProfile,
   AgentProfileSaveInput,
+  AgentProfileScope,
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 import type { SettingsFieldSchema, SettingsSchema } from "#/types/settings";
@@ -90,6 +91,12 @@ export interface AgentProfileFormDeps {
   /** The agent-settings schema; its condenser / verification sections are edited per profile. */
   schema?: SettingsSchema | null;
   defaultLlmProfileRef: string;
+  /**
+   * The collection being edited. An org profile is shared configuration, so
+   * its save body never references a member's MCP servers and always names
+   * its secrets explicitly (OHE-3088). Defaults to ``personal``.
+   */
+  profileScope?: AgentProfileScope;
 }
 
 export function newAgentProfileFormState(
@@ -117,6 +124,14 @@ export function newAgentProfileFormState(
     acpCommandText: "",
     acpModel: "",
   };
+}
+
+/** The wire value of a picker: ``null`` (no restriction) or the chosen names. */
+function scopeRefs(
+  mode: ProfileScopeMode,
+  selected: string[],
+): string[] | null {
+  return mode === "custom" ? selected : null;
 }
 
 /** A persona replaces the default prompt; a suffix extends it. */
@@ -245,9 +260,13 @@ export function buildAgentProfileSaveInput(
   deps: AgentProfileFormDeps,
   stored?: AgentProfile | null,
 ): AgentProfileSaveInput {
-  const mcpServerRefs = state.mcpMode === "custom" ? state.mcpSelected : null;
-  const secretRefs =
-    state.secretsMode === "custom" ? state.secretsSelected : null;
+  const isOrg = deps.profileScope === "org";
+  const mcpServerRefs = isOrg
+    ? []
+    : scopeRefs(state.mcpMode, state.mcpSelected);
+  const secretRefs = isOrg
+    ? state.secretsSelected
+    : scopeRefs(state.secretsMode, state.secretsSelected);
 
   if (state.agentKind === "acp") {
     const tokens = tokenizeCommand(state.acpCommandText);

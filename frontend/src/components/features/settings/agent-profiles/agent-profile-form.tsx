@@ -1,5 +1,8 @@
 import { useTranslation } from "react-i18next";
-import type { AgentKind } from "#/api/agent-profiles-service/agent-profiles-service.api";
+import type {
+  AgentKind,
+  AgentProfileScope,
+} from "#/api/agent-profiles-service/agent-profiles-service.api";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 import type { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { AcpCredentialsSection } from "#/components/features/settings/acp-credentials-section";
@@ -68,6 +71,12 @@ interface AgentProfileFormProps {
   skillsLoadFailed?: boolean;
   /** Credentials for the selected ACP preset; saved as global secrets. */
   credentialForm: AcpCredentialForm;
+  /**
+   * The collection being edited. An org profile is OpenHands-only, has no
+   * MCP servers and always names its secrets, so the agent-kind selector, the
+   * MCP section and the secrets mode switch are left out (OHE-3088).
+   */
+  profileScope?: AgentProfileScope;
 }
 
 function toggleName(list: string[], name: string, checked: boolean): string[] {
@@ -79,7 +88,8 @@ function toggleName(list: string[], name: string, checked: boolean): string[] {
  * The fields of one Agent Profile. Controlled: the owning view holds the
  * state and persists it. Mirrors the Agent Canvas profile editor for the
  * settings OHE supports (agent kind, LLM profile, tools, parallel tool calls,
- * system prompt, MCP server and secret scopes, skills, ACP launch).
+ * system prompt, MCP server and secret scopes, skills, ACP launch), narrowed
+ * to organization-scoped settings for an org profile.
  */
 export function AgentProfileForm({
   state,
@@ -98,9 +108,11 @@ export function AgentProfileForm({
   skills,
   skillsLoadFailed = false,
   credentialForm,
+  profileScope = "personal",
 }: AgentProfileFormProps) {
   const { t } = useTranslation();
   const isAcp = state.agentKind === "acp";
+  const isOrg = profileScope === "org";
   const systemPromptMissing = isSystemPromptMissing(state);
   const toolsMissing = isToolSelectionMissing(state);
 
@@ -142,19 +154,27 @@ export function AgentProfileForm({
     ...danglingMcpRefs.map((name) => ({ name, description: null })),
   ];
   const knownSecrets = new Set(secrets.map(({ name }) => name));
+  // An org profile always names its secrets; a personal one only when narrowed.
+  const hasSecretList = isOrg || state.secretsMode === "custom";
   const secretCatalog: ProfileScopeItem[] = [
     ...secrets,
-    ...(state.secretsMode === "custom"
+    ...(hasSecretList
       ? state.secretsSelected
           .filter((name) => !knownSecrets.has(name))
           .map((name) => ({ name, description: null }))
       : []),
   ];
+  let secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL_HINT;
+  if (isOrg) {
+    secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_HINT;
+  } else if (state.secretsMode === "custom") {
+    secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT;
+  }
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Agent type — only when the ACP feature flag is on */}
-      {isAcpEnabled && (
+      {/* Agent type — only when the ACP feature flag is on; org profiles are OpenHands-only */}
+      {isAcpEnabled && !isOrg && (
         <section className="grid gap-4 xl:grid-cols-2">
           <SettingsDropdownInput
             testId="agent-profile-type-selector"
@@ -574,77 +594,81 @@ export function AgentProfileForm({
         </>
       )}
 
-      {/* MCP servers (both kinds): all configured, or an explicit subset */}
-      <div className="flex flex-col gap-2.5">
-        <Typography.Text className="text-sm">
-          {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP)}
-        </Typography.Text>
-        <SettingsDropdownInput
-          testId="agent-profile-mcp-mode"
-          name="agent-profile-mcp-mode"
-          items={[
-            {
-              key: "standard",
-              label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL),
-            },
-            {
-              key: "custom",
-              label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE),
-            },
-          ]}
-          selectedKey={state.mcpMode}
-          isDisabled={isDisabled}
-          onSelectionChange={(key) => {
-            if (!key) return;
-            const mcpMode = key as ProfileScopeMode;
-            const patch: Partial<AgentProfileFormState> = { mcpMode };
-            // Seed a first switch to "choose" with every configured server,
-            // so narrowing starts from what the agent had.
-            if (mcpMode === "custom" && state.mcpSelected.length === 0) {
-              patch.mcpSelected = mcpServers.map(({ name }) => name);
-            }
-            onChange(patch);
-          }}
-        />
-        {mcpCatalog.length > 0 ? (
-          <ProfileScopeList
-            testId="agent-profile-mcp"
-            items={mcpCatalog}
-            selected={
-              state.mcpMode === "custom"
-                ? state.mcpSelected
-                : mcpCatalog.map(({ name }) => name)
-            }
-            isDisabled={isDisabled || state.mcpMode === "standard"}
-            onToggle={(name, checked) =>
-              onChange({
-                mcpSelected: toggleName(state.mcpSelected, name, checked),
-              })
-            }
+      {/* MCP servers (both kinds): all configured, or an explicit subset.
+          Not for org profiles: MCP servers are per member, so an org profile
+          launches with none. */}
+      {!isOrg && (
+        <div className="flex flex-col gap-2.5">
+          <Typography.Text className="text-sm">
+            {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP)}
+          </Typography.Text>
+          <SettingsDropdownInput
+            testId="agent-profile-mcp-mode"
+            name="agent-profile-mcp-mode"
+            items={[
+              {
+                key: "standard",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL),
+              },
+              {
+                key: "custom",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE),
+              },
+            ]}
+            selectedKey={state.mcpMode}
+            isDisabled={isDisabled}
+            onSelectionChange={(key) => {
+              if (!key) return;
+              const mcpMode = key as ProfileScopeMode;
+              const patch: Partial<AgentProfileFormState> = { mcpMode };
+              // Seed a first switch to "choose" with every configured server,
+              // so narrowing starts from what the agent had.
+              if (mcpMode === "custom" && state.mcpSelected.length === 0) {
+                patch.mcpSelected = mcpServers.map(({ name }) => name);
+              }
+              onChange(patch);
+            }}
           />
-        ) : (
-          <Typography.Text className="text-xs text-tertiary-alt">
-            {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_NONE)}
-          </Typography.Text>
-        )}
-        {danglingMcpRefs.length > 0 ? (
-          <Typography.Text
-            testId="agent-profile-mcp-dangling"
-            className="text-xs text-red-400"
-          >
-            {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_DANGLING, {
-              names: danglingMcpRefs.join(", "),
-            })}
-          </Typography.Text>
-        ) : null}
-        <Typography.Text className="text-xs text-tertiary-alt">
-          {t(
-            state.mcpMode === "custom"
-              ? I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT
-              : I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL_HINT,
+          {mcpCatalog.length > 0 ? (
+            <ProfileScopeList
+              testId="agent-profile-mcp"
+              items={mcpCatalog}
+              selected={
+                state.mcpMode === "custom"
+                  ? state.mcpSelected
+                  : mcpCatalog.map(({ name }) => name)
+              }
+              isDisabled={isDisabled || state.mcpMode === "standard"}
+              onToggle={(name, checked) =>
+                onChange({
+                  mcpSelected: toggleName(state.mcpSelected, name, checked),
+                })
+              }
+            />
+          ) : (
+            <Typography.Text className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_NONE)}
+            </Typography.Text>
           )}
-        </Typography.Text>
-      </div>
+          {danglingMcpRefs.length > 0 ? (
+            <Typography.Text
+              testId="agent-profile-mcp-dangling"
+              className="text-xs text-red-400"
+            >
+              {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_DANGLING, {
+                names: danglingMcpRefs.join(", "),
+              })}
+            </Typography.Text>
+          ) : null}
+          <Typography.Text className="text-xs text-tertiary-alt">
+            {t(
+              state.mcpMode === "custom"
+                ? I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT
+                : I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL_HINT,
+            )}
+          </Typography.Text>
+        </div>
+      )}
 
       {/* OpenHands: condenser and verification, from the agent-settings schema */}
       {!isAcp &&
@@ -689,53 +713,56 @@ export function AgentProfileForm({
           );
         })}
 
-      {/* Secrets (both kinds): no restriction, or an explicit subset */}
+      {/* Secrets (both kinds): no restriction, or an explicit subset.
+          An org profile always lists the org-shared secrets it may use. */}
       <div className="flex flex-col gap-2.5">
         <Typography.Text className="text-sm">
           {t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS)}
         </Typography.Text>
-        <SettingsDropdownInput
-          testId="agent-profile-secrets-mode"
-          name="agent-profile-secrets-mode"
-          items={[
-            {
-              key: "standard",
-              label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL),
-            },
-            {
-              key: "custom",
-              label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE),
-            },
-          ]}
-          selectedKey={state.secretsMode}
-          isDisabled={isDisabled}
-          onSelectionChange={(key) => {
-            if (!key) return;
-            const secretsMode = key as ProfileScopeMode;
-            const patch: Partial<AgentProfileFormState> = { secretsMode };
-            // An external agent needs its provider credentials to sign in:
-            // pre-select them when narrowing the scope for an ACP profile.
-            if (secretsMode === "custom" && isAcp) {
-              const providerSecrets = credentialForm.fields.map(
-                ({ name }) => name,
-              );
-              patch.secretsSelected = [
-                ...new Set([...state.secretsSelected, ...providerSecrets]),
-              ];
-            }
-            onChange(patch);
-          }}
-        />
+        {!isOrg ? (
+          <SettingsDropdownInput
+            testId="agent-profile-secrets-mode"
+            name="agent-profile-secrets-mode"
+            items={[
+              {
+                key: "standard",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL),
+              },
+              {
+                key: "custom",
+                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE),
+              },
+            ]}
+            selectedKey={state.secretsMode}
+            isDisabled={isDisabled}
+            onSelectionChange={(key) => {
+              if (!key) return;
+              const secretsMode = key as ProfileScopeMode;
+              const patch: Partial<AgentProfileFormState> = { secretsMode };
+              // An external agent needs its provider credentials to sign in:
+              // pre-select them when narrowing the scope for an ACP profile.
+              if (secretsMode === "custom" && isAcp) {
+                const providerSecrets = credentialForm.fields.map(
+                  ({ name }) => name,
+                );
+                patch.secretsSelected = [
+                  ...new Set([...state.secretsSelected, ...providerSecrets]),
+                ];
+              }
+              onChange(patch);
+            }}
+          />
+        ) : null}
         {secretCatalog.length > 0 ? (
           <ProfileScopeList
             testId="agent-profile-secret"
             items={secretCatalog}
             selected={
-              state.secretsMode === "custom"
+              hasSecretList
                 ? state.secretsSelected
                 : secretCatalog.map(({ name }) => name)
             }
-            isDisabled={isDisabled || state.secretsMode === "standard"}
+            isDisabled={isDisabled || !hasSecretList}
             onToggle={(name, checked) =>
               onChange({
                 secretsSelected: toggleName(
@@ -748,15 +775,15 @@ export function AgentProfileForm({
           />
         ) : (
           <Typography.Text className="text-xs text-tertiary-alt">
-            {t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_NONE)}
+            {t(
+              isOrg
+                ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_NONE
+                : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_NONE,
+            )}
           </Typography.Text>
         )}
         <Typography.Text className="text-xs text-tertiary-alt">
-          {t(
-            state.secretsMode === "custom"
-              ? I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT
-              : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL_HINT,
-          )}
+          {t(secretsHintKey)}
         </Typography.Text>
       </div>
 
@@ -805,7 +832,11 @@ export function AgentProfileForm({
             </Typography.Text>
           )}
           <Typography.Text className="text-xs text-tertiary-alt">
-            {t(I18nKey.SETTINGS$AGENT_PROFILE_SKILLS_HINT)}
+            {t(
+              isOrg
+                ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_SKILLS_HINT
+                : I18nKey.SETTINGS$AGENT_PROFILE_SKILLS_HINT,
+            )}
           </Typography.Text>
         </div>
       )}
