@@ -7,38 +7,51 @@ set on creation and rotated only by deleting and re-creating the secret —
 no endpoint returns the raw value.
 """
 
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, SecretStr
+from pydantic import AfterValidator, BaseModel, ConfigDict, SecretStr
 
 from openhands.app_server.secrets.secrets_models import (
     CustomSecretPage,
 )
-from openhands.app_server.utils.env_var_validation import validate_env_var_name
+from openhands.app_server.utils.env_var_validation import is_valid_env_var_name
 from openhands.app_server.utils.models import EditResponse
 from server.auth.authorization import Permission, require_permission
+from server.routes.org_secret_validation import OrgSecretValidationRoute
 from storage.org_secrets_store import (
     OrgSecretAlreadyExistsError,
     OrgSecretNotFoundError,
     OrgSecretsStore,
 )
 
+
+def _validate_secret_name(name: str) -> str:
+    if not is_valid_env_var_name(name):
+        raise ValueError(
+            'Secret name must start with a letter or underscore and contain '
+            'only ASCII letters, digits, and underscores'
+        )
+    return name
+
+
+OrgSecretName = Annotated[str, AfterValidator(_validate_secret_name)]
+
+
 org_secrets_router = APIRouter(
     prefix='/api/organizations',
     tags=['Org Secrets'],
+    route_class=OrgSecretValidationRoute,
 )
 
 
 class OrgSecretCreate(BaseModel):
     """Request body for creating an org-shared secret."""
 
-    name: str
+    name: OrgSecretName
     value: SecretStr
     description: str | None = None
-
-    def validate_name(self) -> None:
-        validate_env_var_name(self.name, field_name='secret name')
 
 
 class OrgSecretUpdate(BaseModel):
@@ -49,7 +62,9 @@ class OrgSecretUpdate(BaseModel):
     To rotate the value, delete and re-create the secret.
     """
 
-    name: str | None = None
+    model_config = ConfigDict(extra='forbid')
+
+    name: OrgSecretName | None = None
     description: str | None = None
 
 
@@ -86,7 +101,6 @@ async def create_org_secret(
     Admin/Owner only. The value is encrypted at rest and cannot be read
     back by anyone — including the creator.
     """
-    body.validate_name()
     store = await OrgSecretsStore.get_instance(org_id)
     try:
         await store.create_shared(
@@ -117,9 +131,6 @@ async def update_org_secret(
 
     The value is never modified. Admin/Owner only.
     """
-    if body.name is not None:
-        validate_env_var_name(body.name, field_name='secret name')
-
     store = await OrgSecretsStore.get_instance(org_id)
     try:
         await store.update_shared(
