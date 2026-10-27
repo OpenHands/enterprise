@@ -64,7 +64,9 @@ describe("useCanManageOrgAgentProfiles", () => {
     const { result, queryClient } = await setup(["view_org_settings"], true);
 
     await waitFor(() =>
-      expect(queryClient.getQueryData(["organizations", "org-1", "me"])).toBeTruthy(),
+      expect(
+        queryClient.getQueryData(["organizations", "org-1", "me"]),
+      ).toBeTruthy(),
     );
     expect(result.current).toBe(false);
   });
@@ -73,7 +75,9 @@ describe("useCanManageOrgAgentProfiles", () => {
     const { result, queryClient } = await setup(["edit_org_settings"], false);
 
     await waitFor(() =>
-      expect(queryClient.getQueryData(["organizations", "org-1", "me"])).toBeTruthy(),
+      expect(
+        queryClient.getQueryData(["organizations", "org-1", "me"]),
+      ).toBeTruthy(),
     );
     expect(result.current).toBe(false);
   });
