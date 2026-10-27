@@ -257,7 +257,9 @@ async def test_service_account_carries_its_budget_override(
     """GIVEN accounts with a limit, an unlimited override and no override WHEN read by get and list THEN each reports its own override."""
     org_id, _ = seeded
     limited = await ServiceAccountService.create_service_account(org_id, 'a-limited')
-    unlimited = await ServiceAccountService.create_service_account(org_id, 'b-unlimited')
+    unlimited = await ServiceAccountService.create_service_account(
+        org_id, 'b-unlimited'
+    )
     plain = await ServiceAccountService.create_service_account(org_id, 'c-plain')
     await _add_override(async_session_maker, org_id, limited.id, 12.5, False)
     await _add_override(async_session_maker, org_id, unlimited.id, None, True)
