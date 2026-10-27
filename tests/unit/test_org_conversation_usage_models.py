@@ -553,3 +553,58 @@ async def test_user_usage_counts_top_level_conversations_in_the_time_window(
     assert [row.conversation_count for row in last_30_days.items] == [1]
     assert all_time.items[0].spend_lifetime == pytest.approx(7.0)
     assert last_30_days.items[0].spend_lifetime == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
+async def test_user_usage_lists_people_only(async_session_maker, create_user):
+    # Arrange: a person and a service account each own a conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 0, 0)
+        await _conversation(
+            session, 'bot', 'label', 2.0, 0, 0, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        usage = await OrgConversationService(db_session=session).get_user_usage_stats(
+            org_id=ORG_ID
+        )
+
+    # Assert: the per-user view is about people; a service account has no
+    # email or login and would show as "Unknown".
+    assert [str(row.user_id) for row in usage.items] == [str(USER_ID)]
+
+
+@pytest.mark.asyncio
+async def test_team_usage_lists_people_only(async_session_maker, create_user):
+    # Arrange: a person and a service account each own a recent conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 10, 10)
+        await _conversation(
+            session, 'bot', 'label', 2.0, 10, 10, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_usage_stats(
+            org_id=ORG_ID, days=7
+        )
+
+    # Assert
+    assert [row.user_id for row in stats.team_usage] == [str(USER_ID)]
