@@ -490,9 +490,10 @@ class TestSdkCompatFields:
         base_url and key, as on settings load; a profile-pinned automation run
         builds its LLM from this response. A missing connection is not fatal.
 
-        The caller has no membership row in the org (e.g. a super admin acting
-        in it): session key ownership already proved access, so the overlay
-        must not require one.
+        The test creates no membership row: the overlay must not require one,
+        or a caller without one (e.g. a super admin acting in the org) would
+        get a 404 on ``/me``. In production that caller has no profiles, since
+        settings load requires a membership.
         """
         from unittest.mock import patch
 

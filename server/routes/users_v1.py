@@ -116,9 +116,11 @@ def _resolve_exposed_llm_profiles(
             connection = connections.get(connection_id)
             if connection is None:
                 _logger.warning(
-                    'LLM profile %r references missing provider connection %s',
+                    'LLM profile %r references missing provider connection %s '
+                    'on org %s',
                     name,
                     connection_id,
+                    user_info.org_id,
                 )
             else:
                 updates: dict[str, Any] = {'base_url': connection.base_url}
@@ -132,9 +134,11 @@ def _resolve_exposed_llm_profiles(
 async def _org_provider_connections(org_id: str | None) -> ProviderConnections:
     """The provider connections of ``org_id``, or none.
 
-    Never raises, like settings load: the caller already proved access to this
-    org (session key ownership), and a caller without a membership row (e.g. a
-    super admin acting in an org) must still get its profiles.
+    Never raises, like settings load. It does not check membership: the
+    profiles it is applied to come from a settings load of the same org, which
+    already requires one, so a caller without a membership row (e.g. a super
+    admin acting in an org) has no profiles and gets no connection secret. A
+    membership check here would only turn that caller's ``/me`` into a 404.
     """
     if not org_id:
         return ProviderConnections()
