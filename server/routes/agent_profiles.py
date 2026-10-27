@@ -588,6 +588,7 @@ async def get_agent_profile(
     '/{name}',
     response_model=AgentProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
 )
 async def save_agent_profile(
     name: ProfileName,
@@ -630,7 +631,11 @@ async def save_agent_profile(
     )
 
 
-@router.delete('/{name}', response_model=AgentProfileMutationResponse)
+@router.delete(
+    '/{name}',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_agent_profile(
     name: ProfileName,
     scope: ScopeQuery = 'org',
@@ -679,7 +684,11 @@ async def delete_agent_profile(
     )
 
 
-@router.post('/{name}/rename', response_model=AgentProfileMutationResponse)
+@router.post(
+    '/{name}/rename',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def rename_agent_profile(
     name: ProfileName,
     request: RenameAgentProfileRequest = Body(...),
