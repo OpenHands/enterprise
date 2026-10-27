@@ -28,12 +28,19 @@ export const MAP_PROVIDER = {
   clarifai: "Clarifai",
 };
 
-export const mapProvider = (provider: string) =>
-  Object.keys(MAP_PROVIDER).includes(provider)
+// Without a LiteLLM gateway the "openhands" provider is OpenHands Cloud (the
+// public proxy, with the user's own key) rather than a bundled proxy.
+const OPENHANDS_CLOUD_LABEL = "OpenHands Cloud";
+
+export const mapProvider = (provider: string, litellmEnabled = true) => {
+  if (provider === "openhands" && !litellmEnabled) return OPENHANDS_CLOUD_LABEL;
+  return Object.keys(MAP_PROVIDER).includes(provider)
     ? MAP_PROVIDER[provider as keyof typeof MAP_PROVIDER]
     : provider;
+};
 
 export const getProviderId = (displayName: string): string => {
+  if (displayName === OPENHANDS_CLOUD_LABEL) return "openhands";
   const entry = Object.entries(MAP_PROVIDER).find(
     ([, value]) => value === displayName,
   );
