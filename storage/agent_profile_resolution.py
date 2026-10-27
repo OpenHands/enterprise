@@ -175,6 +175,37 @@ def apply_provider_connection(
     return resolved
 
 
+def resolve_org_profile_llm(
+    org: Org,
+    llm: LLM,
+    *,
+    fallback_api_key: SecretStr | None,
+    strict: bool = False,
+) -> LLM:
+    """Turn a saved org LLM profile into the LLM a run launches with.
+
+    Fills the provider-default ``base_url`` and the fallback key
+    (``resolve_profile_llm``), canonicalizes bundled-proxy models, then applies
+    a linked provider connection, whose ``api_key`` and ``base_url`` win.
+    ``strict`` raises ``AgentLaunchError`` for a missing connection; otherwise
+    it is logged and the profile stays as resolved. Shared by agent-profile
+    launch (``OrgLLMProfileLoader``) and the ``/api/v1/users/me`` overlay.
+    """
+    resolved = resolve_profile_llm(
+        llm,
+        managed_proxy_url=LITE_LLM_API_URL,
+        fallback_api_key=fallback_api_key,
+    )
+    payload = canonicalize_bundled_proxy_llm(
+        canonicalize_openhands_llm_payload(
+            resolved.model_dump(mode='json', context={'expose_secrets': True})
+        )
+    )
+    return type(resolved).model_validate(
+        apply_provider_connection(org, payload, strict=strict)
+    )
+
+
 class OrgLLMProfileLoader:
     """``LLMProfileLoader`` over an org's LLM profiles — the resolver's ``llm_store``.
 
@@ -200,18 +231,8 @@ class OrgLLMProfileLoader:
             # The resolver maps this to ProfileNotFound (HTTP 4xx).
             raise FileNotFoundError(f'LLM profile {name!r} not found')
         if self._org is not None:
-            llm = resolve_profile_llm(
-                llm,
-                managed_proxy_url=LITE_LLM_API_URL,
-                fallback_api_key=self._fallback_api_key,
-            )
-            payload = canonicalize_bundled_proxy_llm(
-                canonicalize_openhands_llm_payload(
-                    llm.model_dump(mode='json', context={'expose_secrets': True})
-                )
-            )
-            llm = type(llm).model_validate(
-                apply_provider_connection(self._org, payload, strict=True)
+            llm = resolve_org_profile_llm(
+                self._org, llm, fallback_api_key=self._fallback_api_key, strict=True
             )
         return llm
 

@@ -19,7 +19,6 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
-from pydantic import SecretStr
 
 from openhands.app_server.config import (
     depends_user_context,
@@ -44,6 +43,8 @@ from server.routes.org_models import OrgNotFoundError
 from server.routes.org_provider_connections import (
     _load_connections as load_provider_connections,
 )
+from storage.agent_profile_resolution import resolve_org_profile_llm
+from storage.org import Org
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
 
@@ -80,76 +81,38 @@ def _inject_sdk_compat_fields(
     content['mcp_config'] = agent_settings.get('mcp_config')
 
 
-def _resolve_exposed_llm_profiles(
-    user_info: SaasUserInfo, connections: ProviderConnections
-) -> None:
-    """Overlay each saved LLM profile with its effective runtime config.
+def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> None:
+    """Overlay each saved LLM profile with the LLM a run launches with.
 
     SaaS profiles never persist a real api_key: the org-profiles routes lift
     real keys into the encrypted member column and store a masked placeholder,
     which the LLM validator nulls at load. The SDK's
     ``OpenHandsCloudWorkspace.get_llm(profile_name=...)`` builds an LLM
     verbatim from this response's ``llm_profiles``, so without this overlay a
-    profile-pinned run (e.g. SaaS automations) calls the LiteLLM proxy with no
-    credentials. Mirrors ``_seed_sandbox_profiles`` and the ``switch_profile``
-    endpoint: resolve the managed/provider-default ``base_url``, force
-    streaming, and fall back to the user's effective settings key for keyless
-    profiles; BYOR profiles with real keys keep their own key.
+    profile-pinned run (e.g. SaaS automations) gets no usable credentials.
 
-    A profile linked to a provider connection then takes the connection's
-    ``api_key`` and ``base_url``, as on settings load
-    (``apply_provider_connection``). A missing connection is logged and the
-    profile is left as resolved.
+    With the caller's org, each profile resolves as agent-profile launch does
+    (``resolve_org_profile_llm``): provider-default ``base_url``, the effective
+    settings key for keyless profiles, and a linked provider connection's key
+    and ``base_url``. A missing connection is logged, not raised, so one bad
+    profile does not break the others. Without an org there is nothing to
+    link, so only the ``base_url`` and fallback key are resolved.
     """
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
     fallback_api_key = getattr(settings_llm, 'api_key', None)
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
-        resolved = resolve_profile_llm(
-            profile_llm,
-            managed_proxy_url=LITE_LLM_API_URL,
-            fallback_api_key=fallback_api_key,
-        )
-        connection_id = getattr(resolved, 'provider_connection_id', None)
-        if connection_id:
-            connection = connections.get(connection_id)
-            if connection is None:
-                _logger.warning(
-                    'LLM profile %r references missing provider connection %s '
-                    'on org %s',
-                    name,
-                    connection_id,
-                    user_info.org_id,
-                )
-            else:
-                updates: dict[str, Any] = {'base_url': connection.base_url}
-                api_key = connection.api_key_value()
-                if api_key is not None:
-                    updates['api_key'] = SecretStr(api_key)
-                resolved = resolved.model_copy(update=updates)
-        profiles[name] = resolved
-
-
-async def _org_provider_connections(org_id: str | None) -> ProviderConnections:
-    """The provider connections of ``org_id``, or none.
-
-    Never raises, like settings load. It does not check membership: the
-    profiles it is applied to come from a settings load of the same org, which
-    already requires one, so a caller without a membership row (e.g. a super
-    admin acting in an org) has no profiles and gets no connection secret. A
-    membership check here would only turn that caller's ``/me`` into a 404.
-    """
-    if not org_id:
-        return ProviderConnections()
-    try:
-        org = await OrgStore.get_org_by_id(UUID(org_id))
-    except Exception:  # noqa: BLE001 - degrade to unresolved profiles
-        _logger.warning(
-            'Failed to load provider connections for org %s', org_id, exc_info=True
-        )
-        return ProviderConnections()
-    return load_provider_connections(org) if org else ProviderConnections()
+        if org is None:
+            profiles[name] = resolve_profile_llm(
+                profile_llm,
+                managed_proxy_url=LITE_LLM_API_URL,
+                fallback_api_key=fallback_api_key,
+            )
+        else:
+            profiles[name] = resolve_org_profile_llm(
+                org, profile_llm, fallback_api_key=fallback_api_key
+            )
 
 
 async def _load_provider_connections_for_user(
@@ -226,9 +189,14 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        _resolve_exposed_llm_profiles(
-            user_info, await _org_provider_connections(user_info.org_id)
+        # ``org_id`` is the effective org, already checked for membership or a
+        # super role.
+        org = (
+            await OrgStore.get_org_by_id(UUID(user_info.org_id))
+            if user_info.org_id
+            else None
         )
+        _resolve_exposed_llm_profiles(user_info, org)
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
         return JSONResponse(content=content)  # type: ignore[return-value]

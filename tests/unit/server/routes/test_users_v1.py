@@ -480,21 +480,11 @@ class TestSdkCompatFields:
 
     @pytest.mark.asyncio
     async def test_expose_secrets_applies_profile_provider_connection(
-        self,
-        mock_user_context,
-        create_org,
-        create_user,
-        async_session_maker,
+        self, mock_user_context, create_org, async_session_maker
     ):
-        """A profile linked to an org provider connection gets the connection's
-        base_url and key, as on settings load; a profile-pinned automation run
-        builds its LLM from this response. A missing connection is not fatal.
-
-        The test creates no membership row: the overlay must not require one,
-        or a caller without one (e.g. a super admin acting in the org) would
-        get a 404 on ``/me``. In production that caller has no profiles, since
-        settings load requires a membership.
-        """
+        """The overlay loads the caller's org and applies a linked provider
+        connection; a profile-pinned automation run builds its LLM from this
+        response. The rule itself is tested in ``TestResolveOrgProfileLlm``."""
         from unittest.mock import patch
 
         from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -522,26 +512,22 @@ class TestSdkCompatFields:
                 mode='json', context={'expose_secrets': True}
             )
         )
-        user = create_user(current_org_id=org.id)
-
-        base_user_info = UserInfo(
-            id=str(user.id),
-            agent_settings=OpenHandsAgentSettings(
-                llm=LLM(model='anthropic/test-model', api_key='sk-effective-key')
-            ),
-            llm_profiles=LLMProfiles(
-                profiles={
-                    'linked': LLM(
-                        model='anthropic/test-model', provider_connection_id='proxy'
-                    ),
-                    'dangling': LLM(
-                        model='anthropic/test-model', provider_connection_id='gone'
-                    ),
-                }
-            ),
+        mock_user_context.get_user_info = AsyncMock(
+            return_value=UserInfo(
+                id='user-123',
+                agent_settings=OpenHandsAgentSettings(
+                    llm=LLM(model='anthropic/test-model', api_key='sk-effective-key')
+                ),
+                llm_profiles=LLMProfiles(
+                    profiles={
+                        'linked': LLM(
+                            model='anthropic/test-model',
+                            provider_connection_id='proxy',
+                        )
+                    }
+                ),
+            )
         )
-        mock_user_context.get_user_info = AsyncMock(return_value=base_user_info)
-        mock_user_context.get_user_id = AsyncMock(return_value=str(user.id))
 
         with (
             patch(
@@ -561,11 +547,9 @@ class TestSdkCompatFields:
                 x_session_api_key='session-key',
             )
 
-        profiles = json.loads(result.body)['llm_profiles']['profiles']
-        assert profiles['linked']['base_url'] == 'https://llm-proxy.example.test'
-        assert profiles['linked']['api_key'] == 'sk-connection-key'
-        # A dangling connection id degrades to the resolved profile, not an error.
-        assert profiles['dangling']['api_key'] == 'sk-effective-key'
+        profile = json.loads(result.body)['llm_profiles']['profiles']['linked']
+        assert profile['base_url'] == 'https://llm-proxy.example.test'
+        assert profile['api_key'] == 'sk-connection-key'
 
     @pytest.mark.asyncio
     async def test_non_expose_response_does_not_resolve_profile_keys(
