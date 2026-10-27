@@ -14,7 +14,10 @@ import {
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
 import {
   DEFAULT_TOOL_TOGGLES,
+  buildPinnedTools,
   buildProfileTools,
+  isStandardToolList,
+  readToolNames,
   readToolToggles,
 } from "./agent-profile-tools";
 import {
@@ -58,6 +61,10 @@ export interface AgentProfileFormState {
   llmProfileRef: string;
   enableSubAgents: boolean;
   enableSwitchLlmTool: boolean;
+  /** The standard tool set (shaped by the two toggles above), or a hand-picked list. */
+  toolsMode: ProfileScopeMode;
+  /** Canonical tool names of the hand-picked list (``toolsMode === "custom"``). */
+  toolsSelected: string[];
   /** ``SchemaField`` value for ``tool_concurrency_limit`` ("" when unknown). */
   toolConcurrency: string | boolean;
   systemPromptMode: SystemPromptMode;
@@ -70,6 +77,8 @@ export interface AgentProfileFormState {
   mcpSelected: string[];
   secretsMode: ProfileScopeMode;
   secretsSelected: string[];
+  /** Skill names this profile keeps the agent from loading (``disabled_skills``). */
+  disabledSkills: string[];
   /** Shell string shown in the ACP command textarea. */
   acpCommandText: string;
   acpModel: string;
@@ -91,6 +100,8 @@ export function newAgentProfileFormState(
     llmProfileRef: deps.defaultLlmProfileRef,
     enableSubAgents: DEFAULT_TOOL_TOGGLES.enableSubAgents,
     enableSwitchLlmTool: DEFAULT_TOOL_TOGGLES.enableSwitchLlmTool,
+    toolsMode: "standard",
+    toolsSelected: [],
     toolConcurrency: deps.toolConcurrencyField
       ? normalizeFieldValue(deps.toolConcurrencyField, undefined)
       : "",
@@ -102,6 +113,7 @@ export function newAgentProfileFormState(
     mcpSelected: [],
     secretsMode: "standard",
     secretsSelected: [],
+    disabledSkills: [],
     acpCommandText: "",
     acpModel: "",
   };
@@ -154,6 +166,10 @@ export function agentProfileFormStateFromProfile(
   }
 
   const toggles = readToolToggles(profile.tools);
+  // A list the toggles could not have produced opens in the tools picker.
+  const toolsMode: ProfileScopeMode = isStandardToolList(profile.tools)
+    ? "standard"
+    : "custom";
   const persona = profile.persona ?? "";
   const suffix = profile.system_message_suffix ?? "";
   return {
@@ -163,6 +179,9 @@ export function agentProfileFormStateFromProfile(
     llmProfileRef: profile.llm_profile_ref,
     enableSubAgents: toggles.enableSubAgents,
     enableSwitchLlmTool: toggles.enableSwitchLlmTool,
+    toolsMode,
+    toolsSelected: toolsMode === "custom" ? readToolNames(profile.tools) : [],
+    disabledSkills: profile.disabled_skills ?? [],
     toolConcurrency: deps.toolConcurrencyField
       ? normalizeFieldValue(
           deps.toolConcurrencyField,
@@ -193,19 +212,33 @@ export function isSystemPromptMissing(state: AgentProfileFormState): boolean {
   );
 }
 
+/** A hand-picked tool list needs at least one tool to save. */
+export function isToolSelectionMissing(state: AgentProfileFormState): boolean {
+  return (
+    state.agentKind === "openhands" &&
+    state.toolsMode === "custom" &&
+    state.toolsSelected.length === 0
+  );
+}
+
 export function isAgentProfileFormValid(state: AgentProfileFormState): boolean {
   if (state.agentKind === "acp") {
     return tokenizeCommand(state.acpCommandText).length > 0;
   }
-  return state.llmProfileRef.trim().length > 0 && !isSystemPromptMissing(state);
+  return (
+    state.llmProfileRef.trim().length > 0 &&
+    !isSystemPromptMissing(state) &&
+    !isToolSelectionMissing(state)
+  );
 }
 
 /**
  * Turn editor state into the variant-specific save body. Throws a
  * user-facing ``Error`` when the parallel-tool-calls value fails the
  * schema's coercion/min/max rules (``coerceFieldValue``). ``stored`` is the
- * profile being edited, so the two tool toggles only add or remove their own
- * entries and a preset's extra ``acp_args`` survive the save.
+ * profile being edited, so a pinned tool entry keeps its ``params``, the two
+ * tool toggles only add or remove their own entries and a preset's extra
+ * ``acp_args`` survive the save.
  */
 export function buildAgentProfileSaveInput(
   state: AgentProfileFormState,
@@ -239,16 +272,23 @@ export function buildAgentProfileSaveInput(
     };
   }
 
+  const storedTools =
+    stored?.agent_kind === "openhands" ? stored.tools : undefined;
   const input: AgentProfileSaveInput = {
     agent_kind: "openhands",
     llm_profile_ref: state.llmProfileRef,
-    tools: buildProfileTools(
-      {
-        enableSubAgents: state.enableSubAgents,
-        enableSwitchLlmTool: state.enableSwitchLlmTool,
-      },
-      stored?.agent_kind === "openhands" ? stored.tools : undefined,
-    ),
+    // "Standard set" rebuilds from the toggles unless the stored list already
+    // is the standard set (then its entries, params included, are kept).
+    tools:
+      state.toolsMode === "custom"
+        ? buildPinnedTools(state.toolsSelected, storedTools)
+        : buildProfileTools(
+            {
+              enableSubAgents: state.enableSubAgents,
+              enableSwitchLlmTool: state.enableSwitchLlmTool,
+            },
+            isStandardToolList(storedTools) ? storedTools : undefined,
+          ),
     mcp_server_refs: mcpServerRefs,
     secret_refs: secretRefs,
     // One of the two carries the text; the other is cleared so a mode
@@ -261,6 +301,7 @@ export function buildAgentProfileSaveInput(
       state.systemPromptMode === "custom" && state.systemPromptText.trim()
         ? state.systemPromptText
         : null,
+    disabled_skills: state.disabledSkills,
   };
   // Only sections the schema exposes are rewritten; otherwise the stored
   // objects ride along through the whole-profile merge untouched.

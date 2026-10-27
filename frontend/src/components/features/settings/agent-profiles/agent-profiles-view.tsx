@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { FaChevronLeft } from "react-icons/fa6";
 import { useTranslation } from "react-i18next";
@@ -16,6 +17,10 @@ import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import { useSkills } from "#/hooks/query/use-skills";
+import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
+import SkillsService from "#/api/skills-service";
+import type { MarketplaceRegistration } from "#/types/settings";
 import { useLlmProfiles } from "#/hooks/query/use-llm-profiles";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useAcpCredentialForm } from "#/hooks/use-acp-credential-form";
@@ -99,6 +104,7 @@ export function AgentProfilesView() {
   const { data: llmProfilesData } = useLlmProfiles();
   // Same query as the ACP credential form, so the list is fetched once.
   const secretsQuery = useSearchSecrets();
+  const { data: skills, isError: skillsLoadFailed } = useSkills();
   const saveProfile = useSaveAgentProfile();
   const renameProfile = useRenameAgentProfile();
   // The editor is seeded from the settings once, when it opens (the
@@ -178,6 +184,75 @@ export function AgentProfilesView() {
       })),
     [secretsQuery.data],
   );
+
+  // Skills with the scope of the marketplace they come from, as the Skills
+  // page derives it; organization-marketplace skills get the badge.
+  // Two lists, as on the Skills page: the server's global and user skills
+  // (``useSkills``), plus the skills of every marketplace the member inherits
+  // or registered. A marketplace skill takes its marketplace's scope, so
+  // organization-marketplace skills get the badge. Fetched only while the
+  // editor is open.
+  const inheritedMarketplaces = settings?.inherited_marketplaces;
+  const registeredMarketplaces = settings?.registered_marketplaces;
+  const marketplaces = useMemo<MarketplaceRegistration[]>(
+    () => [...(inheritedMarketplaces ?? []), ...(registeredMarketplaces ?? [])],
+    [inheritedMarketplaces, registeredMarketplaces],
+  );
+  const { data: marketplaceSkills, isError: isMarketplaceSkillsError } =
+    useQuery({
+      queryKey: [
+        "agent-profile-marketplace-skills",
+        marketplaces.map(
+          (mp) => `${mp.source}@${mp.ref ?? ""}:${mp.repo_path ?? ""}`,
+        ),
+      ],
+      queryFn: () => SkillsService.getMarketplaceSkills(marketplaces),
+      enabled: viewMode !== "list" && marketplaces.length > 0,
+      staleTime: 1000 * 60 * 10,
+      meta: { disableToast: true },
+    });
+  // The server's tool catalog, for the tools picker; fetched only while the
+  // editor is open. Rows are the user-selectable tools, plus any pinned tool
+  // the catalog knows but does not offer (so it shows, and can be unpinned,
+  // without being reported as unknown).
+  const {
+    data: toolCatalog,
+    isPending: isToolCatalogPending,
+    isError: isToolCatalogError,
+  } = useToolCatalog(viewMode !== "list");
+  const selectedToolNames = formState?.toolsSelected;
+  const toolItems = useMemo<ProfileScopeItem[]>(() => {
+    const pinned = new Set(selectedToolNames ?? []);
+    return (toolCatalog ?? [])
+      .filter((entry) => entry.user_selectable || pinned.has(entry.name))
+      .map((entry) => ({
+        name: entry.name,
+        description: entry.description || null,
+      }));
+  }, [toolCatalog, selectedToolNames]);
+  const skillItems = useMemo<ProfileScopeItem[]>(() => {
+    const items: ProfileScopeItem[] = [];
+    const seen = new Set<string>();
+    for (const skill of skills ?? []) {
+      if (!seen.has(skill.name)) {
+        seen.add(skill.name);
+        items.push({ name: skill.name });
+      }
+    }
+    for (const skill of marketplaceSkills?.skills ?? []) {
+      if (!seen.has(skill.name)) {
+        seen.add(skill.name);
+        const marketplace = marketplaces.find(
+          (mp) => skill.source === `marketplace:${mp.name}`,
+        );
+        items.push({
+          name: skill.name,
+          scope: marketplace?.scope === "org" ? "organization" : undefined,
+        });
+      }
+    }
+    return items;
+  }, [skills, marketplaceSkills, marketplaces]);
 
   // ACP credentials are global secrets keyed by the selected preset.
   const selectedPreset =
@@ -409,8 +484,13 @@ export function AgentProfilesView() {
         llmProfiles={llmProfiles}
         toolConcurrencyField={toolConcurrencyField}
         schema={schema ?? null}
+        tools={toolItems}
+        toolsLoading={isToolCatalogPending}
+        toolsLoadFailed={isToolCatalogError}
         mcpServers={mcpServers}
         secrets={secretItems}
+        skills={skillItems}
+        skillsLoadFailed={skillsLoadFailed || isMarketplaceSkillsError}
         credentialForm={credentialForm}
       />
 

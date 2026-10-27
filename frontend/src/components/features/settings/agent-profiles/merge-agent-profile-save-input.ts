@@ -5,8 +5,8 @@ import type {
 
 /**
  * Merge the editor's fields over the stored profile so an edit-save doesn't
- * wipe the fields the editor doesn't model (condenser, verification, the
- * disabled_skills deny-list, ACP session mode/timeouts, …) —
+ * wipe the fields the editor doesn't model (condenser, verification, ACP
+ * session mode/timeouts, …) —
  * `POST /api/agent-profiles/{name}` is a whole-profile overwrite, and unset
  * fields fall back to server-side defaults.
  *
