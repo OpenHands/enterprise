@@ -18,6 +18,7 @@ import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema"
 import { useConfig } from "#/hooks/query/use-config";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useSkills } from "#/hooks/query/use-skills";
+import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
 import SkillsService from "#/api/skills-service";
 import type { MarketplaceRegistration } from "#/types/settings";
 import { useLlmProfiles } from "#/hooks/query/use-llm-profiles";
@@ -210,6 +211,25 @@ export function AgentProfilesView() {
       staleTime: 1000 * 60 * 10,
       meta: { disableToast: true },
     });
+  // The server's tool catalog, for the tools picker; fetched only while the
+  // editor is open. Rows are the user-selectable tools, plus any pinned tool
+  // the catalog knows but does not offer (so it shows, and can be unpinned,
+  // without being reported as unknown).
+  const {
+    data: toolCatalog,
+    isPending: isToolCatalogPending,
+    isError: isToolCatalogError,
+  } = useToolCatalog(viewMode !== "list");
+  const selectedToolNames = formState?.toolsSelected;
+  const toolItems = useMemo<ProfileScopeItem[]>(() => {
+    const pinned = new Set(selectedToolNames ?? []);
+    return (toolCatalog ?? [])
+      .filter((entry) => entry.user_selectable || pinned.has(entry.name))
+      .map((entry) => ({
+        name: entry.name,
+        description: entry.description || null,
+      }));
+  }, [toolCatalog, selectedToolNames]);
   const skillItems = useMemo<ProfileScopeItem[]>(() => {
     const items: ProfileScopeItem[] = [];
     const seen = new Set<string>();
@@ -464,6 +484,9 @@ export function AgentProfilesView() {
         llmProfiles={llmProfiles}
         toolConcurrencyField={toolConcurrencyField}
         schema={schema ?? null}
+        tools={toolItems}
+        toolsLoading={isToolCatalogPending}
+        toolsLoadFailed={isToolCatalogError}
         mcpServers={mcpServers}
         secrets={secretItems}
         skills={skillItems}
