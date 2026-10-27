@@ -433,6 +433,17 @@ describe("Service accounts route", () => {
   });
 
   it("deletes a secret only after confirmation", async () => {
+    // Count DELETEs; returning nothing falls through to the default handler,
+    // which removes the secret.
+    let deletes = 0;
+    server.use(
+      http.delete(
+        "/api/organizations/:orgId/service-accounts/:saId/secrets/:name",
+        () => {
+          deletes += 1;
+        },
+      ),
+    );
     renderPage();
     await userEvent.click(
       within(await findRow("nightly-report")).getByTestId(
@@ -463,9 +474,11 @@ describe("Service accounts route", () => {
     // Cancel keeps the secret: its value cannot be read back.
     await deleteSecret();
     await userEvent.click(await screen.findByTestId("cancel-button"));
-    expect(
-      await screen.findByTestId("service-account-secret-item"),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirmation-modal")).not.toBeInTheDocument(),
+    );
+    expect(deletes).toBe(0);
+    expect(screen.getByTestId("service-account-secret-item")).toBeInTheDocument();
 
     await deleteSecret();
     await userEvent.click(await screen.findByTestId("confirm-button"));
@@ -474,6 +487,7 @@ describe("Service accounts route", () => {
         screen.queryByTestId("service-account-secret-item"),
       ).not.toBeInTheDocument();
     });
+    expect(deletes).toBe(1);
   });
 
   it("deletes a secret once when Confirm is clicked twice", async () => {
