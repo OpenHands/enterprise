@@ -8,7 +8,8 @@ over the SaaS storage model. Everything domain-level is imported from
 store/loader/mutator Protocols.
 
 Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
-``org_profiles``, and ``SaasSettingsStore.load``.
+``org_profiles``, ``SaasSettingsStore.load``, and the
+``/api/v1/users/me`` profile overlay.
 """
 
 from __future__ import annotations
@@ -192,11 +193,17 @@ def resolve_org_profile_llm(
     otherwise it is logged and the profile stays as resolved. Shared by
     agent-profile launch (``OrgLLMProfileLoader``) and the
     ``/api/v1/users/me`` overlay.
+
+    A linked profile never takes ``fallback_api_key``: its key comes only from
+    the connection. With the connection missing (or no org), it resolves with
+    no key, so the settings key is not sent to a provider host the profile
+    never chose.
     """
+    linked = bool(llm.provider_connection_id)
     resolved = resolve_profile_llm(
         llm,
         managed_proxy_url=LITE_LLM_API_URL,
-        fallback_api_key=fallback_api_key,
+        fallback_api_key=None if linked else fallback_api_key,
     )
     payload = canonicalize_bundled_proxy_llm(
         canonicalize_openhands_llm_payload(

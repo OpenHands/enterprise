@@ -551,20 +551,35 @@ class TestResolveOrgProfileLlm:
         assert llm.api_key is not None
         assert llm.api_key.get_secret_value() == 'sk-settings'
 
-    def test_dangling_link_is_left_as_resolved_when_not_strict(self):
+    def test_dangling_link_gets_no_key_when_not_strict(self):
         from pydantic import SecretStr
 
         from openhands.sdk.llm import LLM
         from storage.agent_profile_resolution import resolve_org_profile_llm
 
+        # The fallback key must not go to the provider's default host, which
+        # the profile never chose.
         llm = resolve_org_profile_llm(
             self._org({'connections': {}}),
             LLM(model='anthropic/claude-test', provider_connection_id='gone'),
             fallback_api_key=SecretStr('sk-settings'),
         )
 
-        assert llm.api_key is not None
-        assert llm.api_key.get_secret_value() == 'sk-settings'
+        assert llm.api_key is None
+
+    def test_linked_profile_without_an_org_gets_no_key(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        llm = resolve_org_profile_llm(
+            None,
+            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        assert llm.api_key is None
 
     def test_dangling_link_raises_when_strict(self):
         from pydantic import SecretStr

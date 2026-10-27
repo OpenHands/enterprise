@@ -557,8 +557,9 @@ class TestSdkCompatFields:
         profiles = json.loads(result.body)['llm_profiles']['profiles']
         assert profiles['linked']['base_url'] == 'https://llm-proxy.example.test'
         assert profiles['linked']['api_key'] == 'sk-connection-key'
-        # /me is not strict: one dangling profile must not fail the whole run.
-        assert profiles['dangling']['api_key'] == 'sk-effective-key'
+        # /me is not strict: one dangling profile must not fail the whole
+        # response, and it gets no key rather than the fallback key.
+        assert profiles['dangling']['api_key'] is None
 
     @pytest.mark.asyncio
     async def test_expose_secrets_canonicalizes_profiles_without_an_org(
