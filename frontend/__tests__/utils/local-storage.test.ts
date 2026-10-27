@@ -5,7 +5,6 @@ import {
   setLoginMethod,
   getLoginMethod,
   clearLoginData,
-  setSelectedOrg,
   setCTADismissed,
   isCTADismissed,
 } from "#/utils/local-storage";
@@ -13,6 +12,7 @@ import {
 describe("local-storage utilities", () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
   });
 
   describe("Login method utilities", () => {
@@ -77,14 +77,30 @@ describe("local-storage utilities", () => {
         expect(getLoginMethod()).toBeNull();
       });
 
-      it("removes the selected organization from local storage", () => {
-        setSelectedOrg("org-123");
+      it("removes Agent Canvas's active backend from local and session storage", () => {
+        const stale = JSON.stringify({
+          backendId: "locked-cloud",
+          orgId: "previous-user-org",
+        });
+        localStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND, stale);
+        sessionStorage.setItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND, stale);
+
+        clearLoginData();
+        expect(
+          localStorage.getItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND),
+        ).toBeNull();
+        expect(
+          sessionStorage.getItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND),
+        ).toBeNull();
+      });
+
+      it("keeps the selected organization", () => {
+        localStorage.setItem(LOCAL_STORAGE_KEYS.SELECTED_ORG, "org-123");
+
+        clearLoginData();
         expect(localStorage.getItem(LOCAL_STORAGE_KEYS.SELECTED_ORG)).toBe(
           "org-123",
         );
-
-        clearLoginData();
-        expect(localStorage.getItem(LOCAL_STORAGE_KEYS.SELECTED_ORG)).toBeNull();
       });
 
       it("does not throw when no login method is set", () => {

@@ -4,6 +4,8 @@ export const LOCAL_STORAGE_KEYS = {
   ENTERPRISE_FORM_SAAS: "openhands_enterprise_form_saas",
   ENTERPRISE_FORM_SELF_HOSTED: "openhands_enterprise_form_self_hosted",
   SELECTED_ORG: "openhands_selected_org",
+  // Written by Agent Canvas (/canvas); holds the orgId it sends requests for.
+  ACTIVE_BACKEND: "openhands-active-backend",
 };
 
 // Login methods
@@ -34,13 +36,13 @@ export const getLoginMethod = (): LoginMethod | null => {
 };
 
 /**
- * Clear login method and selected organization from local storage
+ * Clear login method and Agent Canvas's active backend from storage
  */
 export const clearLoginData = (): void => {
   localStorage.removeItem(LOCAL_STORAGE_KEYS.LOGIN_METHOD);
-  // Other apps (Agent Canvas, Automations) read this key; a stale value from a
-  // previous user causes 403s for the next user on the same browser.
-  localStorage.removeItem(LOCAL_STORAGE_KEYS.SELECTED_ORG);
+  // Canvas mirrors this key into sessionStorage and reads that copy first.
+  localStorage.removeItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND);
+  sessionStorage.removeItem(LOCAL_STORAGE_KEYS.ACTIVE_BACKEND);
 };
 
 export const setSelectedOrg = (orgId: string): void => {
