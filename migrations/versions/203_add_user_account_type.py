@@ -6,8 +6,8 @@ member of one org: it has no personal org, no email and no password, and
 ``display_name`` holds its name. Service account names are unique per org,
 ignoring case. Downgrade refuses while a service account exists.
 
-Revision ID: 202
-Revises: 201
+Revision ID: 203
+Revises: 202
 Create Date: 2026-10-26 00:00:00.000000
 """
 
@@ -18,8 +18,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '202'
-down_revision: str | None = '201'
+revision: str = '203'
+down_revision: str | None = '202'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
