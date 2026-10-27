@@ -13,8 +13,8 @@ personal profile references. The column mirrors ``org.agent_profiles``:
 Data migration: no backfill. Existing rows read back as ``NULL`` (an empty
 collection); a member sees only the org profiles until they save a personal one.
 
-Revision ID: 198
-Revises: 197
+Revision ID: 199
+Revises: 198
 Create Date: 2026-10-24
 """
 
@@ -23,8 +23,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '198'
-down_revision: str | None = '197'
+revision: str = '199'
+down_revision: str | None = '198'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

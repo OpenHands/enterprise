@@ -18,7 +18,7 @@ export const useLogout = () => {
       queryClient.removeQueries({ queryKey: ["user"] });
       queryClient.removeQueries({ queryKey: ["secrets"] });
 
-      // Clear login method and last page from local storage
+      // Clear login method and Agent Canvas's active backend from storage
       if (config?.app_mode === "saas") {
         clearLoginData();
       }
