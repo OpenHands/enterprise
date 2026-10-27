@@ -844,6 +844,79 @@ class TestOAuthTokenStore:
         await store.delete_tokens()
         assert await store.get_raw() is None
 
+    @pytest.mark.asyncio
+    async def test_set_invalidated_flags_and_clears(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('at', None, None, None)
+        assert (await store.get_raw()).invalidated_at is None
+
+        assert await store.set_invalidated('at', True) is True
+        flagged_at = (await store.get_raw()).invalidated_at
+        assert flagged_at is not None
+
+        # A repeat rejection keeps the first timestamp.
+        assert await store.set_invalidated('at', True) is True
+        assert (await store.get_raw()).invalidated_at == flagged_at
+
+        assert await store.set_invalidated('at', False) is True
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_ignores_a_replaced_token(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('new-at', None, None, None)
+
+        assert await store.set_invalidated('old-at', True) is False
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_without_row(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        assert await store.set_invalidated('at', True) is False
+
+    @pytest.mark.asyncio
+    async def test_store_tokens_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('old-at', None, None, None)
+        await store.set_invalidated('old-at', True)
+
+        await store.store_tokens('new-at', None, None, None)
+
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_successful_refresh_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=10)
+        await store.store_tokens('old-at', 'rt', past, None)
+        await store.set_invalidated('old-at', True)
+
+        async def refresh(rt, at_exp, rt_exp):
+            return {
+                'access_token': 'new-at',
+                'refresh_token': 'new-rt',
+                'access_token_expires_at': None,
+                'refresh_token_expires_at': None,
+            }
+
+        assert await store.get_valid_access_token(refresh=refresh) == 'new-at'
+        assert (await store.get_raw()).invalidated_at is None
+
 
 # ── lock double-check & timeout (require SELECT FOR UPDATE + lock_timeout) ──
 

@@ -26,6 +26,8 @@ interface GitProviderConnectionProps {
   /** `auth_providers.id`. When set, connect/disconnect use the OAuth v2
    * link/unlink routes instead of the Keycloak account-linking flow. */
   oauthProviderId?: number;
+  /** Linked, but the provider rejected the token: offer Reconnect. */
+  needsReconnect?: boolean;
 }
 
 /**
@@ -41,6 +43,7 @@ export function GitProviderConnection({
   providerName,
   isConnected,
   oauthProviderId,
+  needsReconnect = false,
   children,
 }: React.PropsWithChildren<GitProviderConnectionProps>) {
   const { t } = useTranslation();
@@ -103,6 +106,18 @@ export function GitProviderConnection({
         {isConnected ? (
           <>
             {children}
+            {needsReconnect && (
+              <BrandButton
+                testId={`reconnect-${provider}-button`}
+                type="button"
+                variant="primary"
+                className={settingsListRowActionButtonClassName}
+                isDisabled={isConnecting || isLinking}
+                onClick={handleConnect}
+              >
+                {t(I18nKey.BUTTON$RECONNECT)}
+              </BrandButton>
+            )}
             <BrandButton
               testId={`disconnect-${provider}-button`}
               type="button"
