@@ -19,6 +19,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
+from pydantic import SecretStr
 
 from openhands.app_server.config import (
     depends_user_context,
@@ -44,6 +45,7 @@ from server.routes.org_provider_connections import (
     _load_connections as load_provider_connections,
 )
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 
 _logger = logging.getLogger(__name__)
 
@@ -78,7 +80,9 @@ def _inject_sdk_compat_fields(
     content['mcp_config'] = agent_settings.get('mcp_config')
 
 
-def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
+def _resolve_exposed_llm_profiles(
+    user_info: SaasUserInfo, connections: ProviderConnections
+) -> None:
     """Overlay each saved LLM profile with its effective runtime config.
 
     SaaS profiles never persist a real api_key: the org-profiles routes lift
@@ -91,17 +95,57 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
     endpoint: resolve the managed/provider-default ``base_url``, force
     streaming, and fall back to the user's effective settings key for keyless
     profiles; BYOR profiles with real keys keep their own key.
+
+    A profile linked to a provider connection then takes the connection's
+    ``api_key`` and ``base_url``, as on settings load
+    (``apply_provider_connection``). A missing connection is logged and the
+    profile is left as resolved.
     """
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
     fallback_api_key = getattr(settings_llm, 'api_key', None)
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
-        profiles[name] = resolve_profile_llm(
+        resolved = resolve_profile_llm(
             profile_llm,
             managed_proxy_url=LITE_LLM_API_URL,
             fallback_api_key=fallback_api_key,
         )
+        connection_id = getattr(resolved, 'provider_connection_id', None)
+        if connection_id:
+            connection = connections.get(connection_id)
+            if connection is None:
+                _logger.warning(
+                    'LLM profile %r references missing provider connection %s',
+                    name,
+                    connection_id,
+                )
+            else:
+                updates: dict[str, Any] = {'base_url': connection.base_url}
+                api_key = connection.api_key_value()
+                if api_key is not None:
+                    updates['api_key'] = SecretStr(api_key)
+                resolved = resolved.model_copy(update=updates)
+        profiles[name] = resolved
+
+
+async def _org_provider_connections(org_id: str | None) -> ProviderConnections:
+    """The provider connections of ``org_id``, or none.
+
+    Never raises, like settings load: the caller already proved access to this
+    org (session key ownership), and a caller without a membership row (e.g. a
+    super admin acting in an org) must still get its profiles.
+    """
+    if not org_id:
+        return ProviderConnections()
+    try:
+        org = await OrgStore.get_org_by_id(UUID(org_id))
+    except Exception:  # noqa: BLE001 - degrade to unresolved profiles
+        _logger.warning(
+            'Failed to load provider connections for org %s', org_id, exc_info=True
+        )
+        return ProviderConnections()
+    return load_provider_connections(org) if org else ProviderConnections()
 
 
 async def _load_provider_connections_for_user(
@@ -178,7 +222,9 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        _resolve_exposed_llm_profiles(user_info)
+        _resolve_exposed_llm_profiles(
+            user_info, await _org_provider_connections(user_info.org_id)
+        )
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
         return JSONResponse(content=content)  # type: ignore[return-value]
