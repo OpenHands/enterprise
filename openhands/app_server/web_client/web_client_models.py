@@ -87,6 +87,9 @@ class WebClientFeatureFlags(BaseModel):
     # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
     # its org-scope constraints are not gated.
     enable_org_agent_profiles: bool = False
+    # ``enable_multi_repository_conversations``: the start request accepts
+    # ``additional_repositories``. Set from ENABLE_MULTI_REPOSITORY_CONVERSATIONS.
+    enable_multi_repository_conversations: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

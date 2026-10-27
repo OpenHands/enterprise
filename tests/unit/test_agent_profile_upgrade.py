@@ -62,7 +62,7 @@ def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
             session.execute(
                 text('SELECT version_num FROM alembic_version')
             ).scalar_one()
-            == '200'
+            == '201'
         )
     expected = copy.deepcopy(original)
     expected['profiles'][legacy['id']]['tools'] = None
