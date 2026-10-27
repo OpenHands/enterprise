@@ -22,6 +22,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
@@ -161,6 +162,8 @@ class SaasUserAuth(UserAuth):
     # needed to distinguish "not yet computed" from "computed and None".
     _effective_org_id: UUID | None = None
     _effective_org_id_resolved: bool = False
+    # Cached result of `get_provider_connections()`; org-scoped.
+    _provider_connections: ProviderConnections | None = None
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -197,6 +200,7 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        self._provider_connections = None
         # The v2 access token is org-independent but the memoized token must
         # not survive a re-scope that clears provider_tokens.
         self.access_token = None if self.oauth_v2_cookie else self.access_token
@@ -1167,6 +1171,30 @@ class SaasUserAuth(UserAuth):
             name='OPENHANDS_API_KEY',
         )
         return openhands_api_key
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The provider connections of the effective org, for a member of it.
+
+        Same rule as ``SaasSettingsStore.load``, which supplies the profiles
+        these connections apply to: no member row, no connections. So a super
+        admin acting in an org they did not join gets no connection keys.
+        """
+        if self._provider_connections is not None:
+            return self._provider_connections
+        # Imported locally to avoid a circular import, as above.
+        from storage.agent_profile_resolution import load_provider_connections
+        from storage.org_member_store import OrgMemberStore
+
+        connections = ProviderConnections()
+        org_id = await self.get_effective_org_id()
+        if org_id is not None and await OrgMemberStore.get_org_member(
+            org_id, UUID(self.user_id)
+        ):
+            org = await OrgStore.get_org_by_id(org_id)
+            if org is not None:
+                connections = load_provider_connections(org)
+        self._provider_connections = connections
+        return connections
 
     async def get_org_info(self) -> dict | None:
         """Get organization info for the current user.
