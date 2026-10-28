@@ -21,10 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.agent_server.models import Success
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
-from openhands.app_server.app_conversation.additional_repositories import (
-    ADDITIONAL_REPOSITORIES_DISABLED,
-    multi_repository_conversations_enabled,
-)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -471,18 +467,6 @@ async def batch_get_app_conversations(
     return app_conversations
 
 
-def _reject_disabled_additional_repositories(
-    start_request: AppConversationStartRequest,
-) -> None:
-    # Without the flag, starting single-repository would silently drop them.
-    if start_request.additional_repositories and not (
-        multi_repository_conversations_enabled()
-    ):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, ADDITIONAL_REPOSITORIES_DISABLED
-        )
-
-
 @router.post('')
 async def start_app_conversation(
     request: Request,
@@ -495,7 +479,6 @@ async def start_app_conversation(
         app_conversation_service_dependency
     ),
 ) -> AppConversationStartTask:
-    _reject_disabled_additional_repositories(start_request)
     await _validate_acp_start(start_request, user_context, secrets_store)
 
     # Because we are processing after the request finishes, keep the db connection open
@@ -1166,7 +1149,6 @@ async def stream_app_conversation_start(
     """Start an app conversation start task and stream updates from it.
     Leaves the connection open until either the conversation starts or there was an error
     """
-    _reject_disabled_additional_repositories(request)
     await _validate_acp_start(request, user_context, secrets_store)
     response = StreamingResponse(
         _stream_app_conversation_start(request, user_context),

@@ -288,7 +288,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 sandbox_config=sandbox_config,
                 load_public=True,
                 load_user=True,
-                load_project=True,
+                # Without a primary the project folder is the parent of the
+                # clones; their skills load per repository below instead.
+                load_project=bool(selected_repository) or not additional_repositories,
                 load_org=True,
                 registered_marketplaces=registered_marketplaces,
             )
@@ -300,7 +302,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             ]
             # The agent works from the parent folder whenever additional
             # repositories were requested, even if none of them cloned.
-            if additional_repositories and selected_repository:
+            if additional_repositories:
                 per_repository = await asyncio.gather(
                     *(
                         load_skills_from_agent_server(
@@ -317,8 +319,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 )
                 all_skills = merge_repository_skills(
                     all_skills,
-                    project_dir,
-                    selected_repository.split('/')[-1],
+                    project_dir if selected_repository else None,
+                    selected_repository.split('/')[-1] if selected_repository else None,
                     list(zip(cloned, per_repository, strict=True)),
                 )
 
@@ -461,6 +463,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
             task.detail = 'Could not clone additional repositories: ' + ', '.join(
                 failed
             )
+            if task.request.require_all:
+                raise ValueError(task.detail)
 
         # Compute the project root — the cloned repo directory when a repo is
         # selected, or the sandbox working_dir otherwise.  This must be used
@@ -476,6 +480,9 @@ class AppConversationServiceBase(AppConversationService, ABC):
         task.status = AppConversationStartTaskStatus.SETTING_UP_GIT_HOOKS
         yield task
         await self.maybe_setup_git_hooks(workspace, project_dir)
+        for repo in task._additional_repositories:
+            if repo.status == AdditionalRepositoryStatus.CLONED:
+                await self.maybe_setup_git_hooks(workspace, repo.path)
 
         # Inject the user's stored memory context into the sandbox before the
         # conversation starts. This writes the MEMORY.md file so the SDK's
@@ -770,7 +777,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
         await self._configure_gpg_signing(workspace)
 
         if not request.selected_repository:
-            if self.init_git_in_empty_workspace:
+            # A parent folder holding additional repositories stays a plain folder.
+            if self.init_git_in_empty_workspace and not request.additional_repositories:
                 _logger.debug('Initializing a new git repository in the workspace.')
                 cmd = (
                     'git init && git config --global '
@@ -904,7 +912,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         start.
         """
         request = task.request
-        if not request.additional_repositories or not request.selected_repository:
+        if not request.additional_repositories:
             return []
         folders = assign_repository_folders(
             request.selected_repository, request.additional_repositories

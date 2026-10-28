@@ -6,17 +6,17 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.agent_server.models import ConversationInfo
 from openhands.app_server.app_conversation.additional_repositories import (
-    MULTI_REPOSITORY_CONVERSATIONS_ENV,
     AdditionalRepository,
     AdditionalRepositoryRequest,
     AdditionalRepositoryStatus,
+    agent_working_dir,
     assign_repository_folders,
+    loads_repository_hooks,
     merge_repository_skills,
     repositories_context,
 )
@@ -25,10 +25,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTask,
     ConversationPullRequest,
-)
-from openhands.app_server.app_conversation.app_conversation_router import (
-    start_app_conversation,
-    stream_app_conversation_start,
 )
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
@@ -45,9 +41,6 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.mcp import mcp_router
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
-from openhands.app_server.web_client.default_web_client_config_injector import (
-    _get_feature_flags,
-)
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill
 from server.services.org_conversation_service import conversation_pr_keys
@@ -136,11 +129,19 @@ def test_start_request_rejects_invalid_additional_repositories(additional):
         _start_request(additional_repositories=additional)
 
 
-def test_additional_repositories_need_a_main_repository():
-    with pytest.raises(ValidationError, match='selected_repository'):
-        AppConversationStartRequest(
-            additional_repositories=[{'repository': 'a/b', 'git_provider': 'github'}]
-        )
+def test_additional_repositories_without_a_primary_are_accepted():
+    request = AppConversationStartRequest(
+        additional_repositories=[
+            {'repository': 'a/b', 'git_provider': 'github'},
+            {'repository': 'c/b', 'git_provider': 'github'},
+        ]
+    )
+
+    assert request.selected_repository is None
+    assert assign_repository_folders(None, request.additional_repositories) == [
+        'b',
+        'c-b',
+    ]
 
 
 def test_same_name_on_another_provider_is_not_a_duplicate():
@@ -611,8 +612,7 @@ async def test_repositories_and_pull_requests_survive_the_lifecycle_webhook(
 # --- parent inheritance -----------------------------------------------------
 
 
-def test_sub_conversation_inherits_additional_repositories(monkeypatch):
-    monkeypatch.setenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, 'true')
+def test_sub_conversation_inherits_additional_repositories():
     service = MagicMock()
     parent = AppConversationInfo(
         sandbox_id='s',
@@ -686,68 +686,242 @@ def test_pr_merge_keys_use_each_pull_requests_repository():
     assert conversation_pr_keys('o/r', 'github', [5], None) == [('github', 'o/r', 5)]
 
 
-# --- feature flag ------------------------------------------------------------
+# --- primary-only behaviour and the single-repository invariants -------------
 
 
-def _multi_repo_request() -> AppConversationStartRequest:
-    return _start_request(additional_repositories=[_extra('org2/p/lib')])
+def _setup_service(clone_results):
+    service = MagicMock()
+    service.run_setup_scripts = MethodType(
+        AppConversationServiceBase.run_setup_scripts, service
+    )
+    for name in (
+        'clone_or_init_git_repo',
+        '_configure_azure_devops_git_credentials',
+        'maybe_run_setup_script',
+        'maybe_setup_git_hooks',
+        'maybe_inject_memory_context',
+        'load_and_merge_all_skills',
+    ):
+        setattr(service, name, AsyncMock())
+    service.clone_additional_repositories = AsyncMock(return_value=clone_results)
+    return service
+
+
+async def _run_setup(service, request):
+    task = AppConversationStartTask(created_by_user_id='u', request=request)
+    workspace = MagicMock(working_dir='/workspace/project')
+    async for _ in service.run_setup_scripts(task, Mock(), workspace, 'url', uuid4()):
+        pass
+    return task, workspace
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('endpoint', ['start', 'stream'])
-async def test_flag_off_rejects_additional_repositories(monkeypatch, endpoint):
-    monkeypatch.delenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, raising=False)
-    service = MagicMock()
-
-    with pytest.raises(HTTPException) as exc_info:
-        if endpoint == 'start':
-            await start_app_conversation(
-                request=MagicMock(),
-                start_request=_multi_repo_request(),
-                user_context=MagicMock(),
-                secrets_store=MagicMock(),
-                db_session=MagicMock(),
-                httpx_client=MagicMock(),
-                app_conversation_service=service,
-            )
-        else:
-            await stream_app_conversation_start(
-                request=_multi_repo_request(),
-                user_context=MagicMock(),
-                secrets_store=MagicMock(),
-            )
-
-    assert exc_info.value.status_code == 400
-    assert MULTI_REPOSITORY_CONVERSATIONS_ENV in exc_info.value.detail
-    service.start_app_conversation.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_flag_off_service_refuses_instead_of_starting_single_repository(
-    monkeypatch,
-):
-    monkeypatch.delenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, raising=False)
-    service = MagicMock()
-    service.user_context.get_user_id = AsyncMock(return_value='u')
-    service._start_app_conversation = MethodType(
-        LiveStatusAppConversationService._start_app_conversation, service
+async def test_require_all_fails_the_start_when_a_repository_does_not_clone():
+    service = _setup_service(
+        [
+            _repo('org2/p/lib', 'lib'),
+            _repo('org3/p/x', 'x', AdditionalRepositoryStatus.FAILED),
+        ]
+    )
+    request = _start_request(
+        additional_repositories=[_extra('org2/p/lib'), _extra('org3/p/x')],
+        require_all=True,
     )
 
-    with pytest.raises(ValueError, match=MULTI_REPOSITORY_CONVERSATIONS_ENV):
-        await anext(service._start_app_conversation(_multi_repo_request()))
+    with pytest.raises(ValueError, match='org3/p/x'):
+        await _run_setup(service, request)
+    service.maybe_run_setup_script.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    ('value', 'expected'),
-    [(None, False), ('true', True), ('1', True), ('false', False)],
-)
-def test_web_client_advertises_the_flag(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, raising=False)
-    else:
-        monkeypatch.setenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, value)
+@pytest.mark.asyncio
+async def test_pre_commit_is_installed_in_every_cloned_repository():
+    service = _setup_service(
+        [
+            _repo('org2/p/lib', 'lib'),
+            _repo('org3/p/x', 'x', AdditionalRepositoryStatus.FAILED),
+        ]
+    )
 
-    assert _get_feature_flags().enable_multi_repository_conversations is expected
+    _, workspace = await _run_setup(
+        service,
+        _start_request(
+            additional_repositories=[_extra('org2/p/lib'), _extra('org3/p/x')]
+        ),
+    )
+
+    assert [c.args[1] for c in service.maybe_setup_git_hooks.await_args_list] == [
+        '/workspace/project/main',
+        '/workspace/project/lib',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parent_folder_is_not_git_initialised_without_a_primary():
+    service, user_context = MagicMock(), MagicMock()
+    user_context.get_user_info = AsyncMock(
+        return_value=Mock(git_user_name=None, git_user_email=None)
+    )
+    user_context.get_secrets = AsyncMock(return_value={})
+    service.user_context = user_context
+    service.init_git_in_empty_workspace = True
+    for name in (
+        'clone_or_init_git_repo',
+        '_configure_git_user_settings',
+        '_configure_gpg_signing',
+    ):
+        setattr(
+            service,
+            name,
+            MethodType(getattr(AppConversationServiceBase, name), service),
+        )
+    workspace = _workspace(set())
+    task = AppConversationStartTask(
+        created_by_user_id='u',
+        request=AppConversationStartRequest(
+            additional_repositories=[_extra('org2/p/lib')]
+        ),
+    )
+
+    await service.clone_or_init_git_repo(task, workspace)
+
+    assert not any(
+        'git init' in c.args[0] for c in workspace.execute_command.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_repositories_clone_without_a_primary():
+    service = _clone_service({'org2/p/app': 'https://dev.azure.com/org2/p/_git/app'})
+    task = AppConversationStartTask(
+        created_by_user_id='u',
+        request=AppConversationStartRequest(
+            additional_repositories=[_extra('org2/p/app')]
+        ),
+    )
+
+    [repo] = await service.clone_additional_repositories(task, _workspace(set()))
+
+    assert (repo.folder, repo.status) == ('app', AdditionalRepositoryStatus.CLONED)
+
+
+def test_repositories_read_field_lists_the_primary_first():
+    info = AppConversationInfo(
+        sandbox_id='s',
+        created_by_user_id='u',
+        selected_repository='org1/p/app',
+        selected_branch='main',
+        git_provider=ADO,
+        additional_repositories=[
+            _repo('org3/p/x', 'x', AdditionalRepositoryStatus.FAILED)
+        ],
+        tags={'archiveworkspacepath': '/workspace/project'},
+    )
+
+    listed = info.model_dump(mode='json')['repositories']
+
+    assert [
+        (r['repository'], r['primary'], r['status'], r['path']) for r in listed
+    ] == [
+        ('org1/p/app', True, 'cloned', '/workspace/project/app'),
+        ('org3/p/x', False, 'failed', '/workspace/project/x'),
+    ]
+    no_primary = AppConversationInfo(
+        sandbox_id='s',
+        created_by_user_id='u',
+        additional_repositories=[_repo('a/b', 'b')],
+    )
+    assert [r.primary for r in no_primary.repositories] == [False]
+
+
+def test_repositories_block_without_a_primary():
+    block = repositories_context(
+        None, None, None, '/workspace/project', [_repo('a/b', 'b')]
+    )
+
+    assert ', main repository' not in block
+    assert "No repository's setup.sh has been run." in block
+    assert '`a/b` at `/workspace/project/b`' in block
+
+
+def test_hooks_are_skipped_only_with_additional_repositories():
+    assert loads_repository_hooks([]) is True
+    assert loads_repository_hooks([_repo('a/b', 'b')]) is False
+
+
+# Single-repository invariants: without additional repositories the workspace
+# folder, skill loading, hooks and PR metadata are what they were before.
+
+
+def test_single_repository_invariant_workspace_folder():
+    assert agent_working_dir('/workspace/project', '/workspace/project/app', []) == (
+        '/workspace/project/app'
+    )
+    assert agent_working_dir('/workspace/project', '/workspace/project', []) == (
+        '/workspace/project'
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_repository_invariant_skill_set():
+    service = MagicMock()
+    service.user_context = MagicMock()
+    service._configure_marketplace_git_credentials = AsyncMock()
+    service.load_and_merge_all_skills = MethodType(
+        AppConversationServiceBase.load_and_merge_all_skills, service
+    )
+    loaded = [
+        _skill(
+            'agents', '/workspace/project/app/AGENTS.md', PathTrigger(paths=['x/**'])
+        )
+    ]
+    base = 'openhands.app_server.app_conversation.app_conversation_service_base'
+    with (
+        patch(
+            f'{base}.load_skills_from_agent_server', AsyncMock(return_value=loaded)
+        ) as load,
+        patch(f'{base}.build_org_configs', AsyncMock(return_value=[])),
+        patch(f'{base}.build_sandbox_config', return_value=None),
+        patch(f'{base}.authenticate_marketplace_sources', AsyncMock(return_value=None)),
+    ):
+        skills = await service.load_and_merge_all_skills(
+            Mock(session_api_key='k', exposed_urls=[]),
+            'org1/p/app',
+            '/workspace/project/app',
+            'http://agent',
+        )
+
+    assert skills == loaded
+    load.assert_awaited_once()
+    assert load.await_args.kwargs['load_project'] is True
+    assert load.await_args.kwargs['project_dir'] == '/workspace/project/app'
+
+
+def test_single_repository_invariant_hooks():
+    assert loads_repository_hooks([]) is True
+
+
+@pytest.mark.asyncio
+async def test_single_repository_invariant_setup():
+    service = _setup_service([])
+
+    task, workspace = await _run_setup(service, _start_request())
+
+    assert task.detail is None
+    service.maybe_run_setup_script.assert_awaited_once_with(
+        workspace, '/workspace/project/main'
+    )
+    assert [c.args[1] for c in service.maybe_setup_git_hooks.await_args_list] == [
+        '/workspace/project/main'
+    ]
+
+
+def test_single_repository_invariant_pr_metadata():
+    assert conversation_pr_keys(
+        'OpenHands/app',
+        'github',
+        [5],
+        [{'number': 5, 'repository': 'OpenHands/app', 'git_provider': 'github'}],
+    ) == conversation_pr_keys('OpenHands/app', 'github', [5], None)
 
 
 def test_pr_in_the_main_repository_keeps_its_stored_casing():

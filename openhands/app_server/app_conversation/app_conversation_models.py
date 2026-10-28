@@ -24,6 +24,8 @@ from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
+    ConversationRepository,
+    conversation_repositories,
     validate_additional_repositories,
 )
 from openhands.app_server.event_callback.event_callback_models import (
@@ -239,6 +241,22 @@ class AppConversationInfo(BaseModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def repositories(self) -> list[ConversationRepository]:
+        """Every repository of the conversation in order, the primary first.
+
+        Read this instead of combining ``selected_repository`` with
+        ``additional_repositories``.
+        """
+        return conversation_repositories(
+            self.selected_repository,
+            self.selected_branch,
+            self.git_provider,
+            self.additional_repositories,
+            self.tags.get(ARCHIVE_WORKSPACE_PATH_TAG_KEY),
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def launched_agent_profile(self) -> LaunchedAgentProfile | None:
         """Provenance of the Agent Profile that launched this conversation, else None.
 
@@ -359,10 +377,17 @@ class AppConversationStartRequest(OpenHandsModel):
     additional_repositories: list[AdditionalRepositoryRequest] | None = Field(
         default=None,
         description=(
-            'Repositories cloned beside the main (selected) repository, each in '
-            'its own folder. Requires ENABLE_MULTI_REPOSITORY_CONVERSATIONS. A '
-            'repository that fails to clone is reported on the conversation and '
-            'does not stop the start.'
+            'Repositories cloned beside the primary (selected) repository, or '
+            'without one, each in its own folder. A repository that fails to '
+            'clone is reported on the conversation and does not stop the start '
+            'unless require_all is set.'
+        ),
+    )
+    require_all: bool = Field(
+        default=False,
+        description=(
+            'Fail the start when any additional repository cannot be cloned, '
+            'instead of starting without it.'
         ),
     )
     suggested_task: SuggestedTask | None = None

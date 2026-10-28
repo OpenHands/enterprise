@@ -1,11 +1,12 @@
-"""Additional repositories cloned beside the main one at conversation start.
+"""Additional repositories cloned beside the primary one at conversation start.
 
-The main repository stays in ``selected_repository``/``selected_branch``/
-``git_provider``; these repositories are cloned into their own folders next to
-it, under the conversation's working folder.
+A conversation has an ordered list of repositories with an optional primary
+first. The primary stays in ``selected_repository``/``selected_branch``/
+``git_provider``; additional repositories are cloned into their own folders next
+to it, under the conversation's working folder, which becomes the agent's
+working directory. Only the primary supplies conversation hooks and ``setup.sh``.
 """
 
-import os
 import re
 from collections.abc import Sequence
 from enum import Enum
@@ -19,23 +20,11 @@ from openhands.app_server.utils.git import (
 )
 from openhands.sdk.skills import PathTrigger, Skill
 
-MULTI_REPOSITORY_CONVERSATIONS_ENV = 'ENABLE_MULTI_REPOSITORY_CONVERSATIONS'
 MAX_ADDITIONAL_REPOSITORIES = 9
-ADDITIONAL_REPOSITORIES_DISABLED = (
-    'additional_repositories is not enabled on this server '
-    f'({MULTI_REPOSITORY_CONVERSATIONS_ENV} is off)'
-)
 
 # Skill names the SDK gives instruction files (AGENTS.md, CLAUDE.md, ...).
 _INSTRUCTION_FILE_SKILL_NAMES = frozenset(Skill.PATH_TO_THIRD_PARTY_SKILL_NAME.values())
 _UNSAFE_FOLDER_CHARS = re.compile(r'[^A-Za-z0-9._-]+')
-
-
-def multi_repository_conversations_enabled() -> bool:
-    return os.getenv(MULTI_REPOSITORY_CONVERSATIONS_ENV, 'false').lower() in (
-        'true',
-        '1',
-    )
 
 
 class AdditionalRepositoryRequest(BaseModel):
@@ -78,6 +67,71 @@ class AdditionalRepository(BaseModel):
     error: str | None = None
 
 
+class ConversationRepository(BaseModel):
+    """One entry of a conversation's ordered repository list, primary first."""
+
+    repository: str
+    branch: str | None = None
+    git_provider: ProviderType | None = None
+    folder: str
+    path: str | None = Field(
+        default=None, description='Absolute path of the folder in the sandbox'
+    )
+    status: AdditionalRepositoryStatus
+    error: str | None = None
+    primary: bool = False
+
+
+def conversation_repositories(
+    selected_repository: str | None,
+    selected_branch: str | None,
+    git_provider: ProviderType | None,
+    additional_repositories: Sequence[AdditionalRepository],
+    working_dir: str | None,
+) -> list[ConversationRepository]:
+    """The conversation's repositories in order: the primary, then the others."""
+    repositories: list[ConversationRepository] = []
+    if selected_repository:
+        folder = selected_repository.split('/')[-1]
+        repositories.append(
+            ConversationRepository(
+                repository=selected_repository,
+                branch=selected_branch,
+                git_provider=git_provider,
+                folder=folder,
+                path=f'{working_dir}/{folder}' if working_dir else None,
+                status=AdditionalRepositoryStatus.CLONED,
+                primary=True,
+            )
+        )
+    repositories.extend(
+        ConversationRepository(**repo.model_dump()) for repo in additional_repositories
+    )
+    return repositories
+
+
+def agent_working_dir(
+    working_dir: str,
+    project_dir: str,
+    additional_repositories: Sequence[AdditionalRepository],
+) -> str:
+    """The agent's working directory: the primary's folder unless there are others."""
+    return working_dir if additional_repositories else project_dir
+
+
+def loads_repository_hooks(
+    additional_repositories: Sequence[AdditionalRepository],
+) -> bool:
+    """Whether the primary's ``hooks.json`` is loaded for this conversation.
+
+    Hook commands run from the agent's working directory, which is the parent
+    folder when there are additional repositories, so a relative-path hook would
+    run against the wrong tree; skip them until the agent-server can run them
+    from the primary's folder.
+    """
+    return not additional_repositories
+
+
 def _same_repository(
     repository: str,
     git_provider: ProviderType | None,
@@ -99,15 +153,13 @@ def validate_additional_repositories(
     """Raise ValueError for a list the start request cannot accept."""
     if not additional_repositories:
         return
-    if not selected_repository:
-        raise ValueError(
-            'additional_repositories needs selected_repository as the main repository'
-        )
     if len(additional_repositories) > MAX_ADDITIONAL_REPOSITORIES:
         raise ValueError(
             f'At most {MAX_ADDITIONAL_REPOSITORIES} additional repositories are allowed'
         )
-    seen: list[tuple[str, ProviderType | None]] = [(selected_repository, git_provider)]
+    seen: list[tuple[str, ProviderType | None]] = (
+        [(selected_repository, git_provider)] if selected_repository else []
+    )
     for item in additional_repositories:
         if any(
             _same_repository(item.repository, item.git_provider, repo, provider)
@@ -122,16 +174,18 @@ def _folder_candidate(name: str) -> str:
 
 
 def assign_repository_folders(
-    selected_repository: str,
+    selected_repository: str | None,
     additional_repositories: Sequence[AdditionalRepositoryRequest],
 ) -> list[str]:
     """Return a distinct folder name for each additional repository.
 
-    The main repository keeps its folder (the last path segment). Each
-    additional repository takes its last segment when free, otherwise its full
-    path joined with dashes, otherwise that with a number appended.
+    The primary keeps its folder (the last path segment). Each additional
+    repository takes its last segment when free, otherwise its full path joined
+    with dashes, otherwise that with a number appended.
     """
-    used = {selected_repository.split('/')[-1].lower()}
+    used = (
+        {selected_repository.split('/')[-1].lower()} if selected_repository else set()
+    )
     folders: list[str] = []
     for item in additional_repositories:
         segments = item.repository.split('/')
@@ -148,7 +202,7 @@ def assign_repository_folders(
 
 
 def repositories_context(
-    selected_repository: str,
+    selected_repository: str | None,
     selected_branch: str | None,
     git_provider: ProviderType | None,
     main_path: str,
@@ -175,14 +229,17 @@ def repositories_context(
         'This conversation works on several repositories, each in its own folder '
         'under the working directory. Run git commands inside the folder of the '
         'repository you are changing.',
-        line(
-            selected_repository,
-            main_path,
-            selected_branch,
-            git_provider,
-            'main repository',
-        ),
     ]
+    if selected_repository:
+        lines.append(
+            line(
+                selected_repository,
+                main_path,
+                selected_branch,
+                git_provider,
+                'main repository',
+            )
+        )
     for repo in additional_repositories:
         if repo.status == AdditionalRepositoryStatus.CLONED:
             status = 'cloned'
@@ -193,7 +250,16 @@ def repositories_context(
         )
     lines.append(
         'Instructions from AGENTS.md and similar files in an additional repository '
-        'appear under its folder name, e.g. `agents:<folder>`.'
+        'appear under its folder name, e.g. `agents:<folder>`. '
+        + (
+            "Only the main repository's setup.sh has been run."
+            if selected_repository
+            else "No repository's setup.sh has been run."
+        )
+    )
+    lines.append(
+        'If the task needs another repository, clone it with plain git into a new '
+        'folder next to these.'
     )
     body = '\n'.join(lines)
     return f'<REPOSITORIES>\n{body}\n</REPOSITORIES>'
@@ -233,8 +299,8 @@ def _scope_instruction_file_name(skill: Skill, folder: str) -> Skill:
 
 def merge_repository_skills(
     skills: list[Skill],
-    main_project_dir: str,
-    main_folder: str,
+    main_project_dir: str | None,
+    main_folder: str | None,
     additional_skills: Sequence[tuple[AdditionalRepository, list[Skill]]],
 ) -> list[Skill]:
     """Merge each additional repository's project skills into ``skills``.
@@ -248,7 +314,11 @@ def merge_repository_skills(
     merged: dict[str, Skill] = {}
     project_names: set[str] = set()
     for skill in skills:
-        if _is_under(skill.source, main_project_dir):
+        if (
+            main_project_dir
+            and main_folder
+            and _is_under(skill.source, main_project_dir)
+        ):
             skill = _scope_paths(skill, main_folder)
             project_names.add(skill.name)
         merged[skill.name] = skill

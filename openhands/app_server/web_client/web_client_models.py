@@ -94,9 +94,6 @@ class WebClientFeatureFlags(BaseModel):
     # OH_WEB_CLIENT_FEATURE_FLAGS_* form, which the server reads too). Default
     # False so existing installs keep today's behavior.
     enable_model_router: bool = False
-    # ``enable_multi_repository_conversations``: the start request accepts
-    # ``additional_repositories``. Set from ENABLE_MULTI_REPOSITORY_CONVERSATIONS.
-    enable_multi_repository_conversations: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

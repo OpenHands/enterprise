@@ -25,10 +25,10 @@ from openhands.agent_server.models import (
 )
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
-    ADDITIONAL_REPOSITORIES_DISABLED,
     AdditionalRepository,
     AdditionalRepositoryRequest,
-    multi_repository_conversations_enabled,
+    agent_working_dir,
+    loads_repository_hooks,
     repositories_context,
 )
 from openhands.app_server.app_conversation.app_conversation_info_service import (
@@ -545,7 +545,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         additional_repositories: Sequence[AdditionalRepository],
     ) -> str | None:
         system_message_suffix = self._maybe_append_shallow_clone_context(
-            user, selected_repository, system_message_suffix
+            user,
+            selected_repository
+            or (
+                additional_repositories[0].repository
+                if additional_repositories
+                else None
+            ),
+            system_message_suffix,
         )
         system_message_suffix = await self._maybe_append_azure_devops_context(
             git_provider,
@@ -554,7 +561,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             system_message_suffix,
             additional_repositories,
         )
-        if additional_repositories and selected_repository:
+        if additional_repositories:
             system_message_suffix = append_system_context(
                 system_message_suffix,
                 repositories_context(
@@ -683,10 +690,6 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         self._apply_suggested_task(request)
         self._apply_default_trigger(request)
-        if request.additional_repositories and not (
-            multi_repository_conversations_enabled()
-        ):
-            raise ValueError(ADDITIONAL_REPOSITORIES_DISABLED)
 
         # Resolved once: validation, the build and provenance must see one revision.
         user = await self.user_context.get_user_info(
@@ -1583,10 +1586,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Inherit git parameters from parent if not provided
         if not request.selected_repository:
             request.selected_repository = parent_info.selected_repository
-            if (
-                request.additional_repositories is None
-                and multi_repository_conversations_enabled()
-            ):
+            if request.additional_repositories is None:
                 request.additional_repositories = [
                     AdditionalRepositoryRequest(
                         repository=repo.repository,
@@ -2699,7 +2699,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         project_dir = get_project_dir(working_dir, selected_repository)
         workspace = LocalWorkspace(
-            working_dir=working_dir if additional_repositories else project_dir
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
         )
 
         # --- secrets --------------------------------------------------------
@@ -2881,7 +2883,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- hooks (require remote workspace; must precede request build) -----
         hook_config: HookConfig | None = None
-        if remote_workspace:
+        if remote_workspace and not loads_repository_hooks(additional_repositories):
+            _logger.info(
+                'Not loading repository hooks: with additional repositories they '
+                'would run from the parent folder, not the primary repository'
+            )
+        elif remote_workspace:
             try:
                 _logger.debug(
                     f'Attempting to load hooks from workspace: '
@@ -3069,7 +3076,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Build a scoped ACP settings request for runtime finalization."""
         project_dir = get_project_dir(working_dir, selected_repository)
         workspace = LocalWorkspace(
-            working_dir=working_dir if additional_repositories else project_dir
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
         )
 
         # --- secrets --------------------------------------------------------
