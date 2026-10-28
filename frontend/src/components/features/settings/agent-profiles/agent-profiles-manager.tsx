@@ -6,6 +6,7 @@ import {
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useActivateAgentProfile } from "#/hooks/mutation/use-activate-agent-profile";
+import { useDeactivateAgentProfile } from "#/hooks/mutation/use-deactivate-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { I18nKey } from "#/i18n/declaration";
 import { extractErrorMessage } from "#/utils/extract-error-message";
@@ -41,6 +42,7 @@ export function AgentProfilesManager({
   const { t } = useTranslation();
   const { data, isLoading, error } = useAgentProfiles();
   const activateProfile = useActivateAgentProfile();
+  const deactivateProfile = useDeactivateAgentProfile();
   const [profileToDelete, setProfileToDelete] =
     useState<AgentProfileSummary | null>(null);
 
@@ -61,6 +63,15 @@ export function AgentProfilesManager({
       error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
     }).catch(() => null);
   };
+
+  const handleDeactivate = async (profile: AgentProfileSummary) => {
+    if (!profile.id) return;
+    await mutateWithToast(deactivateProfile, profile.id, {
+      success: t(I18nKey.SETTINGS$PROFILE_DEACTIVATED),
+      error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+    }).catch(() => null);
+  };
+  const isActivating = activateProfile.isPending || deactivateProfile.isPending;
 
   return (
     <>
@@ -88,9 +99,10 @@ export function AgentProfilesManager({
             profiles={personalProfiles}
             activeId={activeId}
             onActivate={handleActivate}
+            onDeactivate={handleDeactivate}
             onEdit={onEditProfile}
             onDelete={setProfileToDelete}
-            isActivating={activateProfile.isPending}
+            isActivating={isActivating}
           />
         </div>
 
@@ -131,9 +143,10 @@ export function AgentProfilesManager({
               profiles={orgProfiles}
               activeId={activeId}
               onActivate={handleActivate}
+              onDeactivate={handleDeactivate}
               onEdit={onEditProfile}
               onDelete={setProfileToDelete}
-              isActivating={activateProfile.isPending}
+              isActivating={isActivating}
               canManageOrg={canManageOrg}
             />
           </section>
