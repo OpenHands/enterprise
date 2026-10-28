@@ -6,6 +6,7 @@ import {
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useActivateAgentProfile } from "#/hooks/mutation/use-activate-agent-profile";
+import { useDeactivateAgentProfile } from "#/hooks/mutation/use-deactivate-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { I18nKey } from "#/i18n/declaration";
 import { extractErrorMessage } from "#/utils/extract-error-message";
@@ -41,6 +42,7 @@ export function AgentProfilesManager({
   const { t } = useTranslation();
   const { data, isLoading, error } = useAgentProfiles();
   const activateProfile = useActivateAgentProfile();
+  const deactivateProfile = useDeactivateAgentProfile();
   const [profileToDelete, setProfileToDelete] =
     useState<AgentProfileSummary | null>(null);
 
@@ -62,13 +64,22 @@ export function AgentProfilesManager({
     }).catch(() => null);
   };
 
+  const handleDeactivate = async (profile: AgentProfileSummary) => {
+    if (!profile.id) return;
+    await mutateWithToast(deactivateProfile, profile.id, {
+      success: t(I18nKey.SETTINGS$PROFILE_DEACTIVATED),
+      error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+    }).catch(() => null);
+  };
+  const isActivating = activateProfile.isPending || deactivateProfile.isPending;
+
   return (
     <>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-white">
-              {t(I18nKey.SETTINGS$AVAILABLE_PROFILES)}
+              {t(I18nKey.SETTINGS$PERSONAL_AGENT_PROFILES_TITLE)}
             </h2>
             <BrandButton
               testId="add-agent-profile"
@@ -88,9 +99,10 @@ export function AgentProfilesManager({
             profiles={personalProfiles}
             activeId={activeId}
             onActivate={handleActivate}
+            onDeactivate={handleDeactivate}
             onEdit={onEditProfile}
             onDelete={setProfileToDelete}
-            isActivating={activateProfile.isPending}
+            isActivating={isActivating}
           />
         </div>
 
@@ -131,9 +143,10 @@ export function AgentProfilesManager({
               profiles={orgProfiles}
               activeId={activeId}
               onActivate={handleActivate}
+              onDeactivate={handleDeactivate}
               onEdit={onEditProfile}
               onDelete={setProfileToDelete}
-              isActivating={activateProfile.isPending}
+              isActivating={isActivating}
               canManageOrg={canManageOrg}
             />
           </section>

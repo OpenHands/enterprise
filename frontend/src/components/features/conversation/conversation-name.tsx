@@ -140,6 +140,7 @@ export function ConversationName() {
     conversation.llm_model,
     conversation.acp_server,
     config?.acp_providers,
+    conversation.acp_available_models,
   );
 
   return (

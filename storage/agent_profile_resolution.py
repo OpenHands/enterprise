@@ -19,6 +19,7 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.app_server.settings.agent_profiles import AgentProfiles
 from openhands.app_server.settings.llm_profiles import LLMProfiles, resolve_profile_llm
+from openhands.app_server.settings.meta_profiles import OrgMetaProfiles
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.launch import AgentLaunchError, LaunchStores
@@ -120,6 +121,21 @@ def load_provider_connections(org: Org) -> ProviderConnections:
             'Failed to load org provider connections for %s: %s', org.id, exc
         )
         return ProviderConnections()
+
+
+def load_meta_profiles(org: Org) -> OrgMetaProfiles:
+    """Load the org's Model Routers from the org row, defaulting to empty if unset.
+
+    Degrades to empty on schema drift rather than raising, matching
+    :func:`load_provider_connections`.
+    """
+    if org.meta_profiles is None:
+        return OrgMetaProfiles()
+    try:
+        return OrgMetaProfiles.model_validate(org.meta_profiles)
+    except ValidationError as exc:
+        logger.warning('Failed to load org Model Routers for %s: %s', org.id, exc)
+        return OrgMetaProfiles()
 
 
 def apply_provider_connection(

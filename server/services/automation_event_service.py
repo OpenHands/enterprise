@@ -24,7 +24,7 @@ import hmac
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -108,6 +108,8 @@ class RequestedEventTypesCacheEntry:
     event_detection_rules: list[EventDetectionRule]
     loaded_at: float
     events_seen: int = 0
+    # Orgs with an automation on the source, for sources fanned out to them.
+    org_ids: list[UUID] = field(default_factory=list)
 
 
 class AutomationEventService:
@@ -201,7 +203,7 @@ class AutomationEventService:
 
     async def forward_jira_dc_event(
         self,
-        org_id: UUID,
+        org_id: UUID | None,
         payload: dict[str, Any],
         workspace_name: str,
         connection_id: int | None = None,
@@ -210,10 +212,42 @@ class AutomationEventService:
         """
         Forward a Jira Data Center webhook event to the automation service.
 
-        Jira DC workspaces are configured directly in OpenHands, so the route
-        resolves the OpenHands org from the workspace instead of using the
-        Git-provider owner resolver.
+        A Jira DC event names no Git owner to resolve an org from, and several
+        orgs can share one Jira DC instance. So it goes to the workspace's org
+        and to every org the automation service reports a Jira DC automation
+        for; each org's automations then match the event themselves.
         """
+        metadata = await self._get_requested_event_metadata('jira_dc')
+        if metadata is not None and not self._is_requested_event(
+            'jira_dc', payload, payload.get('webhookEvent'), metadata
+        ):
+            return
+
+        target_org_ids = [org_id] if org_id else []
+        for automation_org_id in metadata.org_ids if metadata else []:
+            if automation_org_id not in target_org_ids:
+                target_org_ids.append(automation_org_id)
+        if not target_org_ids:
+            logger.info(
+                '[AutomationEventService] No org to forward jira_dc event from '
+                f'workspace {workspace_name} to',
+                extra={'delivery_id': delivery_id},
+            )
+            return
+
+        for target_org_id in target_org_ids:
+            await self._forward_jira_dc_event_to_org(
+                target_org_id, payload, workspace_name, connection_id, delivery_id
+            )
+
+    async def _forward_jira_dc_event_to_org(
+        self,
+        org_id: UUID,
+        payload: dict[str, Any],
+        workspace_name: str,
+        connection_id: int | None,
+        delivery_id: str | None,
+    ) -> None:
         try:
             event_payload = {
                 'organization': {
@@ -262,7 +296,16 @@ class AutomationEventService:
                 f'event metadata unavailable'
             )
             return True
+        return self._is_requested_event(source, payload, event_type, metadata)
 
+    def _is_requested_event(
+        self,
+        source: str,
+        payload: dict[str, Any],
+        event_type: str | None,
+        metadata: RequestedEventTypesCacheEntry,
+    ) -> bool:
+        """Whether an automation could match this event, by its detected type."""
         detected_event_type = self._detect_source_event_type(source, payload, metadata)
         if detected_event_type is None:
             logger.debug(
@@ -416,6 +459,15 @@ class AutomationEventService:
                     requested_event_types = {
                         item for item in event_types if isinstance(item, str)
                     }
+                    org_ids = []
+                    for item in data.get('org_ids') or []:
+                        try:
+                            org_ids.append(UUID(str(item)))
+                        except ValueError:
+                            logger.warning(
+                                f'[AutomationEventService] Ignoring invalid '
+                                f'{source} org id: {item}'
+                            )
                     logger.info(
                         f'[AutomationEventService] Refreshed event forwarding '
                         f'metadata for {source}: requested_event_types='
@@ -426,6 +478,7 @@ class AutomationEventService:
                         event_types=requested_event_types,
                         event_detection_rules=rules,
                         loaded_at=0,
+                        org_ids=org_ids,
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             logger.warning(

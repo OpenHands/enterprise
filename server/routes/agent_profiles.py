@@ -176,6 +176,11 @@ class ActivateAgentProfileResponse(BaseModel):
     agent_settings_applied: bool = False
 
 
+class DeactivateAgentProfileResponse(BaseModel):
+    id: str
+    message: str
+
+
 class RenameAgentProfileRequest(BaseModel):
     new_name: str = Field(
         ..., min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN
@@ -768,6 +773,47 @@ async def activate_agent_profile(
     )
     return ActivateAgentProfileResponse(
         id=profile_id, message=f"Agent profile '{profile_id}' activated"
+    )
+
+
+@router.post('/{profile_id}/deactivate', response_model=DeactivateAgentProfileResponse)
+async def deactivate_agent_profile(
+    profile_id: ProfileId,
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+) -> DeactivateAgentProfileResponse:
+    """Clear the calling member's default when it points at ``profile_id``.
+
+    The pointer-only counterpart of ``activate``: writes
+    ``OrgMember.active_agent_profile_id`` back to ``None`` and touches neither
+    collection, so the member's next conversation starts on the composed org
+    and member settings. Idempotent when nothing is active (a repeated click
+    after success); 409 when the member's default is a different profile, so a
+    stale page cannot clear a choice made elsewhere.
+    """
+    async with _member_agent_profiles_transaction(effective_org_id, user_id) as (
+        _session,
+        _org,
+        locked_member,
+        _personal,
+    ):
+        current = locked_member.active_agent_profile_id
+        if current is not None and current != profile_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Agent profile with id '{profile_id}' is not the active profile"
+                ),
+            )
+        locked_member.active_agent_profile_id = None
+
+    logger.info(
+        "Deactivated agent profile id '%s' for member in org %s",
+        profile_id,
+        effective_org_id,
+    )
+    return DeactivateAgentProfileResponse(
+        id=profile_id, message=f"Agent profile '{profile_id}' deactivated"
     )
 
 
