@@ -448,8 +448,6 @@ async def on_conversation_update(
         git_provider=existing.git_provider,
         trigger=trigger,
         pr_number=existing.pr_number,
-        pull_requests=existing.pull_requests,
-        additional_repositories=existing.additional_repositories,
         # Preserve parent/child relationship and other metadata
         parent_conversation_id=existing.parent_conversation_id,
         metrics=conversation_info.stats.get_combined_metrics(),

@@ -1552,17 +1552,6 @@ class TestSurfacedACPProviders:
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
 
-    def test_config_carries_no_curated_model_lists(self):
-        """The SDK registry dropped its model lists in 1.59.0; the agent's
-        session reports models instead (``AppConversation.acp_available_models``)."""
-        from openhands.app_server.web_client.web_client_models import (
-            ACPProviderConfig,
-        )
-
-        assert {'default_model', 'available_models'}.isdisjoint(
-            ACPProviderConfig.model_fields
-        )
-
 
 class TestGetProviderDefaultHosts:
     """Test cases for _get_provider_default_hosts helper function."""

@@ -16,7 +16,6 @@ interface AgentProfilesBodyProps {
   profiles: AgentProfileSummary[];
   activeId: string | null;
   onActivate: (profile: AgentProfileSummary) => void;
-  onDeactivate: (profile: AgentProfileSummary) => void;
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
@@ -30,7 +29,6 @@ export function AgentProfilesBody({
   profiles,
   activeId,
   onActivate,
-  onDeactivate,
   onEdit,
   onDelete,
   isActivating,
@@ -75,7 +73,6 @@ export function AgentProfilesBody({
           profile={profile}
           isActive={!!profile.id && profile.id === activeId}
           onActivate={onActivate}
-          onDeactivate={onDeactivate}
           onEdit={onEdit}
           onDelete={onDelete}
           isActivating={isActivating}

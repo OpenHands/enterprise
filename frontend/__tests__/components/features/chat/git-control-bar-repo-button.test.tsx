@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitControlBarRepoButton } from "#/components/features/chat/git-control-bar-repo-button";
 
@@ -92,7 +93,7 @@ describe("GitControlBarRepoButton", () => {
   });
 
   describe("when no repository is connected", () => {
-    it("should render 'No Repo Connected' text", () => {
+    it("should render as a button with 'No Repo Connected' text", () => {
       render(
         <GitControlBarRepoButton
           selectedRepository={null}
@@ -100,7 +101,8 @@ describe("GitControlBarRepoButton", () => {
         />,
       );
 
-      expect(screen.getByTestId("git-control-bar-no-repo")).toBeInTheDocument();
+      const button = screen.getByRole("button");
+      expect(button).toBeInTheDocument();
       expect(
         screen.getByText("COMMON$NO_REPO_CONNECTED"),
       ).toBeInTheDocument();
@@ -133,16 +135,65 @@ describe("GitControlBarRepoButton", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("should not render an interactive control", () => {
+    it("should call onClick when clicked", async () => {
+      const handleClick = vi.fn();
+      const user = userEvent.setup();
+
       render(
         <GitControlBarRepoButton
           selectedRepository={null}
           gitProvider={null}
+          onClick={handleClick}
         />,
       );
 
-      expect(screen.queryByRole("button")).not.toBeInTheDocument();
-      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button"));
+      expect(handleClick).toHaveBeenCalledTimes(1);
+    });
+
+    it("should be disabled when disabled prop is true", () => {
+      render(
+        <GitControlBarRepoButton
+          selectedRepository={null}
+          gitProvider={null}
+          disabled={true}
+        />,
+      );
+
+      const button = screen.getByRole("button");
+      expect(button).toBeDisabled();
+      expect(button).toHaveClass("cursor-not-allowed");
+    });
+
+    it("should be clickable when disabled prop is false", () => {
+      render(
+        <GitControlBarRepoButton
+          selectedRepository={null}
+          gitProvider={null}
+          disabled={false}
+        />,
+      );
+
+      const button = screen.getByRole("button");
+      expect(button).not.toBeDisabled();
+      expect(button).toHaveClass("cursor-pointer");
+    });
+
+    it("should not call onClick when disabled", async () => {
+      const handleClick = vi.fn();
+      const user = userEvent.setup();
+
+      render(
+        <GitControlBarRepoButton
+          selectedRepository={null}
+          gitProvider={null}
+          onClick={handleClick}
+          disabled={true}
+        />,
+      );
+
+      await user.click(screen.getByRole("button"));
+      expect(handleClick).not.toHaveBeenCalled();
     });
   });
 });

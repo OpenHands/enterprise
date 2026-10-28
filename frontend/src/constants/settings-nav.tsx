@@ -4,7 +4,6 @@ import {
   Briefcase,
   DollarSign,
   LayoutDashboard,
-  Route,
   Shield,
   Users,
   Wallet,
@@ -84,13 +83,6 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/org-defaults/verification",
     text: "SETTINGS$NAV_VERIFICATION",
     subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <Route className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org-defaults/model-router",
-    text: "SETTINGS$NAV_MODEL_ROUTER",
-    subtitle: "SETTINGS$PAGE_MODEL_ROUTER_SUBLINE",
     section: "org",
   },
   {

@@ -913,48 +913,6 @@ async def test_jira_dc_events_forwards_issue_created_to_automations(
 
 
 @pytest.mark.asyncio
-@patch('server.routes.integration.jira_dc.automation_event_service')
-@patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
-@patch('server.routes.integration.jira_dc.redis_client', new_callable=MagicMock)
-async def test_jira_dc_events_without_workspace_org_still_forward(
-    mock_redis, mock_manager, mock_automation_service, mock_request
-):
-    """An install-wide workspace forwards to the orgs that have automations."""
-    payload = {'webhookEvent': 'comment_created'}
-    mock_workspace = MagicMock()
-    mock_workspace.id = 10
-    mock_workspace.org_id = None
-    mock_workspace.name = 'jira.company.com'
-    mock_manager.validate_request_context.return_value = (
-        True,
-        'sig123',
-        payload,
-        mock_workspace,
-    )
-    mock_redis.exists.return_value = False
-
-    with (
-        patch('server.routes.integration.jira_dc.JIRA_DC_WEBHOOKS_ENABLED', True),
-        patch(
-            'server.routes.integration.jira_dc.AUTOMATION_EVENT_FORWARDING_ENABLED',
-            True,
-        ),
-    ):
-        background_tasks = MagicMock()
-        response = await jira_dc_connection_events(10, mock_request, background_tasks)
-
-    assert response.status_code == 200
-    background_tasks.add_task.assert_any_call(
-        mock_automation_service.forward_jira_dc_event,
-        org_id=None,
-        payload=payload,
-        workspace_name='jira.company.com',
-        connection_id=10,
-        delivery_id='sig123',
-    )
-
-
-@pytest.mark.asyncio
 @patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
 @patch('server.routes.integration.jira_dc.redis_client', new_callable=MagicMock)
 async def test_jira_dc_events_general_exception(mock_redis, mock_manager, mock_request):

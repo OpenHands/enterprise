@@ -10,11 +10,15 @@ import { useProviderHost } from "#/hooks/use-provider-host";
 interface GitControlBarRepoButtonProps {
   selectedRepository: string | null | undefined;
   gitProvider: Provider | null | undefined;
+  onClick?: () => void;
+  disabled?: boolean;
 }
 
 export function GitControlBarRepoButton({
   selectedRepository,
   gitProvider,
+  onClick,
+  disabled,
 }: GitControlBarRepoButtonProps) {
   const { t } = useTranslation();
   const providerHost = useProviderHost(gitProvider);
@@ -58,11 +62,16 @@ export function GitControlBarRepoButton({
   }
 
   return (
-    <div
-      data-testid="git-control-bar-no-repo"
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "flex flex-row items-center justify-between gap-2 pl-2.5 pr-2.5 py-1 rounded-[100px] flex-1 truncate relative min-w-[170px]",
+        "group flex flex-row items-center justify-between gap-2 pl-2.5 pr-2.5 py-1 rounded-[100px] flex-1 truncate relative min-w-[170px]",
         "border border-[rgba(71,74,84,0.50)] bg-transparent",
+        disabled
+          ? "cursor-not-allowed opacity-50"
+          : "cursor-pointer hover:border-[#454545]",
       )}
     >
       <div className="w-3 h-3 flex items-center justify-center flex-shrink-0">
@@ -74,6 +83,6 @@ export function GitControlBarRepoButton({
       >
         {buttonText}
       </div>
-    </div>
+    </button>
   );
 }

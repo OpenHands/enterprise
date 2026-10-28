@@ -1,7 +1,5 @@
-import type { V1ACPModelInfo } from "#/api/conversation-service/v1-conversation-service.types";
 import type { ACPProviderConfig } from "#/api/option-service/option.types";
 import type { AgentKind } from "#/api/open-hands.types";
-import { acpModelLabel } from "./acp-models";
 import { formatLlmModel } from "./format-llm-model";
 
 /**
@@ -56,11 +54,10 @@ function acpKindFor(providerKey: string | undefined): AgentChipKind {
  *
  * The chip carries two signals: the icon is a brand mark for the harness
  * (OpenHands logo, Claude/OpenAI/Gemini mark), and the text is the model label.
- * ACP models use the name the conversation's session reported for the id
- * (``acpModels``), falling back to the raw id; native OpenHands models use
- * ``formatLlmModel``. For ACP conversations where the underlying model isn't
- * exposed, the text falls back to the provider brand ("Claude Code", "Codex",
- * "Gemini CLI", …, or "ACP").
+ * ACP models use the curated label from the provider registry (falling back to
+ * the raw id); native OpenHands models use ``formatLlmModel``. For ACP
+ * conversations where the underlying model isn't exposed, the text falls back
+ * to the provider brand ("Claude Code", "Codex", "Gemini CLI", …, or "ACP").
  *
  * Returns ``null`` when the conversation has neither a model nor an ACP
  * discriminator — in that case the chip is hidden.
@@ -70,7 +67,6 @@ export function resolveAgentChip(
   llmModel: string | null | undefined,
   acpServer?: string | null,
   acpProviders?: ACPProviderConfig[],
-  acpModels?: V1ACPModelInfo[] | null,
 ): AgentChip | null {
   if (agentKind === "acp") {
     let name = "ACP";
@@ -81,9 +77,14 @@ export function resolveAgentChip(
     }
     const kind = acpKindFor(acpServer ?? undefined);
     if (llmModel) {
+      // Use the curated label from the ACP provider registry, falling back to
+      // raw ID for custom overrides or registry/version lag.
+      const label =
+        provider?.available_models?.find((m) => m.id === llmModel)?.label ??
+        llmModel;
       return {
         kind,
-        text: acpModelLabel(acpModels, llmModel),
+        text: label,
         tooltip: `${name} · ${llmModel}`,
       };
     }

@@ -9,18 +9,12 @@ import SettingsIcon from "#/icons/settings.svg?react";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import CheckmarkIcon from "#/icons/checkmark.svg?react";
-import CloseIcon from "#/icons/close.svg?react";
 
 interface ProfileActionsMenuProps {
   /** Edit / Rename / Delete are omitted from the menu when not provided. */
   onEdit?: () => void;
   onRename?: () => void;
   onSetActive: () => void;
-  /**
-   * Offered in place of "Set as default" on the active row when provided, so
-   * the member can clear their default profile (agent profiles only).
-   */
-  onDeactivate?: () => void;
   onDelete?: () => void;
   isActive: boolean;
   isActivating: boolean;
@@ -47,7 +41,6 @@ export function ProfileActionsMenu({
   onEdit,
   onRename,
   onSetActive,
-  onDeactivate,
   onDelete,
   isActive,
   isActivating,
@@ -130,21 +123,13 @@ export function ProfileActionsMenu({
           },
         ]
       : []),
-    isActive && onDeactivate
-      ? {
-          testId: "profile-deactivate",
-          icon: CloseIcon,
-          label: t(I18nKey.SETTINGS$PROFILE_DEACTIVATE),
-          onSelect: onDeactivate,
-          isDisabled: isActivating,
-        }
-      : {
-          testId: "profile-set-active",
-          icon: CheckmarkIcon,
-          label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
-          onSelect: onSetActive,
-          isDisabled: isActive || isActivating,
-        },
+    {
+      testId: "profile-set-active",
+      icon: CheckmarkIcon,
+      label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
+      onSelect: onSetActive,
+      isDisabled: isActive || isActivating,
+    },
     ...(onDelete
       ? [
           {

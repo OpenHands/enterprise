@@ -27,7 +27,6 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import (
-    JSON,
     BigInteger,
     ColumnElement,
     DateTime,
@@ -44,9 +43,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.utils import utc_now
-from openhands.app_server.app_conversation.additional_repositories import (
-    AdditionalRepository,
-)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
     AppConversationInfoServiceInjector,
@@ -55,7 +51,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
-    ConversationPullRequest,
     ConversationTrigger,
 )
 from openhands.app_server.integrations.provider import ProviderType
@@ -166,10 +161,6 @@ class StoredConversationMetadata(Base):
     trigger: Mapped[str | None] = mapped_column(String, nullable=True)
     pr_number: Mapped[list[int] | None] = mapped_column(
         create_json_type_decorator(list[int])
-    )
-    pull_requests: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
-    additional_repositories: Mapped[list[dict] | None] = mapped_column(
-        JSON, nullable=True
     )
 
     # Cost and token metrics
@@ -513,12 +504,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             created_at=created_at,
             trigger=info.trigger.value if info.trigger else None,
             pr_number=info.pr_number or [],
-            pull_requests=[pr.model_dump(mode='json') for pr in info.pull_requests]
-            or None,
-            additional_repositories=[
-                repo.model_dump(mode='json') for repo in info.additional_repositories
-            ]
-            or None,
             # Cost and token metrics
             accumulated_cost=metrics.accumulated_cost,
             prompt_tokens=usage.prompt_tokens,
@@ -897,14 +882,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             title=stored.title,
             trigger=ConversationTrigger(stored.trigger) if stored.trigger else None,
             pr_number=stored.pr_number or [],
-            pull_requests=[
-                ConversationPullRequest.model_validate(pr)
-                for pr in stored.pull_requests or []
-            ],
-            additional_repositories=[
-                AdditionalRepository.model_validate(repo)
-                for repo in stored.additional_repositories or []
-            ],
             llm_model=stored.llm_model,
             agent_kind=stored.agent_kind or 'openhands',
             metrics=metrics,

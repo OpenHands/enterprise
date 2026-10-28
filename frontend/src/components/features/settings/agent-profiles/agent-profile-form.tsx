@@ -14,7 +14,12 @@ import type { AcpCredentialForm } from "#/hooks/use-acp-credential-form";
 import { I18nKey } from "#/i18n/declaration";
 import type { SettingsFieldSchema, SettingsSchema } from "#/types/settings";
 import { Typography } from "#/ui/typography";
-import { CUSTOM_PRESET, detectPreset } from "#/utils/acp-agent-form";
+import {
+  CUSTOM_MODEL_KEY,
+  CUSTOM_PRESET,
+  detectPreset,
+  isKnownModel,
+} from "#/utils/acp-agent-form";
 import {
   formControlMultilineFieldClassName,
   formControlSwitchDescriptionClassName,
@@ -113,9 +118,18 @@ export function AgentProfileForm({
 
   // ── ACP derived state ─────────────────────────────────────────────────────
   const selectedPreset = detectPreset(state.acpCommandText, acpProviders);
+  const selectedProvider = acpProviders.find(
+    ({ key }) => key === selectedPreset,
+  );
   const commandPlaceholder =
     formatCommand(acpProviders[0]?.default_command ?? []) ||
     "npx -y <package-name>";
+  const modelSuggestions = selectedProvider?.available_models ?? [];
+  const hasModelSuggestions = modelSuggestions.length > 0;
+  const selectedModelKey = isKnownModel(selectedProvider, state.acpModel)
+    ? state.acpModel
+    : CUSTOM_MODEL_KEY;
+
   // ── Scope catalogs ────────────────────────────────────────────────────────
   // A stored ref whose server/secret is gone rides along so it can be cleared.
   // Same for a pinned tool this server's catalog does not list; it is only
@@ -185,7 +199,7 @@ export function AgentProfileForm({
                   patch.acpCommandText = formatCommand(
                     preferred.default_command,
                   );
-                  patch.acpModel = "";
+                  patch.acpModel = preferred.default_model || "";
                 }
               }
               onChange(patch);
@@ -481,7 +495,7 @@ export function AgentProfileForm({
               if (provider) {
                 onChange({
                   acpCommandText: formatCommand(provider.default_command),
-                  acpModel: "",
+                  acpModel: provider.default_model || "",
                 });
               } else if (preset === CUSTOM_PRESET) {
                 onChange({ acpCommandText: "", acpModel: "" });
@@ -507,11 +521,13 @@ export function AgentProfileForm({
                 const patch: Partial<AgentProfileFormState> = {
                   acpCommandText: next,
                 };
-                // Model ids are provider-specific: fall back to the agent
-                // default when the typed command switches provider.
+                // Sync the model when the typed command switches provider.
                 const nextPreset = detectPreset(next, acpProviders);
                 if (nextPreset !== selectedPreset) {
-                  patch.acpModel = "";
+                  const nextProvider = acpProviders.find(
+                    ({ key }) => key === nextPreset,
+                  );
+                  patch.acpModel = nextProvider?.default_model || "";
                 }
                 onChange(patch);
               }}
@@ -521,20 +537,49 @@ export function AgentProfileForm({
             </Typography.Text>
           </div>
 
-          {/* Blank means the agent's own default; a running conversation
-              lists the models its session offers in the chat header. */}
           <div className="flex flex-col gap-1.5">
-            <SettingsInput
-              testId="agent-profile-model-input"
-              label={t(I18nKey.SETTINGS$AGENT_MODEL)}
-              type="text"
-              className="w-full"
-              value={state.acpModel}
-              placeholder={t(I18nKey.SETTINGS$AGENT_MODEL_AGENT_DEFAULT)}
-              showOptionalTag
-              isDisabled={isDisabled}
-              onChange={(acpModel) => onChange({ acpModel })}
-            />
+            {hasModelSuggestions && (
+              <SettingsDropdownInput
+                testId="agent-profile-model-selector"
+                name="agent-profile-model"
+                label={t(I18nKey.SETTINGS$AGENT_MODEL)}
+                items={[
+                  ...modelSuggestions.map((model) => ({
+                    key: model.id,
+                    label: model.label,
+                  })),
+                  {
+                    key: CUSTOM_MODEL_KEY,
+                    label: t(I18nKey.SETTINGS$AGENT_PRESET_CUSTOM),
+                  },
+                ]}
+                selectedKey={selectedModelKey}
+                isDisabled={isDisabled}
+                onSelectionChange={(key) => {
+                  if (!key) return;
+                  const modelKey = String(key);
+                  onChange({
+                    acpModel: modelKey === CUSTOM_MODEL_KEY ? "" : modelKey,
+                  });
+                }}
+              />
+            )}
+            {selectedModelKey === CUSTOM_MODEL_KEY && (
+              <SettingsInput
+                testId="agent-profile-model-input"
+                label={
+                  hasModelSuggestions
+                    ? t(I18nKey.SETTINGS$AGENT_CUSTOM_MODEL)
+                    : t(I18nKey.SETTINGS$AGENT_MODEL)
+                }
+                type="text"
+                className="w-full"
+                value={state.acpModel}
+                showOptionalTag
+                isDisabled={isDisabled}
+                onChange={(acpModel) => onChange({ acpModel })}
+              />
+            )}
             <Typography.Text className="text-xs text-[var(--oh-muted)]">
               {t(I18nKey.SETTINGS$AGENT_MODEL_HINT)}
             </Typography.Text>

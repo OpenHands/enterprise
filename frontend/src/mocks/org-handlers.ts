@@ -1790,14 +1790,4 @@ export const ORG_HANDLERS = [
   http.get("/api/organizations/:orgId/provider-connections", () =>
     HttpResponse.json({ connections: [] }),
   ),
-
-  // Model Routers — default to an empty list so the org Model Router page
-  // renders in tests without extra setup.
-  http.get("/api/organizations/:orgId/meta-profiles", () =>
-    HttpResponse.json({
-      meta_profiles: [],
-      active_meta_profile: null,
-      run_at_conversation_start: false,
-    }),
-  ),
 ];

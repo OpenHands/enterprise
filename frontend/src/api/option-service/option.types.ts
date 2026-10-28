@@ -80,27 +80,19 @@ export interface WebClientFeatureFlags {
   /** When true, org admins can add, edit and delete the organization's
    *  shared Agent Profiles on the Agent Profiles page. Off by default. */
   enable_org_agent_profiles?: boolean;
-  /** When true, the org "Model Router" settings page is shown and the
-   *  server applies the org's active Model Router to conversation launches.
-   *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
-  enable_model_router?: boolean;
 }
 
-/** One entry of a model picker; built from what an ACP session reported. */
 export interface ACPModelOption {
   id: string;
   label: string;
 }
 
-/**
- * A built-in ACP harness the deployment offers. Carries no model list: the
- * models an agent offers depend on the account it runs under, so the session
- * reports them (``V1AppConversation.acp_available_models``).
- */
 export interface ACPProviderConfig {
   key: string;
   display_name: string;
   default_command: string[];
+  default_model?: string | null;
+  available_models?: ACPModelOption[];
   api_key_env_var?: string | null;
   base_url_env_var?: string | null;
 }

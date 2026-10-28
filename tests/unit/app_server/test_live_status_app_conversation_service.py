@@ -6050,7 +6050,6 @@ class TestLiveStatusAppConversationService:
             revision=2,
         )
         parent.selected_repository = parent.selected_branch = parent.git_provider = None
-        parent.additional_repositories = []
         parent.llm_model = 'parent-model'
         request = AppConversationStartRequest(
             sandbox_id=str(uuid4()),
@@ -7147,64 +7146,6 @@ class TestAgentKindConversationUrl:
         assert result.conversation_url == (
             'http://localhost:8000/api/conversations/11111111111111111111111111111111'
         )
-
-
-class TestBuildConversationAcpModels:
-    """``AppConversation`` surfaces the models the live ACP session reported.
-
-    The SDK registry stopped carrying curated per-provider model lists in
-    1.59.0; the chat model picker reads these fields instead.
-    """
-
-    def _info(self):
-        from uuid import UUID
-
-        from openhands.app_server.app_conversation.app_conversation_models import (
-            AppConversationInfo,
-        )
-
-        return AppConversationInfo(
-            id=UUID('11111111-1111-1111-1111-111111111111'),
-            created_by_user_id=None,
-            sandbox_id='sandbox-a',
-            agent_kind='acp',
-        )
-
-    def test_surfaces_the_models_the_session_reported(self):
-        from openhands.sdk.agent.acp_models import ACPModelInfo
-        from openhands.sdk.conversation import ConversationExecutionStatus
-
-        service = LiveStatusAppConversationService.__new__(
-            LiveStatusAppConversationService
-        )
-        conversation_info = SimpleNamespace(
-            execution_status=ConversationExecutionStatus.IDLE,
-            available_models=[
-                ACPModelInfo(model_id='gpt-5.6-sol', name='GPT-5.6 Sol'),
-                ACPModelInfo(model_id='gpt-6-astra', name=None),
-            ],
-            supports_runtime_model_switch=True,
-        )
-
-        result = service._build_conversation(self._info(), None, conversation_info)
-
-        assert result is not None
-        assert [m.model_id for m in result.acp_available_models] == [
-            'gpt-5.6-sol',
-            'gpt-6-astra',
-        ]
-        assert result.acp_supports_runtime_model_switch is True
-
-    def test_reports_no_models_without_a_live_session(self):
-        service = LiveStatusAppConversationService.__new__(
-            LiveStatusAppConversationService
-        )
-
-        result = service._build_conversation(self._info(), None, None)
-
-        assert result is not None
-        assert result.acp_available_models == []
-        assert result.acp_supports_runtime_model_switch is False
 
 
 class TestBuildAcpStartConversationRequestSecrets:

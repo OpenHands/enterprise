@@ -13,7 +13,7 @@ All source-specific skill loading is handled by the agent-server.
 import asyncio
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import unquote, urlparse
@@ -283,7 +283,6 @@ _URL_RESOLVE_CONCURRENCY = 8
 async def build_org_configs(
     selected_repository: str | None,
     user_context: UserContext,
-    additional_repositories: Sequence[str] = (),
 ) -> list[OrgConfig]:
     """Build the list of global org/user skill-repo configs for the agent-server.
 
@@ -292,8 +291,7 @@ async def build_org_configs(
     organization/group they belong to (across all authenticated providers),
     resolving both ``.openhands`` and ``.agents`` repos for GitHub-style
     providers. When a repository is selected, the repo owner's repos are
-    included too, then the owners of any additional repositories. Only repos
-    whose authenticated URL resolves are returned, and
+    included too. Only repos whose authenticated URL resolves are returned, and
     duplicate repo paths are collapsed. Failures degrade to fewer (or no)
     configs rather than raising.
 
@@ -324,20 +322,6 @@ async def build_org_configs(
                 candidates.append((f'{org_name}/.agents', org_name, selected_provider))
         except Exception as e:
             _logger.debug(f'Failed to determine selected-repo org config: {e}')
-
-    for repository in additional_repositories:
-        if len(repository.split('/')) < 2:
-            continue
-        try:
-            org_openhands_repo, org_name = await _determine_org_repo_path(
-                repository, user_context
-            )
-            repo_provider = await _get_provider_type(repository, user_context)
-            candidates.append((org_openhands_repo, org_name, repo_provider))
-            if repo_provider == 'github':
-                candidates.append((f'{org_name}/.agents', org_name, repo_provider))
-        except Exception as e:
-            _logger.debug(f'Failed to determine additional-repo org config: {e}')
 
     # 2. Global owners: the user's account plus their orgs/groups, per provider.
     try:
@@ -634,22 +618,17 @@ async def azure_devops_marketplace_orgs(
 async def azure_devops_user_orgs(
     user_context: UserContext,
     selected_repository: str | None = None,
-    additional_repositories: Sequence[str] = (),
 ) -> list[str]:
     """Return every Azure DevOps organization the user can reach.
 
     Covers the organizations the user's Azure DevOps token is installed on, plus
-    the organizations of the selected repository and of any additional Azure
-    DevOps repositories, so the git credential helper is installed for all of
-    the user's Azure DevOps repos (not only the selected one). Failures degrade
-    to the orgs already collected.
+    the selected repository's organization when one is given, so the git
+    credential helper is installed for all of the user's Azure DevOps repos (not
+    only the selected one). Failures degrade to the orgs already collected.
     """
     orgs: list[str] = []
-    for repository in (selected_repository, *additional_repositories):
-        if repository and len(repository.split('/')) >= 2:
-            org = repository.split('/')[0]
-            if org not in orgs:
-                orgs.append(org)
+    if selected_repository and len(selected_repository.split('/')) >= 2:
+        orgs.append(selected_repository.split('/')[0])
     try:
         provider_handler = await user_context.get_provider_handler()
         if ProviderType.AZURE_DEVOPS in provider_handler.provider_tokens:

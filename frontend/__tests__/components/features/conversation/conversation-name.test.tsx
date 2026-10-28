@@ -370,10 +370,6 @@ describe("ConversationName", () => {
         agent_kind: "acp",
         acp_server: "claude-code",
         llm_model: "anthropic/claude-opus-4-1",
-        // The session reports its models; the chip labels the id from them.
-        acp_available_models: [
-          { model_id: "anthropic/claude-opus-4-1", name: "Claude Opus 4.1" },
-        ],
       } as unknown as Conversation,
     });
     useConfigMock.mockReturnValue({
@@ -384,6 +380,9 @@ describe("ConversationName", () => {
             key: "claude-code",
             display_name: "Claude Code",
             default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            available_models: [
+              { id: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
+            ],
           },
         ],
       },
@@ -399,7 +398,7 @@ describe("ConversationName", () => {
     );
   });
 
-  it("falls back to the raw model id when the session has not reported its models", () => {
+  it("falls back to the raw model id for an ACP conversation not in the registry", () => {
     useActiveConversationMock.mockReturnValue({
       data: {
         conversation_id: "test-conversation-id",

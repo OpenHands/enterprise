@@ -41,10 +41,6 @@ export default [
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
       ),
-      route(
-        "org-defaults/model-router",
-        "routes/org-model-router-settings.tsx",
-      ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),

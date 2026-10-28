@@ -21,7 +21,6 @@ def _make_metadata(**overrides):
         'git_provider': 'github',
         'trigger': 'manual',
         'pr_number': [101],
-        'pull_requests': None,
         'tags': {'team': 'alpha'},
         'accumulated_cost': 1.25,
         'prompt_tokens': 100,

@@ -143,11 +143,6 @@ class AgentProfilesService {
   static async activateProfile(id: string): Promise<void> {
     await openHands.post(`${profileUrl(id)}/activate`);
   }
-
-  /** Clears the member's default when it points at ``id``; pointer-only. */
-  static async deactivateProfile(id: string): Promise<void> {
-    await openHands.post(`${profileUrl(id)}/deactivate`);
-  }
 }
 
 export default AgentProfilesService;
