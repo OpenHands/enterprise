@@ -93,9 +93,7 @@ export interface SamlIdpMetadata {
 
 /** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
-  | OAuthProviderDetails
-  | PasswordProviderDetails
-  | SamlProviderDetails;
+  OAuthProviderDetails | PasswordProviderDetails | SamlProviderDetails;
 
 /** Default ``color`` for a row that hasn't been given a brand color yet --
  * mirrors ``storage.auth_provider.DEFAULT_AUTH_PROVIDER_COLOR``. */

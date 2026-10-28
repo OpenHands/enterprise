@@ -10,6 +10,7 @@ import SettingsService from "#/api/settings-service/settings-service.api";
 import GitService from "#/api/git-service/git-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import AuthService from "#/api/auth-service/auth-service.api";
+import V1ConversationService from "#/api/conversation-service/v1-conversation-service.api";
 import MainApp from "#/routes/root-layout";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 
@@ -431,6 +432,13 @@ describe("HomeScreen", () => {
         items: MOCK_RESPOSITORIES,
         next_page_id: null,
       });
+
+      // Keep the create-conversation mutation pending so the launch buttons
+      // stay disabled long enough for the assertions below to observe it.
+      // (A real request resolves/rejects within the same tick.)
+      vi.spyOn(V1ConversationService, "createConversation").mockImplementation(
+        () => new Promise(() => {}),
+      );
     });
 
     it("should disable the other launch buttons when the header launch button is clicked", async () => {
