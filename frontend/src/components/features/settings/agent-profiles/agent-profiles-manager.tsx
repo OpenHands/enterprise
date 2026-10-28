@@ -79,7 +79,7 @@ export function AgentProfilesManager({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-white">
-              {t(I18nKey.SETTINGS$AVAILABLE_PROFILES)}
+              {t(I18nKey.SETTINGS$PERSONAL_AGENT_PROFILES_TITLE)}
             </h2>
             <BrandButton
               testId="add-agent-profile"
