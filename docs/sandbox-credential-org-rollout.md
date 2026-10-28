@@ -12,22 +12,28 @@ When a sandbox webhook first records a conversation, its organization comes from
 the matching owner's persisted sandbox binding. A later owner organization switch
 therefore cannot put that conversation in a different organization from its
 credential lookups. Existing conversation organization records are preserved.
-For legacy or unrecorded sandboxes, metadata retains its previous current-org
-fallback; this does not backfill a credential binding or restore secret access.
+For unbound or unrecorded sandboxes, metadata retains its previous current-org
+fallback; this does not create a credential binding.
 
-Apply migration 203 (after revision 202) before upgrading application writers. Complete the upgrade
+Apply migration 205 (after revision 204) before upgrading application writers. Complete the upgrade
 of all application servers before considering the binding enforced; old writers
 and lookup handlers do not enforce it during a mixed-version rollout. Coordinate
 migration numbering and ancestry with other pending migrations before merging.
 
 ## Existing conversations
 
-The migration deliberately leaves existing sandboxes unbound. The owner's
-current organization is mutable, and a historical sandbox may have hosted
-conversations from multiple organizations. We have not qualified a safe
-historical backfill; do not infer a binding from current user state.
+The migration binds an existing sandbox only from its own conversation records:
+when every conversation its owner recorded on it names the same organization,
+the sandbox is bound to that organization. A sandbox whose owner's conversations
+name more than one organization, or that has none, stays unbound. The owner's
+current organization is never used, because it is mutable.
 
-Existing unbound sandboxes return 403 from both
+A conversation recorded through the sandbox webhook before this change took its
+organization from the owner's current organization at that moment, so a
+backfilled binding is only as reliable as that record. It matches the
+organization the conversation is listed under.
+
+Existing sandboxes that stay unbound return 403 from both
 `/api/v1/sandboxes/{id}/settings/secrets` and `.../{name}`. This also affects
 paused conversations resumed after the upgrade. New sub-conversations inheriting
 an unbound parent sandbox are refused too. If the owner switches organizations,
