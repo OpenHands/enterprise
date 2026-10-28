@@ -152,6 +152,8 @@ def test_routes_a_run_needs_do_not_reject_service_accounts(router, method, path)
 # service_account role lacks, or (c) is listed here with the reason a service
 # account run may call it or cannot affect the account. A new route fails
 # ``test_every_mutating_route_is_classified`` until it is guarded or listed.
+# A run also creates the account's OPENHANDS_API_KEY and MCP_API_KEY; disabling
+# the service account revokes them (see ``reject_service_account``).
 _RUN_NEEDS = 'a service account run needs it (conversation, sandbox or MCP call)'
 _NO_AUTH = 'unauthenticated or signed by a third party; no caller identity'
 _PROVIDER = 'needs a git or Jira provider identity, which a service account lacks'
