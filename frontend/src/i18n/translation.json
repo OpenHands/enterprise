@@ -38164,6 +38164,23 @@
     "uk": "Профілі агента організації",
     "ca": "Perfils d'agent de l'organització"
   },
+  "SETTINGS$PERSONAL_AGENT_PROFILES_TITLE": {
+    "en": "Personal agent profiles",
+    "ja": "個人のエージェントプロファイル",
+    "zh-CN": "个人代理配置文件",
+    "zh-TW": "個人代理設定檔",
+    "ko-KR": "개인 에이전트 프로필",
+    "no": "Personlige agentprofiler",
+    "it": "Profili agente personali",
+    "pt": "Perfis de agente pessoais",
+    "es": "Perfiles de agente personales",
+    "ar": "ملفات تعريف الوكيل الشخصية",
+    "fr": "Profils d'agent personnels",
+    "tr": "Kişisel ajan profilleri",
+    "de": "Persönliche Agentenprofile",
+    "uk": "Особисті профілі агента",
+    "ca": "Perfils d'agent personals"
+  },
   "SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION": {
     "en": "Shared with everyone in your organization. You can set one as your default; only admins can change them.",
     "ja": "組織の全員と共有されています。デフォルトとして設定できますが、変更できるのは管理者のみです。",
