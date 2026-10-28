@@ -6049,6 +6049,7 @@ class TestLiveStatusAppConversationService:
             revision=2,
         )
         parent.selected_repository = parent.selected_branch = parent.git_provider = None
+        parent.additional_repositories = []
         parent.llm_model = 'parent-model'
         request = AppConversationStartRequest(
             sandbox_id=str(uuid4()),
