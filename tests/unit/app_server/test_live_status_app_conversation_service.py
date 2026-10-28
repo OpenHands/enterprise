@@ -2924,6 +2924,37 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-token'
         )
 
+    @pytest.mark.parametrize('acp', [False, True])
+    @pytest.mark.asyncio
+    async def test_scoped_profile_keeps_git_credential_helper_token_masked(self, acp):
+        from openhands.app_server.sandbox.sandbox_service import (
+            GIT_CREDENTIAL_HELPER_TOKEN_VARIABLE_PREFIX,
+        )
+        from openhands.sdk.conversation.secret_registry import SecretRegistry
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.active_agent_profile_secret_refs = []
+        self.mock_user_context.get_secrets = AsyncMock(return_value={})
+        self.mock_user_context.get_provider_tokens = AsyncMock(return_value={})
+        settings = (
+            ACPAgentSettings(acp_server='claude-code')
+            if acp
+            else OpenHandsAgentSettings(llm={'model': 'gpt-4', 'api_key': 'test-key'})
+        )
+        result = await self._build_request_with_agent_settings(
+            settings,
+            git_access_tokens={ProviderType.GITHUB: 'profile-scoped-git-jwt'},
+        )
+        # The helper reads this JWT from a file the agent can also read, so it is
+        # registered as a conversation secret even under a scoped profile.
+        name = f'{GIT_CREDENTIAL_HELPER_TOKEN_VARIABLE_PREFIX}GITHUB'
+        assert set(result.secrets) == {name}
+        registry = SecretRegistry()
+        registry.update_secrets({name: result.secrets[name]})
+        assert 'profile-scoped-git-jwt' not in registry.mask_secrets_in_output(
+            'credential: profile-scoped-git-jwt'
+        )
+
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
@@ -7938,6 +7969,63 @@ def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
         LiveStatusAppConversationService._mint_azure_devops_access_token, service
     )
     return service
+
+
+def _git_mint_service(*, lookup_url, user_id='user-1'):
+    from datetime import timedelta
+    from types import MethodType
+
+    service = Mock()
+    service.access_token_hard_timeout = timedelta(days=14)
+    service._secret_lookup_url = Mock(return_value=lookup_url)
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in: f'jwt-{payload["provider_type"]}'
+    )
+    service.user_context = Mock()
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._mint_git_access_token = MethodType(
+        LiveStatusAppConversationService._mint_git_access_token, service
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_mint_git_access_token_once_per_provider_with_lookup_url():
+    """One exchange JWT per provider, minted like the LookupSecret header and
+    reused by the conversation's later clones from the same provider."""
+    service = _git_mint_service(
+        lookup_url='https://app.example.com/api/v1/webhooks/secrets'
+    )
+    task = types.SimpleNamespace(_git_access_tokens={})
+
+    github = await service._mint_git_access_token(task, ProviderType.GITHUB)
+    again = await service._mint_git_access_token(task, ProviderType.GITHUB)
+    gitlab = await service._mint_git_access_token(task, ProviderType.GITLAB)
+
+    assert (github, again, gitlab) == ('jwt-github', 'jwt-github', 'jwt-gitlab')
+    assert task._git_access_tokens == {
+        ProviderType.GITHUB: 'jwt-github',
+        ProviderType.GITLAB: 'jwt-gitlab',
+    }
+    assert service.jwt_service.create_jws_token.call_count == 2
+    service.jwt_service.create_jws_token.assert_any_call(
+        payload={'user_id': 'user-1', 'provider_type': 'github'},
+        expires_in=service.access_token_hard_timeout,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mint_git_access_token_skips_when_sandbox_cannot_call_back():
+    """Without a webhook secrets URL the sandbox can reach, no helper token is
+    minted and the clone keeps its authenticated URL."""
+    service = _git_mint_service(lookup_url=None)
+    task = types.SimpleNamespace(_git_access_tokens={})
+
+    assert await service._mint_git_access_token(task, ProviderType.GITHUB) is None
+
+    assert task._git_access_tokens == {}
+    service.jwt_service.create_jws_token.assert_not_called()
 
 
 def test_exception_detail_unwraps_dict_message():

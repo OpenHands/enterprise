@@ -119,6 +119,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    GIT_CREDENTIAL_HELPER_TOKEN_VARIABLE_PREFIX,
     SandboxService,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -841,6 +842,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     client_tools=request.client_tools,
                     api_secrets=request.secrets,
                     azure_devops_access_token=task._azure_devops_access_token,
+                    git_access_tokens=task._git_access_tokens,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
                     browser_available=browser_available,
@@ -1458,6 +1460,54 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             value=SecretStr(azure_devops_access_token),
             description='Azure DevOps git credential-helper access token',
         )
+
+    async def _mint_git_access_token(
+        self, task: AppConversationStartTask, provider: ProviderType
+    ) -> str | None:
+        """Mint, once per conversation and provider, the git credential-helper
+        exchange JWT the setup flow delivers to the sandbox.
+
+        The same payload as the provider's ``LookupSecret`` header and the Azure
+        DevOps helper token, with the ``access_token_hard_timeout`` lifetime that
+        already bounds how long a sandboxed conversation may fetch git tokens,
+        and only when the sandbox can call the webhook secrets endpoint back:
+        the gate that also turns provider tokens into ``LookupSecret``s. Kept on
+        the task so the setup flow (which writes it to the sandbox) and the
+        request builder (which registers it for masking) use the exact same
+        value. Best-effort: None keeps the token in the clone URL, as before.
+        """
+        cached = task._git_access_tokens.get(provider)
+        if cached:
+            return cached
+        if not self._secret_lookup_url():
+            return None
+        try:
+            user_id = await self.user_context.get_user_id()
+            if not user_id:
+                return None
+            token = self.jwt_service.create_jws_token(
+                payload={'user_id': user_id, 'provider_type': provider.value},
+                expires_in=self.access_token_hard_timeout,
+            )
+        except Exception as exc:
+            _logger.debug(f'Could not mint {provider.value} git access token: {exc}')
+            return None
+        task._git_access_tokens[provider] = token
+        return token
+
+    @staticmethod
+    def _register_git_access_token_secrets(
+        secrets: dict, git_access_tokens: Mapping[ProviderType, str] | None
+    ) -> None:
+        """Register this conversation's git credential-helper JWTs as masked
+        secrets, like ``_register_azure_devops_access_token_secret``: the helper
+        reads each JWT from a file the agent can also read."""
+        for provider, token in (git_access_tokens or {}).items():
+            name = f'{GIT_CREDENTIAL_HELPER_TOKEN_VARIABLE_PREFIX}{provider.name}'
+            secrets[name] = StaticSecret(
+                value=SecretStr(token),
+                description=f'{provider.name} git credential-helper access token',
+            )
 
     async def _seed_sandbox_profiles(
         self, agent_server_url: str, session_api_key: str | None
@@ -2616,6 +2666,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         azure_devops_access_token: str | None = None,
+        git_access_tokens: Mapping[ProviderType, str] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
@@ -2689,6 +2740,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
                 azure_devops_access_token=azure_devops_access_token,
+                git_access_tokens=git_access_tokens,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2747,6 +2799,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
         )
+        self._register_git_access_token_secrets(secrets, git_access_tokens)
 
         system_message_suffix = await self._append_git_context(
             user,
@@ -3078,6 +3131,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         azure_devops_access_token: str | None = None,
+        git_access_tokens: Mapping[ProviderType, str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -3139,6 +3193,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
         )
+        self._register_git_access_token_secrets(secrets, git_access_tokens)
 
         system_message_suffix = await self._append_git_context(
             user,

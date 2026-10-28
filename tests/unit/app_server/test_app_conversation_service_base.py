@@ -4,11 +4,13 @@ This module tests the git-related functionality, specifically the clone_or_init_
 and the recent bug fixes for git checkout operations.
 """
 
+import http.server
 import inspect
 import os
 import shutil
 import stat
 import subprocess
+import threading
 from pathlib import Path
 from types import MappingProxyType, MethodType
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -21,6 +23,8 @@ from openhands.app_server.app_conversation.app_conversation_models import AgentT
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
     _azure_devops_credential_helper_script,
+    _git_credential_helper_script,
+    _git_credential_target,
 )
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import (
@@ -1329,6 +1333,228 @@ async def test_azure_devops_git_credentials_logs_without_web_url(mock_workspace)
     )
 
 
+_GITHUB_TOKEN_URL = 'https://ghp_cloneSecret@github.com/owner/repo.git'
+_HELPER_JWT = 'header.payload.signature'
+
+
+def _git_credential_clone_service(helper_token: str | None):
+    """A service whose clone path mints ``helper_token`` for the credential helper."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+            '_configure_git_credentials',
+            '_strip_origin_credentials',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    service.web_url = 'https://app.example.com'
+    service._mint_git_access_token = AsyncMock(return_value=helper_token)
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value=_GITHUB_TOKEN_URL
+    )
+    return service
+
+
+def _github_clone_task():
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+    return task
+
+
+def _commands(workspace) -> list[str]:
+    return [call.args[0] for call in workspace.execute_command.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_clone_delivers_git_credential_helper_instead_of_token_url(
+    mock_workspace,
+):
+    """With a helper token the clone URL carries no credentials: the helper is
+    installed first, and the git token never reaches ``.git/config``."""
+    service = _git_credential_clone_service(_HELPER_JWT)
+    task = _github_clone_task()
+
+    await service.clone_or_init_git_repo(task, mock_workspace)
+
+    commands = _commands(mock_workspace)
+    setup = next(c for c in commands if 'git-credential-helper' in c)
+    clone = next(c for c in commands if ' clone ' in c)
+    assert commands.index(setup) < commands.index(clone)
+    assert clone == 'git clone --depth 1 https://github.com/owner/repo.git repo'
+    assert not any('ghp_cloneSecret' in c for c in commands)
+    # The per-conversation JWT goes to a mode-600 file keyed by the git host, and
+    # git is pointed at the helper with the provider's username for that host.
+    assert 'git-credential-tokens' in setup
+    assert _HELPER_JWT in setup
+    assert 'chmod 600' in setup
+    assert 'credential.https://github.com.username x-access-token' in setup
+    assert 'credential.https://github.com.helper' in setup
+    assert '/api/v1/webhooks/secrets' in setup
+    assert 'X-Access-Token' in setup
+    service._mint_git_access_token.assert_awaited_once_with(task, ProviderType.GITHUB)
+
+
+@pytest.mark.asyncio
+async def test_clone_keeps_authenticated_url_without_helper_token(mock_workspace):
+    """The base service mints no helper token, so the clone is unchanged."""
+    service = _git_credential_clone_service(None)
+    service._mint_git_access_token = MethodType(
+        AppConversationServiceBase._mint_git_access_token, service
+    )
+
+    await service.clone_or_init_git_repo(_github_clone_task(), mock_workspace)
+
+    commands = _commands(mock_workspace)
+    assert not any('git-credential-helper' in c for c in commands)
+    assert f'git clone --depth 1 {_GITHUB_TOKEN_URL} repo' in commands
+
+
+@pytest.mark.asyncio
+async def test_clone_keeps_authenticated_url_when_helper_setup_fails():
+    """A failed helper install must not break the start: clone with the token URL."""
+    service = _git_credential_clone_service(_HELPER_JWT)
+    workspace = MockWorkspace(working_dir='/workspace/project')
+
+    async def execute_command(command, cwd=None, timeout=None):
+        if 'git-credential-helper' in command:
+            return MockCommandResult(exit_code=1, stderr='read-only file system')
+        return MockCommandResult()
+
+    workspace.execute_command = AsyncMock(side_effect=execute_command)
+
+    await service.clone_or_init_git_repo(_github_clone_task(), workspace)
+
+    assert f'git clone --depth 1 {_GITHUB_TOKEN_URL} repo' in _commands(workspace)
+
+
+@pytest.mark.asyncio
+async def test_shared_sandbox_clone_strips_credentials_from_existing_origin():
+    """A repository an earlier conversation cloned with the token in ``origin``
+    is rewritten to the clean URL once the helper supplies the credential."""
+    service = _git_credential_clone_service(_HELPER_JWT)
+    workspace = MockWorkspace(working_dir='/workspace/project')
+
+    async def execute_command(command, cwd=None, timeout=None):
+        if ' clone ' in command:
+            return MockCommandResult(exit_code=128, stderr='already exists')
+        if command == 'git remote get-url origin':
+            return MockCommandResult(stdout=f'{_GITHUB_TOKEN_URL}\n')
+        return MockCommandResult()
+
+    workspace.execute_command = AsyncMock(side_effect=execute_command)
+
+    await service.clone_or_init_git_repo(_github_clone_task(), workspace)
+
+    assert 'git remote set-url origin https://github.com/owner/repo.git' in _commands(
+        workspace
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which('git') is None, reason='git not available')
+async def test_configure_git_credentials_command_runs(mock_workspace, tmp_path):
+    """Run the produced setup command for real: the token file and the per-host
+    git config must land (a quoting slip would abort the ``&&`` chain)."""
+    service, _ = _create_service_with_mock_user_context(
+        MockUserInfo(), bind_methods=('_configure_git_credentials',)
+    )
+    service.web_url = 'https://app.example.com'
+    target = _git_credential_target(_GITHUB_TOKEN_URL, ProviderType.GITHUB)
+    assert target is not None
+
+    configured = await service._configure_git_credentials(
+        mock_workspace, target, _HELPER_JWT
+    )
+
+    assert configured
+    env = {**os.environ, 'HOME': str(tmp_path)}
+    result = subprocess.run(
+        ['sh', '-c', _commands(mock_workspace)[0]],
+        cwd='/',
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    token_file = tmp_path / '.openhands' / 'git-credential-tokens' / 'github.com'
+    assert token_file.read_text() == _HELPER_JWT
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    helper = tmp_path / '.openhands' / 'git-credential-helper'
+    assert os.access(helper, os.X_OK)
+
+    def git_config(key: str) -> str:
+        return subprocess.run(
+            ['git', 'config', '--global', '--get-all', key],
+            env=env,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    assert git_config('credential.https://github.com.username') == 'x-access-token'
+    assert git_config('credential.https://github.com.helper') == f'!"{helper}"'
+
+
+class _SecretsWebhook(http.server.BaseHTTPRequestHandler):
+    """Stands in for ``GET /api/v1/webhooks/secrets`` with a Bitbucket
+    ``email:api_token`` credential, answered only for the expected JWT."""
+
+    def do_GET(self):
+        if (
+            self.path != '/api/v1/webhooks/secrets'
+            or self.headers.get('X-Access-Token') != _HELPER_JWT
+        ):
+            self.send_response(401)
+            self.end_headers()
+            return
+        body = b'me@example.com:bitbucket-api-token'
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.skipif(shutil.which('curl') is None, reason='curl not available')
+def test_git_credential_helper_script_exchanges_jwt_for_password(tmp_path):
+    """Run the helper as git would: it exchanges the host's JWT at the webhooks
+    secrets endpoint and answers with the password only, so a Bitbucket
+    ``email:api_token`` value loses its username prefix."""
+    server = http.server.HTTPServer(('127.0.0.1', 0), _SecretsWebhook)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        token_dir = tmp_path / '.openhands' / 'git-credential-tokens'
+        token_dir.mkdir(parents=True)
+        (token_dir / 'bitbucket.org').write_text(_HELPER_JWT)
+        script = tmp_path / 'git-credential-helper'
+        script.write_text(
+            _git_credential_helper_script(f'http://127.0.0.1:{server.server_port}')
+        )
+        env = {k: v for k, v in os.environ.items() if k != 'OH_WEBHOOKS_0_BASE_URL'}
+        env['HOME'] = str(tmp_path)
+
+        result = subprocess.run(
+            ['sh', str(script), 'get'],
+            input='protocol=https\nhost=bitbucket.org\nusername=me@example.com\n\n',
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'username=me@example.com\npassword=bitbucket-api-token\n'
+
+
 @pytest.mark.asyncio
 async def test_configure_git_user_settings_both_name_and_email(mock_workspace):
     """Test configuring both git user name and email."""
@@ -2524,3 +2750,56 @@ def test_azure_devops_credential_helper_script_auth_source():
     assert 'SESSION_API_KEY' not in script
     assert 'X-Session-API-Key' not in script
     assert '/api/v1/sandboxes/' not in script
+
+
+@pytest.mark.parametrize(
+    ('url', 'git_provider', 'expected'),
+    [
+        # GitHub: any username works with the token as the password.
+        (
+            'https://ghp_tok@github.com/o/r.git',
+            ProviderType.GITHUB,
+            (ProviderType.GITHUB, 'github.com', 'x-access-token'),
+        ),
+        (
+            'https://ghp_tok@github.com/o/r.git',
+            None,
+            (ProviderType.GITHUB, 'github.com', 'x-access-token'),
+        ),
+        # GitLab keeps its oauth2 username; a port stays part of the host.
+        (
+            'https://oauth2:glpat@gitlab.example.com:8443/o/r.git',
+            None,
+            (ProviderType.GITLAB, 'gitlab.example.com:8443', 'oauth2'),
+        ),
+        # Bitbucket email:api_token credentials keep the decoded email.
+        (
+            'https://me%40ex.com:apitok@bitbucket.org/o/r.git',
+            ProviderType.BITBUCKET,
+            (ProviderType.BITBUCKET, 'bitbucket.org', 'me@ex.com'),
+        ),
+        (
+            'https://jdoe:pw@bbdc.example.com/scm/p/r.git',
+            ProviderType.BITBUCKET_DATA_CENTER,
+            (ProviderType.BITBUCKET_DATA_CENTER, 'bbdc.example.com', 'jdoe'),
+        ),
+        # Not covered: no credentials, Azure DevOps (its own helper), Forgejo,
+        # and an unspecified provider the URL shape cannot identify.
+        ('https://github.com/o/r.git', ProviderType.GITHUB, None),
+        ('https://org:pat@dev.azure.com/org/p/_git/r', ProviderType.AZURE_DEVOPS, None),
+        ('https://tok@codeberg.org/o/r.git', ProviderType.FORGEJO, None),
+        ('https://tok@ghe.example.com/o/r.git', None, None),
+        ('https://jdoe:pw@bbdc.example.com/scm/p/r.git', None, None),
+    ],
+)
+def test_git_credential_target(url, git_provider, expected):
+    """Which authenticated clone URLs the credential helper stands in for, and
+    the host and username git is configured with; the clean URL loses only
+    its userinfo."""
+    target = _git_credential_target(url, git_provider)
+
+    if expected is None:
+        assert target is None
+        return
+    assert (target.provider, target.host, target.username) == expected
+    assert target.clean_url == 'https://' + url.split('@', 1)[1]
