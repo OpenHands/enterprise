@@ -303,6 +303,7 @@ async def test_setup_records_failures_in_the_start_task_detail():
     for name in (
         'clone_or_init_git_repo',
         '_configure_azure_devops_git_credentials',
+        '_configure_git_credential_helpers',
         'maybe_run_setup_script',
         'maybe_setup_git_hooks',
         'maybe_inject_memory_context',
@@ -697,6 +698,7 @@ def _setup_service(clone_results):
     for name in (
         'clone_or_init_git_repo',
         '_configure_azure_devops_git_credentials',
+        '_configure_git_credential_helpers',
         'maybe_run_setup_script',
         'maybe_setup_git_hooks',
         'maybe_inject_memory_context',
