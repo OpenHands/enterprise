@@ -47,6 +47,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/org-defaults/model-router",
   "/settings/usage-monitoring",
   "/settings/budgets",
   "/settings/your-budget",
@@ -56,6 +57,7 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/org-defaults/model-router",
   "/settings/budgets",
   "/settings/credits",
 ]);
