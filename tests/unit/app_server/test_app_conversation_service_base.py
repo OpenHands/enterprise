@@ -32,6 +32,7 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.sdk.skills import Skill
+from openhands.sdk.workspace.models import FileOperationResult
 
 
 class MockUserInfo:
@@ -2524,3 +2525,181 @@ def test_azure_devops_credential_helper_script_auth_source():
     assert 'SESSION_API_KEY' not in script
     assert 'X-Session-API-Key' not in script
     assert '/api/v1/sandboxes/' not in script
+
+
+# =============================================================================
+# Tests for maybe_setup_git_hooks
+# =============================================================================
+
+
+class AgentServerLikeWorkspace:
+    """Run commands for real and transfer files the way the agent-server does.
+
+    Commands without a working directory run in ``server_dir``, and file
+    transfers with a relative path fail, as the agent-server rejects them.
+    """
+
+    def __init__(self, server_dir: Path, env: dict[str, str]):
+        self.server_dir = server_dir
+        self.env = env
+        self.execute_command = AsyncMock(side_effect=self._execute_command)
+        self.file_download = AsyncMock(side_effect=self._file_download)
+        self.file_upload = AsyncMock(side_effect=self._file_upload)
+
+    async def _execute_command(self, command, cwd=None, timeout=None):
+        result = subprocess.run(
+            ['bash', '-c', command],
+            cwd=cwd or self.server_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        return MockCommandResult(result.returncode, result.stderr, result.stdout)
+
+    async def _file_download(self, source_path, destination_path):
+        source = Path(source_path)
+        if not source.is_absolute() or not source.is_file():
+            return FileOperationResult(
+                success=False,
+                source_path=str(source_path),
+                destination_path=str(destination_path),
+            )
+        assert Path(destination_path).is_absolute(), destination_path
+        shutil.copyfile(source, destination_path)
+        return FileOperationResult(
+            success=True,
+            source_path=str(source_path),
+            destination_path=str(destination_path),
+        )
+
+    async def _file_upload(self, source_path, destination_path):
+        destination = Path(destination_path)
+        if not destination.is_absolute():
+            return FileOperationResult(
+                success=False,
+                source_path=str(source_path),
+                destination_path=str(destination_path),
+                error='Path must be absolute',
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, destination)
+        return FileOperationResult(
+            success=True,
+            source_path=str(source_path),
+            destination_path=str(destination_path),
+        )
+
+
+@pytest.fixture
+def git_env(tmp_path):
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith('GIT_')
+    }
+    env.update(
+        HOME=str(tmp_path),
+        GIT_CONFIG_NOSYSTEM='1',
+        GIT_AUTHOR_NAME='Test',
+        GIT_AUTHOR_EMAIL='test@example.com',
+        GIT_COMMITTER_NAME='Test',
+        GIT_COMMITTER_EMAIL='test@example.com',
+    )
+    return env
+
+
+@pytest.fixture
+def hook_workspace(tmp_path, git_env):
+    server_dir = tmp_path / 'agent-server'
+    server_dir.mkdir()
+    return AgentServerLikeWorkspace(server_dir, git_env)
+
+
+def _make_repo(path: Path, env: dict[str, str], with_pre_commit: bool = True) -> Path:
+    subprocess.run(['git', 'init', '-q', str(path)], env=env, check=True)
+    if with_pre_commit:
+        (path / '.openhands').mkdir()
+        (path / '.openhands' / 'pre-commit.sh').write_text(
+            '#!/bin/bash\ntouch .git/pre-commit-ran\n'
+        )
+    return path
+
+
+def _hook_service():
+    service, _ = _create_service_with_mock_user_context(
+        MockUserInfo(), bind_methods=('maybe_setup_git_hooks',)
+    )
+    return service
+
+
+def _commit(repo: Path, env: dict[str, str]) -> None:
+    subprocess.run(
+        ['git', '-C', str(repo), 'commit', '--allow-empty', '-q', '-m', 'test'],
+        env=env,
+        check=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pre_commit_hook_is_installed_in_each_repository(
+    tmp_path, git_env, hook_workspace
+):
+    repos = [
+        _make_repo(tmp_path / 'workspace' / name, git_env)
+        for name in ('primary', 'additional')
+    ]
+    service = _hook_service()
+
+    for repo in repos:
+        await service.maybe_setup_git_hooks(hook_workspace, str(repo))
+
+    for repo in repos:
+        hook = repo / '.git' / 'hooks' / 'pre-commit'
+        assert 'This hook was installed by OpenHands' in hook.read_text()
+        assert os.access(hook, os.X_OK)
+        assert not (repo / '.git' / 'hooks' / 'pre-commit.local').exists()
+        _commit(repo, git_env)
+        assert (repo / '.git' / 'pre-commit-ran').exists()
+    assert list(hook_workspace.server_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_pre_commit_hook_is_not_installed_without_a_repository_script(
+    tmp_path, git_env, hook_workspace
+):
+    repo = _make_repo(tmp_path / 'repo', git_env, with_pre_commit=False)
+
+    await _hook_service().maybe_setup_git_hooks(hook_workspace, str(repo))
+
+    assert not (repo / '.git' / 'hooks' / 'pre-commit').exists()
+    hook_workspace.file_upload.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_existing_pre_commit_hook_is_preserved_as_local(
+    tmp_path, git_env, hook_workspace
+):
+    repo = _make_repo(tmp_path / 'repo', git_env)
+    existing = repo / '.git' / 'hooks' / 'pre-commit'
+    existing.write_text('#!/bin/sh\necho custom hook\n')
+
+    await _hook_service().maybe_setup_git_hooks(hook_workspace, str(repo))
+
+    local = repo / '.git' / 'hooks' / 'pre-commit.local'
+    assert local.read_text() == '#!/bin/sh\necho custom hook\n'
+    assert os.access(local, os.X_OK)
+    assert 'This hook was installed by OpenHands' in existing.read_text()
+
+
+@pytest.mark.asyncio
+async def test_setting_up_git_hooks_twice_keeps_the_openhands_hook(
+    tmp_path, git_env, hook_workspace
+):
+    repo = _make_repo(tmp_path / 'repo', git_env)
+    service = _hook_service()
+
+    await service.maybe_setup_git_hooks(hook_workspace, str(repo))
+    await service.maybe_setup_git_hooks(hook_workspace, str(repo))
+
+    hook = repo / '.git' / 'hooks' / 'pre-commit'
+    assert 'This hook was installed by OpenHands' in hook.read_text()
+    assert not (repo / '.git' / 'hooks' / 'pre-commit.local').exists()
+    assert list(hook_workspace.server_dir.iterdir()) == []

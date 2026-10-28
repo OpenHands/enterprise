@@ -1154,19 +1154,25 @@ class AppConversationServiceBase(AppConversationService, ABC):
         if pre_commit_command_result.exit_code:
             return
 
+        # File transfers need absolute paths inside the repository.
+        hook_path = f'{project_dir}/{PRE_COMMIT_HOOK}'
+        local_hook_path = f'{project_dir}/{PRE_COMMIT_LOCAL}'
+
         # Check if there's an existing pre-commit hook
-        with tempfile.TemporaryFile(mode='w+t') as temp_file:
-            download_result = await workspace.file_download(
-                PRE_COMMIT_HOOK, str(temp_file)
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            existing_hook = Path(temp_dir) / 'pre-commit'
+            download_result = await workspace.file_download(hook_path, existing_hook)
             if download_result.success:
                 _logger.info('Preserving existing pre-commit hook')
                 # an existing pre-commit hook exists
-                if 'This hook was installed by OpenHands' not in temp_file.read():
+                if (
+                    'This hook was installed by OpenHands'
+                    not in existing_hook.read_text(errors='replace')
+                ):
                     # Move the existing hook to pre-commit.local
                     command = (
-                        f'mv {PRE_COMMIT_HOOK} {PRE_COMMIT_LOCAL} &&'
-                        f'chmod +x {PRE_COMMIT_LOCAL}'
+                        f'mv {shlex.quote(hook_path)} {shlex.quote(local_hook_path)} && '
+                        f'chmod +x {shlex.quote(local_hook_path)}'
                     )
                     mv_chmod_result = await workspace.execute_command(
                         command, project_dir
@@ -1178,13 +1184,18 @@ class AppConversationServiceBase(AppConversationService, ABC):
                         return
 
         # write the pre-commit hook
-        await workspace.file_upload(
+        upload_result = await workspace.file_upload(
             source_path=Path(__file__).parent / 'git' / 'pre-commit.sh',
-            destination_path=PRE_COMMIT_HOOK,
+            destination_path=hook_path,
         )
+        if not upload_result.success:
+            _logger.error(f'Failed to write pre-commit hook: {upload_result.error}')
+            return
 
         # Make the pre-commit hook executable
-        chmod_result = await workspace.execute_command(f'chmod +x {PRE_COMMIT_HOOK}')
+        chmod_result = await workspace.execute_command(
+            f'chmod +x {shlex.quote(hook_path)}', project_dir
+        )
         if chmod_result.exit_code:
             _logger.error(
                 f'Failed to make pre-commit hook executable: {chmod_result.stderr}'
