@@ -580,6 +580,11 @@ class AppConversationStartTask(OpenHandsModel):
     # and the masked-secret registration so both use the exact same value. Unset
     # when the user has no Entra Azure DevOps token.
     _azure_devops_access_token: str | None = PrivateAttr(default=None)
+    # Same, for the other git providers: one exchange JWT per provider the user
+    # has a token for (keyed by ProviderType value), so the sandbox's git
+    # credential helper can fetch the current token for any of that provider's
+    # repositories, not only the selected one. Empty when nothing was minted.
+    _git_credential_access_tokens: dict[str, str] = PrivateAttr(default_factory=dict)
     # Clone results of the request's additional repositories, saved on the
     # conversation once it starts.
     _additional_repositories: list[AdditionalRepository] = PrivateAttr(

@@ -119,6 +119,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
+    GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
     SandboxService,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -229,6 +230,8 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 # same limit those providers have today; the durable fix is the sandbox-bound
 # credential tracked in ak684/oh#124.
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
+# The other providers' credential-helper JWTs live as long.
+_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT = _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
 
 
 def _resolve_title_llm_profile(
@@ -788,6 +791,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # before setup runs (the setup flow writes it to the sandbox and the
             # request builder registers it for masking).
             await self._mint_azure_devops_access_token(task)
+            await self._mint_git_credential_access_tokens(task)
 
             # Run setup scripts
             remote_workspace = AsyncRemoteWorkspace(
@@ -842,6 +846,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     client_tools=request.client_tools,
                     api_secrets=request.secrets,
                     azure_devops_access_token=task._azure_devops_access_token,
+                    git_credential_access_tokens=task._git_credential_access_tokens,
                     system_prompt=request.system_prompt,
                     disabled_skills=request.disabled_skills,
                     browser_available=browser_available,
@@ -1453,6 +1458,55 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
         except Exception as exc:
             _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+
+    async def _mint_git_credential_access_tokens(
+        self, task: AppConversationStartTask
+    ) -> None:
+        """Mint this conversation's credential-helper exchange JWTs for the other
+        git providers, one per provider the user has a token for.
+
+        Each JWT is scoped to the user and that provider; the setup flow writes
+        them to per-provider files and installs a git credential helper for each
+        provider's host, which trades the JWT at ``GET /api/v1/webhooks/secrets``
+        for the user's current provider token on every git call. That way plain
+        git works on any repository the user can reach, from the agent's
+        terminal and from hooks, not only on the selected one, whose remote
+        embeds a token. Azure DevOps keeps its own per-organization helper
+        (``_mint_azure_devops_access_token``). Best-effort, like that one.
+        """
+        if not self.web_url:
+            return
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+            user_id = await self.user_context.get_user_id()
+            if not user_id:
+                return
+            tokens: dict[str, str] = {}
+            for provider in provider_handler.provider_tokens:
+                if provider == ProviderType.AZURE_DEVOPS:
+                    continue
+                tokens[provider.value] = self.jwt_service.create_jws_token(
+                    payload={'user_id': user_id, 'provider_type': provider.value},
+                    expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                )
+            task._git_credential_access_tokens = tokens
+        except Exception as exc:
+            _logger.debug(f'Could not mint git credential access tokens: {exc}')
+
+    @staticmethod
+    def _register_git_credential_access_token_secrets(
+        secrets: dict, git_credential_access_tokens: Mapping[str, str] | None
+    ) -> None:
+        """Register the per-provider credential-helper JWTs as masked secrets,
+        like ``_register_azure_devops_access_token_secret``."""
+        for provider, token in (git_credential_access_tokens or {}).items():
+            if not token:
+                continue
+            name = GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX + provider.upper()
+            secrets[name] = StaticSecret(
+                value=SecretStr(token),
+                description=f'{provider} git credential-helper access token',
+            )
 
     @staticmethod
     def _register_azure_devops_access_token_secret(
@@ -2630,6 +2684,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         client_tools: list[ClientToolSpec] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         azure_devops_access_token: str | None = None,
+        git_credential_access_tokens: Mapping[str, str] | None = None,
         system_prompt: str | None = None,
         disabled_skills: list[str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
@@ -2703,6 +2758,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 registered_marketplaces=registered_marketplaces,
                 api_secrets=api_secrets,
                 azure_devops_access_token=azure_devops_access_token,
+                git_credential_access_tokens=git_credential_access_tokens,
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
@@ -2760,6 +2816,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Keep it registered for output masking even with a scoped profile.
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
+        )
+        self._register_git_credential_access_token_secrets(
+            secrets, git_credential_access_tokens
         )
 
         system_message_suffix = await self._append_git_context(
@@ -3092,6 +3151,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
         api_secrets: dict[str, SecretStr] | None = None,
         azure_devops_access_token: str | None = None,
+        git_credential_access_tokens: Mapping[str, str] | None = None,
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
@@ -3152,6 +3212,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Keep it registered for output masking even with a scoped profile.
         self._register_azure_devops_access_token_secret(
             secrets, azure_devops_access_token
+        )
+        self._register_git_credential_access_token_secrets(
+            secrets, git_credential_access_tokens
         )
 
         system_message_suffix = await self._append_git_context(
