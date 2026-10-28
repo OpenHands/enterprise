@@ -66,6 +66,7 @@ GUARDED = [
     (api_keys_router, 'POST', '/api/keys/llm/byor/refresh'),
     (api_keys_router, 'POST', '/api/keys/llm/managed/refresh'),
     (agent_profiles_router, 'POST', '/api/agent-profiles/{profile_id}/activate'),
+    (agent_profiles_router, 'POST', '/api/agent-profiles/{profile_id}/deactivate'),
     # A personal-scope write needs only membership, which the role has.
     (agent_profiles_router, 'POST', '/api/agent-profiles/{name}'),
     (agent_profiles_router, 'DELETE', '/api/agent-profiles/{name}'),
