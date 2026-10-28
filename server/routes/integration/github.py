@@ -67,6 +67,8 @@ async def github_events(
     try:
         # Add timeout to prevent hanging on slow/stalled clients
         payload = await asyncio.wait_for(request.body(), timeout=15.0)
+
+        logger.info('github_events', extra={'payload': payload})
         verify_github_signature(payload, x_hub_signature_256)
 
         payload_data = await request.json()
