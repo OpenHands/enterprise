@@ -97,7 +97,10 @@ class FilesystemEventService(EventServiceBase):
             return  # already stale/absent
         stale_path = self._index_stale_path(conversation_path)
         # os.replace overwrites the target if it exists and is atomic on POSIX.
-        os.replace(index_path, stale_path)
+        try:
+            os.replace(index_path, stale_path)
+        except FileNotFoundError:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class FilesystemEventServiceInjector(EventServiceInjector):

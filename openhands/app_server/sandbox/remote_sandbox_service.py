@@ -57,6 +57,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     REMOTE_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     search_stored_sandboxes,
@@ -211,6 +212,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxInfo(
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
+            credential_org_id=stored.credential_org_id,
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -420,6 +422,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
@@ -460,16 +463,7 @@ class RemoteSandboxService(SandboxService):
             return False
         if server_config.app_mode.value != 'saas':
             return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if org_id is None:
-            # ResolverUserContext has no get_effective_org_id; it carries the
-            # org the integration run targets as resolver_org_id. Without
-            # this, a resolver start would fall back to the user's
-            # last-selected org and apply that org's override instead of the
-            # target org's (cf. _get_effective_org_id in
-            # integrations/jira_dc/jira_dc_conversation_secret_enricher.py).
-            org_id = getattr(self.user_context, 'resolver_org_id', None)
+        org_id = await get_credential_org_id(self.user_context)
         async with a_session_maker() as session:
             return await DailySandboxQuotaService(session).reserve(user_id, org_id)
 
@@ -528,6 +522,7 @@ class RemoteSandboxService(SandboxService):
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
         user_id = await self.user_context.get_user_id()
+        credential_org_id = await get_credential_org_id(self.user_context)
         quota_reserved = await self._reserve_daily_sandbox_quota(user_id)
         try:
             # Enforce sandbox limits by cleaning up old sandboxes
@@ -550,6 +545,7 @@ class RemoteSandboxService(SandboxService):
                 id=sandbox_id,
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
+                credential_org_id=credential_org_id,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )
