@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
 from openhands.app_server.user_auth import get_user_id
 from server.routes.quota import quota_admin_router
@@ -21,8 +20,10 @@ from storage.user import User
 @pytest.fixture
 async def user_quota_api(async_session_maker, session_maker, create_user, monkeypatch):
     with session_maker() as session:
-        admin_role = session.scalar(select(Role).where(Role.name == 'admin'))
-        owner_role = session.scalar(select(Role).where(Role.name == 'owner'))
+        admin_role = Role(name='admin', rank=2)
+        owner_role = Role(name='owner', rank=1)
+        session.add_all([admin_role, owner_role])
+        session.commit()
         caller = create_user(role_id=admin_role.id)
         session.add(
             OrgMember(
