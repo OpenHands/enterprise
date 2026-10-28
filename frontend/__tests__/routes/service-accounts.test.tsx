@@ -312,6 +312,57 @@ describe("Service accounts route", () => {
     });
   });
 
+  it("clears a secret's description when the field is emptied in edit mode", async () => {
+    const bodies: { description?: string }[] = [];
+    server.events.on("request:start", async ({ request }) => {
+      if (request.method === "PUT" && request.url.includes("/secrets/")) {
+        bodies.push(await request.clone().json());
+      }
+    });
+    renderPage();
+    const row = await findRow("nightly-report");
+    await userEvent.click(within(row).getByTestId("manage-service-account"));
+
+    await userEvent.click(
+      await screen.findByTestId("add-service-account-secret-button"),
+    );
+    await userEvent.type(
+      await screen.findByTestId("service-account-secret-name-input"),
+      "API_TOKEN",
+    );
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-value-input"),
+      "value",
+    );
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-description-input"),
+      "old description",
+    );
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+
+    const secretRow = await screen.findByTestId("service-account-secret-item");
+    await userEvent.click(
+      within(secretRow).getByTestId("edit-service-account-secret"),
+    );
+    await userEvent.clear(
+      await screen.findByTestId("service-account-secret-description-input"),
+    );
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-value-input"),
+      "new-value",
+    );
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    server.events.removeAllListeners("request:start");
+    // An empty string clears it; omitting the field would keep the old one.
+    expect(bodies[1].description).toBe("");
+  });
+
   it("sets the monthly budget of a service account", async () => {
     renderPage();
     const row = await findRow("nightly-report");

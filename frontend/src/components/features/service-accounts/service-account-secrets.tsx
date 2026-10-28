@@ -64,8 +64,9 @@ function SecretForm({
         onSubmit({
           name,
           value,
-          // Omitting the description keeps the stored one.
-          description: description || undefined,
+          // Edit sends the field as shown, so "" clears the stored one. Add
+          // omits an empty one.
+          description: isEdit ? description : description || undefined,
         });
       }}
     >
