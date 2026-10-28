@@ -31,6 +31,14 @@ export const PROVIDER_CONNECTIONS_QUERY_KEYS = {
     ["provider-connections", organizationId] as const,
 } as const;
 
+export const MODEL_ROUTERS_QUERY_KEYS = {
+  all: ["org-model-routers"] as const,
+  byOrg: (organizationId: string | null | undefined) =>
+    ["org-model-routers", organizationId] as const,
+  detail: (organizationId: string | null | undefined, name: string | null) =>
+    ["org-model-routers", organizationId, "detail", name] as const,
+} as const;
+
 /** Cache configuration shared across all config-related queries */
 export const CONFIG_CACHE_OPTIONS = {
   staleTime: 1000 * 60 * 5, // 5 minutes

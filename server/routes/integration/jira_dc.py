@@ -453,20 +453,16 @@ async def _process_jira_dc_event(
             redis_client.setex(key, 120, 1)
 
         if AUTOMATION_EVENT_FORWARDING_ENABLED and payload and workspace:
-            if workspace.org_id:
-                background_tasks.add_task(
-                    automation_event_service.forward_jira_dc_event,
-                    org_id=workspace.org_id,
-                    payload=payload,
-                    workspace_name=workspace.name,
-                    connection_id=workspace.id,
-                    delivery_id=signature,
-                )
-            else:
-                logger.warning(
-                    '[Jira DC] Workspace %s has no org_id; skipping automation forwarding',
-                    workspace.id,
-                )
+            # Also reaches other orgs with Jira DC automations, so a workspace
+            # without an org still forwards.
+            background_tasks.add_task(
+                automation_event_service.forward_jira_dc_event,
+                org_id=workspace.org_id,
+                payload=payload,
+                workspace_name=workspace.name,
+                connection_id=workspace.id,
+                delivery_id=signature,
+            )
 
         # Process the webhook
         message_payload = {'payload': payload}

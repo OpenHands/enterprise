@@ -1283,10 +1283,12 @@ async def accept_tos(request: Request):
                     if email and '@' in email
                     else None,
                 )
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'signed_up_at': datetime.now(timezone.utc).isoformat()},
-                )
+                person_properties = {
+                    'signed_up_at': datetime.now(timezone.utc).isoformat()
+                }
+                if email:
+                    person_properties['email'] = email
+                analytics.set_person_properties(ctx=ctx, properties=person_properties)
         except Exception:
             logger.exception('analytics:user_signed_up:failed', stack_info=True)
 

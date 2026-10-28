@@ -87,6 +87,13 @@ class WebClientFeatureFlags(BaseModel):
     # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
     # its org-scope constraints are not gated.
     enable_org_agent_profiles: bool = False
+    # Org Model Router (OHE-3508): when true, the settings shell shows the
+    # org "Model Router" page and the server serves
+    # /api/organizations/{org_id}/meta-profiles and applies the active router
+    # to conversation launches. Set from ENABLE_MODEL_ROUTER (or the
+    # OH_WEB_CLIENT_FEATURE_FLAGS_* form, which the server reads too). Default
+    # False so existing installs keep today's behavior.
+    enable_model_router: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -96,17 +103,17 @@ class WebClientFeatureFlags(BaseModel):
         return self
 
 
-class ACPModelOption(BaseModel):
-    id: str
-    label: str
-
-
 class ACPProviderConfig(BaseModel):
+    """A built-in ACP harness this deployment offers.
+
+    Carries no model list: which models an ACP agent offers depends on the
+    account it runs under, so the agent reports them once a session starts
+    (``AppConversation.acp_available_models``).
+    """
+
     key: str
     display_name: str
     default_command: list[str]
-    default_model: str | None = None
-    available_models: list[ACPModelOption] = Field(default_factory=list)
     api_key_env_var: str | None = None
     base_url_env_var: str | None = None
 
