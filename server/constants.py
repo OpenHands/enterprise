@@ -241,6 +241,21 @@ def to_openhands_model(model: str) -> str:
     return _OPENHANDS_PREFIX + model
 
 
+def is_model_router_enabled() -> bool:
+    """Whether the org Model Router feature is on (OHE-3508).
+
+    Mirrors the web client's ``enable_model_router`` flag so the API, the
+    conversation launch and the settings page switch together.
+    ``OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_MODEL_ROUTER`` wins when set, since the
+    web client then reads it in place of ``ENABLE_MODEL_ROUTER``. Read on each
+    call, not at import, so the server and its tests see the current value.
+    """
+    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_MODEL_ROUTER')
+    if value is None:
+        value = os.getenv('ENABLE_MODEL_ROUTER', 'false')
+    return value.lower() in ('true', '1')
+
+
 def uses_bundled_litellm_proxy() -> bool:
     """Whether managed models are served by a self-hosted bundled LiteLLM proxy.
 
