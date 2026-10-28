@@ -11,6 +11,7 @@ from pydantic import (
     SecretStr,
     computed_field,
     field_validator,
+    model_validator,
 )
 
 from openhands.agent_server.models import (
@@ -298,6 +299,23 @@ class AppConversationStartRequest(OpenHandsModel):
     """
 
     sandbox_id: str | None = Field(default=None)
+    sandbox_spec_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description='One-conversation named sandbox template override. Omit for the saved default.',
+    )
+
+    @model_validator(mode='after')
+    def validate_sandbox_selection(self) -> 'AppConversationStartRequest':
+        if self.sandbox_id is not None and self.sandbox_spec_id is not None:
+            raise ValueError('sandbox_id and sandbox_spec_id cannot be combined')
+        if self.parent_conversation_id is not None and self.sandbox_spec_id is not None:
+            raise ValueError(
+                'sandbox_spec_id and parent_conversation_id cannot be combined; '
+                'child conversations inherit the parent sandbox'
+            )
+        return self
+
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None

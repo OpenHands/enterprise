@@ -15,6 +15,7 @@ from openhands.app_server.integrations.provider import (
     ProviderType,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.sandbox.sandbox_template_policy import SandboxTemplatePolicy
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
@@ -201,6 +202,13 @@ class AuthUserContext(UserContext):
     async def get_default_sandbox_spec_id(self) -> str | None:
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
+
+    async def get_sandbox_template_policy(self) -> SandboxTemplatePolicy | None:
+        if not hasattr(self.user_auth, 'get_effective_org_id'):
+            return None
+        from server.services.sandbox_template_policy import get_org_template_policy
+
+        return await get_org_template_policy(await self.get_effective_org_id())
 
     async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
         get_named_oauth_secrets = getattr(

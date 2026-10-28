@@ -8,6 +8,7 @@ from openhands.app_server.integrations.provider import (
     ProviderHandler,
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
+from openhands.app_server.sandbox.sandbox_template_policy import SandboxTemplatePolicy
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -143,3 +144,10 @@ class ResolverUserContext(UserContext):
     async def get_default_sandbox_spec_id(self) -> str | None:
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
+
+    async def get_sandbox_template_policy(self) -> SandboxTemplatePolicy | None:
+        from server.services.sandbox_template_policy import get_org_template_policy
+
+        # Integration routing captures the conversation's organization, which may
+        # differ from the user's interactive selection when the event arrives.
+        return await get_org_template_policy(self.resolver_org_id)

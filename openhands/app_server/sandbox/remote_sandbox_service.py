@@ -630,7 +630,7 @@ class RemoteSandboxService(SandboxService):
         fs_group = getattr(sandbox_spec, 'fs_group', DEFAULT_FS_GROUP)
 
         start_request: dict[str, Any] = {
-            'image': sandbox_spec.id,  # Use sandbox_spec.id as the container image
+            'image': getattr(sandbox_spec, 'image', None) or sandbox_spec.id,
             'command': sandbox_spec.command,
             'working_dir': sandbox_spec.working_dir,
             'environment': environment,
@@ -640,6 +640,10 @@ class RemoteSandboxService(SandboxService):
             'run_as_group': run_as_group,
             'fs_group': fs_group,
         }
+
+        template_name = getattr(sandbox_spec, 'warm_runtime_config_name', None)
+        if template_name:
+            start_request['warm_runtime_config_name'] = template_name
 
         # Add runtime class if specified
         if self.runtime_class == 'sysbox':

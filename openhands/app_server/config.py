@@ -1,8 +1,9 @@
 """Configuration for the OpenHands App Server."""
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncContextManager, Literal
+from typing import AsyncContextManager, AsyncGenerator, Literal
 
 import httpx
 from fastapi import Depends, Request
@@ -249,6 +250,15 @@ class AppServerConfig(OpenHandsModel):
 
 
 def config_from_env() -> AppServerConfig:
+    from openhands.app_server.sandbox.sandbox_template_policy import (
+        ORG_TEMPLATES_ENV,
+        parse_org_template_config,
+    )
+
+    # Reject malformed policies before the process can serve requests or pass
+    # readiness. A Helm typo must not become a delayed, deployment-wide 500.
+    parse_org_template_config(os.environ.get(ORG_TEMPLATES_ENV, '{}'))
+
     # Import defaults...
     from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
         LiveStatusAppConversationServiceInjector,
@@ -488,12 +498,22 @@ def get_sandbox_service(
     return injector.context(state, request)
 
 
-def get_sandbox_spec_service(
+@asynccontextmanager
+async def get_sandbox_spec_service(
     state: InjectorState, request: Request | None = None
-) -> AsyncContextManager[SandboxSpecService]:
+) -> AsyncGenerator[SandboxSpecService, None]:
     injector = get_global_config().sandbox_spec
     assert injector is not None
-    return injector.context(state, request)
+    from openhands.app_server.sandbox.sandbox_template_policy import (
+        ScopedSandboxSpecService,
+    )
+
+    async with injector.context(state, request) as service:
+        async with get_user_context(state, request) as user_context:
+            policy = await user_context.get_sandbox_template_policy()
+        yield (
+            ScopedSandboxSpecService(service, policy) if policy is not None else service
+        )
 
 
 def get_app_conversation_info_service(
@@ -574,9 +594,11 @@ def depends_sandbox_service():
 
 
 def depends_sandbox_spec_service():
-    injector = get_global_config().sandbox_spec
-    assert injector is not None
-    return Depends(injector.depends)
+    async def scoped_service(request: Request):
+        async with get_sandbox_spec_service(request.state, request) as service:
+            yield service
+
+    return Depends(scoped_service)
 
 
 def depends_app_conversation_info_service(

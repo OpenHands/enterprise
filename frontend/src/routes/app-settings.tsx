@@ -86,6 +86,26 @@ function AppSettingsScreen() {
     React.useState(false);
   const [gpgKeyModalIsVisible, setGpgKeyModalIsVisible] = React.useState(false);
 
+  const effectiveSandboxSpecId =
+    selectedSandboxSpecId !== undefined
+      ? selectedSandboxSpecId
+      : settings?.default_sandbox_spec_id;
+  const sandboxSpecItems = (sandboxSpecsPage?.items ?? []).map((spec) => ({
+    key: spec.id,
+    label: spec.display_name || spec.id,
+  }));
+  // Keep saved image IDs and removed templates visible until the user chooses
+  // a replacement. Several templates may share an image, so do not guess one.
+  if (
+    effectiveSandboxSpecId &&
+    !sandboxSpecItems.some((item) => item.key === effectiveSandboxSpecId)
+  ) {
+    sandboxSpecItems.push({
+      key: effectiveSandboxSpecId,
+      label: effectiveSandboxSpecId,
+    });
+  }
+
   const formAction = (formData: FormData) => {
     const languageLabel = formData.get("language-input")?.toString();
     const languageValue = AvailableLanguages.find(
@@ -339,15 +359,8 @@ function AppSettingsScreen() {
             name="default-sandbox-spec-input"
             label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
             placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
-            items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
-              key: spec.id,
-              label: spec.id,
-            }))}
-            selectedKey={
-              selectedSandboxSpecId !== undefined
-                ? selectedSandboxSpecId
-                : settings.default_sandbox_spec_id
-            }
+            items={sandboxSpecItems}
+            selectedKey={effectiveSandboxSpecId}
             isClearable
             isLoading={sandboxSpecsLoading}
             onSelectionChange={handleSandboxSpecIdChange}

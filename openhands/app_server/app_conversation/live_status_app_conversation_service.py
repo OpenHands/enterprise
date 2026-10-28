@@ -818,12 +818,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             except httpx.HTTPStatusError as exc:
                 # A custom image that 500s on create is usually an openhands-sdk
                 # mismatch /server_info couldn't reveal; add an actionable hint.
-                if is_custom_sandbox_spec(sandbox.sandbox_spec_id):
+                image = getattr(sandbox_spec, 'image', None) or sandbox.sandbox_spec_id
+                if is_custom_sandbox_spec(image):
                     expected = _expected_sdk_version()
                     raise SandboxError(
                         f'Conversation create failed (HTTP '
                         f'{exc.response.status_code}) on custom sandbox image '
-                        f'{sandbox.sandbox_spec_id}. Verify its openhands-sdk '
+                        f'{image}. Verify its openhands-sdk '
                         f'matches this release'
                         + (f' ({expected})' if expected else '')
                         + '; rebuild/re-pin the image if not.'
@@ -1258,8 +1259,27 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Wait for sandbox to start and return info."""
         # Get or create the sandbox
         if not task.request.sandbox_id:
+            template_id = task.request.sandbox_spec_id
+            if template_id is not None:
+                if not self.sandbox_spec_service.selection_enabled:
+                    raise SandboxError(
+                        'Sandbox selection is not enabled for this organization'
+                    )
+                spec = await self.sandbox_spec_service.get_start_sandbox_spec(
+                    template_id
+                )
+                if spec is None:
+                    raise SandboxError(
+                        'Sandbox template is unavailable for this organization'
+                    )
             # First try to find a running sandbox for the current user
-            sandbox = await self._find_running_sandbox_for_user()
+            # An explicit template must never reuse an unrelated grouped sandbox.
+            sandbox = (
+                None
+                if template_id is not None
+                or not self.sandbox_spec_service.allow_sandbox_reuse
+                else await self._find_running_sandbox_for_user()
+            )
             if sandbox is None:
                 # No running sandbox found, start a new one
 
@@ -1270,9 +1290,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     else None
                 )
 
-                sandbox = await self.sandbox_service.start_sandbox(
-                    sandbox_id=sandbox_id_str,
-                )
+                if template_id is not None:
+                    sandbox = await self.sandbox_service.start_sandbox(
+                        sandbox_id=sandbox_id_str, sandbox_spec_id=template_id
+                    )
+                else:
+                    sandbox = await self.sandbox_service.start_sandbox(
+                        sandbox_id=sandbox_id_str
+                    )
             task.sandbox_id = sandbox.id
         else:
             sandbox_info = await self.sandbox_service.get_sandbox(
