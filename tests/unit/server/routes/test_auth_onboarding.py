@@ -9,6 +9,7 @@ Tests for:
 
 import json
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,6 +23,7 @@ from server.routes.auth import (
     _build_onboarding_redirect,
     _get_post_auth_redirect,
     _should_redirect_to_onboarding,
+    accept_tos,
     complete_onboarding,
     onboarding_status,
 )
@@ -52,6 +54,46 @@ def mock_user():
     user.current_org_id = uuid.uuid4()
     user.onboarding_completed = False
     return user
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('email', ['signup@example.com', None])
+async def test_accept_tos_sets_signup_email_and_timestamp_together(
+    email, mock_request, create_user, async_session_maker
+):
+    user = create_user(email=email)
+    mock_request.json = AsyncMock(return_value={'redirect_url': 'https://example.com/'})
+    user_auth = MagicMock(spec=SaasUserAuth)
+    user_auth.oauth_v2_cookie = True
+    user_auth.get_user_id = AsyncMock(return_value=str(user.id))
+    analytics = MagicMock()
+
+    with (
+        patch('server.routes.auth.get_user_auth', AsyncMock(return_value=user_auth)),
+        patch('server.routes.auth.a_session_maker', async_session_maker),
+        patch('server.routes.auth.get_web_url', return_value='https://example.com'),
+        patch('server.routes.auth.get_analytics_service', return_value=analytics),
+        patch(
+            'server.routes.auth._get_post_auth_redirect',
+            AsyncMock(return_value='https://example.com/'),
+        ),
+        patch('server.auth.provider_identity.set_oauth_v2_cookie'),
+    ):
+        response = await accept_tos(mock_request)
+
+    assert response.status_code == 200
+    analytics.track_user_signed_up.assert_called_once()
+    analytics.set_person_properties.assert_called_once()
+    properties = analytics.set_person_properties.call_args.kwargs['properties']
+    assert properties.keys() == (
+        {'email', 'signed_up_at'} if email else {'signed_up_at'}
+    )
+    if email:
+        assert properties['email'] == email
+    assert (
+        datetime.fromisoformat(properties['signed_up_at']).date()
+        == datetime.now(timezone.utc).date()
+    )
 
 
 # --- Tests for _should_redirect_to_onboarding ---
