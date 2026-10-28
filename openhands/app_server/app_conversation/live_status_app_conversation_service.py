@@ -1783,6 +1783,39 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             }
         )
 
+    async def _route_direct_llm_via_bundled_proxy(self, llm: LLM) -> LLM:
+        """Serve a credential-less ``bedrock/`` or ``vertex_ai/`` LLM through the
+        bundled proxy.
+
+        Stored settings are routed on load; this covers a model passed with the
+        start request, such as one inherited from a parent conversation.
+        """
+        try:
+            from server.constants import (  # type: ignore[import-not-found]
+                bundled_proxy_model_for_direct_llm,
+                route_direct_llm_via_bundled_proxy,
+            )
+            from server.verified_models.litellm_proxy_model_router import (  # type: ignore[import-not-found]
+                get_bundled_proxy_model_names,
+            )
+        except ImportError:
+            return llm
+
+        payload = llm.model_dump()
+        if bundled_proxy_model_for_direct_llm(payload) is None:
+            return llm
+        try:
+            proxy_models = await get_bundled_proxy_model_names()
+        except Exception:
+            _logger.warning('bundled_proxy_models_unavailable', exc_info=True)
+            return llm
+        routed = route_direct_llm_via_bundled_proxy(payload, proxy_models)
+        if routed['model'] == llm.model:
+            return llm
+        return llm.model_copy(
+            update={'model': routed['model'], 'base_url': routed['base_url']}
+        )
+
     async def _maybe_refresh_managed_llm_key(self, user: UserInfo, llm: LLM) -> LLM:
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
@@ -2121,7 +2154,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             ``Agent.mcp_config`` field expects)
         """
         # Configure LLM
-        llm = self._configure_llm(user, llm_model)
+        llm = await self._route_direct_llm_via_bundled_proxy(
+            self._configure_llm(user, llm_model)
+        )
         _logger.debug(
             'managed_llm_key_refresh:configured_llm',
             extra={

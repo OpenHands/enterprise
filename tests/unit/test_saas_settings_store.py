@@ -850,6 +850,127 @@ async def test_load_represents_bundled_proxy_default_as_openhands(
     assert default.base_url == proxy_url
 
 
+def _use_bundled_proxy(monkeypatch, proxy_url: str) -> None:
+    from server import constants
+    from storage import saas_settings_store
+
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+
+
+@pytest.mark.asyncio
+async def test_load_routes_credential_less_direct_llms_through_bundled_proxy(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """Self-hosted: a stored ``bedrock/<id>`` or ``vertex_ai/<name>`` LLM without
+    credentials of its own loads as the bundled proxy's ``openhands/<route>``
+    with the member's key. LLMs with their own credentials are left alone.
+    """
+    from sqlalchemy import update
+
+    from server.verified_models.litellm_proxy_model_router import (
+        LiteLLMProxyModelService,
+    )
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    proxy_url = 'http://litellm.test:4000'
+    bedrock_id = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+    _use_bundled_proxy(monkeypatch, proxy_url)
+
+    async def proxy_routes(self):
+        return [bedrock_id, 'gemini-2.5-flash'], [], {}
+
+    async def byok_off(self):
+        return False
+
+    monkeypatch.setattr(
+        LiteLLMProxyModelService, '_fetch_proxy_model_names', proxy_routes
+    )
+    monkeypatch.setattr(LiteLLMProxyModelService, '_byok_enabled', byok_off)
+    LiteLLMProxyModelService._reset_cache()
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    org_id = fixture['org_id']
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == admin_user_id)
+            .values(agent_settings_diff={'llm': {'model': f'bedrock/{bedrock_id}'}})
+        )
+        await session.execute(
+            update(Org)
+            .where(Org.id == org_id)
+            .values(
+                llm_profiles={
+                    'profiles': {
+                        'bedrock': {'model': f'bedrock/{bedrock_id}'},
+                        'vertex': {'model': 'vertex_ai/gemini-2.5-flash'},
+                        'own-keys': {
+                            'model': f'bedrock/{bedrock_id}',
+                            'aws_access_key_id': 'AKIA-test',
+                            'aws_secret_access_key': 'secret',
+                        },
+                    },
+                    'active': 'bedrock',
+                }
+            )
+        )
+        await session.commit()
+
+    store = SaasSettingsStore(str(admin_user_id))
+    try:
+        with (
+            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.org_store.a_session_maker', async_session_maker),
+        ):
+            loaded = await store.load()
+    finally:
+        LiteLLMProxyModelService._reset_cache()
+
+    assert loaded is not None
+    llm = loaded.agent_settings.llm
+    assert llm.model == f'openhands/{bedrock_id}'
+    assert llm.base_url == proxy_url
+    assert llm.api_key.get_secret_value() == 'admin-initial-key'
+    for name, route in (('bedrock', bedrock_id), ('vertex', 'gemini-2.5-flash')):
+        profile = loaded.llm_profiles.require(name)
+        assert profile.model == f'openhands/{route}'
+        assert profile.base_url == proxy_url
+    own_keys = loaded.llm_profiles.require('own-keys')
+    assert own_keys.model == f'bedrock/{bedrock_id}'
+    assert own_keys.base_url is None
+
+
+@pytest.mark.asyncio
+async def test_load_skips_proxy_lookup_without_direct_llms(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """Settings with nothing to route never query the proxy's model list."""
+    from storage import saas_settings_store
+
+    proxy_url = 'http://litellm.test:4000'
+    _use_bundled_proxy(monkeypatch, proxy_url)
+    lookup = AsyncMock(return_value=frozenset())
+    monkeypatch.setattr(
+        saas_settings_store, 'get_bundled_proxy_model_names', lookup, raising=False
+    )
+
+    store = SaasSettingsStore(str(org_with_multiple_members_fixture['admin_user_id']))
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    lookup.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_bundled_proxy_load_and_save_preserve_untyped_member_key(
     async_session_maker, org_with_multiple_members_fixture, monkeypatch

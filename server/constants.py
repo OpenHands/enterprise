@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Collection, Mapping
 from typing import Any
 from urllib.parse import urlparse
 
@@ -285,6 +286,59 @@ def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
     ):
         return {**payload, 'model': to_openhands_model(model)}
     return payload
+
+
+# Replicated installs used to put the LLM provider credentials in every
+# sandbox's env, so a stored ``bedrock/<id>`` or ``vertex_ai/<name>`` LLM with
+# no credentials of its own authenticated from them. The bundled proxy serves
+# the same models as the ``<id>`` / ``<name>`` routes.
+_PROXY_SERVED_DIRECT_PREFIXES = ('bedrock/', 'vertex_ai/')
+_DIRECT_LLM_CREDENTIAL_FIELDS = (
+    'provider_connection_id',
+    'aws_access_key_id',
+    'aws_secret_access_key',
+    'aws_session_token',
+    'aws_profile_name',
+    'aws_role_name',
+    'aws_bedrock_runtime_endpoint',
+)
+
+
+def bundled_proxy_model_for_direct_llm(payload: Mapping[str, Any]) -> str | None:
+    """Return the ``openhands/<route>`` that would serve a direct LLM.
+
+    ``None`` unless ``payload`` is a ``bedrock/`` or ``vertex_ai/`` LLM without
+    an endpoint or credentials of its own, on a bundled-proxy install. The
+    bundled proxy URL is not an endpoint of its own: it only appears when a
+    direct model is paired with a managed LLM's base_url.
+    """
+    model = payload.get('model')
+    base_url = payload.get('base_url')
+    if not isinstance(model, str) or any(
+        payload.get(field) for field in _DIRECT_LLM_CREDENTIAL_FIELDS
+    ):
+        return None
+    if base_url and not is_bundled_proxy_base_url(base_url):
+        return None
+    for prefix in _PROXY_SERVED_DIRECT_PREFIXES:
+        route = model.removeprefix(prefix)
+        if route != model and route and uses_bundled_litellm_proxy():
+            return _OPENHANDS_PREFIX + route
+    return None
+
+
+def route_direct_llm_via_bundled_proxy(
+    payload: dict[str, Any], proxy_models: Collection[str]
+) -> dict[str, Any]:
+    """Serve a credential-less direct LLM through the bundled proxy.
+
+    ``proxy_models`` are the ``openhands/<route>`` names the proxy serves; an
+    LLM without a matching route is returned unchanged.
+    """
+    model = bundled_proxy_model_for_direct_llm(payload)
+    if model is None or model not in proxy_models:
+        return payload
+    return {**payload, 'model': model, 'base_url': LITE_LLM_API_URL}
 
 
 def get_default_llm_model() -> str:

@@ -37,8 +37,10 @@ from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
+    bundled_proxy_model_for_direct_llm,
     canonicalize_bundled_proxy_llm,
     is_bundled_proxy_base_url,
+    route_direct_llm_via_bundled_proxy,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -51,6 +53,9 @@ from server.verified_models.default_profile import (
     get_openhands_default_model_name,
     materialize_default_llm_payload,
     uses_deployment_default_profile,
+)
+from server.verified_models.litellm_proxy_model_router import (
+    get_bundled_proxy_model_names,
 )
 from storage.agent_profile_resolution import (
     apply_provider_connection,
@@ -106,6 +111,22 @@ class ManagedLlmKeyRotation:
     old_key: str | None = None
     new_key: str | None = None
     openhands_type: bool = False
+
+
+async def _bundled_proxy_models_for(*llm_payloads: object) -> frozenset[str]:
+    """The bundled proxy's models, fetched only when an LLM could use them."""
+    if not any(
+        isinstance(payload, dict) and bundled_proxy_model_for_direct_llm(payload)
+        for payload in llm_payloads
+    ):
+        return frozenset()
+    try:
+        return await get_bundled_proxy_model_names()
+    except Exception:
+        logger.warning(
+            'saas_settings_store:bundled_proxy_models_unavailable', exc_info=True
+        )
+        return frozenset()
 
 
 def managed_llm_key_config_from_model(
@@ -476,10 +497,19 @@ class SaasSettingsStore(SettingsStore):
         # Canonicalize legacy managed OpenHands LLM payloads before Settings
         # validation so current settings and seeded profiles use the public
         # openhands/ prefix (including bundled-proxy defaults on self-hosted).
+        # Credential-less bedrock/vertex LLMs move to the bundled proxy route.
         llm_dict = merged_agent_settings.get('llm')
+        org_profiles = (org.llm_profiles or {}).get('profiles')
+        proxy_models = await _bundled_proxy_models_for(
+            llm_dict,
+            *(org_profiles.values() if isinstance(org_profiles, dict) else ()),
+        )
         if isinstance(llm_dict, dict):
-            merged_agent_settings['llm'] = canonicalize_bundled_proxy_llm(
-                canonicalize_openhands_llm_payload(llm_dict)
+            merged_agent_settings['llm'] = route_direct_llm_via_bundled_proxy(
+                canonicalize_bundled_proxy_llm(
+                    canonicalize_openhands_llm_payload(llm_dict)
+                ),
+                proxy_models,
             )
 
         kwargs['agent_settings'] = merged_agent_settings
@@ -528,8 +558,11 @@ class SaasSettingsStore(SettingsStore):
             raw_profiles = profiles_data.get('profiles')
             if isinstance(raw_profiles, dict):
                 profiles_data['profiles'] = {
-                    name: canonicalize_bundled_proxy_llm(
-                        canonicalize_openhands_llm_payload(prof)
+                    name: route_direct_llm_via_bundled_proxy(
+                        canonicalize_bundled_proxy_llm(
+                            canonicalize_openhands_llm_payload(prof)
+                        ),
+                        proxy_models,
                     )
                     if isinstance(prof, dict)
                     else prof

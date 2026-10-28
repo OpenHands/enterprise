@@ -1457,6 +1457,36 @@ class TestLiveStatusAppConversationService:
         )
 
     @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_routes_direct_model_through_bundled_proxy(
+        self, monkeypatch
+    ):
+        """A credential-less ``bedrock/`` model inherited from a parent
+        conversation is served by the bundled proxy's matching route, even
+        though it picks up the member's managed base_url."""
+        from server import constants
+
+        proxy_url = 'http://litellm.test:4000'
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'proxy')
+        monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+        monkeypatch.setattr(
+            'server.verified_models.litellm_proxy_model_router.'
+            'get_bundled_proxy_model_names',
+            AsyncMock(return_value=frozenset({'openhands/claude-opus-4-7'})),
+            raising=False,
+        )
+        self.mock_user.llm_base_url = proxy_url
+        self.mock_user_context.get_mcp_api_key.return_value = None
+
+        llm, _ = await self.service._configure_llm_and_mcp(
+            self.mock_user, 'bedrock/claude-opus-4-7', self.conversation_id
+        )
+
+        assert llm.model == 'openhands/claude-opus-4-7'
+        assert llm.base_url == proxy_url
+        assert llm.api_key.get_secret_value() == self.mock_user.llm_api_key
+
+    @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_uses_user_llm_settings(self):
         """User LLM fields should drive the configured LLM."""
         self.mock_user.llm_model = 'sdk-model'

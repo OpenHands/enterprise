@@ -318,6 +318,12 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             return response
 
 
+async def get_bundled_proxy_model_names() -> frozenset[str]:
+    """``openhands/<route>`` names the bundled proxy serves, from the shared cache."""
+    response = await LiteLLMProxyModelService()._get_models_response()
+    return frozenset([*response.models, *response.hidden_models])
+
+
 class LiteLLMProxyModelServiceInjector(LLMModelServiceInjector):
     """Injector that provides the LiteLLM-proxy-backed model service.
 
