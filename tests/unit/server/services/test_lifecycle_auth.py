@@ -31,7 +31,13 @@ async def test_cookie_revocation_survives_enable(
         }
         authenticate = saas_user_auth_from_signed_token
     else:
-        payload = {'user_id': str(user.id)}
+        # The session claims every openhands_auth cookie carries; a bare
+        # {user_id} JWS is no longer accepted as a login cookie.
+        payload = {
+            'user_id': str(user.id),
+            'accepted_tos': True,
+            'access_token_expires_at': None,
+        }
         authenticate = saas_user_auth_from_oauth_v2_cookie
     old = get_jwt_service().create_jws_token(payload)
     assert (await authenticate(old)).user_id == str(user.id)

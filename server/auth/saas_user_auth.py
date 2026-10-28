@@ -1394,6 +1394,13 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
+    # The same JwtService signs tokens for other purposes (git-token lookup
+    # secrets and credential helpers, quota-increase emails), and those carry a
+    # ``user_id`` too. Only a session cookie carries the session claims below
+    # (every cookie minted by create_oauth_v2_cookie_payload has both keys), so
+    # anything else must not be accepted as a login.
+    if 'accepted_tos' not in decoded or 'access_token_expires_at' not in decoded:
+        raise AuthError('OAuth v2 cookie is not a session cookie')
 
     accepted_tos = decoded.get('accepted_tos')
 
