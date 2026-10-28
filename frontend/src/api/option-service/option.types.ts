@@ -86,17 +86,21 @@ export interface WebClientFeatureFlags {
   enable_model_router?: boolean;
 }
 
+/** One entry of a model picker; built from what an ACP session reported. */
 export interface ACPModelOption {
   id: string;
   label: string;
 }
 
+/**
+ * A built-in ACP harness the deployment offers. Carries no model list: the
+ * models an agent offers depend on the account it runs under, so the session
+ * reports them (``V1AppConversation.acp_available_models``).
+ */
 export interface ACPProviderConfig {
   key: string;
   display_name: string;
   default_command: string[];
-  default_model?: string | null;
-  available_models?: ACPModelOption[];
   api_key_env_var?: string | null;
   base_url_env_var?: string | null;
 }

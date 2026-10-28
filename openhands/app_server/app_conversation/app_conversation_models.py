@@ -28,6 +28,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 
 # Import from new location and re-export for backward compatibility
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     TAG_KEY_PATTERN,
@@ -277,6 +278,18 @@ class AppConversation(AppConversationInfo):  # type: ignore
     )
     session_api_key: str | None = Field(
         default=None, description='The Session Api Key for REST operations.'
+    )
+    acp_available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            'Models the ACP session reported it offers under its credentials. '
+            'Empty for OpenHands agents, while the sandbox is not RUNNING, and '
+            'until the session has started.'
+        ),
+    )
+    acp_supports_runtime_model_switch: bool = Field(
+        default=False,
+        description='Whether the ACP session accepts a model switch mid-conversation.',
     )
 
     # JSON fields for complex data types
