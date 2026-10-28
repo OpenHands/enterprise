@@ -55,8 +55,32 @@ class SlackStatusResponse(BaseModel):
     connected: bool
 
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+def _build_signature_verifier() -> SignatureVerifier | None:
+    """Build the verifier only when a signing secret is configured.
+
+    ``SignatureVerifier`` raises for a missing or empty secret, so constructing
+    it unconditionally would break the import on installs that don't run the
+    Slack app.
+    """
+    if not SLACK_SIGNING_SECRET:
+        return None
+    return SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+
+
+signature_verifier = _build_signature_verifier()
 slack_router = APIRouter(prefix='/slack')
+
+
+def _is_valid_slack_signature(
+    *, body: bytes, timestamp: str | None, signature: str | None
+) -> bool:
+    """Whether Slack signed the request; unconfigured verifiers fail closed."""
+    if signature_verifier is None:
+        return False
+    return signature_verifier.is_valid(
+        body=body, timestamp=timestamp, signature=signature
+    )
+
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
 authorize_url_generator = AuthorizeUrlGenerator(
@@ -330,7 +354,7 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_event', extra={'payload': payload})
 
     # First verify the signature
-    if not signature_verifier.is_valid(
+    if not _is_valid_slack_signature(
         body=body,
         timestamp=request.headers.get('x-slack-request-timestamp'),
         signature=request.headers.get('x-slack-signature'),
@@ -415,7 +439,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_options_load', extra={'payload': payload})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if not _is_valid_slack_signature(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
         signature=request.headers.get('X-Slack-Signature'),
@@ -518,7 +542,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     logger.info('slack_on_form_interaction', extra={'payload': payload})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if not _is_valid_slack_signature(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
         signature=request.headers.get('X-Slack-Signature'),
