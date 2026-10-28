@@ -346,6 +346,10 @@ async def search_app_conversations(
         list[str] | None,
         Query(title='Filter by tags as repeatable key=value items; all must match'),
     ] = None,
+    pinned__eq: Annotated[
+        bool | None,
+        Query(title='Filter by pinned state'),
+    ] = None,
     page_id: Annotated[
         str | None,
         Query(title='Optional next_page_id from the previously returned page'),
@@ -377,6 +381,7 @@ async def search_app_conversations(
         updated_at__lt=updated_at__lt,
         sandbox_id__eq=sandbox_id__eq,
         tags__contains=_parse_tag_filters(tags__contains),
+        pinned__eq=pinned__eq,
         page_id=page_id,
         limit=limit,
         include_sub_conversations=include_sub_conversations,
@@ -413,6 +418,10 @@ async def count_app_conversations(
         list[str] | None,
         Query(title='Filter by tags as repeatable key=value items; all must match'),
     ] = None,
+    pinned__eq: Annotated[
+        bool | None,
+        Query(title='Filter by pinned state'),
+    ] = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -426,6 +435,7 @@ async def count_app_conversations(
         updated_at__lt=updated_at__lt,
         sandbox_id__eq=sandbox_id__eq,
         tags__contains=_parse_tag_filters(tags__contains),
+        pinned__eq=pinned__eq,
     )
 
 

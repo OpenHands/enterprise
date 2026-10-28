@@ -8,7 +8,7 @@ import os
 import sys
 import types
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -5311,6 +5311,79 @@ class TestLiveStatusAppConversationService:
         assert result is not None
         assert result.title == 'New title'
         assert result.tags == {'environmenturl': 'https://env/a'}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('requested', 'stored_pinned_at'),
+        [(True, datetime(2026, 10, 16, tzinfo=UTC)), (False, None)],
+    )
+    async def test_update_app_conversation_pinned(self, requested, stored_pinned_at):
+        """Pin and unpin go through the info service and surface as pinned_at."""
+        # Arrange
+        info = AppConversationInfo(
+            created_by_user_id='test_user_<secret-hidden>',
+            sandbox_id='sandbox-1',
+            title='Conversation',
+        )
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.set_app_conversation_pinned = AsyncMock(
+            return_value=stored_pinned_at
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+
+        # Act
+        result = await self.service.update_app_conversation(
+            info.id, AppConversationUpdateRequest(pinned=requested)
+        )
+
+        # Assert
+        self.mock_app_conversation_info_service.set_app_conversation_pinned.assert_awaited_once_with(
+            info.id, requested
+        )
+        assert result is not None
+        assert result.pinned_at == stored_pinned_at
+
+    @pytest.mark.asyncio
+    async def test_update_app_conversation_without_pinned_leaves_pin_alone(self):
+        """A request that does not mention pinned (or sends null) never touches the pin."""
+        # Arrange
+        pinned_at = datetime(2026, 10, 16, tzinfo=UTC)
+        info = AppConversationInfo(
+            created_by_user_id='test_user_<secret-hidden>',
+            sandbox_id='sandbox-1',
+            title='Old title',
+            pinned_at=pinned_at,
+        )
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.set_app_conversation_pinned = (
+            AsyncMock()
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+
+        # Act
+        result = await self.service.update_app_conversation(
+            info.id, AppConversationUpdateRequest(title='New title', pinned=None)
+        )
+
+        # Assert
+        self.mock_app_conversation_info_service.set_app_conversation_pinned.assert_not_called()
+        assert result is not None
+        assert result.title == 'New title'
+        assert result.pinned_at == pinned_at
 
     @pytest.mark.parametrize(
         'repository',
