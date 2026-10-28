@@ -789,7 +789,11 @@ async def activate_agent_profile(
     )
 
 
-@router.post('/{profile_id}/deactivate', response_model=DeactivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/deactivate',
+    response_model=DeactivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def deactivate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
