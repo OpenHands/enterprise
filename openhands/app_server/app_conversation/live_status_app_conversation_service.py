@@ -150,7 +150,9 @@ from openhands.tools.preset.planning import (
     get_planning_tools,
 )
 
-_conversation_info_type_adapter = TypeAdapter(list[ConversationInfo | None])
+_conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
+    TypeAdapter(list[ConversationInfo | None])
+)
 _logger = logging.getLogger(__name__)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
