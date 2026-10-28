@@ -19,6 +19,7 @@ from openhands.app_server.utils.git import (
     ensure_valid_repository_name,
 )
 from openhands.sdk.conversation.request import ConversationConfig
+from openhands.sdk.settings.model import ConversationSettings
 from openhands.sdk.skills import PathTrigger, Skill
 
 MAX_ADDITIONAL_REPOSITORIES = 9
@@ -124,9 +125,13 @@ def agent_server_runs_hooks_from_project_dir() -> bool:
     """Whether the agent-server runs command hooks from ``hook_project_dir``.
 
     The SDK and the sandbox agent-server are pinned to the same version, so the
-    installed request model says what the sandbox understands.
+    installed models say what the sandbox understands and what
+    ``ConversationSettings.create_request`` forwards.
     """
-    return 'hook_project_dir' in ConversationConfig.model_fields
+    return (
+        'hook_project_dir' in ConversationConfig.model_fields
+        and 'hook_project_dir' in ConversationSettings.model_fields
+    )
 
 
 def loads_repository_hooks(
