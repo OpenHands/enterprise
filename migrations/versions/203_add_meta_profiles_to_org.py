@@ -14,8 +14,8 @@ Data migration: no backfill. Existing orgs read back with meta_profiles = NULL,
 which OrgMetaProfiles treats as an empty collection. The first save through the
 /api/organizations/{org_id}/meta-profiles endpoints populates the column lazily.
 
-Revision ID: 202
-Revises: 201
+Revision ID: 203
+Revises: 202
 Create Date: 2026-10-27
 """
 
@@ -24,8 +24,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '202'
-down_revision: str | None = '201'
+revision: str = '203'
+down_revision: str | None = '202'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
