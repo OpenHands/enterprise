@@ -199,6 +199,22 @@ _conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
 )
 _logger = logging.getLogger(__name__)
 
+# Org Model Router "Run on first message" (OHE-3508). Same text Agent Canvas
+# appends locally (``buildRouterAtStartSystemSuffix``), so the agent behaves the
+# same on every backend.
+ROUTE_AT_CONVERSATION_START_INSTRUCTION = '\n'.join(
+    [
+        '<ROUTE_AT_CONVERSATION_START>',
+        'Before responding to the FIRST user message of this conversation, call',
+        'the `route_task_to_model` tool with that user message so the active',
+        'Model Router selects the appropriate model. After the router switches',
+        "the model, continue handling the user's request with the switched",
+        'model. Apply this only to the very first user message; do not route',
+        'subsequent messages this way.',
+        '</ROUTE_AT_CONVERSATION_START>',
+    ]
+)
+
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # Upper bound for the provider lookup of a repository started without a
 # provider, so a slow git provider cannot hold up the conversation start.
@@ -714,6 +730,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 }
             )
             user = user.model_copy(update={'agent_settings': agent_settings})
+
+        # Org Model Router "Run on first message": the launch carries the
+        # router only when the org activated one (SaasSettingsStore inlines
+        # it). An explicit per-launch LLM pick is a stronger signal than the
+        # org policy, so the instruction is skipped then.
+        if (
+            isinstance(agent_settings, OpenHandsAgentSettings)
+            and agent_settings.enable_classify_and_switch_llm_tool
+            and not request.llm_profile
+        ):
+            await self._maybe_append_route_at_start_instruction(request)
 
         task = AppConversationStartTask(
             created_by_user_id=user_id,
@@ -1789,6 +1816,37 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             url=lookup_url,
             headers={'X-Access-Token': access_token},
             description=description,
+        )
+
+    async def _maybe_append_route_at_start_instruction(
+        self, request: AppConversationStartRequest
+    ) -> None:
+        """Append the route-on-first-message instruction when the org asks for it.
+
+        The toggle lives on the org's Model Router envelope
+        (``org.meta_profiles.run_at_conversation_start``), set from the OHE
+        Model Router settings page.
+        """
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        if get_effective_org_id is None:
+            return
+        org_id = await get_effective_org_id()
+        if org_id is None:
+            return
+        # Imported lazily: ``storage`` transitively imports this service.
+        from storage.agent_profile_resolution import load_meta_profiles
+        from storage.org_store import OrgStore
+
+        org = await OrgStore.get_org_by_id_async(org_id)
+        if org is None or not load_meta_profiles(org).run_at_conversation_start:
+            return
+        request.system_message_suffix = '\n\n'.join(
+            part
+            for part in (
+                request.system_message_suffix,
+                ROUTE_AT_CONVERSATION_START_INSTRUCTION,
+            )
+            if part
         )
 
     async def _setup_conversation_secrets(

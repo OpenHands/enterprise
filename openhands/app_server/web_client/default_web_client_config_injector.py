@@ -222,8 +222,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
     ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
     ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
-    ENABLE_ORG_AGENT_PROFILES and ENABLE_MULTI_REPOSITORY_CONVERSATIONS from
-    environment.
+    ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER and
+    ENABLE_MULTI_REPOSITORY_CONVERSATIONS from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -264,6 +264,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
         enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
         enable_org_agent_profiles=_env_flag_enabled('ENABLE_ORG_AGENT_PROFILES'),
+        enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
         enable_multi_repository_conversations=(
             multi_repository_conversations_enabled()
         ),

@@ -80,6 +80,10 @@ export interface WebClientFeatureFlags {
   /** When true, org admins can add, edit and delete the organization's
    *  shared Agent Profiles on the Agent Profiles page. Off by default. */
   enable_org_agent_profiles?: boolean;
+  /** When true, the org "Model Router" settings page is shown and the
+   *  server applies the org's active Model Router to conversation launches.
+   *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
+  enable_model_router?: boolean;
 }
 
 export interface ACPModelOption {
