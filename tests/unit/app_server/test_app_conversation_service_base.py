@@ -770,6 +770,8 @@ def _create_service_with_mock_user_context(
     methods_to_bind = ['_configure_git_user_settings', '_configure_gpg_signing']
     if bind_methods:
         methods_to_bind.extend(bind_methods)
+        if 'clone_or_init_git_repo' in bind_methods:
+            methods_to_bind.append('_clone_repository')
         # Remove potential duplicates while keeping order
         methods_to_bind = list(dict.fromkeys(methods_to_bind))
 
@@ -2431,6 +2433,7 @@ def _provider_resolution_service(user_context) -> MagicMock:
     service.init_git_in_empty_workspace = True
     for name in (
         'clone_or_init_git_repo',
+        '_clone_repository',
         '_get_azure_devops_bearer_token_for_git',
         '_configure_git_user_settings',
         '_configure_gpg_signing',

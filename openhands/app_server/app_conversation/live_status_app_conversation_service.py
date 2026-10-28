@@ -24,6 +24,13 @@ from openhands.agent_server.models import (
     TextContent,
 )
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryRequest,
+    agent_working_dir,
+    loads_repository_hooks,
+    repositories_context,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -54,6 +61,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
+    azure_devops_repositories,
     get_project_dir,
 )
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
@@ -133,7 +141,10 @@ from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
-from openhands.app_server.utils.git import ensure_valid_git_branch_name
+from openhands.app_server.utils.git import (
+    ensure_valid_git_branch_name,
+    ensure_valid_repository_name,
+)
 from openhands.app_server.utils.import_utils import get_impl
 from openhands.app_server.utils.llm_metadata import (
     get_llm_metadata,
@@ -187,6 +198,22 @@ _conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
     TypeAdapter(list[ConversationInfo | None])
 )
 _logger = logging.getLogger(__name__)
+
+# Org Model Router "Run on first message" (OHE-3508). Same text Agent Canvas
+# appends locally (``buildRouterAtStartSystemSuffix``), so the agent behaves the
+# same on every backend.
+ROUTE_AT_CONVERSATION_START_INSTRUCTION = '\n'.join(
+    [
+        '<ROUTE_AT_CONVERSATION_START>',
+        'Before responding to the FIRST user message of this conversation, call',
+        'the `route_task_to_model` tool with that user message so the active',
+        'Model Router selects the appropriate model. After the router switches',
+        "the model, continue handling the user's request with the switched",
+        'model. Apply this only to the very first user message; do not route',
+        'subsequent messages this way.',
+        '</ROUTE_AT_CONVERSATION_START>',
+    ]
+)
 
 _EXPORT_LOCK_KEY_PREFIX = 'app_conversation_export'
 # Upper bound for the provider lookup of a repository started without a
@@ -306,10 +333,19 @@ def append_system_context(existing: str | None, block: str) -> str:
     return f'{existing.rstrip()}\n\n{block}'
 
 
+def _azure_devops_repository_url(host: str, parts: list[str]) -> str:
+    org, project, repo = parts[0], parts[1], parts[2]
+    return (
+        f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
+        f'/_git/{quote(repo, safe="")}'
+    )
+
+
 def azure_devops_context(
     selected_repository: str | None,
     organizations: Sequence[str],
     git_credentials_configured: bool,
+    additional_repositories: Sequence[str] = (),
 ) -> str:
     """Describe an Azure DevOps conversation's provider, host and organizations.
 
@@ -319,20 +355,24 @@ def azure_devops_context(
     when a credential was minted and ``organizations`` is non-empty.
     """
     host = ProviderHandler.PROVIDER_DOMAINS[ProviderType.AZURE_DEVOPS]
-    lines = [
-        f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
-    ]
-    parts = (selected_repository or '').split('/')
-    if len(parts) >= 3:
-        org, project, repo = parts[0], parts[1], parts[2]
-        url = (
-            f'https://{host}/{quote(org, safe="")}/{quote(project, safe="")}'
-            f'/_git/{quote(repo, safe="")}'
-        )
-        lines.append(
-            f'Selected repository: organization `{org}`, project `{project}`, '
-            f'repository `{repo}` ({url}).'
-        )
+    if additional_repositories and not selected_repository:
+        lines = [
+            f'Azure DevOps repositories in this conversation are hosted at {host}.'
+        ]
+    else:
+        lines = [
+            f'The git provider for this conversation is Azure DevOps, hosted at {host}.'
+        ]
+    for label, repository in [
+        ('Selected repository', selected_repository),
+        *(('Additional repository', name) for name in additional_repositories),
+    ]:
+        parts = (repository or '').split('/')
+        if len(parts) >= 3:
+            lines.append(
+                f'{label}: organization `{parts[0]}`, project `{parts[1]}`, '
+                f'repository `{parts[2]}` ({_azure_devops_repository_url(host, parts)}).'
+            )
     lines.append(
         'An Azure DevOps repository written as ORG/PROJECT/REPO is cloned from '
         f'https://{host}/ORG/PROJECT/_git/REPO.'
@@ -472,12 +512,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         selected_repository: str | None,
         azure_devops_access_token: str | None,
         system_message_suffix: str | None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
     ) -> str | None:
+        additional = azure_devops_repositories(additional_repositories)
         if git_provider != ProviderType.AZURE_DEVOPS:
-            return system_message_suffix
+            if not additional:
+                return system_message_suffix
+            selected_repository = None
         # The same organizations the git credential helper is installed for.
         organizations = await azure_devops_user_orgs(
-            self.user_context, selected_repository
+            self.user_context, selected_repository, additional
         )
         return append_system_context(
             system_message_suffix,
@@ -485,8 +529,50 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 selected_repository,
                 organizations,
                 git_credentials_configured=bool(azure_devops_access_token),
+                additional_repositories=additional,
             ),
         )
+
+    async def _append_git_context(
+        self,
+        user: UserInfo,
+        git_provider: ProviderType | None,
+        selected_repository: str | None,
+        selected_branch: str | None,
+        azure_devops_access_token: str | None,
+        system_message_suffix: str | None,
+        working_dir: str,
+        additional_repositories: Sequence[AdditionalRepository],
+    ) -> str | None:
+        system_message_suffix = self._maybe_append_shallow_clone_context(
+            user,
+            selected_repository
+            or (
+                additional_repositories[0].repository
+                if additional_repositories
+                else None
+            ),
+            system_message_suffix,
+        )
+        system_message_suffix = await self._maybe_append_azure_devops_context(
+            git_provider,
+            selected_repository,
+            azure_devops_access_token,
+            system_message_suffix,
+            additional_repositories,
+        )
+        if additional_repositories:
+            system_message_suffix = append_system_context(
+                system_message_suffix,
+                repositories_context(
+                    selected_repository,
+                    selected_branch,
+                    git_provider,
+                    get_project_dir(working_dir, selected_repository),
+                    additional_repositories,
+                ),
+            )
+        return system_message_suffix
 
     async def _get_sandbox_grouping_strategy(self) -> SandboxGroupingStrategy:
         """Get the effective sandbox grouping strategy.
@@ -648,6 +734,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             user = user.model_copy(update={'agent_settings': agent_settings})
 
+        # Org Model Router "Run on first message": the launch carries the
+        # router only when the org activated one (SaasSettingsStore inlines
+        # it). An explicit per-launch LLM pick is a stronger signal than the
+        # org policy, so the instruction is skipped then.
+        if (
+            isinstance(agent_settings, OpenHandsAgentSettings)
+            and agent_settings.enable_classify_and_switch_llm_tool
+            and not request.llm_profile
+        ):
+            await self._maybe_append_route_at_start_instruction(request)
+
         task = AppConversationStartTask(
             created_by_user_id=user_id,
             request=request,
@@ -750,6 +847,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_metadata=request.observability_metadata,
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
+                    additional_repositories=task._additional_repositories,
                 )
             )
 
@@ -859,6 +957,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 git_provider=git_provider,
                 trigger=request.trigger,
                 pr_number=request.pr_number,
+                additional_repositories=task._additional_repositories,
                 parent_conversation_id=request.parent_conversation_id,
                 tags=conversation_tags,
             )
@@ -1026,6 +1125,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         execution_status = (
             conversation_info.execution_status if conversation_info else None
         )
+        # The agent-server lifts these off the live ACP session; nothing is
+        # persisted, so a stopped sandbox reports no models.
+        acp_available_models = (
+            list(conversation_info.available_models) if conversation_info else []
+        )
+        acp_supports_runtime_model_switch = bool(
+            conversation_info and conversation_info.supports_runtime_model_switch
+        )
         conversation_url = None
         session_api_key = None
         if sandbox and sandbox.exposed_urls:
@@ -1048,6 +1155,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             conversation_url=conversation_url,
             conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
             session_api_key=session_api_key,
+            acp_available_models=acp_available_models,
+            acp_supports_runtime_model_switch=acp_supports_runtime_model_switch,
         )
 
     def _get_sandbox_id_to_conversation_ids(
@@ -1487,6 +1596,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Inherit git parameters from parent if not provided
         if not request.selected_repository:
             request.selected_repository = parent_info.selected_repository
+            if request.additional_repositories is None:
+                request.additional_repositories = [
+                    AdditionalRepositoryRequest(
+                        repository=repo.repository,
+                        branch=repo.branch,
+                        git_provider=repo.git_provider,
+                    )
+                    for repo in parent_info.additional_repositories
+                    if repo.git_provider is not None
+                ] or None
         if not request.selected_branch:
             request.selected_branch = parent_info.selected_branch
         if not request.git_provider:
@@ -1707,6 +1826,37 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             url=lookup_url,
             headers={'X-Access-Token': access_token},
             description=description,
+        )
+
+    async def _maybe_append_route_at_start_instruction(
+        self, request: AppConversationStartRequest
+    ) -> None:
+        """Append the route-on-first-message instruction when the org asks for it.
+
+        The toggle lives on the org's Model Router envelope
+        (``org.meta_profiles.run_at_conversation_start``), set from the OHE
+        Model Router settings page.
+        """
+        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
+        if get_effective_org_id is None:
+            return
+        org_id = await get_effective_org_id()
+        if org_id is None:
+            return
+        # Imported lazily: ``storage`` transitively imports this service.
+        from storage.agent_profile_resolution import load_meta_profiles
+        from storage.org_store import OrgStore
+
+        org = await OrgStore.get_org_by_id_async(org_id)
+        if org is None or not load_meta_profiles(org).run_at_conversation_start:
+            return
+        request.system_message_suffix = '\n\n'.join(
+            part
+            for part in (
+                request.system_message_suffix,
+                ROUTE_AT_CONVERSATION_START_INSTRUCTION,
+            )
+            if part
         )
 
     async def _setup_conversation_secrets(
@@ -2472,6 +2622,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
         browser_available: bool = True,
+        additional_repositories: Sequence[AdditionalRepository] = (),
     ) -> StartConversationRequest:
         """Build a scoped request for runtime finalization."""
         llm_settings = (
@@ -2541,6 +2692,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 request_observability_metadata=request_observability_metadata,
                 request_observability_tags=request_observability_tags,
                 request_observability_span_name=request_observability_span_name,
+                additional_repositories=additional_repositories,
             )
             if remote_workspace:
                 acp_request = await self._load_skills_onto_request(
@@ -2551,11 +2703,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     get_project_dir(working_dir, selected_repository),
                     effective_disabled_skills(user, disabled_skills),
                     registered_marketplaces,
+                    additional_repositories,
                 )
             return acp_request
 
         project_dir = get_project_dir(working_dir, selected_repository)
-        workspace = LocalWorkspace(working_dir=project_dir)
+        workspace = LocalWorkspace(
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
+        )
 
         # --- secrets --------------------------------------------------------
         # Start with secrets from git providers and database
@@ -2591,14 +2748,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             secrets, azure_devops_access_token
         )
 
-        system_message_suffix = self._maybe_append_shallow_clone_context(
-            user, selected_repository, system_message_suffix
-        )
-        system_message_suffix = await self._maybe_append_azure_devops_context(
+        system_message_suffix = await self._append_git_context(
+            user,
             git_provider,
             selected_repository,
+            selected_branch,
             azure_devops_access_token,
             system_message_suffix,
+            working_dir,
+            additional_repositories,
         )
 
         # --- LLM + MCP -----------------------------------------------------
@@ -2735,7 +2893,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- hooks (require remote workspace; must precede request build) -----
         hook_config: HookConfig | None = None
-        if remote_workspace:
+        if remote_workspace and not loads_repository_hooks(additional_repositories):
+            _logger.info(
+                'Not loading repository hooks: with additional repositories they '
+                'would run from the parent folder, not the primary repository'
+            )
+        elif remote_workspace:
             try:
                 _logger.debug(
                     f'Attempting to load hooks from workspace: '
@@ -2848,6 +3011,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 project_dir,
                 effective_disabled_skills(user, disabled_skills),
                 registered_marketplaces,
+                additional_repositories,
             )
 
         return request
@@ -2871,6 +3035,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         project_dir: str,
         disabled_skills: list[str] | None,
         registered_marketplaces: list[MarketplaceRegistration] | None = None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
     ) -> StartConversationRequest:
         """Load workspace skills into the launch source."""
         try:
@@ -2884,6 +3049,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 project_dir,
                 disabled_skills=disabled_skills,
                 registered_marketplaces=registered_marketplaces,
+                additional_repositories=additional_repositories,
             )
             payload = (
                 updated
@@ -2915,10 +3081,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_metadata: Mapping[str, Any] | None = None,
         request_observability_tags: Sequence[str] | None = None,
         request_observability_span_name: str | None = None,
+        additional_repositories: Sequence[AdditionalRepository] = (),
     ) -> StartConversationRequest:
         """Build a scoped ACP settings request for runtime finalization."""
         project_dir = get_project_dir(working_dir, selected_repository)
-        workspace = LocalWorkspace(working_dir=project_dir)
+        workspace = LocalWorkspace(
+            working_dir=agent_working_dir(
+                working_dir, project_dir, additional_repositories
+            )
+        )
 
         # --- secrets --------------------------------------------------------
         # ACP secrets must be StaticSecrets — LookupSecrets with JWT headers
@@ -2969,14 +3140,15 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             secrets, azure_devops_access_token
         )
 
-        system_message_suffix = self._maybe_append_shallow_clone_context(
-            user, selected_repository, system_message_suffix
-        )
-        system_message_suffix = await self._maybe_append_azure_devops_context(
+        system_message_suffix = await self._append_git_context(
+            user,
             git_provider,
             selected_repository,
+            selected_branch,
             azure_devops_access_token,
             system_message_suffix,
+            working_dir,
+            additional_repositories,
         )
 
         # --- build the ACP agent ------------------------------------------
@@ -3255,18 +3427,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if 'selected_repository' in request.model_fields_set:
             repo = request.selected_repository
             if repo is not None:
-                # Validate repository format: owner/repo, or more segments for
-                # Azure DevOps (org/project/repo) and GitLab subgroups.
-                segments = repo.split('/')
-                if len(segments) < 2 or not all(segments):
-                    raise ValueError(
-                        f"Invalid repository format: '{repo}'. Expected 'owner/repo' "
-                        "or more path segments (e.g. 'org/project/repo')."
-                    )
-
-                # Sanitize: check for dangerous characters
-                if any(c in repo for c in [';', '&', '|', '$', '`', '\n', '\r']):
-                    raise ValueError(f"Invalid characters in repository name: '{repo}'")
+                ensure_valid_repository_name(repo)
 
                 # If setting a repository, branch should also be provided
                 # (either in this request or already exists in conversation)

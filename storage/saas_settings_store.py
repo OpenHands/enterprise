@@ -14,6 +14,11 @@ from sqlalchemy.orm import joinedload
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     has_real_api_key,
+    resolve_profile_llm,
+)
+from openhands.app_server.settings.meta_profiles import (
+    ORG_OWNED_ROUTER_SETTINGS_KEYS,
+    referenced_llm_profile_names,
 )
 from openhands.app_server.settings.settings_models import (
     Settings,
@@ -39,6 +44,7 @@ from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
     is_bundled_proxy_base_url,
+    is_model_router_enabled,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -55,7 +61,9 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
+    load_llm_profiles,
     load_member_agent_profiles,
+    load_meta_profiles,
     locate_agent_profile,
     org_launch_stores,
 )
@@ -374,6 +382,81 @@ class SaasSettingsStore(SettingsStore):
             profile.secret_refs,
         )
 
+    @staticmethod
+    def _apply_org_model_router(
+        org: Org,
+        agent_settings: dict[str, Any],
+        llm_profiles: LLMProfiles | None,
+        effective_llm_api_key: SecretStr | None,
+    ) -> None:
+        """Inline the org's active Model Router into launch ``agent_settings``.
+
+        A cloud sandbox has no meta-profile store, so the SDK can only route
+        from the inline ``meta_profile`` / ``meta_profile_llms`` fields of
+        ``OpenHandsAgentSettings``. The router is an org-wide launch policy
+        (OHE-3508): it is applied after Agent Profile resolution, and the
+        routing keys are owned here, so with no active router (or the feature
+        off) routing is forced off and a stale profile ``meta_profile_ref``
+        cannot enable a tool that has nothing to route with.
+
+        Every LLM profile the router can pick is copied with runnable
+        credentials, resolved exactly like the launch LLM (managed-key
+        overlay, canonical model names, provider connection). Direct-prompt
+        routers may name any saved profile, so all of them are copied.
+
+        Fail-safe by design: any resolution error disables routing for this
+        launch only and logs, mirroring ``_resolve_active_agent_profile``.
+        """
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            agent_settings.pop(router_key, None)
+        agent_settings['enable_classify_and_switch_llm_tool'] = False
+        if agent_settings.get('agent_kind') == 'acp' or not is_model_router_enabled():
+            return
+        active = load_meta_profiles(org).active_profile()
+        if active is None:
+            return
+        name, config = active
+        try:
+            profiles = llm_profiles or load_llm_profiles(org)
+            llm_names = referenced_llm_profile_names(config)
+            if config.prompt_template is not None:
+                llm_names.update(profiles.profiles)
+            resolved_llms: dict[str, Any] = {}
+            for llm_name in sorted(llm_names):
+                profile_llm = profiles.get(llm_name)
+                if profile_llm is None:
+                    raise ValueError(
+                        f'Model Router {name!r} references missing LLM profile '
+                        f'{llm_name!r}'
+                    )
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=effective_llm_api_key,
+                )
+                payload = profile_llm.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
+                resolved_llms[llm_name] = apply_provider_connection(
+                    org,
+                    canonicalize_bundled_proxy_llm(
+                        canonicalize_openhands_llm_payload(payload)
+                    ),
+                )
+        except Exception:
+            logger.warning(
+                'Failed to inline the active Model Router %r for org %s; '
+                'routing is off for this launch',
+                name,
+                org.id,
+                exc_info=True,
+            )
+            return
+        agent_settings['enable_classify_and_switch_llm_tool'] = True
+        agent_settings['active_meta_profile'] = name
+        agent_settings['meta_profile'] = config.model_dump(mode='json')
+        agent_settings['meta_profile_llms'] = resolved_llms
+
     async def load(
         self,
         *,
@@ -444,6 +527,12 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         for private_key in MEMBER_PRIVATE_AGENT_KEYS:
             org_agent_settings_dump.pop(private_key, None)
+        # The Model Router fields belong to the org's active router (see
+        # ``_apply_org_model_router``): neither stored org settings nor a
+        # member's diff may switch routing on or point it elsewhere.
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            org_agent_settings_dump.pop(router_key, None)
+            member_agent_settings_diff.pop(router_key, None)
         merged_agent_settings = deep_merge(
             org_agent_settings_dump,
             member_agent_settings_diff,
@@ -658,6 +747,14 @@ class SaasSettingsStore(SettingsStore):
                 located = locate_agent_profile(org, org_member, resolved_id)
                 if located is not None:
                     kwargs['active_agent_profile_scope'] = located[1]
+            # The org's active Model Router applies to every launch, whether it
+            # runs the composed settings or a resolved Agent Profile.
+            self._apply_org_model_router(
+                org,
+                kwargs['agent_settings'],
+                live_llm_profiles,
+                effective_llm_api_key,
+            )
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.

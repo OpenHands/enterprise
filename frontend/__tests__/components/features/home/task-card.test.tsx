@@ -1,10 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { createRoutesStub } from "react-router";
 import V1ConversationService from "#/api/conversation-service/v1-conversation-service.api";
-import GitService from "#/api/git-service/git-service.api";
 import { TaskCard } from "#/components/features/home/tasks/task-card";
 import { GitRepository } from "#/types/git";
 import { SuggestedTask } from "#/utils/types";
@@ -109,17 +108,6 @@ describe("TaskCard", () => {
   });
 
   describe("creating suggested task conversation", () => {
-    beforeEach(() => {
-      const retrieveUserGitRepositoriesSpy = vi.spyOn(
-        GitService,
-        "retrieveUserGitRepositories",
-      );
-      retrieveUserGitRepositoriesSpy.mockResolvedValue({
-        items: MOCK_RESPOSITORIES,
-        next_page_id: null,
-      });
-    });
-
     it("should call create conversation with suggest task trigger and selected suggested task", async () => {
       const createConversationSpy = vi
         .spyOn(V1ConversationService, "createConversation")
