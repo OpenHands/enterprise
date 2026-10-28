@@ -15,7 +15,11 @@ from openhands.app_server.settings.llm_profiles import (
     has_real_api_key,
     resolve_profile_llm,
 )
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    agent_llm,
+    normalize_member_agent_settings_diff,
+)
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
@@ -24,6 +28,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import resolve_agent_profile
+from openhands.sdk.tool.defaults import drop_retired_tool_switches
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
@@ -438,7 +443,9 @@ class SaasSettingsStore(SettingsStore):
             )
             return None
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        member_agent_settings_diff = dict(org_member.agent_settings_diff)
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
         member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
 
@@ -661,6 +668,15 @@ class SaasSettingsStore(SettingsStore):
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
 
+        # ACP agents make their own model calls, and the SDK rejects an ``llm``
+        # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
+        agent_settings_payload = kwargs.get('agent_settings')
+        if (
+            isinstance(agent_settings_payload, dict)
+            and agent_settings_payload.get('agent_kind') == 'acp'
+        ):
+            agent_settings_payload.pop('llm', None)
+
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
         if resolution_requested:
@@ -785,10 +801,12 @@ class SaasSettingsStore(SettingsStore):
                 )
                 return None
 
-            llm_model = item.agent_settings.llm.model
-            llm_base_url = item.agent_settings.llm.base_url
+            # ACP agents make their own model calls: no managed key to provision.
+            item_llm = agent_llm(item.agent_settings)
+            llm_model = item_llm.model if item_llm else None
+            llm_base_url = item_llm.base_url if item_llm else None
             llm_provider_connection_id = getattr(
-                item.agent_settings.llm, 'provider_connection_id', None
+                item_llm, 'provider_connection_id', None
             )
             managed_config = managed_llm_key_config_from_model(
                 llm_model, llm_base_url, llm_provider_connection_id
@@ -863,7 +881,7 @@ class SaasSettingsStore(SettingsStore):
                 elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 
-            current_member_llm_api_key = item.agent_settings.llm.api_key
+            current_member_llm_api_key = item_llm.api_key if item_llm else None
             org_default_llm_api_key = org.llm_api_key
             org_default_llm_api_key_raw = (
                 org_default_llm_api_key.get_secret_value()
@@ -891,7 +909,12 @@ class SaasSettingsStore(SettingsStore):
             )
 
             member_mcp_config = org_member.effective_mcp_config
-            member_agent_settings_diff = dict(org_member.agent_settings_diff)
+            # The dump merged in below holds sub-agents in ``tools`` and carries
+            # the current schema version, under which the SDK rejects the
+            # retired switches an older row may still have.
+            member_agent_settings_diff = drop_retired_tool_switches(
+                org_member.agent_settings_diff
+            )
             for private_key in MEMBER_PRIVATE_AGENT_KEYS:
                 member_agent_settings_diff.pop(private_key, None)
             # Single assignment so SQLAlchemy tracks the JSON column change.
@@ -1021,6 +1044,9 @@ class SaasSettingsStore(SettingsStore):
         First checks if an existing key exists for the user and verifies it
         is valid in LiteLLM. If valid, reuses it. Otherwise, generates a new key.
         """
+        llm = agent_llm(item.agent_settings)
+        if llm is None:  # ACP agents make their own model calls
+            return
         if not await is_litellm_enabled():
             # LiteLLM is disabled deployment-wide: there is no gateway to
             # generate, verify, or rotate a key against. A managed
@@ -1047,11 +1073,7 @@ class SaasSettingsStore(SettingsStore):
         # ``has_real_api_key`` -- the same "is this actually set" check
         # ``llm_api_key_is_set``/``llm_profiles`` already use -- instead of a
         # bare truthiness check.
-        item_api_key = (
-            item.agent_settings.llm.api_key
-            if has_real_api_key(item.agent_settings.llm.api_key)
-            else None
-        )
+        item_api_key = llm.api_key if has_real_api_key(llm.api_key) else None
         llm_api_key = item_api_key or (
             fallback_api_key if has_real_api_key(fallback_api_key) else None
         )
@@ -1080,7 +1102,7 @@ class SaasSettingsStore(SettingsStore):
                 key_alias,
                 {'type': 'openhands'} if openhands_type else None,
             )
-            item.agent_settings.llm.api_key = SecretStr(generated_key)
+            llm.api_key = SecretStr(generated_key)
             logger.info(
                 'saas_settings_store:store:generated_openhands_key',
                 extra={
@@ -1091,7 +1113,7 @@ class SaasSettingsStore(SettingsStore):
             )
             return
 
-        item.agent_settings.llm.api_key = llm_api_key
+        llm.api_key = llm_api_key
         existing_key_valid = await LiteLlmManager.verify_existing_key(
             llm_api_key.get_secret_value(),  # type: ignore[union-attr]
             self.user_id,
@@ -1122,7 +1144,7 @@ class SaasSettingsStore(SettingsStore):
                 {'type': 'openhands'} if openhands_type else None,
             )
 
-            item.agent_settings.llm.api_key = SecretStr(generated_key)
+            llm.api_key = SecretStr(generated_key)
             logger.info(
                 'saas_settings_store:store:generated_openhands_key',
                 extra={
@@ -1144,7 +1166,9 @@ class SaasSettingsStore(SettingsStore):
         if settings is None:
             return None
 
-        llm = settings.agent_settings.llm
+        llm = agent_llm(settings.agent_settings)
+        if llm is None:  # ACP agents make their own model calls
+            return None
         if (
             managed_llm_key_config_from_model(
                 llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
@@ -1233,7 +1257,9 @@ class SaasSettingsStore(SettingsStore):
         if settings is None:
             return False
 
-        llm = settings.agent_settings.llm
+        llm = agent_llm(settings.agent_settings)
+        if llm is None:  # ACP agents make their own model calls
+            return False
         if (
             managed_llm_key_config_from_model(
                 llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
@@ -1309,7 +1335,9 @@ class SaasSettingsStore(SettingsStore):
         if settings is None:
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-        llm = settings.agent_settings.llm
+        llm = agent_llm(settings.agent_settings)
+        if llm is None:  # ACP agents make their own model calls
+            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
         config = managed_llm_key_config_from_model(
             llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
         )

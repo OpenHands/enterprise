@@ -75,9 +75,9 @@ def test_kind_switch_resets_new_kind_to_defaults():
 
     s.update(_set_acp())
 
-    # ACP base — ``llm`` defaults to the ACP sentinel, not the OH model.
+    # ACP base — ACP settings have no ``llm``, so the OH model is not carried.
     assert s.agent_settings.agent_kind == 'acp'
-    assert s.agent_settings.llm.model != 'anthropic/claude-sonnet-4-5'
+    assert getattr(s.agent_settings, 'llm', None) is None
 
 
 def test_kind_switch_with_inline_field_override():

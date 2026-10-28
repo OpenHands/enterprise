@@ -101,6 +101,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
@@ -139,10 +140,11 @@ from openhands.sdk.marketplace.registration import (
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import ACPAgentSettings
+from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.subagent import get_registered_agent_definitions
-from openhands.sdk.tool import ClientToolSpec
+from openhands.sdk.tool import SUB_AGENT_TOOL_NAME, ClientToolSpec
 from openhands.sdk.tool.builtins import SwitchLLMTool
+from openhands.sdk.tool.defaults import selects_tool
 from openhands.sdk.utils.redact import (
     redact_api_key_literals,
     redact_text_secrets,
@@ -879,7 +881,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if sandbox_grouping_strategy == SandboxGroupingStrategy.NO_GROUPING:
                 return None
 
-            # Collect all running sandboxes for this user
+            credential_org_id = await get_credential_org_id(self.user_context)
+            # SaaS requires a verified org; OSS contexts can be unscoped.
+            if credential_org_id is None and self.app_mode == 'saas':
+                return None
+
+            # Collect running sandboxes for this user in the caller's org.
             running_sandboxes = []
             page_id = None
             while True:
@@ -891,6 +898,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     if (
                         sandbox.status == SandboxStatus.RUNNING
                         and sandbox.created_by_user_id == user_id
+                        and sandbox.credential_org_id == credential_org_id
                     ):
                         running_sandboxes.append(sandbox)
 
@@ -1023,6 +1031,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if sandbox_info is None:
                 raise SandboxError(f'Sandbox not found: {task.request.sandbox_id}')
+            credential_org_id = await get_credential_org_id(self.user_context)
+            if sandbox_info.credential_org_id != credential_org_id or (
+                credential_org_id is None and self.app_mode == 'saas'
+            ):
+                raise SandboxError(
+                    'Sandbox is not available in the requested organization'
+                )
             sandbox = sandbox_info
 
         # Update the listener with sandbox info
@@ -1359,23 +1374,22 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Returns:
             Configured LLM instance
         """
-        model: str = (
-            llm_model
-            or user.agent_settings.llm.model
-            or LLM.model_fields['model'].default
-        )
+        # ACP conversations return before the LLM is configured.
+        assert isinstance(user.agent_settings, OpenHandsAgentSettings)
+        user_llm = user.agent_settings.llm
+        model: str = llm_model or user_llm.model or LLM.model_fields['model'].default
 
         base_url = resolve_provider_llm_base_url(
             model,
-            user.agent_settings.llm.base_url,
+            user_llm.base_url,
             provider_base_url=self.openhands_provider_base_url,
         )
 
-        return user.agent_settings.llm.model_copy(
+        return user_llm.model_copy(
             update={
                 'model': model,
                 'base_url': base_url,
-                'api_key': user.agent_settings.llm.api_key,
+                'api_key': user_llm.api_key,
                 'usage_id': 'agent',
                 # Force streaming on (the SDK LLM defaults stream=False).
                 'stream': True,
@@ -2254,11 +2268,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             tools = get_planning_tools(plan_path=plan_path)
         else:
             register_builtins_agents(enable_browser=True)
+            # Sub-agents are on when the saved tools include the task tool set,
+            # as the SDK's retired ``enable_sub_agents`` property decided.
+            enable_sub_agents = user.agent_settings.tools is not None and selects_tool(
+                user.agent_settings.tools, SUB_AGENT_TOOL_NAME
+            )
             tools = get_default_tools(
                 enable_browser=True,
-                enable_sub_agents=user.agent_settings.enable_sub_agents,
+                enable_sub_agents=enable_sub_agents,
             )
-            if user.agent_settings.enable_sub_agents:
+            if enable_sub_agents:
                 agent_definitions = list(get_registered_agent_definitions())
 
         # --- build AgentSettings and create agent ---------------------------
@@ -2601,14 +2620,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Isolate the CLI data dir onto the durable /workspace tree so the SDK
         # self-resumes the provider session (session/load from base_state.json)
         # across pause/resume — matching the regular-agent lifecycle (#1274).
-        # Strip llm.api_key/base_url to prevent proxy settings from leaking
-        # into the subprocess env (ACP CLIs handle their own LLM calls).
-        settings_update: dict[str, Any] = {
-            'acp_isolate_data_dir': True,
-            'llm': acp_settings.llm.model_copy(
-                update={'api_key': None, 'base_url': None}
-            ),
-        }
+        # ACP settings carry no LLM: ACP CLIs handle their own LLM calls.
+        settings_update: dict[str, Any] = {'acp_isolate_data_dir': True}
         # Forward the resolved profile's / user's custom MCP servers to the ACP
         # subprocess (#15044 §7). Only custom servers — the system OpenHands MCP
         # server (Tavily proxy) is runtime-internal and unreachable by an external

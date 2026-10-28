@@ -52,6 +52,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     E2B_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
@@ -297,6 +298,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxInfo(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -384,6 +386,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     # ------------------------------------------------------------------
@@ -408,6 +411,7 @@ class E2BSandboxService(ManagedSandboxService):
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
         # would reach every user's sandboxes as ADMIN.
         user_id = await require_user_id(self.user_context)
+        credential_org_id = await get_credential_org_id(self.user_context)
 
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
@@ -467,6 +471,7 @@ class E2BSandboxService(ManagedSandboxService):
         stored_sandbox = self._new_stored_sandbox(
             id=e2b_sandbox_id,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
             session_api_key=SecretStr(session_api_key),
@@ -491,6 +496,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxInfo(
             id=e2b_sandbox_id,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             status=SandboxStatus.RUNNING,
             session_api_key=session_api_key,
