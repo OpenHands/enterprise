@@ -760,6 +760,70 @@ class TestSaasSQLAppConversationInfoServiceWebhookFallback:
     """Test suite for webhook callback fallback using info.created_by_user_id."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('context_kind', ['admin', 'sandbox'])
+    @pytest.mark.parametrize('binding', ['bound', 'unbound', 'missing', 'other-owner'])
+    async def test_webhook_creation_uses_sandbox_launch_org(
+        self, async_session_with_users: AsyncSession, context_kind, binding
+    ):
+        """First webhook save after an org switch keeps a known launch org."""
+        from openhands.app_server.sandbox.sandbox_store import StoredSandbox
+        from openhands.app_server.user.specifiy_user_context import ADMIN
+        from storage.stored_conversation_metadata_saas import (
+            StoredConversationMetadataSaas,
+        )
+
+        session = async_session_with_users
+        sandbox_id = 'webhook-launch-org'
+        if binding != 'missing':
+            session.add(
+                StoredSandbox(
+                    id=sandbox_id,
+                    sandbox_spec_id='test',
+                    created_by_user_id=str(
+                        USER2_ID if binding == 'other-owner' else USER1_ID
+                    ),
+                    credential_org_id=None if binding == 'unbound' else ORG1_ID,
+                )
+            )
+        owner = await session.get(User, USER1_ID)
+        owner.current_org_id = ORG2_ID
+        await session.commit()
+        context = (
+            ADMIN
+            if context_kind == 'admin'
+            else SandboxUserContext(user_id=str(USER1_ID), sandbox_id=sandbox_id)
+        )
+        webhook_service = SaasSQLAppConversationInfoService(
+            db_session=session, user_context=context
+        )
+        info = AppConversationInfo(
+            id=uuid4(),
+            created_by_user_id=str(USER1_ID),
+            sandbox_id=sandbox_id,
+            title='First webhook after owner switches org',
+        )
+        await webhook_service.save_app_conversation_info(info)
+        stored = await session.get(StoredConversationMetadataSaas, str(info.id))
+        # Only the matching owner's persisted binding is evidence of origin.
+        expected_org = ORG1_ID if binding == 'bound' else ORG2_ID
+        assert stored.org_id == expected_org
+
+        await webhook_service.save_app_conversation_info(
+            info.model_copy(update={'title': 'Webhook update'})
+        )
+        await session.refresh(stored)
+        assert stored.org_id == expected_org
+        # Exercise the listing path, not just the saved row.
+        owner_service = SaasSQLAppConversationInfoService(
+            db_session=session,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        owner.current_org_id = expected_org
+        await session.commit()
+        page = await owner_service.search_app_conversation_info()
+        assert [item.id for item in page.items] == [info.id]
+
+    @pytest.mark.asyncio
     async def test_save_with_admin_context_uses_created_by_user_id_fallback(
         self,
         async_session_with_users: AsyncSession,

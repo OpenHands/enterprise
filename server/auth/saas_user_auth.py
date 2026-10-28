@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -19,6 +20,7 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
@@ -50,6 +52,8 @@ from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
@@ -1270,6 +1274,69 @@ class SaasUserAuth(UserAuth):
                 # Will raise if rate limit is reached.
                 if rate_limiter is not None:
                     await rate_limiter.hit('auth_uid', user_id)
+        return instance
+
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Authorize each lookup against the persisted launch principal and org.
+
+        Do not use get_user_by_id here: it can provision a missing user. Legacy
+        sandboxes with no trustworthy org binding must be recreated.
+        """
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
+            )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
+        try:
+            user_id = UUID(sandbox.created_by_user_id)
+        except ValueError:
+            deny('invalid_owner')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User, OrgMember, Org)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                deny('unknown_owner')
+            user, member, org = row
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
+        instance = cls(
+            user_id=str(user_id),
+            refresh_token=SecretStr(''),
+            auth_type=AuthType.BEARER,
+        )
+        instance.set_effective_org_id_override(sandbox.credential_org_id)
+        # Validate now, before any credential (including provider tokens) is read.
+        await instance.get_effective_org_id()
         return instance
 
     @classmethod

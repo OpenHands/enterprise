@@ -3435,3 +3435,24 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
             max_num_sandboxes=7,
         )
         assert injector.max_num_sandboxes == 7
+
+
+@pytest.mark.asyncio
+async def test_start_persists_credential_organization(
+    remote_sandbox_service, async_session_maker
+):
+    org_id = uuid4()
+    service = remote_sandbox_service
+    service.user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+    response = MagicMock()
+    response.json.return_value = create_runtime_data(status='running')
+    service.httpx_client.request.return_value = response
+    service.pause_old_sandboxes = AsyncMock(return_value=[])
+    async with async_session_maker() as session:
+        service.db_session = session
+        sandbox = await service.start_sandbox(sandbox_id='org-binding')
+        await session.commit()
+    async with async_session_maker() as session:
+        stored = await session.get(StoredSandbox, sandbox.id)
+        assert stored.credential_org_id == org_id
+        assert sandbox.credential_org_id == org_id

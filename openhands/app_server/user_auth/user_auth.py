@@ -19,6 +19,7 @@ from openhands.app_server.integrations.provider import (
     ProviderHandler,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import Settings
@@ -157,6 +158,13 @@ class UserAuth(ABC):
     async def get_for_user(cls, user_id: str) -> UserAuth:
         """Get an instance of UserAuth for the user given"""
 
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Resolve sandbox credentials; Enterprise overrides this to enforce org binding."""
+        if not sandbox.created_by_user_id:
+            raise ValueError('Sandbox has no associated user')
+        return await cls.get_for_user(sandbox.created_by_user_id)
+
 
 async def get_user_auth(request: Request) -> UserAuth:
     user_auth: UserAuth | None = getattr(request.state, 'user_auth', None)
@@ -176,3 +184,8 @@ async def get_for_user(user_id: str) -> UserAuth:
     impl = get_impl(UserAuth, impl_name)
     user_auth = await impl.get_for_user(user_id)
     return user_auth
+
+
+async def get_for_sandbox(sandbox: SandboxInfo) -> UserAuth:
+    impl = get_impl(UserAuth, server_config.user_auth_class)
+    return await impl.get_for_sandbox(sandbox)

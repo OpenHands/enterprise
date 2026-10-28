@@ -125,6 +125,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
 )
+from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
@@ -1182,7 +1183,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if sandbox_grouping_strategy == SandboxGroupingStrategy.NO_GROUPING:
                 return None
 
-            # Collect all running sandboxes for this user
+            credential_org_id = await get_credential_org_id(self.user_context)
+            # SaaS requires a verified org; OSS contexts can be unscoped.
+            if credential_org_id is None and self.app_mode == 'saas':
+                return None
+
+            # Collect running sandboxes for this user in the caller's org.
             running_sandboxes = []
             page_id = None
             while True:
@@ -1194,6 +1200,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     if (
                         sandbox.status == SandboxStatus.RUNNING
                         and sandbox.created_by_user_id == user_id
+                        and sandbox.credential_org_id == credential_org_id
                     ):
                         running_sandboxes.append(sandbox)
 
@@ -1362,6 +1369,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if sandbox_info is None:
                 raise SandboxError(f'Sandbox not found: {task.request.sandbox_id}')
+            credential_org_id = await get_credential_org_id(self.user_context)
+            if sandbox_info.credential_org_id != credential_org_id or (
+                credential_org_id is None and self.app_mode == 'saas'
+            ):
+                raise SandboxError(
+                    'Sandbox is not available in the requested organization'
+                )
             sandbox = sandbox_info
 
         # Update the listener with sandbox info
