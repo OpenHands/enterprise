@@ -1053,6 +1053,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         execution_status = (
             conversation_info.execution_status if conversation_info else None
         )
+        # The agent-server lifts these off the live ACP session; nothing is
+        # persisted, so a stopped sandbox reports no models.
+        acp_available_models = (
+            list(conversation_info.available_models) if conversation_info else []
+        )
+        acp_supports_runtime_model_switch = bool(
+            conversation_info and conversation_info.supports_runtime_model_switch
+        )
         conversation_url = None
         session_api_key = None
         if sandbox and sandbox.exposed_urls:
@@ -1075,6 +1083,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             conversation_url=conversation_url,
             conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
             session_api_key=session_api_key,
+            acp_available_models=acp_available_models,
+            acp_supports_runtime_model_switch=acp_supports_runtime_model_switch,
         )
 
     def _get_sandbox_id_to_conversation_ids(

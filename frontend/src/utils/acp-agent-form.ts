@@ -3,8 +3,6 @@ import { tokenizeCommand } from "#/utils/shell-tokenize";
 
 /** Preset key for a hand-written ACP command that matches no provider. */
 export const CUSTOM_PRESET = "custom";
-/** Dropdown key for a model that is not among the provider's suggestions. */
-export const CUSTOM_MODEL_KEY = "__custom__";
 
 export function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -24,13 +22,4 @@ export function detectPreset(
     }
   }
   return CUSTOM_PRESET;
-}
-
-export function isKnownModel(
-  provider: ACPProviderConfig | undefined,
-  model: string,
-): boolean {
-  return (
-    provider?.available_models?.some(({ id }) => id === model.trim()) ?? false
-  );
 }
