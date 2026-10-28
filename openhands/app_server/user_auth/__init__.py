@@ -70,7 +70,12 @@ async def reject_service_account(request: Request) -> None:
 
     Put it on routes that change the caller's own account (API keys,
     personal secrets, settings, git links). A service account's run key must
-    not be able to mint other keys or rewrite its own configuration.
+    not be able to create keys on request or rewrite its own configuration.
+
+    Starting a run is allowed, and it still creates the account's
+    ``OPENHANDS_API_KEY`` and ``MCP_API_KEY`` for the sandbox. These keys do
+    not expire and the account cannot delete them. Disabling or deleting the
+    service account revokes them, as it does every key of the account.
     """
     user_auth = await get_user_auth(request)
     if user_auth.is_service_account():
