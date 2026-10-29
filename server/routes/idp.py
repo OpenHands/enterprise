@@ -117,6 +117,13 @@ from server.constants import (
     ROLE_MEMBER,
     ROLE_OWNER,
 )
+from server.routes.org_invitation_models import (
+    EmailMismatchError,
+    InvitationExpiredError,
+    InvitationInvalidError,
+    UserAlreadyMemberError,
+)
+from server.services.org_invitation_service import OrgInvitationService
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
     RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
@@ -205,12 +212,19 @@ class SignupLinkPayload:
     # together with ``org_id``) or ``_SIGNUP_LINK_ROLE_SUPERADMIN`` (always
     # paired with ``org_id is None``).
     role: str
+    # Set when the link was minted from a pending organization invitation
+    # (``signup_link_url_for_invitation``) rather than by a super admin: the
+    # invitation's own token, accepted once the recipient has set their
+    # password (``idp_invite_accept``). Such links never carry an ``org_id``
+    # -- the invitation holds the org and role.
+    invitation_token: str | None = None
 
 
 def _create_signup_link_token(
     email: str,
     org_id: uuid.UUID | None = None,
     role: str = ROLE_MEMBER,
+    invitation_token: str | None = None,
 ) -> str:
     """Sign a JWT for an admin-issued sign-up link.
 
@@ -219,6 +233,8 @@ def _create_signup_link_token(
     or ``_SIGNUP_LINK_ROLE_SUPERADMIN`` to grant the instance-level
     super-admin role instead), and a ``purpose`` claim, plus the standard
     ``iat``/``exp`` claims added by ``JwtService.create_jws_token``.
+    ``invitation_token`` ties a link minted for an organization invitation
+    to that invitation (see ``SignupLinkPayload``).
     Expires after ``SIGNUP_LINK_EXPIRY_HOURS`` — enforced by
     ``JwtService.verify_jws_token`` (via the underlying ``jwt.decode``),
     not by any separate check here.
@@ -232,6 +248,8 @@ def _create_signup_link_token(
     }
     if org_id is not None:
         payload['org_id'] = str(org_id)
+    if invitation_token is not None:
+        payload['invitation_token'] = invitation_token
     return get_jwt_service().create_jws_token(
         payload, expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS)
     )
@@ -274,7 +292,16 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     if role not in _SIGNUP_LINK_ROLES:
         raise ValueError('Invalid sign-up link')
 
-    return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
+    invitation_token = payload.get('invitation_token')
+    if invitation_token is not None and not isinstance(invitation_token, str):
+        raise ValueError('Invalid sign-up link')
+
+    return SignupLinkPayload(
+        email=email.strip().lower(),
+        org_id=org_id,
+        role=role,
+        invitation_token=invitation_token,
+    )
 
 
 async def _get_integrated_idp_provider(
@@ -808,6 +835,38 @@ def _invite_form_redirect(web_url: str, *, token: str, error: str) -> RedirectRe
     return RedirectResponse(target, status_code=302)
 
 
+async def signup_link_url_for_invitation(
+    request: Request, email: str, invitation_token: str
+) -> str | None:
+    """URL of the set-password form for an organization invitation, or ``None``.
+
+    Bridges the organization invitation flow
+    (``server.routes.org_invitations``) into this IDP's onboarding: account
+    creation here is admin-only (see the module docstring), so an invitee
+    who has no account yet would otherwise be sent to a login form they
+    cannot get past. Mints a sign-up link token for the invitation's
+    ``email`` that also carries the invitation's own token, so
+    ``idp_invite_accept`` accepts the invitation -- org membership with the
+    invited role -- once the password is set.
+
+    Returns ``None``, meaning the regular login flow applies, when this IDP
+    is not available or ``email`` already belongs to an account: an existing
+    user signs in with their password and the frontend accepts the
+    invitation, and an invitation link must never double as a password
+    reset the way a super-admin-issued link does.
+    """
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
+        return None
+    email_str = email.strip().lower()
+    if await _find_existing_user(provider, email_str) is not None:
+        return None
+    token = _create_signup_link_token(email_str, invitation_token=invitation_token)
+    return (
+        f'{get_web_url(request)}/oauth/{IDP_INVITE_PATH}?{urlencode({"token": token})}'
+    )
+
+
 @idp_router.get(f'/{IDP_INVITE_PATH}')
 async def idp_invite_form(
     request: Request,
@@ -887,6 +946,16 @@ async def idp_invite_accept(
             url=f'{web_url}/login?account_disabled=true', status_code=302
         )
 
+    if link.invitation_token is not None and existing is not None:
+        # The account appeared after the invitation link was followed (see
+        # ``signup_link_url_for_invitation``): hand over to the regular flow
+        # -- sign in with the existing password, then the frontend accepts
+        # the invitation -- rather than resetting that password.
+        return RedirectResponse(
+            url=f'{web_url}/?invitation_token={link.invitation_token}',
+            status_code=302,
+        )
+
     hashed = hash_password(password)
 
     user: User | None
@@ -936,6 +1005,9 @@ async def idp_invite_accept(
     elif link.org_id is not None:
         await _ensure_org_membership(link.org_id, user, link.role)
 
+    if link.invitation_token is not None:
+        user = await _accept_invitation_for_new_user(user, link.invitation_token)
+
     return await _complete_idp_login(
         request=request,
         user=user,
@@ -943,6 +1015,43 @@ async def idp_invite_accept(
         email=email_str,
         redirect_url='',
     )
+
+
+async def _accept_invitation_for_new_user(user: User, invitation_token: str) -> User:
+    """Accept the organization invitation a sign-up link was minted from.
+
+    Mirrors the invitation step of the Keycloak callback
+    (``server.routes.auth``): membership with the invited role, and the user
+    lands in that org when still parked on their personal workspace -- the
+    same rule as ``OrgInvitationService.accept_pending_invitations_for_user``.
+    Never raises: the account and its password already exist by now, so a
+    revoked or expired invitation only costs the membership, which is
+    logged, not the login.
+    """
+    try:
+        invitation = await OrgInvitationService.accept_invitation(
+            invitation_token, user.id
+        )
+        if user.current_org_id == user.id:
+            await UserStore.update_current_org(str(user.id), invitation.org_id)
+            user = await UserStore.get_user_by_id(str(user.id)) or user
+    except (
+        EmailMismatchError,
+        InvitationExpiredError,
+        InvitationInvalidError,
+        UserAlreadyMemberError,
+    ) as exc:
+        logger.warning(
+            'idp:invitation_not_accepted',
+            extra={'user_id': str(user.id), 'error': str(exc)},
+        )
+    except Exception:
+        logger.exception(
+            'idp:invitation_accept_failed',
+            extra={'user_id': str(user.id)},
+            stack_info=True,
+        )
+    return user
 
 
 async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) -> None:
