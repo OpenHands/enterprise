@@ -133,6 +133,23 @@ class TestProviderConnectionsModel:
         assert not pc.has('bad')
 
 
+class TestApplyToPayload:
+    """``ProviderConnections.apply_to_payload`` is the shared connection rule."""
+
+    def test_linked_payload_stays_json_serializable(self):
+        import json
+
+        conns = ProviderConnections(
+            connections={
+                'c1': ProviderConnection(
+                    id='c1', display_name='Shared', api_key='sk-shared'
+                )
+            }
+        )
+        out = conns.apply_to_payload({'model': 'm', 'provider_connection_id': 'c1'})
+        assert json.loads(json.dumps(out))['api_key'] == 'sk-shared'
+
+
 class TestUpdateRequestValidation:
     def test_rejects_null_api_key(self):
         with pytest.raises(ValueError):

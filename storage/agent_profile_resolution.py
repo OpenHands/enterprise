@@ -154,12 +154,7 @@ def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str
     provider host the linked LLM never chose; the load still works. The rule
     is ``ProviderConnections.apply_to_payload``.
     """
-    resolved = load_provider_connections(org).apply_to_payload(llm_payload)
-    api_key = resolved.get('api_key')
-    if isinstance(api_key, SecretStr):
-        # The settings payload carries plain strings.
-        resolved['api_key'] = api_key.get_secret_value()
-    return resolved
+    return load_provider_connections(org).apply_to_payload(llm_payload)
 
 
 def resolve_org_profile_llm(
