@@ -48,6 +48,7 @@ from server.routes.idp import (
     derive_idp_user_id,
     is_idp_available,
 )
+from server.routes.org_invitation_models import InvitationInvalidError
 from storage.auth_provider_details import PasswordProviderDetails
 from storage.instance_settings import InstanceSettings
 
@@ -1517,6 +1518,24 @@ class TestSignupLinkToken:
         assert link.role == 'superadmin'
         assert link.org_id is None
 
+    def test_roundtrip_with_invitation_token(self, jwt_svc):
+        """A link minted for an organization invitation carries that
+        invitation's token, so accepting the link can accept the invitation."""
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', invitation_token='inv-token-123'
+            )
+            link = idp._verify_signup_link_token(token)
+        assert link.invitation_token == 'inv-token-123'
+        assert link.org_id is None
+        assert link.role == 'member'
+
+    def test_invitation_token_is_none_for_admin_minted_link(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('invitee@example.com')
+            link = idp._verify_signup_link_token(token)
+        assert link.invitation_token is None
+
     def test_missing_role_claim_defaults_to_member(self, jwt_svc):
         """Links minted before the ``role`` claim existed keep working."""
         with _patch_jwt_service(jwt_svc):
@@ -2822,6 +2841,242 @@ class TestInviteAcceptRole:
         mock_get_role.assert_awaited_once_with('owner')
         mock_add.assert_awaited_once()
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
+
+
+# ── organization invitations bridged into the sign-up form (OHE-3825) ───
+
+
+class TestSignupLinkUrlForInvitation:
+    """``signup_link_url_for_invitation`` -- how an organization invitation
+    link sends a brand-new invitee to the set-password form instead of a
+    login form they could never get past."""
+
+    @staticmethod
+    async def _url_for(email: str = 'invitee@example.com') -> str | None:
+        with patch('server.routes.idp.get_web_url', return_value='http://testserver'):
+            return await idp.signup_link_url_for_invitation(
+                MagicMock(), email, 'inv-token-123'
+            )
+
+    @pytest.mark.asyncio
+    async def test_new_user_gets_set_password_url_tied_to_invitation(self, jwt_svc):
+        with (
+            _available(),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            _patch_jwt_service(jwt_svc),
+        ):
+            url = await self._url_for('Invitee@Example.com')
+            assert url is not None
+            parsed = urlparse(url)
+            link = idp._verify_signup_link_token(parse_qs(parsed.query)['token'][0])
+
+        assert parsed.path == f'/oauth/{IDP_INVITE_PATH}'
+        assert link.email == 'invitee@example.com'
+        assert link.invitation_token == 'inv-token-123'
+        assert link.org_id is None
+
+    @pytest.mark.asyncio
+    async def test_none_when_email_already_has_an_account(self, jwt_svc):
+        """An existing user signs in and the frontend accepts the invitation;
+        an invitation link must never double as a password reset."""
+        with (
+            _available(),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=_mock_user(email='invitee@example.com'),
+            ),
+            _patch_jwt_service(jwt_svc),
+        ):
+            assert await self._url_for() is None
+
+    @pytest.mark.asyncio
+    async def test_none_when_idp_unavailable(self):
+        with (
+            _unavailable(),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_by_id,
+        ):
+            assert await self._url_for() is None
+        mock_get_by_id.assert_not_awaited()
+
+
+class TestInviteAcceptFromOrgInvitation:
+    """``POST /oauth/idp/invite`` with a token minted by
+    ``signup_link_url_for_invitation`` (``invitation_token`` claim)."""
+
+    @staticmethod
+    def _post(client, token):
+        return client.post(
+            f'/oauth/{IDP_INVITE_PATH}',
+            data={
+                'token': token,
+                'password': 'password123',
+                'confirm_password': 'password123',
+            },
+            follow_redirects=False,
+        )
+
+    def test_new_user_joins_the_invited_org(self, client, jwt_svc):
+        user_id = derive_idp_user_id('invitee@example.com')
+        new_user = _mock_user(user_id=user_id, email='invitee@example.com')
+        new_user.current_org_id = new_user.id  # parked on the personal workspace
+        refreshed = _mock_user(user_id=user_id, email='invitee@example.com')
+        invitation = MagicMock(org_id=uuid.uuid4())
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', invitation_token='inv-token-123'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    side_effect=[None, refreshed],
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=new_user,
+                ) as mock_create,
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_hash,
+                patch(
+                    'server.routes.idp.OrgInvitationService.accept_invitation',
+                    new_callable=AsyncMock,
+                    return_value=invitation,
+                ) as mock_accept,
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                patch(
+                    'server.routes.idp._ensure_org_membership',
+                    new_callable=AsyncMock,
+                ) as mock_ensure,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_create.assert_awaited_once()
+        assert mock_set_hash.call_args.args[0] == str(new_user.id)
+        mock_accept.assert_awaited_once_with('inv-token-123', new_user.id)
+        mock_set_org.assert_awaited_once_with(str(new_user.id), invitation.org_id)
+        mock_ensure.assert_not_awaited()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is refreshed
+        assert mock_complete.call_args.kwargs['is_new_user'] is True
+
+    def test_existing_account_is_sent_to_sign_in_without_password_reset(
+        self, client, jwt_svc
+    ):
+        """The account appeared after the link was followed: hand over to
+        the regular flow (sign in, then the frontend accepts the invitation)
+        rather than resetting the password the way an admin-minted link
+        does."""
+        existing = _mock_user(
+            email='invitee@example.com', password_hash='existing_hash'
+        )
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', invitation_token='inv-token-123'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_hash,
+                patch(
+                    'server.routes.idp.OrgInvitationService.accept_invitation',
+                    new_callable=AsyncMock,
+                ) as mock_accept,
+                _patch_complete_login() as mock_complete,
+            ):
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        assert response.headers['location'].endswith('/?invitation_token=inv-token-123')
+        mock_set_hash.assert_not_awaited()
+        mock_accept.assert_not_awaited()
+        mock_complete.assert_not_awaited()
+
+    def test_login_completes_when_invitation_cannot_be_accepted(self, client, jwt_svc):
+        """A revoked invitation only costs the membership: the account and
+        its password already exist, so the login still completes."""
+        new_user = _mock_user(
+            user_id=derive_idp_user_id('invitee@example.com'),
+            email='invitee@example.com',
+        )
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', invitation_token='inv-token-123'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=new_user,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    'server.routes.idp.OrgInvitationService.accept_invitation',
+                    new_callable=AsyncMock,
+                    side_effect=InvitationInvalidError('Invitation has been revoked'),
+                ),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_not_awaited()
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is new_user
 
 
 # ── auth_provider_users links ─────────────────────────────────────────────
