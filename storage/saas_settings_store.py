@@ -13,6 +13,7 @@ from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
+    detach_provider_connection,
     has_real_api_key,
 )
 from openhands.app_server.settings.meta_profiles import (
@@ -431,10 +432,13 @@ class SaasSettingsStore(SettingsStore):
                         f'Model Router {name!r} references missing LLM profile '
                         f'{llm_name!r}'
                     )
-                resolved_llms[llm_name] = resolve_org_profile_llm(
-                    connections,
-                    profile_llm,
-                    fallback_api_key=effective_llm_api_key,
+                # The agent server has no copy of the org's connections.
+                resolved_llms[llm_name] = detach_provider_connection(
+                    resolve_org_profile_llm(
+                        connections,
+                        profile_llm,
+                        fallback_api_key=effective_llm_api_key,
+                    )
                 ).model_dump(mode='json', context={'expose_secrets': True})
         except Exception:
             logger.warning(

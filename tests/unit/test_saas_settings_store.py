@@ -3543,4 +3543,6 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     llm = agent_settings['meta_profile_llms']['proxied']
     assert llm['base_url'] == 'https://llm-proxy.example.test'
     assert llm['api_key'] == 'sk-proxy'
+    # The agent server has no copy of the org's connections.
+    assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
