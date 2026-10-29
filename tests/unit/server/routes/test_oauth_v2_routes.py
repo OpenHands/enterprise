@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
+import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -1466,6 +1467,141 @@ def test_callback_link_rejects_state_not_bound_to_this_browser(
     exchange.assert_not_awaited()
     link.assert_not_awaited()
     store_tokens.assert_not_awaited()
+
+
+# ── callback: ID token claims when there is no userinfo endpoint ──────────
+
+
+def _id_token(**overrides) -> str:
+    claims = {
+        'sub': 'entra-sub',
+        'aud': 'cid',
+        'exp': int(time.time()) + 300,
+        'email': 'User@Example.com',
+        **overrides,
+    }
+    return jwt.encode(claims, 'k' * 32, algorithm='HS256')
+
+
+def _login_without_userinfo_url(client, jwt_svc, token_response: dict):
+    """Run a login callback against a provider with no ``userinfo_url``.
+
+    The userinfo GET is canned with a different subject, so a test can tell
+    whether the claims came from the ID token or from that endpoint.
+    """
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=_fake_provider(userinfo_url=None)),
+        ),
+        _patch_httpx(token_response, {'sub': 'userinfo-endpoint-sub'}),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ) as create_user,
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()
+        ) as store_tokens,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+    return response, create_user, link, store_tokens
+
+
+def test_callback_login_reads_id_token_when_no_userinfo_url(client, jwt_svc):
+    response, create_user, link, store_tokens = _login_without_userinfo_url(
+        client,
+        jwt_svc,
+        {'access_token': 'at', 'refresh_token': 'rt', 'id_token': _id_token()},
+    )
+
+    assert response.status_code == 302
+    assert create_user.await_args.args[1]['email'] == 'user@example.com'
+    assert link.await_args.kwargs['external_subject_id'] == 'entra-sub'
+    store_tokens.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    'id_token',
+    [
+        pytest.param(_id_token(aud='another-client'), id='wrong-audience'),
+        pytest.param(_id_token(exp=int(time.time()) - 600), id='expired'),
+        pytest.param(_id_token(sub=None), id='no-subject'),
+        pytest.param('not-a-jwt', id='malformed'),
+    ],
+)
+def test_callback_login_rejects_an_invalid_id_token(client, jwt_svc, id_token):
+    response, create_user, _, store_tokens = _login_without_userinfo_url(
+        client, jwt_svc, {'access_token': 'at', 'id_token': id_token}
+    )
+
+    assert response.status_code == 502
+    create_user.assert_not_awaited()
+    store_tokens.assert_not_awaited()
+
+
+def test_callback_login_without_userinfo_url_or_id_token_400(client, jwt_svc):
+    response, create_user, _, store_tokens = _login_without_userinfo_url(
+        client, jwt_svc, {'access_token': 'at'}
+    )
+
+    assert response.status_code == 400
+    create_user.assert_not_awaited()
+    store_tokens.assert_not_awaited()
+
+
+def test_callback_link_reads_id_token_when_no_userinfo_url(client, jwt_svc):
+    user_id = uuid4()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=_fake_provider(userinfo_url=None)),
+        ),
+        _patch_httpx(
+            {'access_token': 'at', 'id_token': _id_token()},
+            {'sub': 'userinfo-endpoint-sub'},
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=1, user_id=user_id, external_subject_id='entra-sub'
+    )
 
 
 def test_callback_missing_code_400(client, jwt_svc):

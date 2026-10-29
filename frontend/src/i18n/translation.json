@@ -35988,6 +35988,23 @@
     "uk": "Bitbucket",
     "ca": "Bitbucket"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS": {
+    "en": "Azure DevOps",
+    "ja": "Azure DevOps",
+    "zh-CN": "Azure DevOps",
+    "zh-TW": "Azure DevOps",
+    "ko-KR": "Azure DevOps",
+    "no": "Azure DevOps",
+    "it": "Azure DevOps",
+    "pt": "Azure DevOps",
+    "es": "Azure DevOps",
+    "ar": "Azure DevOps",
+    "fr": "Azure DevOps",
+    "tr": "Azure DevOps",
+    "de": "Azure DevOps",
+    "uk": "Azure DevOps",
+    "ca": "Azure DevOps"
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML": {
     "en": "Generic SAML",
     "ja": "Generic SAML",
