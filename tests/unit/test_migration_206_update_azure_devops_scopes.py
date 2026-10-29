@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 206 (``offline_access`` on Azure DevOps rows)."""
+"""Real-DB tests for migration 206 (Azure DevOps scopes)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,16 @@ from sqlalchemy.engine import Engine
 from tests import postgres_testdb
 
 AZURE_DEVOPS_SCOPE = '499b84ac-1321-427f-aa17-267ca6975798/.default'
+NAMED_SCOPES = [
+    'openid',
+    'email',
+    'profile',
+    'offline_access',
+    '499b84ac-1321-427f-aa17-267ca6975798/vso.profile',
+    '499b84ac-1321-427f-aa17-267ca6975798/vso.code_write',
+    '499b84ac-1321-427f-aa17-267ca6975798/vso.project',
+    '499b84ac-1321-427f-aa17-267ca6975798/vso.work_write',
+]
 
 
 def _insert_oauth_row(engine: Engine, details: dict) -> int:
@@ -44,21 +54,51 @@ def _rerun_206(test_database: postgres_testdb.TestDatabase) -> None:
     )
 
 
-def test_upgrade_appends_offline_access_to_azure_devops_scopes(
+def test_upgrade_replaces_seeded_scopes_with_named_scopes(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '205'
     )
-    azure = _insert_oauth_row(
+    seeded = _insert_oauth_row(
         engine, {'provider_type': 'azure_devops', 'scopes': [AZURE_DEVOPS_SCOPE]}
+    )
+    seeded_with_offline_access = _insert_oauth_row(
+        engine,
+        {
+            'provider_type': 'azure_devops',
+            'scopes': [AZURE_DEVOPS_SCOPE, 'offline_access'],
+        },
     )
 
     _rerun_206(test_database)
 
-    details = _details(engine, azure)
-    assert details['scopes'] == [AZURE_DEVOPS_SCOPE, 'offline_access']
-    assert details['client_id'] == 'cid'
+    assert _details(engine, seeded)['scopes'] == NAMED_SCOPES
+    assert _details(engine, seeded_with_offline_access)['scopes'] == NAMED_SCOPES
+    assert _details(engine, seeded)['client_id'] == 'cid'
+
+
+def test_upgrade_appends_offline_access_to_admin_set_scopes(
+    engine: Engine, test_database: postgres_testdb.TestDatabase
+):
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'downgrade', '205'
+    )
+    custom = _insert_oauth_row(
+        engine,
+        {
+            'provider_type': 'azure_devops',
+            'scopes': ['openid', '499b84ac-1321-427f-aa17-267ca6975798/vso.code'],
+        },
+    )
+
+    _rerun_206(test_database)
+
+    assert _details(engine, custom)['scopes'] == [
+        'openid',
+        '499b84ac-1321-427f-aa17-267ca6975798/vso.code',
+        'offline_access',
+    ]
 
 
 def test_upgrade_leaves_other_rows_alone(

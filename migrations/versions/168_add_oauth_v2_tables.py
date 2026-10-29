@@ -209,8 +209,19 @@ def _seed_from_environment() -> None:
                 else None
             ),
             userinfo_url=None,
+            # 499b84ac-... is Azure DevOps' resource ID in Entra. Named scopes,
+            # unlike .default, need no API permission on the app registration.
             # Entra only issues a refresh token when offline_access is requested.
-            scopes=['499b84ac-1321-427f-aa17-267ca6975798/.default', 'offline_access'],
+            scopes=[
+                'openid',
+                'email',
+                'profile',
+                'offline_access',
+                '499b84ac-1321-427f-aa17-267ca6975798/vso.profile',
+                '499b84ac-1321-427f-aa17-267ca6975798/vso.code_write',
+                '499b84ac-1321-427f-aa17-267ca6975798/vso.project',
+                '499b84ac-1321-427f-aa17-267ca6975798/vso.work_write',
+            ],
         )
 
 

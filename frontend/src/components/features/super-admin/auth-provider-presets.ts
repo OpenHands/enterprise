@@ -188,12 +188,17 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         // No userinfo endpoint: Entra's is on Graph and rejects an Azure
         // DevOps access token, so login reads the user from the ID token.
         userinfo_url: null,
+        // 499b84ac-... is Azure DevOps' resource ID in Entra. Named scopes,
+        // unlike .default, need no API permission on the app registration.
         scopes: [
           "openid",
           "email",
           "profile",
           "offline_access",
-          "499b84ac-1321-427f-aa17-267ca6975798/.default",
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.profile",
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.project",
+          "499b84ac-1321-427f-aa17-267ca6975798/vso.work_write",
         ],
       }),
     },
