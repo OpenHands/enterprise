@@ -3,6 +3,7 @@
 from pydantic import SecretStr
 
 from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.sdk.llm import LLM
 
 MANAGED_URL = 'http://openhands-litellm.openhands.svc.cluster.local:4000'
@@ -41,6 +42,7 @@ class TestManagedProxyProfiles:
                 usage_id='test',
             ),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert _key_of(resolved) == CURRENT_KEY.get_secret_value()
@@ -54,6 +56,7 @@ class TestManagedProxyProfiles:
                 usage_id='test',
             ),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert resolved.base_url == MANAGED_URL
@@ -64,6 +67,7 @@ class TestManagedProxyProfiles:
         resolved = resolve_profile_llm(
             LLM(model='openhands/claude-opus-4-8', usage_id='test'),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert _key_of(resolved) == CURRENT_KEY.get_secret_value()
@@ -77,6 +81,7 @@ class TestManagedProxyProfiles:
                 usage_id='test',
             ),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=None,
         )
         assert _key_of(resolved) == ROTATED_OUT_KEY.get_secret_value()
@@ -95,6 +100,7 @@ class TestByorProfiles:
                 usage_id='test',
             ),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert _key_of(resolved) == byor_key.get_secret_value()
@@ -108,6 +114,7 @@ class TestByorProfiles:
                 usage_id='test',
             ),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert _key_of(resolved) == CURRENT_KEY.get_secret_value()
@@ -118,6 +125,7 @@ class TestStreamingIsForced:
         resolved = resolve_profile_llm(
             LLM(model='openhands/claude-opus-4-8', usage_id='test'),
             managed_proxy_url=MANAGED_URL,
+            connections=ProviderConnections(),
             fallback_api_key=CURRENT_KEY,
         )
         assert resolved.stream is True
@@ -175,14 +183,6 @@ class TestProviderConnections:
             managed_proxy_url=MANAGED_URL,
             fallback_api_key=CURRENT_KEY,
             connections=ProviderConnections(),
-        )
-        assert resolved.api_key is None
-
-    def test_linked_profile_without_connections_gets_no_key(self):
-        resolved = resolve_profile_llm(
-            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
-            managed_proxy_url=MANAGED_URL,
-            fallback_api_key=CURRENT_KEY,
         )
         assert resolved.api_key is None
 

@@ -14,7 +14,6 @@ from sqlalchemy.orm import joinedload
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     has_real_api_key,
-    resolve_profile_llm,
 )
 from openhands.app_server.settings.meta_profiles import (
     ORG_OWNED_ROUTER_SETTINGS_KEYS,
@@ -64,8 +63,10 @@ from storage.agent_profile_resolution import (
     load_llm_profiles,
     load_member_agent_profiles,
     load_meta_profiles,
+    load_provider_connections,
     locate_agent_profile,
     org_launch_stores,
+    resolve_org_profile_llm,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -421,6 +422,7 @@ class SaasSettingsStore(SettingsStore):
             llm_names = referenced_llm_profile_names(config)
             if config.prompt_template is not None:
                 llm_names.update(profiles.profiles)
+            connections = load_provider_connections(org)
             resolved_llms: dict[str, Any] = {}
             for llm_name in sorted(llm_names):
                 profile_llm = profiles.get(llm_name)
@@ -429,20 +431,11 @@ class SaasSettingsStore(SettingsStore):
                         f'Model Router {name!r} references missing LLM profile '
                         f'{llm_name!r}'
                     )
-                profile_llm = resolve_profile_llm(
+                resolved_llms[llm_name] = resolve_org_profile_llm(
+                    connections,
                     profile_llm,
-                    managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=effective_llm_api_key,
-                )
-                payload = profile_llm.model_dump(
-                    mode='json', context={'expose_secrets': True}
-                )
-                resolved_llms[llm_name] = apply_provider_connection(
-                    org,
-                    canonicalize_bundled_proxy_llm(
-                        canonicalize_openhands_llm_payload(payload)
-                    ),
-                )
+                ).model_dump(mode='json', context={'expose_secrets': True})
         except Exception:
             logger.warning(
                 'Failed to inline the active Model Router %r for org %s; '

@@ -44,8 +44,8 @@ def resolve_profile_llm(
     profile_llm: LLM,
     *,
     managed_proxy_url: str,
+    connections: ProviderConnections,
     fallback_api_key: Any = None,
-    connections: ProviderConnections | None = None,
     strict: bool = False,
 ) -> LLM:
     """Resolve a saved profile's LLM for activation on the agent server.
@@ -73,13 +73,8 @@ def resolve_profile_llm(
     raises ``ProviderConnectionNotFoundError`` when ``strict``. All callers that
     turn a saved profile into a live LLM go through here.
     """
-    # Imported here: provider_connections imports this module.
-    from openhands.app_server.settings.provider_connections import (
-        ProviderConnections,
-    )
-
     if profile_llm.provider_connection_id:
-        return (connections or ProviderConnections()).apply(
+        return connections.apply(
             _resolve_base_url(profile_llm, managed_proxy_url), strict=strict
         )
     resolved = _resolve_base_url(profile_llm, managed_proxy_url)

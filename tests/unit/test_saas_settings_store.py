@@ -3496,3 +3496,51 @@ async def test_load_without_a_default_llm_adds_no_default_profile(
     assert loaded is not None
     assert loaded.llm_profiles.profiles == {}
     assert not (org.llm_profiles or {}).get('profiles')
+
+
+def test_model_router_resolves_linked_profile_without_missing_warning():
+    """A router's linked profile takes its connection's key and base_url, with
+    no false 'missing provider connection' warning on the way."""
+    from types import SimpleNamespace
+
+    from storage.saas_settings_store import SaasSettingsStore
+
+    org = SimpleNamespace(
+        id=uuid.uuid4(),
+        llm_profiles={
+            'profiles': {
+                'proxied': {
+                    'model': 'anthropic/claude-x',
+                    'provider_connection_id': 'proxy',
+                }
+            }
+        },
+        provider_connections={
+            'connections': {
+                'proxy': {
+                    'id': 'proxy',
+                    'display_name': 'Proxy',
+                    'api_key': 'sk-proxy',
+                    'base_url': 'https://llm-proxy.example.test',
+                }
+            }
+        },
+        meta_profiles={
+            'profiles': {'router': {'classifier_model': 'proxied'}},
+            'active': 'router',
+        },
+    )
+    agent_settings: dict = {}
+
+    with (
+        patch('storage.saas_settings_store.is_model_router_enabled', return_value=True),
+        patch('openhands.app_server.settings.provider_connections.logger') as log,
+    ):
+        SaasSettingsStore._apply_org_model_router(
+            org, agent_settings, None, SecretStr('sk-settings')
+        )
+
+    llm = agent_settings['meta_profile_llms']['proxied']
+    assert llm['base_url'] == 'https://llm-proxy.example.test'
+    assert llm['api_key'] == 'sk-proxy'
+    log.warning.assert_not_called()
