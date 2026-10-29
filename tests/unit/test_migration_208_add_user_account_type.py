@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 205 (``user.account_type`` and ``display_name``)."""
+"""Real-DB tests for migration 208 (``user.account_type`` and ``display_name``)."""
 
 from __future__ import annotations
 
@@ -52,13 +52,13 @@ def test_upgrade_reads_existing_users_as_human(
     test_database: postgres_testdb.TestDatabase,
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '204'
+        test_database.server, test_database.name, 'downgrade', '207'
     )
     org_id = _insert_org(session_maker)
     user_id = _insert_user(engine, org_id)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '205'
+        test_database.server, test_database.name, 'upgrade', '208'
     )
 
     with engine.connect() as conn:
@@ -98,12 +98,12 @@ def test_downgrade_drops_columns(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '205'
+        test_database.server, test_database.name, 'upgrade', '208'
     )
     assert {'account_type', 'display_name'} <= _user_columns(engine)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '204'
+        test_database.server, test_database.name, 'downgrade', '207'
     )
 
     columns = _user_columns(engine)
@@ -121,7 +121,7 @@ def test_downgrade_refuses_while_service_accounts_exist(
 
     with pytest.raises(postgres_testdb.PostgresUnavailableError, match='service'):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'downgrade', '204'
+            test_database.server, test_database.name, 'downgrade', '207'
         )
 
     assert 'account_type' in _user_columns(engine)
