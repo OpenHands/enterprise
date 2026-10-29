@@ -16,6 +16,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
@@ -227,6 +228,16 @@ class AuthUserContext(UserContext):
         if get_effective_org_id is None:
             return None
         return await cast(Callable[[], Awaitable[UUID | None]], get_effective_org_id)()
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        get_provider_connections = getattr(
+            self.user_auth, 'get_provider_connections', None
+        )
+        if get_provider_connections is None:
+            return ProviderConnections()
+        return await cast(
+            Callable[[], Awaitable[ProviderConnections]], get_provider_connections
+        )()
 
 
 USER_ID_ATTR = 'user_id'

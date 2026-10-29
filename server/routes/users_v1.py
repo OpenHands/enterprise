@@ -7,7 +7,6 @@ user endpoints with organization context (org_id, org_name, role, permissions).
 import logging
 from types import MappingProxyType
 from typing import Any, cast
-from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -27,6 +26,7 @@ from openhands.app_server.config import (
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
@@ -34,8 +34,6 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 from storage.agent_profile_resolution import resolve_org_profile_llm
-from storage.org import Org
-from storage.org_store import OrgStore
 
 _logger = logging.getLogger(__name__)
 
@@ -70,7 +68,9 @@ def _inject_sdk_compat_fields(
     content['mcp_config'] = agent_settings.get('mcp_config')
 
 
-def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> None:
+def _resolve_exposed_llm_profiles(
+    user_info: SaasUserInfo, connections: ProviderConnections
+) -> None:
     """Overlay each saved LLM profile with the LLM a run launches with.
 
     SaaS profiles never persist a real api_key: the org-profiles routes lift
@@ -83,8 +83,8 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> N
     Each profile resolves as agent-profile launch does
     (``resolve_org_profile_llm``): provider-default ``base_url``, the effective
     settings key for keyless profiles, and a linked provider connection's key
-    and ``base_url`` when the caller has an org. A missing connection is
-    logged, not raised, so one bad profile does not break the others.
+    and ``base_url``. A linked profile whose connection is missing gets no key;
+    it is not raised, so one bad profile does not break the others.
     """
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
@@ -92,7 +92,7 @@ def _resolve_exposed_llm_profiles(user_info: SaasUserInfo, org: Org | None) -> N
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
         profiles[name] = resolve_org_profile_llm(
-            org, profile_llm, fallback_api_key=fallback_api_key
+            connections, profile_llm, fallback_api_key=fallback_api_key
         )
 
 
@@ -134,15 +134,9 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        # No membership check here: the profiles come from a settings load of the
-        # same effective org, which needs a membership row, so a caller without
-        # one has no profiles to resolve.
-        org = (
-            await OrgStore.get_org_by_id(UUID(user_info.org_id))
-            if user_info.org_id
-            else None
+        _resolve_exposed_llm_profiles(
+            user_info, await user_context.get_provider_connections()
         )
-        _resolve_exposed_llm_profiles(user_info, org)
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
         return JSONResponse(content=content)  # type: ignore[return-value]

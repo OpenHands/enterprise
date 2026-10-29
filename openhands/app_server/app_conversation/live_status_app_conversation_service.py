@@ -135,9 +135,15 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -738,15 +744,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             # Resolve the profile as switch_profile does, and copy rather than
             # mutate: the user context may cache the resolved settings.
-            agent_settings = agent_settings.model_copy(
-                update={
-                    'llm': resolve_profile_llm(
-                        profile_llm,
-                        managed_proxy_url=LITE_LLM_API_URL,
-                        fallback_api_key=agent_settings.llm.api_key,
-                    )
-                }
-            )
+            try:
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=agent_settings.llm.api_key,
+                    connections=await self.user_context.get_provider_connections(),
+                    strict=True,
+                )
+            except ProviderConnectionNotFoundError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=exc.profile_detail,
+                ) from exc
+            agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
             user = user.model_copy(update={'agent_settings': agent_settings})
 
         # Org Model Router "Run on first message": the launch carries the
@@ -1579,6 +1590,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     user, settings_llm
                 )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
+            connections = await self.user_context.get_provider_connections()
         except Exception:
             _logger.exception(
                 'Failed to load profiles for sandbox %s',
@@ -1600,7 +1612,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     profile_llm,
                     managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=fallback_api_key,
+                    connections=connections,
                 )
+                resolved = detach_provider_connection(resolved)
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
                     json={
@@ -2433,6 +2447,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             },
         )
         llm = await self._maybe_refresh_managed_llm_key(user, llm)
+        # Detach after the refresh: it reads the link to treat a linked LLM as
+        # BYOK. The connection's key and base_url are already applied, by
+        # settings load or by the ``llm_profile`` resolution.
+        llm = detach_provider_connection(llm)
 
         mcp_servers: dict[str, MCPServer] = {}
 

@@ -483,11 +483,12 @@ class TestSdkCompatFields:
 
     @pytest.mark.asyncio
     async def test_expose_secrets_applies_profile_provider_connection(
-        self, mock_user_context, create_org, async_session_maker
+        self, mock_user_context
     ):
-        """The overlay loads the caller's org and applies a linked provider
-        connection; a profile-pinned automation run builds its LLM from this
-        response. The rule itself is tested in ``TestResolveOrgProfileLlm``."""
+        """The overlay takes the provider connections from the user context
+        (the effective org, member-gated) and applies a linked one; a
+        profile-pinned automation run builds its LLM from this response. The
+        rule itself is tested in ``test_resolve_profile_llm``."""
         from unittest.mock import patch
 
         from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -500,19 +501,16 @@ class TestSdkCompatFields:
         from openhands.sdk.settings import OpenHandsAgentSettings
         from server.routes.users_v1 import get_current_user_saas
 
-        connections = ProviderConnections(
-            connections={
-                'proxy': ProviderConnection(
-                    id='proxy',
-                    display_name='Proxy',
-                    api_key='sk-connection-key',
-                    base_url='https://llm-proxy.example.test',
-                )
-            }
-        )
-        org = create_org(
-            provider_connections=connections.model_dump(
-                mode='json', context={'expose_secrets': True}
+        mock_user_context.get_provider_connections = AsyncMock(
+            return_value=ProviderConnections(
+                connections={
+                    'proxy': ProviderConnection(
+                        id='proxy',
+                        display_name='Proxy',
+                        api_key='sk-connection-key',
+                        base_url='https://llm-proxy.example.test',
+                    )
+                }
             )
         )
         mock_user_context.get_user_info = AsyncMock(
@@ -539,14 +537,12 @@ class TestSdkCompatFields:
         with (
             patch(
                 'server.routes.users_v1._get_org_info_from_context',
-                return_value={'org_id': str(org.id)},
+                return_value={'org_id': 'org-123'},
             ),
             patch(
                 'server.routes.users_v1.validate_session_key_ownership',
                 new_callable=AsyncMock,
             ),
-            # Point the store at the test database (not a mock).
-            patch('storage.org_store.a_session_maker', async_session_maker),
         ):
             result = await get_current_user_saas(
                 user_context=mock_user_context,
