@@ -209,7 +209,8 @@ def _seed_from_environment() -> None:
                 else None
             ),
             userinfo_url=None,
-            scopes=['499b84ac-1321-427f-aa17-267ca6975798/.default'],
+            # Entra only issues a refresh token when offline_access is requested.
+            scopes=['499b84ac-1321-427f-aa17-267ca6975798/.default', 'offline_access'],
         )
 
 

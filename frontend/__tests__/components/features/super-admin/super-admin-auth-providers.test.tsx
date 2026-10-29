@@ -233,6 +233,7 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITHUB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -310,6 +311,7 @@ describe("Super Admin Auth Providers page", () => {
               "https://YOUR_DOMAIN.okta.com/oauth2/v1/authorize",
             token_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/token",
             userinfo_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -342,6 +344,7 @@ describe("Super Admin Auth Providers page", () => {
             authorization_url: "https://PLACEHOLDER.COM/OAUTH/auth",
             token_url: "https://PLACEHOLDER.COM/OAUTH/token",
             userinfo_url: "https://PLACEHOLDER.COM/OAUTH/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -386,6 +389,54 @@ describe("Super Admin Auth Providers page", () => {
     expect(params.icon).toContain("<svg");
     expect(params.icon).toContain("#FFFFFF");
     expect(params.icon).not.toContain("currentColor");
+  });
+
+  it("creates an Azure DevOps provider that requests a refresh token from Entra", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 12 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    const params = createAuthProvider.mock.calls[0][0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        title: "Log in with Azure DevOps",
+        is_idp: true,
+        enabled: false,
+        color: "#0078D4",
+        details: expect.objectContaining({
+          provider_type: "azure_devops",
+          client_id: "PLACEHOLDER",
+          authorization_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
+          token_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
+          userinfo_url:
+            "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+          scopes: [
+            "499b84ac-1321-427f-aa17-267ca6975798/.default",
+            "offline_access",
+          ],
+          legacy_keycloak_type: null,
+          named_secret: "AZURE_DEVOPS_TOKEN",
+        }),
+      }),
+    );
+    expect(params.icon).toContain("<svg");
+    expect(params.icon).not.toContain("currentColor");
+    expect(await screen.findByTestId("location")).toHaveTextContent("12");
   });
 
   it("creates a SAML provider with placeholder IdP values", async () => {

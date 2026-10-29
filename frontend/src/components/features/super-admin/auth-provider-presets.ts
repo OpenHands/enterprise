@@ -1,6 +1,7 @@
 import githubLogo from "#/assets/branding/github-logo.svg?raw";
 import gitlabLogo from "#/assets/branding/gitlab-logo.svg?raw";
 import bitbucketLogo from "#/assets/branding/bitbucket-logo.svg?raw";
+import azureDevOpsLogo from "#/assets/branding/azure-devops-logo.svg?raw";
 import type {
   CreateAuthProviderParams,
   OAuthProviderDetails,
@@ -15,6 +16,7 @@ export type AuthProviderPresetKey =
   | "github"
   | "gitlab"
   | "bitbucket"
+  | "azure_devops"
   | "saml"
   | "password";
 
@@ -81,6 +83,7 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         authorization_url: "https://accounts.google.com/o/oauth2/auth",
         token_url: "https://oauth2.googleapis.com/token",
         userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo",
+        // No offline_access: Google rejects it and uses access_type=offline.
         scopes: ["openid", "email"],
       }),
     },
@@ -97,7 +100,7 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         authorization_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/authorize",
         token_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/token",
         userinfo_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/userinfo",
-        scopes: ["openid", "email"],
+        scopes: ["openid", "email", "offline_access"],
       }),
     },
   },
@@ -113,7 +116,7 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         authorization_url: "https://PLACEHOLDER.COM/OAUTH/auth",
         token_url: "https://PLACEHOLDER.COM/OAUTH/token",
         userinfo_url: "https://PLACEHOLDER.COM/OAUTH/userinfo",
-        scopes: ["openid", "email"],
+        scopes: ["openid", "email", "offline_access"],
       }),
     },
   },
@@ -165,6 +168,31 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         token_url: "https://bitbucket.org/site/oauth2/access_token",
         userinfo_url: "https://api.bitbucket.org/2.0/user",
         scopes: ["repository", "account"],
+      }),
+    },
+  },
+  {
+    key: "azure_devops",
+    label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS,
+    params: {
+      ...LOGIN_DEFAULTS,
+      title: "Log in with Azure DevOps",
+      icon: whiteIcon(azureDevOpsLogo),
+      color: "#0078D4",
+      details: oauthDetails({
+        provider_type: "azure_devops",
+        authorization_url:
+          "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
+        token_url:
+          "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
+        // Unlike migration 168's link-only row, logging in needs a userinfo
+        // endpoint; the Azure DevOps profile returns the user's `id`.
+        userinfo_url:
+          "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+        scopes: [
+          "499b84ac-1321-427f-aa17-267ca6975798/.default",
+          "offline_access",
+        ],
       }),
     },
   },
