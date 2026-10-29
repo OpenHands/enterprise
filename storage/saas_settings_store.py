@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from fastapi import HTTPException
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
@@ -15,6 +16,10 @@ from openhands.app_server.settings.llm_profiles import (
     has_real_api_key,
     resolve_profile_llm,
 )
+from openhands.app_server.settings.meta_profiles import (
+    ORG_OWNED_ROUTER_SETTINGS_KEYS,
+    referenced_llm_profile_names,
+)
 from openhands.app_server.settings.settings_models import (
     Settings,
     agent_llm,
@@ -23,17 +28,23 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
 )
-from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.profiles import resolve_agent_profile
-from openhands.sdk.tool.defaults import drop_retired_tool_switches
+from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+)
+from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
     is_bundled_proxy_base_url,
+    is_model_router_enabled,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -48,10 +59,13 @@ from server.verified_models.default_profile import (
     uses_deployment_default_profile,
 )
 from storage.agent_profile_resolution import (
-    OrgLLMProfileLoader,
     apply_provider_connection,
     load_agent_profiles,
     load_llm_profiles,
+    load_member_agent_profiles,
+    load_meta_profiles,
+    locate_agent_profile,
+    org_launch_stores,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -120,10 +134,22 @@ def managed_llm_key_config_from_model(
     it is never classified as managed even when its ``base_url`` is the managed
     proxy. Callers that hold an LLM pass the id through so this decision lives
     in one place rather than at each call site.
+
+    With the LiteLLM gateway off, an ``openhands/`` model on the public OpenHands
+    proxy is OpenHands Cloud with a user-owned key (BYOK), so it is not managed
+    either.
     """
     if provider_connection_id:
         return None
     openhands_type = is_openhands_model(llm_model)
+    if (
+        openhands_type
+        and not constants.ENABLE_LEGACY_LITELLM
+        and is_openhands_proxy_base_url(llm_base_url)
+    ):
+        # No gateway: ``openhands/`` on the public proxy is OpenHands Cloud with
+        # the user's own key, not a managed LiteLLM key.
+        return None
     normalized_llm_base_url = llm_base_url.rstrip('/') if llm_base_url else None
     normalized_managed_base_url = (
         LITE_LLM_API_URL.rstrip('/') if LITE_LLM_API_URL else None
@@ -282,121 +308,154 @@ class SaasSettingsStore(SettingsStore):
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
-    ) -> tuple[dict[str, Any], str, int] | None:
-        """Resolve an agent profile into an ``agent_settings`` dump.
-
-        Resolves ``override_agent_profile_id`` when given (a one-off,
-        non-persisted launch override — never written back to
-        ``org_member.active_agent_profile_id``), else the member's ambient
-        ``active_agent_profile_id``, else the org-wide default pointer
-        (``AgentProfiles.active``, if one has been set). Returns
-        ``(agent_settings_dump, profile_id, revision)``, or ``None`` to fall
-        back to the composed ``agent_settings``.
-        Delegates the ``llm_profile_ref`` + ``mcp_server_refs`` join entirely to
-        the SDK ``resolve_agent_profile``; only the cloud-specific glue (the
-        org-backed ``llm_store`` adapter, the member-effective ``mcp_config``,
-        and the managed-key / base-url overlay via ``resolve_profile_llm``)
-        lives here.
-
-        Fail-safe by design: a stale pointer (profile deleted) or any resolution
-        error returns ``None`` and logs, because bricking *every* settings load
-        on a dangling pointer is far worse than launching the composed default.
-        """
-        agent_profiles = load_agent_profiles(org)
+    ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
+        """Resolve one personal or org profile snapshot or reject the launch."""
+        raw_envelope = org.agent_profiles
+        personal_envelope = org_member.agent_profiles
+        for envelope in (personal_envelope, raw_envelope):
+            if envelope is not None and (
+                not isinstance(envelope, dict)
+                or not isinstance(envelope.get('profiles', {}), dict)
+            ):
+                raise HTTPException(
+                    503, detail={'code': 'agent_profile_store_unreadable'}
+                )
         active_id = (
             override_agent_profile_id
-            or org_member.active_agent_profile_id
-            or agent_profiles.active
+            if override_agent_profile_id is not None
+            else org_member.active_agent_profile_id
+            or (raw_envelope or {}).get('active')
         )
-        if not active_id:
+        if active_id is None:
             return None
-
-        name = agent_profiles.name_for_id(active_id)
-        if name is None:
-            logger.warning(
-                'Active agent profile %s not found for user %s in org %s; '
-                'falling back to composed settings',
-                active_id,
-                self.user_id,
-                org.id,
+        active_id = str(active_id)
+        profile = None
+        for envelope, profiles in (
+            (personal_envelope, load_member_agent_profiles(org_member)),
+            (raw_envelope, load_agent_profiles(org)),
+        ):
+            if active_id not in (envelope or {}).get('profiles', {}):
+                continue
+            name = profiles.name_for_id(active_id)
+            if name is None:
+                raise HTTPException(422, detail={'code': 'agent_profile_unreadable'})
+            profile = profiles.load(name)
+            break
+        if profile is None:
+            raise HTTPException(404, detail={'code': 'agent_profile_not_found'})
+        try:
+            mcp_config = coerce_persisted_mcp_config(
+                merged_agent_settings.get('mcp_config') or {}
             )
-            return None
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, detail={'code': 'invalid_mcp_config'}) from exc
         try:
-            profile = agent_profiles.load(name)
-        except FileNotFoundError:
-            return None
-
-        mcp_config: dict[str, MCPServer] = {}
-        mcp_raw = merged_agent_settings.get('mcp_config')
-        if mcp_raw:
-            try:
-                mcp_config = coerce_persisted_mcp_config(mcp_raw)
-            except Exception:
-                logger.warning(
-                    'Failed to parse member MCP config for active profile resolution',
-                    exc_info=True,
-                )
-                mcp_config = {}
-
-        llm_store = OrgLLMProfileLoader(llm_profiles or load_llm_profiles(org))
-        try:
-            resolved = resolve_agent_profile(
+            launched = resolve(
                 profile,
-                llm_store=llm_store,
-                mcp_config=mcp_config,
-                available_skills=None,
-                cipher=None,
+                org_launch_stores(
+                    org,
+                    mcp_config,
+                    llm_profiles=llm_profiles,
+                    fallback_api_key=effective_llm_api_key,
+                ),
             )
+        except AgentLaunchError as exc:
+            raise HTTPException(422, detail=exc.to_detail()) from exc
+        except (ProfileNotFound, FileNotFoundError) as exc:
+            raise HTTPException(
+                404, detail={'code': 'agent_profile_not_found'}
+            ) from exc
+        except LaunchStoreError as exc:
+            raise HTTPException(
+                503 if exc.retryable else 500,
+                detail={'code': 'agent_profile_store_unavailable'},
+            ) from exc
+        except Exception as exc:
+            logger.error('Agent profile resolution failed: %s', type(exc).__name__)
+            raise HTTPException(
+                503, detail={'code': 'agent_profile_store_unavailable'}
+            ) from exc
+        return (
+            launched.settings.model_dump(mode='json', context={'expose_secrets': True}),
+            str(profile.id),
+            profile.revision,
+            profile.secret_refs,
+        )
 
-            # Apply the cloud managed-key / base-url overlay to the resolved LLM
-            # (OpenHands kind only), so managed OpenHands keys and provider-default
-            # base URLs behave exactly as the non-profile path. Reuses the existing
-            # resolve_profile_llm helper rather than re-deriving key resolution.
-            if resolved.agent_kind == 'openhands':
-                resolved = resolved.model_copy(
-                    update={
-                        'llm': resolve_profile_llm(
-                            resolved.llm,
-                            managed_proxy_url=LITE_LLM_API_URL,
-                            fallback_api_key=effective_llm_api_key,
-                        )
-                    }
+    @staticmethod
+    def _apply_org_model_router(
+        org: Org,
+        agent_settings: dict[str, Any],
+        llm_profiles: LLMProfiles | None,
+        effective_llm_api_key: SecretStr | None,
+    ) -> None:
+        """Inline the org's active Model Router into launch ``agent_settings``.
+
+        A cloud sandbox has no meta-profile store, so the SDK can only route
+        from the inline ``meta_profile`` / ``meta_profile_llms`` fields of
+        ``OpenHandsAgentSettings``. The router is an org-wide launch policy
+        (OHE-3508): it is applied after Agent Profile resolution, and the
+        routing keys are owned here, so with no active router (or the feature
+        off) routing is forced off and a stale profile ``meta_profile_ref``
+        cannot enable a tool that has nothing to route with.
+
+        Every LLM profile the router can pick is copied with runnable
+        credentials, resolved exactly like the launch LLM (managed-key
+        overlay, canonical model names, provider connection). Direct-prompt
+        routers may name any saved profile, so all of them are copied.
+
+        Fail-safe by design: any resolution error disables routing for this
+        launch only and logs, mirroring ``_resolve_active_agent_profile``.
+        """
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            agent_settings.pop(router_key, None)
+        agent_settings['enable_classify_and_switch_llm_tool'] = False
+        if agent_settings.get('agent_kind') == 'acp' or not is_model_router_enabled():
+            return
+        active = load_meta_profiles(org).active_profile()
+        if active is None:
+            return
+        name, config = active
+        try:
+            profiles = llm_profiles or load_llm_profiles(org)
+            llm_names = referenced_llm_profile_names(config)
+            if config.prompt_template is not None:
+                llm_names.update(profiles.profiles)
+            resolved_llms: dict[str, Any] = {}
+            for llm_name in sorted(llm_names):
+                profile_llm = profiles.get(llm_name)
+                if profile_llm is None:
+                    raise ValueError(
+                        f'Model Router {name!r} references missing LLM profile '
+                        f'{llm_name!r}'
+                    )
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=effective_llm_api_key,
                 )
-
-            # expose_secrets so the resolved LLM key lands in agent_settings the
-            # same way the composed path sets
-            # merged_agent_settings['llm']['api_key'].
-            resolved_dump = resolved.model_dump(
-                mode='json', context={'expose_secrets': True}
-            )
-            # Canonicalize legacy managed OpenHands model names/base_urls on the
-            # resolved LLM, mirroring the composed path (merged_agent_settings
-            # ['llm'], line ~348) so a profile launch and a non-profile launch
-            # normalize an org's pre-canonical llm_profiles identically.
-            resolved_llm = resolved_dump.get('llm')
-            if isinstance(resolved_llm, dict):
-                # A referenced LLM profile linked to a provider connection
-                # resolves the same way as the composed path below.
-                resolved_dump['llm'] = apply_provider_connection(
+                payload = profile_llm.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
+                resolved_llms[llm_name] = apply_provider_connection(
                     org,
                     canonicalize_bundled_proxy_llm(
-                        canonicalize_openhands_llm_payload(resolved_llm)
+                        canonicalize_openhands_llm_payload(payload)
                     ),
                 )
-        except Exception as exc:
-            # Never-brick contract: catch broadly, not just the known resolver
-            # errors — SDK contract drift (e.g. a new required kwarg raising
-            # TypeError) must degrade to the composed settings, not 500 every
-            # settings load.
+        except Exception:
             logger.warning(
-                'Failed to resolve active agent profile %r for user %s: %s; '
-                'falling back to composed settings',
+                'Failed to inline the active Model Router %r for org %s; '
+                'routing is off for this launch',
                 name,
-                self.user_id,
-                exc,
+                org.id,
+                exc_info=True,
             )
-            return None
-        return resolved_dump, str(profile.id), profile.revision
+            return
+        agent_settings['enable_classify_and_switch_llm_tool'] = True
+        agent_settings['active_meta_profile'] = name
+        agent_settings['meta_profile'] = config.model_dump(mode='json')
+        agent_settings['meta_profile_llms'] = resolved_llms
 
     async def load(
         self,
@@ -404,26 +463,7 @@ class SaasSettingsStore(SettingsStore):
         resolve_agent_profile: bool = False,
         override_agent_profile_id: str | None = None,
     ) -> Settings | None:
-        """Load settings; opt into the resolved Agent-Profile launch view.
-
-        The default returns the PERSISTED (composed org + member) settings —
-        the view every load() -> store() round-trip must operate on, so an
-        active Agent Profile's *resolved* dump (ref-filtered ``mcp_config``,
-        the referenced LLM profile's key) can never masquerade as
-        user-authored settings and get written back.
-
-        ``resolve_agent_profile=True`` is the conversation-start opt-in: the
-        active Agent Profile resolves and REPLACES ``agent_settings`` (the
-        sole launch authority, #15044 §3), and the result is marked
-        ``_resolved_view`` — ``store()`` refuses it. Falls back to the
-        composed settings when no pointer is set or the pointer is stale /
-        unresolvable, so a broken pointer can never brick the load.
-
-        ``override_agent_profile_id`` is a one-off launch override (e.g. a
-        per-conversation-start request): it implies resolution, changes which
-        profile resolves for *this call only*, and is never persisted to
-        ``org_member.active_agent_profile_id``.
-        """
+        """Load persisted settings or a strictly resolved launch snapshot."""
         user = await UserStore.get_user_by_id(self.user_id)
         if not user:
             logger.error(f'User not found for ID {self.user_id}')
@@ -448,6 +488,18 @@ class SaasSettingsStore(SettingsStore):
             dict(org_member.agent_settings_diff)
         )
         member_agent_settings_diff.pop('mcp_config', None)
+        # Unversioned legacy rows stored `[]` meaning the standard set.
+        if (
+            'schema_version' not in member_agent_settings_diff
+            and member_agent_settings_diff.get('tools') == []
+        ):
+            del member_agent_settings_diff['tools']
+        # A stale version would re-run the tool-switch fold over the org's tools.
+        if not any(
+            key in member_agent_settings_diff
+            for key in ('tools', *RETIRED_TOOL_SWITCHES)
+        ):
+            member_agent_settings_diff.pop('schema_version', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -475,6 +527,12 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         for private_key in MEMBER_PRIVATE_AGENT_KEYS:
             org_agent_settings_dump.pop(private_key, None)
+        # The Model Router fields belong to the org's active router (see
+        # ``_apply_org_model_router``): neither stored org settings nor a
+        # member's diff may switch routing on or point it elsewhere.
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            org_agent_settings_dump.pop(router_key, None)
+            member_agent_settings_diff.pop(router_key, None)
         merged_agent_settings = deep_merge(
             org_agent_settings_dump,
             member_agent_settings_diff,
@@ -672,10 +730,31 @@ class SaasSettingsStore(SettingsStore):
                 live_llm_profiles,
             )
             if resolved is not None:
-                resolved_dump, resolved_id, resolved_revision = resolved
+                (
+                    resolved_dump,
+                    resolved_id,
+                    resolved_revision,
+                    resolved_secret_refs,
+                ) = resolved
                 kwargs['agent_settings'] = resolved_dump
                 kwargs['active_agent_profile_id'] = resolved_id
                 kwargs['active_agent_profile_revision'] = resolved_revision
+                kwargs['active_agent_profile_secret_refs'] = resolved_secret_refs
+                # Which collection the launched profile came from, read by
+                # conversation-start's secrets setup: an org-scoped profile
+                # with an explicit list resolves it against the org-shared
+                # secrets only (OHE-3088).
+                located = locate_agent_profile(org, org_member, resolved_id)
+                if located is not None:
+                    kwargs['active_agent_profile_scope'] = located[1]
+            # The org's active Model Router applies to every launch, whether it
+            # runs the composed settings or a resolved Agent Profile.
+            self._apply_org_model_router(
+                org,
+                kwargs['agent_settings'],
+                live_llm_profiles,
+                effective_llm_api_key,
+            )
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
@@ -689,7 +768,7 @@ class SaasSettingsStore(SettingsStore):
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
         if resolution_requested:
-            # Launch view (even when resolution fell back): never persistable.
+            # Resolved launch views must never be persisted.
             settings._resolved_view = True
 
         # The legacy seed above is in-memory only. Persist it only when there

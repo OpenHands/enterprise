@@ -20,6 +20,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
     SQLAppConversationInfoService,
 )
 from openhands.app_server.errors import AuthError
+from openhands.app_server.sandbox.sandbox_store import StoredSandbox
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN, SandboxUserContext
 from storage.stored_conversation_metadata import StoredConversationMetadata
@@ -104,6 +105,10 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         otherwise falls back to the user's persisted current_org_id.
         """
         user_auth = getattr(self.user_context, 'user_auth', None)
+        if user_auth is None:
+            # Resolver contexts wrap the same auth under a different attribute.
+            # Keep metadata in the org captured by the sandbox at creation.
+            user_auth = getattr(self.user_context, 'saas_user_auth', None)
         if user_auth is not None and hasattr(user_auth, 'get_effective_org_id'):
             return await user_auth.get_effective_org_id()
         user = await self._get_current_user()
@@ -427,11 +432,23 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
             user = user_result.scalar_one_or_none()
             assert user
 
-            # Determine org_id. The effective org id resolver handles
-            # the X-Org-Id > api_key_org_id > current_org_id precedence;
-            # we fall back to user.current_org_id for the ADMIN/webhook
-            # path where no user_auth is attached.
+            # Authenticated requests keep their effective-org precedence.
+            # Webhook creation uses the matching owner's persisted launch org,
+            # so switching the owner's current org cannot retarget metadata.
             org_id = await self._get_effective_org_id()
+            if self.user_context == ADMIN or isinstance(
+                self.user_context, SandboxUserContext
+            ):
+                launch_org_id = await self.db_session.scalar(
+                    select(StoredSandbox.credential_org_id).where(
+                        StoredSandbox.id == info.sandbox_id,
+                        StoredSandbox.created_by_user_id == user_id_str,
+                    )
+                )
+                if launch_org_id is not None:
+                    org_id = launch_org_id
+            # Preserve metadata behavior for legacy/unrecorded sandboxes. This
+            # neither infers a credential binding nor enables secret lookups.
             if org_id is None:
                 org_id = user.current_org_id
 

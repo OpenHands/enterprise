@@ -98,13 +98,14 @@ async def test_a_link_for_another_provider_type_does_not_match(
 
 @pytest.mark.usefixtures('oauth_v2_login_on')
 @pytest.mark.asyncio
-async def test_a_login_provider_link_does_not_match(
+async def test_a_git_provider_login_link_matches(
     no_keycloak, create_git_provider, create_user
 ):
     gitlab_login = await create_git_provider(ProviderType.GITLAB, is_idp=True)
+    user = create_user()
     await AuthProviderUserStore().link(
         oauth_provider_id=gitlab_login.id,
-        user_id=create_user().id,
+        user_id=user.id,
         external_subject_id='123',
     )
 
@@ -113,7 +114,7 @@ async def test_a_login_provider_link_does_not_match(
             '123', ProviderType.GITLAB
         )
 
-    assert user_id is None
+    assert user_id == str(user.id)
 
 
 @pytest.mark.usefixtures('oauth_v2_login_on')

@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
@@ -30,9 +32,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.routes import oauth_v2
 from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
@@ -426,19 +430,24 @@ def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt
     _override_user_context(app, user_id)
     github = _fake_provider(provider_id=1, category='github')
     gitlab = _fake_provider(provider_id=2, category='gitlab')
-    for provider in (github, gitlab):
+    bitbucket = _fake_provider(provider_id=3, category='bitbucket')
+    for provider in (github, gitlab, bitbucket):
         provider.icon = None
         provider.color = '#000000'
 
     async def fake_get_raw(store):
-        return object() if store.oauth_provider_id == 1 else None
+        if store.oauth_provider_id == 1:
+            return SimpleNamespace(invalidated_at=None)
+        if store.oauth_provider_id == 3:
+            return SimpleNamespace(invalidated_at=datetime.now(timezone.utc))
+        return None
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
             oauth_v2.AuthProviderStore,
             'get_git_providers',
-            new=AsyncMock(return_value=[github, gitlab]),
+            new=AsyncMock(return_value=[github, gitlab, bitbucket]),
         ),
         patch.object(oauth_v2.OAuthTokenStore, 'get_raw', new=fake_get_raw),
     ):
@@ -446,9 +455,13 @@ def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt
 
     assert response.status_code == 200
     body = response.json()
-    assert [(p['id'], p['provider_type'], p['connected']) for p in body] == [
-        (1, 'github', True),
-        (2, 'gitlab', False),
+    assert [
+        (p['id'], p['provider_type'], p['connected'], p['needs_reconnect'])
+        for p in body
+    ] == [
+        (1, 'github', True, False),
+        (2, 'gitlab', False, False),
+        (3, 'bitbucket', True, True),
     ]
     assert 'client_id' not in body[0]
 
@@ -482,7 +495,9 @@ def test_list_git_providers_hides_disabled_unless_already_connected(
     disabled_linked.enabled = False
 
     async def fake_get_raw(store):
-        return object() if store.oauth_provider_id == 3 else None
+        if store.oauth_provider_id == 3:
+            return SimpleNamespace(invalidated_at=None)
+        return None
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -500,6 +515,127 @@ def test_list_git_providers_hides_disabled_unless_already_connected(
         (1, False),
         (3, True),
     ]
+
+
+# ── POST /oauth/git-providers/{id}/check ─────────────────────────────────
+
+
+def _override_secrets(app, secrets: Secrets | None):
+    app.dependency_overrides[get_secrets] = lambda: secrets
+
+
+@contextmanager
+def _patch_check(provider, result, invalidated_at=None):
+    """Patch the provider lookup, the check itself and the re-read row."""
+    check = AsyncMock(return_value=result)
+    row = SimpleNamespace(invalidated_at=invalidated_at) if result else None
+    with (
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(oauth_v2, 'check_git_provider_token', new=check),
+        patch.object(
+            oauth_v2.OAuthTokenStore, 'get_raw', new=AsyncMock(return_value=row)
+        ),
+    ):
+        yield check
+
+
+def test_check_git_provider_requires_auth(client, app):
+    _override_user_context(app, None)
+    _override_secrets(app, None)
+    response = client.post('/oauth/git-providers/1/check')
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ('check_status', 'invalidated_at', 'needs_reconnect'),
+    [
+        ('valid', None, False),
+        ('invalid', datetime.now(timezone.utc), True),
+        # An unreachable provider reports whatever was already recorded.
+        ('unavailable', datetime.now(timezone.utc), True),
+    ],
+)
+def test_check_git_provider_reports_result(
+    client, app, check_status, invalidated_at, needs_reconnect
+):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=4, category='github')
+    with _patch_check(provider, check_status, invalidated_at) as check:
+        response = client.post('/oauth/git-providers/4/check')
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'id': 4,
+        'status': check_status,
+        'needs_reconnect': needs_reconnect,
+    }
+    check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
+
+
+def test_check_git_provider_accepts_git_provider_that_is_also_the_idp(client, app):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=3, category='github', is_idp=True)
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/3/check')
+
+    assert response.status_code == 200
+    assert response.json() == {'id': 3, 'status': 'valid', 'needs_reconnect': False}
+    check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
+
+
+def test_check_git_provider_uses_the_users_stored_host(client, app):
+    _override_user_context(app, uuid4())
+    _override_secrets(
+        app,
+        Secrets(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(host='gitlab.example.com')
+            }
+        ),
+    )
+    provider = _fake_provider(provider_id=2, category='gitlab')
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/2/check')
+
+    assert response.status_code == 200
+    assert check.await_args.args[3] == 'gitlab.example.com'
+
+
+def test_check_git_provider_not_linked(client, app):
+    _override_user_context(app, uuid4())
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=1, category='github')
+    with _patch_check(provider, None):
+        response = client.post('/oauth/git-providers/1/check')
+
+    assert response.status_code == 404
+    assert response.json()['detail'] == 'Git provider not connected'
+
+
+@pytest.mark.parametrize(
+    'provider',
+    [
+        _fake_provider(provider_id=7, category='enterprise_sso'),
+        _fake_provider(provider_id=7, category='enterprise_sso', is_idp=True),
+        _fake_saml_provider(provider_id=7),
+    ],
+)
+def test_check_git_provider_rejects_non_git_rows(client, app, provider):
+    _override_user_context(app, uuid4())
+    _override_secrets(app, None)
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/7/check')
+
+    assert response.status_code == 404
+    check.assert_not_awaited()
 
 
 def test_list_idp_providers_hides_disabled(client, jwt_svc):
@@ -1374,7 +1510,7 @@ def test_callback_error_param_400(client, jwt_svc):
     [
         ('gitlab', False, 'oauth_v2_login_on', True),
         ('github', False, 'oauth_v2_login_on', False),
-        ('gitlab', True, 'oauth_v2_login_on', False),
+        ('gitlab', True, 'oauth_v2_login_on', True),
         ('gitlab', False, 'oauth_v2_login_off', False),
     ],
 )
@@ -1530,8 +1666,14 @@ def test_link_requires_auth(app, client, jwt_svc):
     assert response.status_code == 401
 
 
-def test_link_idp_provider_400(app, client, jwt_svc):
-    provider = _fake_provider(is_idp=True)
+@pytest.mark.parametrize(
+    ('category', 'expected_status'),
+    [('enterprise_sso', 400), ('github', 200)],
+)
+def test_link_idp_provider_only_if_git_provider(
+    app, client, jwt_svc, category, expected_status
+):
+    provider = _fake_provider(category=category, is_idp=True)
     user_id = uuid4()
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -1543,7 +1685,7 @@ def test_link_idp_provider_400(app, client, jwt_svc):
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
-    assert response.status_code == 400
+    assert response.status_code == expected_status
 
 
 def test_link_unknown_provider_kind_404(app, client, jwt_svc):

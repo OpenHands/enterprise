@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -19,9 +20,11 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.auth_error import (
     AuthError,
@@ -49,6 +52,8 @@ from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
@@ -825,10 +830,10 @@ class SaasUserAuth(UserAuth):
     async def _v2_get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         """Resolve git-provider tokens for an OAuth v2 cookie session.
 
-        Queries ``oauth_tokens`` for this user where the linked provider
-        ``is_idp=False`` and builds ``ProviderToken`` objects via
-        ``OAuthTokenStore.get_valid_access_token`` with a provider-specific
-        refresh callback. The interface to ``ProviderHandler`` / ``GitService``
+        Queries ``oauth_tokens`` for this user's git providers (see
+        ``AuthProviderStore.get_git_providers``) and builds ``ProviderToken``
+        objects via ``OAuthTokenStore.get_valid_access_token`` with a
+        provider-specific refresh callback. The interface to ``ProviderHandler`` / ``GitService``
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
@@ -860,8 +865,6 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
-                # Git providers (is_idp=False) are always OAuth2 -- there is
-                # no password/SAML "git integration".
                 assert isinstance(provider.details, OAuthProviderDetails)
                 try:
                     idp_type = provider.details.provider_type
@@ -949,6 +952,86 @@ class SaasUserAuth(UserAuth):
                 token=SecretStr(token), user_id=None, host=host
             )
         return provider_tokens
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        """Secrets named by ``OAuthProviderDetails.named_secret`` for the
+        providers this user linked. ``None`` unless OAuth v2 login is enabled.
+
+        When several linked rows share a name, the first in
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        """
+        if not is_oauth_v2_login_enabled():
+            return None
+        from storage.auth_provider_details import (
+            GIT_PROVIDER_TYPES,
+            OAuthProviderDetails,
+        )
+        from storage.auth_provider_store import AuthProviderStore
+
+        result = NamedOAuthSecrets()
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return result
+        seen_names: set[str] = set()
+        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+            details = provider.details
+            if not isinstance(details, OAuthProviderDetails):
+                continue
+            if details.provider_type in GIT_PROVIDER_TYPES:
+                result.linked_provider_types.add(details.provider_type)
+            name = details.named_secret
+            if not name or details.legacy_keycloak_type or name in seen_names:
+                continue
+            seen_names.add(name)
+            result.secrets.append(
+                NamedOAuthSecret(
+                    secret_name=name,
+                    oauth_provider_id=provider.id,
+                    description=f'{provider.title} OAuth access token',
+                )
+            )
+        return result
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's access token for ``oauth_provider_id``, refreshed if due.
+
+        ``None`` when the row no longer names a secret or the token is
+        unavailable. A failed refresh keeps the token row, since there may be
+        no user present to re-link.
+        """
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider = await AuthProviderStore().get_by_id(oauth_provider_id)
+        if provider is None:
+            return None
+        details = provider.details
+        if (
+            not isinstance(details, OAuthProviderDetails)
+            or not details.named_secret
+            or details.legacy_keycloak_type
+        ):
+            return None
+        try:
+            return await OAuthTokenStore(
+                user_id=UUID(self.user_id), oauth_provider_id=provider.id
+            ).get_valid_access_token(
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
+                refresh=make_refresh_callback(provider),
+            )
+        except Exception:
+            logger.warning(
+                'named_oauth_secret_unavailable',
+                extra={'user_id': self.user_id, 'oauth_provider_id': provider.id},
+                exc_info=True,
+            )
+            return None
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
@@ -1191,6 +1274,69 @@ class SaasUserAuth(UserAuth):
                 # Will raise if rate limit is reached.
                 if rate_limiter is not None:
                     await rate_limiter.hit('auth_uid', user_id)
+        return instance
+
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Authorize each lookup against the persisted launch principal and org.
+
+        Do not use get_user_by_id here: it can provision a missing user. Legacy
+        sandboxes with no trustworthy org binding must be recreated.
+        """
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
+            )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
+        try:
+            user_id = UUID(sandbox.created_by_user_id)
+        except ValueError:
+            deny('invalid_owner')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User, OrgMember, Org)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                deny('unknown_owner')
+            user, member, org = row
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
+        instance = cls(
+            user_id=str(user_id),
+            refresh_token=SecretStr(''),
+            auth_type=AuthType.BEARER,
+        )
+        instance.set_effective_org_id_override(sandbox.credential_org_id)
+        # Validate now, before any credential (including provider tokens) is read.
+        await instance.get_effective_org_id()
         return instance
 
     @classmethod

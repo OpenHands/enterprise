@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.79.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.81.0} # x-release-please-version
 
 services:
   db:
@@ -16,12 +16,25 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # GitLab webhook dedup, MCP OAuth connections and conversation-export locking need Redis.
+  # Its keys are short-lived, so it has no volume.
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   app:
     image: *app-image
     # The entrypoint script in the image must run as root.
     user: '0:0'
-    depends_on:
+    depends_on: &app-depends-on
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     expose:
       - '3000'
@@ -37,12 +50,13 @@ services:
       DB_NAME: ${DB_NAME:-openhands}
       DB_USER: ${DB_USER:-openhands}
       DB_PASS: ${DB_PASS:-openhands}
+      REDIS_HOST: redis
       OH_DEPLOYMENT_MODE: self_hosted
       OH_APP_MODE: saas
-      PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+      PERMITTED_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
       # If you open the app on an address other than localhost, set WEB_HOST and WEB_URL to that address.
       WEB_HOST: ${WEB_HOST:-localhost}
-      OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}
+      OH_WEB_URL: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}
       # Sandboxes reach the app through the proxy.
       OH_SANDBOX_WEB_URL: http://proxy
       RUN_MIGRATIONS_ON_STARTUP: 'true'
@@ -56,12 +70,12 @@ services:
       OH_LLM_MODEL_KIND: server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
       OH_ALLOW_USER_LLM_CONFIGURATION: 'true'
       ENABLE_BILLING: 'false'
-      # Rate limiting needs Redis, which this stack does not include.
+      # Rate limiting adds nothing for a single evaluator.
       RATE_LIMITING_ENABLED: 'false'
       POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
-      SANDBOX_HOST_PORT: ${APP_PORT:-3100}
+      SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
-      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-3100}}/runtime/{sandbox_id}/{port}
+      SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
       # New conversations reuse the running sandbox with the fewest conversations, so fewer sandbox containers run.
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
       OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
@@ -90,7 +104,7 @@ services:
       - '8000'
     volumes:
       - automation-data:/data
-    # Sandbox URLs use localhost:3100, so localhost must point to the Docker host, where the proxy listens.
+    # Sandbox URLs use localhost:9043, so localhost must point to the Docker host, where the proxy listens.
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       - 'localhost:host-gateway'
@@ -112,7 +126,7 @@ services:
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
-      AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-3100}
+      AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s
@@ -125,7 +139,7 @@ services:
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
-    # AGENT_CANVAS_LOCK_TO_CLOUD must exactly match the address in your browser, such as http://localhost:3100.
+    # AGENT_CANVAS_LOCK_TO_CLOUD must exactly match the address in your browser, such as http://localhost:9043.
     command:
       - --port
       - '8000'
@@ -136,7 +150,7 @@ services:
       - --base-path
       - /canvas
       - --lock-to-cloud
-      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-3100}}
+      - ${AGENT_CANVAS_LOCK_TO_CLOUD:-http://localhost:${APP_PORT:-9043}}
       - --disable-telemetry
     expose:
       - '8000'
@@ -147,7 +161,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Caddy is used as a reverse proxy, and all traffic is served via localhost:3100.
+  # Caddy is used as a reverse proxy, and all traffic is served via localhost:9043.
   proxy:
     image: caddy:2
     depends_on:
@@ -158,7 +172,7 @@ services:
       canvas-server:
         condition: service_healthy
     ports:
-      - '${APP_PORT:-3100}:80'
+      - '${APP_PORT:-9043}:80'
     configs:
       - source: caddyfile
         target: /etc/caddy/Caddyfile
@@ -169,9 +183,7 @@ services:
     image: *app-image
     user: '0:0'
     command: ['python', '-m', 'openhands.app_server.worker']
-    depends_on:
-      db:
-        condition: service_healthy
+    depends_on: *app-depends-on
     volumes: *app-volumes
     extra_hosts: *app-extra-hosts
     environment:

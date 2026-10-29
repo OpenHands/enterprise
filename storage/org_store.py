@@ -20,6 +20,7 @@ from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
@@ -411,6 +412,15 @@ class OrgStore:
         normalized_base_url = (
             base_url.rstrip('/') if isinstance(base_url, str) else None
         )
+
+        # No gateway: ``openhands/`` on the public proxy is OpenHands Cloud with
+        # the org's own key (BYOK), not a managed default to repair.
+        if (
+            is_openhands_model(model)
+            and not constants.ENABLE_LEGACY_LITELLM
+            and is_openhands_proxy_base_url(normalized_base_url)
+        ):
+            return False
 
         if normalized_base_url == managed_base_url:
             return True

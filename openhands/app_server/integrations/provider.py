@@ -468,6 +468,49 @@ class ProviderHandler:
             total_count=0,
         )
 
+    def get_git_host(self, provider: ProviderType) -> tuple[str, str]:
+        """The (protocol, host) git reaches ``provider`` at.
+
+        The stored token's host when there is one (not for Azure DevOps, whose
+        host field may carry an org/project path), otherwise the provider's
+        default domain. The scheme and a trailing API path are stripped, and a
+        plain-http host is refused unless ALLOW_INSECURE_GIT_ACCESS allows it.
+        """
+        domain = self.PROVIDER_DOMAINS.get(provider, '')
+
+        # If provider tokens are provided, use the host from the token if available
+        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
+        if self.provider_tokens and provider in self.provider_tokens:
+            if provider != ProviderType.AZURE_DEVOPS:
+                domain = self.provider_tokens[provider].host or domain
+
+        # Detect protocol before normalizing domain
+        # Default to https, but preserve http if explicitly specified
+        protocol = 'https'
+        if domain and domain.strip().startswith('http://'):
+            # Check if insecure HTTP access is allowed
+            allow_insecure = os.environ.get(
+                'ALLOW_INSECURE_GIT_ACCESS', 'false'
+            ).lower() in ('true', '1', 'yes')
+            if not allow_insecure:
+                raise ValueError(
+                    'Attempting to connect to an insecure git repository over HTTP. '
+                    "If you'd like to allow this nonetheless, set "
+                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
+                )
+            protocol = 'http'
+
+        # Normalize domain to prevent double protocols or path segments
+        if domain:
+            domain = domain.strip()
+            domain = domain.replace('https://', '').replace('http://', '')
+            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
+            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
+            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
+            domain = domain.rstrip('/')
+
+        return protocol, domain
+
     async def get_authenticated_git_url(
         self,
         repo_name: str,
@@ -512,38 +555,7 @@ class ProviderHandler:
         provider = repository.git_provider
         repo_name = repository.full_name
 
-        domain = self.PROVIDER_DOMAINS.get(provider, '')
-
-        # If provider tokens are provided, use the host from the token if available
-        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
-        if self.provider_tokens and provider in self.provider_tokens:
-            if provider != ProviderType.AZURE_DEVOPS:
-                domain = self.provider_tokens[provider].host or domain
-
-        # Detect protocol before normalizing domain
-        # Default to https, but preserve http if explicitly specified
-        protocol = 'https'
-        if domain and domain.strip().startswith('http://'):
-            # Check if insecure HTTP access is allowed
-            allow_insecure = os.environ.get(
-                'ALLOW_INSECURE_GIT_ACCESS', 'false'
-            ).lower() in ('true', '1', 'yes')
-            if not allow_insecure:
-                raise ValueError(
-                    'Attempting to connect to an insecure git repository over HTTP. '
-                    "If you'd like to allow this nonetheless, set "
-                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
-                )
-            protocol = 'http'
-
-        # Normalize domain to prevent double protocols or path segments
-        if domain:
-            domain = domain.strip()
-            domain = domain.replace('https://', '').replace('http://', '')
-            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
-            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
-            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
-            domain = domain.rstrip('/')
+        protocol, domain = self.get_git_host(provider)
 
         # Try to use token if available, otherwise use public URL
         if self.provider_tokens and provider in self.provider_tokens:

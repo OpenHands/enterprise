@@ -35,7 +35,9 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import (
     ProfileReferenced,
+    cascade_rename,
     delete_llm_profile,
+    find_referrers,
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
@@ -51,6 +53,8 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     OrgLLMProfileMutator,
     load_agent_profiles,
+    load_member_agent_profiles,
+    load_meta_profiles,
 )
 from storage.database import a_session_maker
 from storage.org import Org
@@ -371,9 +375,13 @@ async def delete_profile(
     """Delete an LLM profile.
 
     Blocked with 409 if any of the org's Agent Profiles still reference this LLM
-    profile by ``llm_profile_ref`` (the SDK ``find_referrers`` FK guard) — both
-    collections live on the same org row, so the ``SELECT ... FOR UPDATE`` lock
-    makes the referrer check and the delete atomic.
+    profile by ``llm_profile_ref`` (the SDK ``find_referrers`` FK guard), or if
+    a Model Router names it as classifier or class target — all collections
+    live on the same org row, so the ``SELECT ... FOR UPDATE`` lock makes the
+    referrer checks and the delete atomic. Members' personal Agent Profiles
+    (``org_member.agent_profiles``) are checked the same way under their row
+    locks; the 409 reports only how many members reference it, since an admin
+    cannot see or repoint their profiles.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -385,6 +393,47 @@ async def delete_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
             )
+        members_with_profiles = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        referencing_members = sum(
+            1
+            for member in members_with_profiles
+            if find_referrers(load_member_agent_profiles(member), name)
+        )
+        if referencing_members:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"LLM profile '{name}' is referenced by the personal agent "
+                    f'profiles of {referencing_members} member(s); they must '
+                    'repoint those profiles first.'
+                ),
+            )
+        # Same FK guard for the org's Model Routers (classifier / class
+        # targets name LLM profiles). Only while the feature is on: a hidden
+        # router must not block a visible action.
+        if constants.is_model_router_enabled():
+            router_referrers = load_meta_profiles(org).llm_profile_referrers(name)
+            if router_referrers:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"LLM profile '{name}' is still referenced by Model "
+                        f'Router(s): {", ".join(router_referrers)}'
+                    ),
+                )
         agent_profiles = load_agent_profiles(org)
         try:
             delete_llm_profile(agent_profiles, OrgLLMProfileMutator(profiles), name)
@@ -537,7 +586,8 @@ async def rename_profile(
     The SDK ``rename_llm_profile`` renames the LLM profile and repoints every
     ``agent_profiles.*.llm_profile_ref == name`` to ``new_name`` under the org
     row lock, so a referencing Agent Profile never dangles. Both collections are
-    written back in the same transaction.
+    written back in the same transaction, and every member's personal Agent
+    Profiles (``org_member.agent_profiles``) are repointed the same way.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -576,6 +626,46 @@ async def rename_profile(
         after = agent_profiles.model_dump(mode='json', context={'expose_secrets': True})
         if after != before:
             org.agent_profiles = after
+        # Personal Agent Profiles reference org LLM profiles by name too.
+        members = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for member in members:
+            personal = load_member_agent_profiles(member)
+            personal_before = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            cascade_rename(personal, name, request.new_name)
+            personal_after = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            if personal_after != personal_before:
+                member.agent_profiles = personal_after
+        # Model Routers name LLM profiles too (classifier / class targets);
+        # repoint them under the same lock so no router dangles after a rename.
+        routers = load_meta_profiles(org)
+        routers_changed = False
+        for config in routers.profiles.values():
+            if config.classifier_model == name:
+                config.classifier_model = request.new_name
+                routers_changed = True
+            for item in config.classes:
+                if item.model == name:
+                    item.model = request.new_name
+                    routers_changed = True
+        if routers_changed:
+            org.meta_profiles = routers.model_dump(mode='json')
         await session.execute(
             update(OrgMember)
             .where(

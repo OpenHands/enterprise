@@ -26,6 +26,9 @@ updates:
         applies-to: "version-updates"
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "npm"
     directory: "/frontend"
@@ -35,9 +38,6 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
     groups:
-      docusaurus:
-        patterns:
-          - "*docusaurus*"
       eslint:
         patterns:
           - "*eslint*"
@@ -49,30 +49,9 @@ updates:
         applies-to: "version-updates"
         patterns:
           - "*"
-
-  - package-ecosystem: "npm"
-    directory: "/docs"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-    cooldown:
-      default-days: 7
-    open-pull-requests-limit: 5
-    groups:
-      docusaurus:
-        patterns:
-          - "*docusaurus*"
-      eslint:
-        patterns:
-          - "*eslint*"
-      security-all:
-        applies-to: "security-updates"
-        patterns:
-          - "*"
-      version-all:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directories:

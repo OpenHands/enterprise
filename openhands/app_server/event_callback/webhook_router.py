@@ -448,6 +448,8 @@ async def on_conversation_update(
         git_provider=existing.git_provider,
         trigger=trigger,
         pr_number=existing.pr_number,
+        pull_requests=existing.pull_requests,
+        additional_repositories=existing.additional_repositories,
         # Preserve parent/child relationship and other metadata
         parent_conversation_id=existing.parent_conversation_id,
         metrics=conversation_info.stats.get_combined_metrics(),
@@ -646,18 +648,24 @@ async def get_secret(
     jwt_service: JwtService = jwt_dependency,
 ) -> Response:
     """Given an access token, retrieve a user secret. The access token
-    is limited by user and provider type, and may include a timeout, limiting
-    the damage in the event that a token is ever leaked"""
+    is limited by user and either an OAuth provider row (``oauth_provider_id``)
+    or a provider type, and may include a timeout, limiting the damage in the
+    event that a token is ever leaked"""
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
         payload = jwt_service.verify_jws_token(access_token)
         user_id = payload['user_id']
-        provider_type = ProviderType(payload['provider_type'])
-
         user_context = await _resolve_user_context(user_id)
 
-        secret = await user_context.get_latest_token(provider_type)
+        secret: str | SecretStr | None
+        if 'oauth_provider_id' in payload:
+            secret = await user_context.get_named_oauth_secret_value(
+                int(payload['oauth_provider_id'])
+            )
+        else:
+            provider_type = ProviderType(payload['provider_type'])
+            secret = await user_context.get_latest_token(provider_type)
         if secret is None:
             raise HTTPException(404, 'No such provider')
         if isinstance(secret, SecretStr):

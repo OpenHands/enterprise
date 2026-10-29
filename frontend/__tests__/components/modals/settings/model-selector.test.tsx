@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import OptionService from "#/api/option-service/option-service.api";
 import { ModelSelector } from "#/components/shared/modals/settings/model-selector";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import type {
   LLMProvider,
   LLMModel,
@@ -86,6 +88,30 @@ function renderWithQuery(ui: React.ReactElement) {
     <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
   );
 }
+
+describe("ModelSelector without a LiteLLM gateway", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("labels the openhands provider OpenHands Cloud", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          enable_litellm: false,
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithQuery(<ModelSelector />);
+
+    await user.click(screen.getByLabelText("LLM Provider"));
+
+    expect(await screen.findByText("OpenHands Cloud")).toBeInTheDocument();
+    expect(screen.queryByText("OpenHands")).not.toBeInTheDocument();
+  });
+});
 
 describe("ModelSelector", () => {
   it("should display the provider selector", async () => {

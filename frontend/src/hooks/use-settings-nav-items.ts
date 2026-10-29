@@ -72,7 +72,13 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const featureFlags = config?.feature_flags;
   const enableIntegratedIdp = !!featureFlags?.enable_integrated_idp;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
-  const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
+  // OHE-3456: with the Agent Profiles page on, the agent kind comes from the
+  // active profile rather than the single-agent settings this guard reads
+  // (and the page that edited them is gone), so the ACP guard is off.
+  const agentProfilesEnabled =
+    isSaasMode && !!featureFlags?.enable_agent_profiles_page;
+  const isAcpAgent =
+    !agentProfilesEnabled && settings?.agent_settings?.agent_kind === "acp";
   const acpServerName = isAcpAgent
     ? (config?.acp_providers?.find(
         ({ key }) => key === settings?.agent_settings?.acp_server,
@@ -83,6 +89,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
+
+  // OHE-3456: the Agent Profiles page supersedes the single-agent page.
+  if (agentProfilesEnabled) {
+    items = items.filter((item) => item.to !== "/settings/agent");
+  }
 
   // Budgets/"Your budget" stay reachable (they render a "please enable
   // LiteLLM" placeholder) but are removed from the nav when disabled.

@@ -45,6 +45,13 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
 
 export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
 
+/** The ``named_secret`` a new provider of ``brand`` starts with -- the
+ * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
+ * (migration 198 backfills it). Login-only brands expose no token. */
+export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
+  return brand === "enterprise_sso" ? null : `${brand.toUpperCase()}_TOKEN`;
+}
+
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
     option.key !== "enterprise_sso",
@@ -129,6 +136,8 @@ export interface AuthProviderFormState {
   permittedDriftSeconds: string;
   /** ``""`` when unset -- see ``OAuthProviderDetails.legacy_keycloak_type``. */
   legacyKeycloakType: LegacyKeycloakType | "";
+  /** ``""`` when unset -- see ``OAuthProviderDetails.named_secret``. */
+  namedSecret: string;
   metadataUrl: string;
   idpEntityId: string;
   ssoUrl: string;
@@ -168,6 +177,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   scopes: "",
   permittedDriftSeconds: DEFAULT_PERMITTED_DRIFT_SECONDS,
   legacyKeycloakType: "",
+  namedSecret: "",
   metadataUrl: "",
   idpEntityId: "",
   ssoUrl: "",
@@ -200,6 +210,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       scopes: details.scopes?.join(" ") ?? "",
       permittedDriftSeconds: String(details.permitted_drift_seconds),
       legacyKeycloakType: details.legacy_keycloak_type ?? "",
+      namedSecret: details.named_secret ?? "",
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -254,7 +265,8 @@ function oauthDetailsUnchanged(
     form.scopes.trim() === initial.scopes.trim() &&
     form.permittedDriftSeconds.trim() ===
       initial.permittedDriftSeconds.trim() &&
-    form.legacyKeycloakType === initial.legacyKeycloakType
+    form.legacyKeycloakType === initial.legacyKeycloakType &&
+    form.namedSecret.trim() === initial.namedSecret.trim()
   );
 }
 
@@ -318,6 +330,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       ? Number(form.permittedDriftSeconds)
       : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
     legacy_keycloak_type: form.legacyKeycloakType || null,
+    named_secret: form.namedSecret.trim() || null,
   };
 }
 
