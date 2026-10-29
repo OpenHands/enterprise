@@ -136,18 +136,19 @@ class TestRepoVerificationHandling:
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
-    async def test_no_repo_mentioned_shows_button_and_dropdown(
+    async def test_no_repo_mentioned_shows_button_dropdown_and_start(
         self,
         mock_send_message,
         mock_get_redis_client_async,
         slack_manager,
         slack_new_conversation_view,
     ):
-        """Test that when no repo is mentioned, a button and dropdown are shown.
+        """Test that when no repo is mentioned, the repository picker is shown.
 
         The form shows:
         1. A "No Repository" button - immediately clickable without loading
-        2. An external_select dropdown - for searching repositories dynamically
+        2. A multi_external_select dropdown - for searching repositories dynamically
+        3. A "Start" button - starts with the chosen repositories
         """
         # Setup Redis mock
         mock_redis = AsyncMock()
@@ -168,7 +169,7 @@ class TestRepoVerificationHandling:
         mock_send_message.assert_called_once()
         call_args = mock_send_message.call_args
 
-        # Should be the repo selection form with button + external_select
+        # Should be the repo selection form with buttons + multi_external_select
         message = call_args[0][0]
         assert isinstance(message, dict)
         assert message.get('text') == 'Choose a Repository:'
@@ -178,17 +179,21 @@ class TestRepoVerificationHandling:
         assert actions_block is not None
         elements = actions_block.get('elements', [])
 
-        # Should have 2 elements: button and external_select
-        assert len(elements) == 2
+        # Should have 3 elements: button, multi_external_select and button
+        assert len(elements) == 3
 
         # First element: "No Repository" button (immediately available)
         assert elements[0].get('type') == 'button'
         assert elements[0].get('action_id').startswith('no_repository:')
         assert elements[0].get('value') == '-'
 
-        # Second element: external_select for searching repos
-        assert elements[1].get('type') == 'external_select'
-        assert elements[1].get('action_id').startswith('repository_select:')
+        # Second element: multi_external_select for searching repos
+        assert elements[1].get('type') == 'multi_external_select'
+        assert elements[1].get('action_id').startswith('repositories_select:')
+
+        # Third element: "Start" button for the chosen repos
+        assert elements[2].get('type') == 'button'
+        assert elements[2].get('action_id').startswith('start_with_repositories:')
 
     @pytest.mark.asyncio
     @patch('integrations.slack.slack_manager.get_redis_client_async')
@@ -280,7 +285,7 @@ class TestRepoVerificationHandling:
 
             mock_receive.assert_called_once()
             mock_replace_form.assert_awaited_once_with(
-                'https://hooks.slack.com/actions/test', None
+                'https://hooks.slack.com/actions/test', []
             )
 
         expected_claim_key = (
