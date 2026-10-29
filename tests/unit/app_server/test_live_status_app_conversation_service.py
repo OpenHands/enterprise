@@ -4450,6 +4450,83 @@ class TestLiveStatusAppConversationService:
         )
         assert rotated
 
+    def _use_agent_server_below_the_sdk_floor(self) -> None:
+        """Run the real runtime check against an agent-server on SDK 1.50.1."""
+        del self.service._ensure_profile_runtime  # the shared stub from setup
+
+        def get(url, **_):
+            response = Mock(raise_for_status=Mock())
+            response.json.return_value = (
+                {'sdk_version': '1.50.1', 'usable_tools': ['terminal']}
+                if url.endswith('/server_info')
+                else {'profiles': []}
+            )
+            return response
+
+        self.mock_httpx_client.get = AsyncMock(side_effect=get)
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_in_sandbox_below_the_sdk_floor(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """An ordinary launch still starts in a sandbox whose agent-server predates
+        the Agent Profile runtime, such as one created before an image bump."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self._use_agent_server_below_the_sdk_floor()
+        self.service._process_pending_messages = AsyncMock()
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(conversation_id=conversation_id)
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posted = [call.args[0] for call in self.mock_httpx_client.post.await_args_list]
+        assert 'http://agent-server:8000/api/conversations' in posted
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_persona_below_the_sdk_floor(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """That agent-server would drop the persona silently, so the start fails
+        with the upgrade error instead of launching without it."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self._use_agent_server_below_the_sdk_floor()
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={'persona': 'Review only.'}
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(conversation_id=conversation_id)
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert 'to launch an Agent Profile persona' in tasks[-1].detail
+        self.mock_httpx_client.post.assert_not_awaited()
+
     async def test_start_app_conversation_in_sandbox_whose_image_is_no_longer_advertised(
         self,
     ):
@@ -6190,17 +6267,54 @@ class TestLiveStatusAppConversationService:
         # Verify empty results
         assert len(result.items) == 0
 
+    @pytest.mark.parametrize(
+        'launch, requirement',
+        [('persona', 'an Agent Profile persona'), ('acp', 'an ACP agent')],
+    )
+    @pytest.mark.asyncio
+    async def test_old_runtime_rejects_launches_it_cannot_honor(
+        self, launch, requirement
+    ):
+        """An agent-server below the floor drops a persona silently and rejects
+        the ACP settings transport, so those launches fail with the upgrade error."""
+        response = Mock()
+        response.json.return_value = {'sdk_version': '1.50.1'}
+        self.mock_httpx_client.get = AsyncMock(return_value=response)
+        agent_settings = (
+            ACPAgentSettings(acp_server='codex')
+            if launch == 'acp'
+            else self.mock_user.agent_settings.model_copy(
+                update={'persona': 'Review only.'}
+            )
+        )
+
+        with pytest.raises(SandboxError, match=f'to launch {requirement}'):
+            await LiveStatusAppConversationService._ensure_profile_runtime(
+                self.service, 'http://sandbox', 'session-key', agent_settings
+            )
+
     @pytest.mark.parametrize('version', ['1.50.1', '1.53.0', 'unknown', None])
     @pytest.mark.asyncio
-    async def test_old_runtime_is_rejected_before_launch(self, version):
+    async def test_old_runtime_lets_an_ordinary_launch_proceed(self, version):
+        """Everything else a launch sends is honored by an old agent-server, so
+        the start goes ahead instead of stranding the sandbox after an image bump."""
         response = Mock()
-        response.json.return_value = {'sdk_version': version}
+        response.json.return_value = {
+            'sdk_version': version,
+            'usable_tools': ['browser_tool_set'],
+        }
         self.mock_httpx_client.get = AsyncMock(return_value=response)
-        with pytest.raises(SandboxError, match='Upgrade its image'):
+
+        browser_available = (
             await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service, 'http://sandbox', 'session-key'
+                self.service,
+                'http://sandbox',
+                'session-key',
+                self.mock_user.agent_settings,
             )
-        self.mock_httpx_client.post.assert_not_called()
+        )
+
+        assert browser_available is True
 
     @pytest.mark.parametrize('usable_tools', [[], ['terminal'], ['browser_tool_set']])
     @pytest.mark.asyncio
@@ -6213,7 +6327,10 @@ class TestLiveStatusAppConversationService:
         self.mock_httpx_client.get = AsyncMock(return_value=response)
         browser_available = (
             await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service, 'http://sandbox', 'session-key'
+                self.service,
+                'http://sandbox',
+                'session-key',
+                self.mock_user.agent_settings,
             )
         )
         assert browser_available == ('browser_tool_set' in usable_tools)
