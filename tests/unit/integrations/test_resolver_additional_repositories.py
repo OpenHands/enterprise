@@ -263,7 +263,7 @@ async def test_inaccessible_comment_mention_is_reported_and_start_continues(
 ):
     view = make(
         f'@openhands use {_mention(other)}, src/components and '
-        'https://example.com/acme/secret'
+        'https://github.com/acme/secret'
     )
 
     request, _ = await _start(

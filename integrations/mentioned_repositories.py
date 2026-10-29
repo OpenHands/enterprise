@@ -7,6 +7,7 @@ linked providers and clone the verified ones beside the primary repository.
 
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from integrations.utils import infer_repo_from_message
 from openhands.app_server.app_conversation.additional_repositories import (
@@ -17,8 +18,29 @@ from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType, Repository
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import BITBUCKET_DATA_CENTER_HOST
 
 _URL = re.compile(r'(?:https?://|git@)[^\s<>"\'()\[\]|]+')
+
+
+def _host_of(url: str) -> str:
+    if url.startswith('git@'):
+        return url[4:].split(':', 1)[0].lower()
+    return (urlsplit(url).hostname or '').lower()
+
+
+def _git_hosts(provider_handler: ProviderHandler | None) -> set[str]:
+    hosts = {*ProviderHandler.PROVIDER_DOMAINS.values(), 'visualstudio.com'}
+    hosts.add(BITBUCKET_DATA_CENTER_HOST)
+    if provider_handler:
+        hosts.update(t.host or '' for t in provider_handler.provider_tokens.values())
+    return {_host_of(h if '://' in h else f'https://{h}') for h in hosts if h}
+
+
+def _on_git_host(url: str, hosts: set[str]) -> bool:
+    """Subdomains count too (ssh.dev.azure.com, org.visualstudio.com)."""
+    host = _host_of(url)
+    return any(host == h or host.endswith('.' + h) for h in hosts)
 
 
 @dataclass
@@ -184,11 +206,12 @@ async def resolve_mentioned_repositories(
         logger.exception(f'{log_prefix} Could not verify mentioned repositories')
         return MentionedRepositories()
 
-    # Bare a/b text is often a file path; only a repository URL that cannot be
-    # accessed is worth telling the user about.
-    url_mentions = infer_repo_from_message(' '.join(_URL.findall(comment)))
+    # Bare a/b text is often a file path and most links are docs; only a URL on
+    # a Git provider's host that cannot be accessed is worth reporting.
+    hosts = _git_hosts(provider_handler)
+    repo_urls = [u for u in _URL.findall(comment) if _on_git_host(u, hosts)]
     selection = select_additional_repositories(
-        primary, verified, unverified, url_mentions
+        primary, verified, unverified, infer_repo_from_message(' '.join(repo_urls))
     )
     logger.info(
         '%s repo resolution primary=%s inferred=%s additional=%s',

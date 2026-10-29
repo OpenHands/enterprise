@@ -60,7 +60,9 @@ async def test_only_inaccessible_repository_urls_are_reported():
     handler = _handler(['acme/api'])
     result = await _resolve(
         handler,
-        '@openhands use acme/api; the form in src/components is broken, '
+        '@openhands use acme/api; the form in src/components is broken, as in '
+        'https://docs.python.org/3/library/re.html and '
+        'https://stackoverflow.com/questions/12345/how-to-x; '
         'see also https://github.com/acme/missing',
     )
     assert [r.full_name for r in result.additional] == ['acme/api']
@@ -133,3 +135,15 @@ def test_messages():
         "I'm on it in acme/web, together with acme/a and acme/b!"
     )
     assert join_names(['a', 'b', 'c']) == 'a, b and c'
+
+
+@pytest.mark.asyncio
+async def test_inaccessible_self_hosted_url_is_reported():
+    handler = _handler([])
+    handler.provider_tokens = {
+        ProviderType.GITLAB: MagicMock(host='https://git.example.com')
+    }
+    result = await _resolve(
+        handler, '@openhands see https://git.example.com/team/svc/-/issues/3'
+    )
+    assert result.inaccessible == ['team/svc']
