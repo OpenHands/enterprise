@@ -1728,6 +1728,32 @@ class TestLiveStatusAppConversationService:
         assert llm.stream is True
 
     @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_sends_llm_without_connection_link(self):
+        """The agent server has no copy of the org's connections, so the start
+        LLM keeps the resolved key and base_url but drops the link."""
+        from pydantic import SecretStr as _SecretStr
+
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={
+                'llm': LLM(
+                    model='anthropic/claude-test',
+                    base_url='https://llm-proxy.example.test',
+                    api_key=_SecretStr('sk-proxy'),
+                    provider_connection_id='proxy',
+                )
+            }
+        )
+        self.mock_user_context.get_mcp_api_key.return_value = None
+
+        llm, _ = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id
+        )
+
+        assert llm.provider_connection_id is None
+        assert llm.base_url == 'https://llm-proxy.example.test'
+        assert llm.api_key.get_secret_value() == 'sk-proxy'
+
+    @pytest.mark.asyncio
     async def test_configure_llm_preserves_reasoning_effort(self):
         """User-configured reasoning_effort must survive _configure_llm.
 
