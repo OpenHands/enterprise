@@ -67,6 +67,12 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.codex_credential_binding import (
+    CODEX_ACP_SERVER,
+    activate_codex_credential_binding,
+    credential_binding_callback_url,
+    reactivate_sandbox_codex_credential_bindings,
+)
 from openhands.app_server.app_conversation.conversation_links import (
     get_conversation_ui_url,
 )
@@ -137,6 +143,7 @@ from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     grouped_workspace_dir,
 )
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth.user_auth import AuthType
@@ -159,6 +166,10 @@ from openhands.app_server.utils.redis_lock import (
     try_acquire_redis_lock,
 )
 from openhands.sdk import Agent, AgentContext, LocalWorkspace, Tool
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_REGEX
@@ -861,6 +872,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Profiles must still be available before the conversation is created.
             await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
 
+            await self._activate_codex_credential_binding(
+                request, user, sandbox, agent_server_url, conversation_id
+            )
+
             # update status
             task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
             task.agent_server_url = agent_server_url
@@ -1400,7 +1415,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         yield task
 
         # Resume if paused
-        if sandbox.status == SandboxStatus.PAUSED:
+        resumed = sandbox.status == SandboxStatus.PAUSED
+        if resumed:
             await self.sandbox_service.resume_sandbox(sandbox.id)
 
         # Check for immediate error states
@@ -1416,12 +1432,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             raise SandboxError(f'Sandbox not startable: {sandbox.id}')
 
         # Use shared wait_for_sandbox_running utility to poll for ready state
-        await self.sandbox_service.wait_for_sandbox_running(
+        running = await self.sandbox_service.wait_for_sandbox_running(
             sandbox.id,
             timeout=self.sandbox_startup_timeout,
             poll_interval=self.sandbox_startup_poll_frequency,
             httpx_client=self.httpx_client,
         )
+        if resumed and self.web_url:
+            # The resumed agent server refuses to hydrate a Codex conversation
+            # bound to the saved credential until its binding is re-sent.
+            await reactivate_sandbox_codex_credential_bindings(
+                self.httpx_client,
+                sandbox=running,
+                agent_server_url=self._get_agent_server_url(running),
+                web_url=self.web_url,
+            )
 
     async def _mint_azure_devops_access_token(
         self, task: AppConversationStartTask
@@ -1609,6 +1634,62 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
         except Exception:
             _logger.warning('Failed to prune sandbox profiles', exc_info=True)
+
+    async def _activate_codex_credential_binding(
+        self,
+        request: AppConversationStartRequest,
+        user: UserInfo,
+        sandbox: SandboxInfo,
+        agent_server_url: str,
+        conversation_id: UUID,
+    ) -> None:
+        """Bind a Codex conversation's credential to the saved ``CODEX_AUTH_JSON``.
+
+        Registered before the create so the agent server consumes the binding at
+        create, keeps the rotated ChatGPT refresh token in sync with the saved
+        secret, and strips the plaintext copy the start request still carries
+        (OHE-3289). Skipped, leaving today's static copy, when there is no
+        callback URL, the request supplies its own ``CODEX_AUTH_JSON``, or the
+        user has no valid personal one to write a rotation back to (only an
+        authenticated user context owns a secrets store).
+        """
+        agent_settings = user.agent_settings
+        if not (
+            isinstance(agent_settings, ACPAgentSettings)
+            and agent_settings.acp_server == CODEX_ACP_SERVER
+        ):
+            return
+        if not self.web_url or not sandbox.session_api_key:
+            return
+        if request.secrets and CODEX_AUTH_SECRET_NAME in request.secrets:
+            return
+        if not isinstance(self.user_context, AuthUserContext):
+            return
+        # Best-effort like profile seeding: a failure here leaves the static
+        # copy in place rather than blocking the conversation.
+        try:
+            secrets_store = await self.user_context.user_auth.get_secrets_store()
+            secrets = await secrets_store.load_personal()
+            secret = (
+                secrets.custom_secrets.get(CODEX_AUTH_SECRET_NAME) if secrets else None
+            )
+            if secret is None or not is_valid_codex_auth(
+                secret.secret.get_secret_value()
+            ):
+                return
+            await activate_codex_credential_binding(
+                self.httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+                callback_url=credential_binding_callback_url(self.web_url, sandbox.id),
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            _logger.warning(
+                'Failed to bind the Codex credential for conversation %s',
+                conversation_id,
+                exc_info=True,
+            )
 
     def _get_agent_server_url(self, sandbox: SandboxInfo) -> str:
         """Get agent server url for running sandbox."""

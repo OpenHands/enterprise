@@ -31,6 +31,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
     AppConversationInfo,
     AppConversationStartRequest,
+    AppConversationStartTask,
     AppConversationStartTaskStatus,
     AppConversationUpdateRequest,
     ConversationTrigger,
@@ -57,7 +58,11 @@ from openhands.app_server.event_callback.memory_change_callback_processor import
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
 )
-from openhands.app_server.integrations.provider import ProviderToken, ProviderType
+from openhands.app_server.integrations.provider import (
+    CustomSecret,
+    ProviderToken,
+    ProviderType,
+)
 from openhands.app_server.integrations.service_types import SuggestedTask, TaskType
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
@@ -72,6 +77,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
@@ -79,6 +85,7 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
     grouped_workspace_dir,
 )
+from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import (
     NamedOAuthSecret,
@@ -92,6 +99,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
+    ACPAgentSettings,
     ConversationSettings,
     OpenHandsAgentSettings,
     validate_agent_settings,
@@ -168,6 +176,11 @@ def _build_test_user_agent_settings(user: SimpleNamespace) -> OpenHandsAgentSett
         agent_vals['mcp_config'] = mcp_config.model_dump(mode='python')
 
     return Settings(agent_settings=agent_vals).agent_settings
+
+
+_CODEX_AUTH = json.dumps(
+    {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'r0', 'access_token': 'a0'}}
+)
 
 
 class _TestUserInfo(SimpleNamespace):
@@ -391,6 +404,177 @@ class TestLiveStatusAppConversationService:
         # Default mock for hooks loading - returns None (no hooks found)
         # Tests that specifically test hooks loading can override this mock
         self.service._load_hooks_from_workspace = AsyncMock(return_value=None)
+
+    # -- Codex credential binding (OHE-3289) --------------------------------
+
+    def _codex_user(self) -> _TestUserInfo:
+        user = _TestUserInfo(
+            id='test_user_123',
+            llm_model='gpt-4',
+            sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING,
+        )
+        user.agent_settings = ACPAgentSettings(
+            acp_server='codex', acp_model='gpt-5.5/high'
+        )
+        return user
+
+    def _use_owner_secrets(self, codex_auth: str | None) -> Mock:
+        """Give the service an authenticated context whose personal secrets hold
+        ``codex_auth`` (or no ``CODEX_AUTH_JSON`` at all). Returns the user auth."""
+        custom = {}
+        if codex_auth is not None:
+            custom['CODEX_AUTH_JSON'] = CustomSecret(secret=SecretStr(codex_auth))
+        store = Mock()
+        store.load_personal = AsyncMock(return_value=Secrets(custom_secrets=custom))
+        user_auth = Mock()
+        user_auth.get_secrets_store = AsyncMock(return_value=store)
+        self.service.user_context = AuthUserContext(user_auth=user_auth)
+        return user_auth
+
+    def _sandbox(self, status: SandboxStatus, session_api_key: str | None):
+        return SandboxInfo(
+            id='sb-1',
+            created_by_user_id='test_user_123',
+            sandbox_spec_id='spec',
+            status=status,
+            session_api_key=session_api_key,
+            exposed_urls=[
+                ExposedUrl(
+                    name=AGENT_SERVER, url='http://agent-server:8000', port=60000
+                )
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_activate_codex_credential_binding_binds_the_saved_credential(
+        self,
+    ):
+        """A Codex start points the agent server's binding at the saved
+        CODEX_AUTH_JSON through the sandbox-scoped callback, before the create."""
+        conversation_id = uuid4()
+        self._use_owner_secrets(_CODEX_AUTH)
+        self.mock_httpx_client.put = AsyncMock(return_value=Mock())
+
+        await self.service._activate_codex_credential_binding(
+            AppConversationStartRequest(),
+            self._codex_user(),
+            self._sandbox(SandboxStatus.RUNNING, 'session-key'),
+            'http://agent-server:8000',
+            conversation_id,
+        )
+
+        self.mock_httpx_client.put.assert_awaited_once()
+        call = self.mock_httpx_client.put.await_args
+        assert call.args[0] == (
+            'http://agent-server:8000/api/conversations/'
+            f'{conversation_id}/credential-bindings/CODEX_AUTH_JSON'
+        )
+        assert call.kwargs['json'] == {
+            'url': (
+                'https://test.example.com/api/v1/sandboxes/sb-1'
+                '/credential-bindings/CODEX_AUTH_JSON'
+            ),
+            'headers': {'X-Session-API-Key': 'session-key'},
+        }
+        assert call.kwargs['headers'] == {'X-Session-API-Key': 'session-key'}
+
+    @pytest.mark.asyncio
+    async def test_activate_codex_credential_binding_skips_without_a_saved_credential(
+        self,
+    ):
+        """With no personal CODEX_AUTH_JSON to write back to, the start keeps
+        today's static credential and the agent server is left alone."""
+        self._use_owner_secrets(None)
+        self.mock_httpx_client.put = AsyncMock()
+
+        await self.service._activate_codex_credential_binding(
+            AppConversationStartRequest(),
+            self._codex_user(),
+            self._sandbox(SandboxStatus.RUNNING, 'session-key'),
+            'http://agent-server:8000',
+            uuid4(),
+        )
+
+        self.mock_httpx_client.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_activate_codex_credential_binding_skips_an_inline_credential(
+        self,
+    ):
+        """A CODEX_AUTH_JSON passed on the start request is a one-off that has
+        no saved secret behind it, so nothing is bound and nothing is loaded."""
+        user_auth = self._use_owner_secrets(_CODEX_AUTH)
+        self.mock_httpx_client.put = AsyncMock()
+        request = AppConversationStartRequest(
+            secrets={'CODEX_AUTH_JSON': SecretStr(_CODEX_AUTH)}
+        )
+
+        await self.service._activate_codex_credential_binding(
+            request,
+            self._codex_user(),
+            self._sandbox(SandboxStatus.RUNNING, 'session-key'),
+            'http://agent-server:8000',
+            uuid4(),
+        )
+
+        self.mock_httpx_client.put.assert_not_awaited()
+        user_auth.get_secrets_store.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_rebinds_codex_credentials_after_a_resume(
+        self,
+    ):
+        """Resuming a paused sandbox re-sends the Codex bindings its agent server
+        waits for, using the session key it has once it is running."""
+        paused = self._sandbox(SandboxStatus.PAUSED, None)
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.mock_sandbox_service.get_sandbox = AsyncMock(return_value=paused)
+        self.mock_sandbox_service.resume_sandbox = AsyncMock(return_value=True)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(sandbox_id='sb-1'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.reactivate_sandbox_codex_credential_bindings',
+            new=AsyncMock(),
+        ) as rebind:
+            async for _ in self.service._wait_for_sandbox_start(task):
+                pass
+
+        self.mock_sandbox_service.resume_sandbox.assert_awaited_once_with('sb-1')
+        rebind.assert_awaited_once_with(
+            self.mock_httpx_client,
+            sandbox=running,
+            agent_server_url='http://agent-server:8000',
+            web_url='https://test.example.com',
+        )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_leaves_a_running_sandbox_alone(self):
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.mock_sandbox_service.get_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.resume_sandbox = AsyncMock()
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(sandbox_id='sb-1'),
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.reactivate_sandbox_codex_credential_bindings',
+            new=AsyncMock(),
+        ) as rebind:
+            async for _ in self.service._wait_for_sandbox_start(task):
+                pass
+
+        self.mock_sandbox_service.resume_sandbox.assert_not_awaited()
+        rebind.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_seed_sandbox_profiles_upserts_resolved_keys_and_prunes(self):

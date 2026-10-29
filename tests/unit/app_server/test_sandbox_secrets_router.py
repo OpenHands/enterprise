@@ -4,11 +4,14 @@ Tests:
 - GET /api/v1/users/me?expose_secrets=true
 - GET /api/v1/sandboxes/{sandbox_id}/settings/secrets
 - GET /api/v1/sandboxes/{sandbox_id}/settings/secrets/{secret_name}
+- GET/PUT /api/v1/sandboxes/{sandbox_id}/credential-bindings/CODEX_AUTH_JSON
 - Shared session_auth.validate_session_key()
 - Integration tests exercising the real auth validation stack via HTTP
 """
 
 import contextlib
+import hashlib
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,7 +19,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
+from openhands.app_server.app_conversation.codex_credential_binding import (
+    CredentialBindingReplacement,
+)
+from openhands.app_server.integrations.provider import (
+    CustomSecret,
+    ProviderHandler,
+    ProviderToken,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
@@ -26,11 +36,14 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_router import (
     get_secret_value,
     list_secret_names,
+    load_codex_credential,
+    replace_codex_credential,
 )
 from openhands.app_server.sandbox.session_auth import (
     validate_session_key,
     validate_session_key_ownership,
 )
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user.user_router import get_current_user
@@ -984,3 +997,145 @@ class TestProviderTokensInEndpoints:
             )
 
         assert response.body == b'custom-override'
+
+
+# ---------------------------------------------------------------------------
+# GET/PUT /sandboxes/{sandbox_id}/credential-bindings/CODEX_AUTH_JSON
+# ---------------------------------------------------------------------------
+
+CODEX_AUTH = json.dumps(
+    {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'r0', 'access_token': 'a0'}}
+)
+ROTATED_CODEX_AUTH = json.dumps(
+    {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'r1', 'access_token': 'a1'}}
+)
+NEWER_CODEX_AUTH = json.dumps(
+    {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'r2', 'access_token': 'a2'}}
+)
+API_KEY_CODEX_AUTH = json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'sk-test'})
+
+
+def _version(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+class _FakeSecretsStore:
+    """The sandbox owner's personal secrets, with every write recorded."""
+
+    def __init__(self, codex_auth: str | None) -> None:
+        custom = {
+            'OTHER': CustomSecret(secret=SecretStr('keep-me'), description='other')
+        }
+        if codex_auth is not None:
+            custom['CODEX_AUTH_JSON'] = CustomSecret(
+                secret=SecretStr(codex_auth), description='codex login'
+            )
+        self.secrets = Secrets(custom_secrets=custom)
+        self.stored: list[Secrets] = []
+
+    async def load_personal(self) -> Secrets:
+        return self.secrets
+
+    async def store(self, secrets: Secrets) -> None:
+        self.stored.append(secrets)
+        self.secrets = secrets
+
+
+def _patch_owner_secrets_store(store: _FakeSecretsStore):
+    ctx = AsyncMock()
+    ctx.user_auth.get_secrets_store = AsyncMock(return_value=store)
+    return patch(
+        'openhands.app_server.sandbox.sandbox_router._get_user_context',
+        return_value=ctx,
+    )
+
+
+@pytest.mark.asyncio
+class TestCodexCredentialBinding:
+    """The versioned callback the agent server's Codex credential binding uses."""
+
+    async def test_get_serves_personal_credential_with_content_version(self):
+        store = _FakeSecretsStore(CODEX_AUTH)
+
+        with _patch_owner_secrets_store(store):
+            result = await load_codex_credential(sandbox_info=_make_sandbox_info())
+
+        assert result.value == CODEX_AUTH
+        assert result.version == _version(CODEX_AUTH)
+
+    async def test_get_404_without_personal_credential(self):
+        with _patch_owner_secrets_store(_FakeSecretsStore(None)):
+            with pytest.raises(HTTPException) as exc_info:
+                await load_codex_credential(sandbox_info=_make_sandbox_info())
+
+        assert exc_info.value.status_code == 404
+
+    async def test_get_422_for_api_key_mode_credential(self):
+        with _patch_owner_secrets_store(_FakeSecretsStore(API_KEY_CODEX_AUTH)):
+            with pytest.raises(HTTPException) as exc_info:
+                await load_codex_credential(sandbox_info=_make_sandbox_info())
+
+        assert exc_info.value.status_code == 422
+
+    async def test_put_stores_rotation_and_returns_its_version(self):
+        store = _FakeSecretsStore(CODEX_AUTH)
+        replacement = CredentialBindingReplacement(
+            expected_version=_version(CODEX_AUTH), value=ROTATED_CODEX_AUTH
+        )
+
+        with _patch_owner_secrets_store(store):
+            result = await replace_codex_credential(
+                replacement, sandbox_info=_make_sandbox_info()
+            )
+
+        assert result.version == _version(ROTATED_CODEX_AUTH)
+        saved = store.secrets.custom_secrets
+        assert saved['CODEX_AUTH_JSON'].secret.get_secret_value() == ROTATED_CODEX_AUTH
+        assert saved['CODEX_AUTH_JSON'].description == 'codex login'
+        assert saved['OTHER'].secret.get_secret_value() == 'keep-me'
+        assert len(store.stored) == 1
+
+    async def test_put_409_for_stale_version_without_writing(self):
+        store = _FakeSecretsStore(ROTATED_CODEX_AUTH)
+        replacement = CredentialBindingReplacement(
+            expected_version=_version(CODEX_AUTH), value=NEWER_CODEX_AUTH
+        )
+
+        with _patch_owner_secrets_store(store):
+            with pytest.raises(HTTPException) as exc_info:
+                await replace_codex_credential(
+                    replacement, sandbox_info=_make_sandbox_info()
+                )
+
+        assert exc_info.value.status_code == 409
+        assert store.stored == []
+
+    async def test_put_422_for_api_key_mode_value(self):
+        store = _FakeSecretsStore(CODEX_AUTH)
+        replacement = CredentialBindingReplacement(
+            expected_version=_version(CODEX_AUTH), value=API_KEY_CODEX_AUTH
+        )
+
+        with _patch_owner_secrets_store(store):
+            with pytest.raises(HTTPException) as exc_info:
+                await replace_codex_credential(
+                    replacement, sandbox_info=_make_sandbox_info()
+                )
+
+        assert exc_info.value.status_code == 422
+        assert store.stored == []
+
+    async def test_put_404_when_credential_was_deleted(self):
+        store = _FakeSecretsStore(None)
+        replacement = CredentialBindingReplacement(
+            expected_version=_version(CODEX_AUTH), value=ROTATED_CODEX_AUTH
+        )
+
+        with _patch_owner_secrets_store(store):
+            with pytest.raises(HTTPException) as exc_info:
+                await replace_codex_credential(
+                    replacement, sandbox_info=_make_sandbox_info()
+                )
+
+        assert exc_info.value.status_code == 404
+        assert store.stored == []
