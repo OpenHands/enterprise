@@ -62,7 +62,9 @@ async def test_only_inaccessible_repository_urls_are_reported():
         handler,
         '@openhands use acme/api; the form in src/components is broken, as in '
         'https://docs.python.org/3/library/re.html and '
-        'https://stackoverflow.com/questions/12345/how-to-x; '
+        'https://stackoverflow.com/questions/12345/how-to-x, '
+        'https://docs.github.com/en/rest/pulls/pulls and '
+        'https://gist.github.com/alice/abc123; '
         'see also https://github.com/acme/missing',
     )
     assert [r.full_name for r in result.additional] == ['acme/api']
@@ -147,3 +149,11 @@ async def test_inaccessible_self_hosted_url_is_reported():
         handler, '@openhands see https://git.example.com/team/svc/-/issues/3'
     )
     assert result.inaccessible == ['team/svc']
+
+
+@pytest.mark.asyncio
+async def test_inaccessible_azure_devops_ssh_url_is_reported():
+    result = await _resolve(
+        _handler([]), '@openhands see git@ssh.dev.azure.com:v3/org1/proj/svc'
+    )
+    assert result.inaccessible == ['org1/proj/svc']

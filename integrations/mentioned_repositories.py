@@ -29,8 +29,13 @@ def _host_of(url: str) -> str:
     return (urlsplit(url).hostname or '').lower()
 
 
+# Azure DevOps serves repositories on subdomains too (ssh.dev.azure.com,
+# <org>.visualstudio.com); other providers' subdomains are docs or gists.
+_AZURE_DEVOPS_HOSTS = ('dev.azure.com', 'visualstudio.com')
+
+
 def _git_hosts(provider_handler: ProviderHandler | None) -> set[str]:
-    hosts = {*ProviderHandler.PROVIDER_DOMAINS.values(), 'visualstudio.com'}
+    hosts = {*ProviderHandler.PROVIDER_DOMAINS.values(), *_AZURE_DEVOPS_HOSTS}
     hosts.add(BITBUCKET_DATA_CENTER_HOST)
     if provider_handler:
         hosts.update(t.host or '' for t in provider_handler.provider_tokens.values())
@@ -38,9 +43,8 @@ def _git_hosts(provider_handler: ProviderHandler | None) -> set[str]:
 
 
 def _on_git_host(url: str, hosts: set[str]) -> bool:
-    """Subdomains count too (ssh.dev.azure.com, org.visualstudio.com)."""
     host = _host_of(url)
-    return any(host == h or host.endswith('.' + h) for h in hosts)
+    return host in hosts or host.endswith(tuple(f'.{h}' for h in _AZURE_DEVOPS_HOSTS))
 
 
 @dataclass
