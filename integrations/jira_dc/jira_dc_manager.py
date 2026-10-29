@@ -541,8 +541,22 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             return True
 
         try:
-            target_str = f'{jira_dc_view.job_context.issue_description}\n{jira_dc_view.job_context.user_msg}'
-            mentioned_repos = infer_repo_from_message(target_str)
+            # Mentions in the triggering comment come first: they are the
+            # user's deliberate choice, while the description often links to
+            # Jira, Confluence or upstream issues that also look like a/b.
+            comment_mentions = infer_repo_from_message(
+                jira_dc_view.job_context.user_msg or ''
+            )
+            mentioned_repos = list(
+                dict.fromkeys(
+                    [
+                        *comment_mentions,
+                        *infer_repo_from_message(
+                            jira_dc_view.job_context.issue_description or ''
+                        ),
+                    ]
+                )
+            )
 
             if not mentioned_repos:
                 jira_dc_view.selected_repo = None
@@ -581,15 +595,18 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 return False
 
             # The first verified mention is the primary repository; the rest
-            # are cloned beside it. Mentions that could not be accessed are
-            # reported in the reply and do not stop the start.
+            # are cloned beside it. Only mentions from the comment that could
+            # not be accessed are reported: unverified text from the
+            # description is usually not a repository at all.
             primary, *additional = verified_repos
             jira_dc_view.selected_repo = primary.full_name
             jira_dc_view.additional_repos = additional[:MAX_ADDITIONAL_REPOSITORIES]
             jira_dc_view.skipped_repos = [
                 r.full_name for r in additional[MAX_ADDITIONAL_REPOSITORIES:]
             ]
-            jira_dc_view.inaccessible_repos = unverified_repos
+            jira_dc_view.inaccessible_repos = [
+                m for m in unverified_repos if m in comment_mentions
+            ]
             logger.info(
                 '[Jira DC] Inferred repository: %s additional=%s',
                 primary.full_name,

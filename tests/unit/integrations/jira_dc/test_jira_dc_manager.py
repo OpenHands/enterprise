@@ -1345,6 +1345,130 @@ class TestIsJobRequested:
         jira_dc_manager._send_inaccessible_repos_comment.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_is_job_requested_prefers_repos_named_in_the_comment(
+        self, jira_dc_manager, sample_user_auth
+    ):
+        """A repository named in the triggering comment is the primary even
+        when the description links to another repository first."""
+        mock_view = MagicMock(spec=JiraDcNewConversationView)
+        mock_view.saas_user_auth = sample_user_auth
+        mock_view.job_context = MagicMock()
+        mock_view.job_context.issue_key = 'PROJ-1'
+        mock_view.job_context.issue_description = (
+            'Upstream bug: https://github.com/psf/requests/issues/6000'
+        )
+        mock_view.job_context.user_msg = '@openhands please fix in acme/api'
+        repos = {
+            'psf/requests': Repository(
+                id='1',
+                full_name='psf/requests',
+                stargazers_count=0,
+                git_provider=ProviderType.GITHUB,
+                is_public=True,
+            ),
+            'acme/api': Repository(
+                id='2',
+                full_name='acme/api',
+                stargazers_count=0,
+                git_provider=ProviderType.GITHUB,
+                is_public=False,
+            ),
+        }
+        handler = MagicMock()
+        handler.verify_repo_provider = AsyncMock(side_effect=lambda n, **_: repos[n])
+        jira_dc_manager._create_provider_handler = AsyncMock(return_value=handler)
+        jira_dc_manager._send_inaccessible_repos_comment = AsyncMock()
+
+        message = Message(source=SourceType.JIRA_DC, message={})
+        result = await jira_dc_manager.is_job_requested(message, mock_view)
+
+        assert result is True
+        assert mock_view.selected_repo == 'acme/api'
+        assert [r.full_name for r in mock_view.additional_repos] == ['psf/requests']
+        assert mock_view.inaccessible_repos == []
+
+    @pytest.mark.asyncio
+    async def test_is_job_requested_ignores_unverified_description_text(
+        self, jira_dc_manager, sample_user_auth
+    ):
+        """Jira and Confluence links or a/b words in the description are not
+        repositories; they neither block the start nor show up in the reply."""
+        mock_view = MagicMock(spec=JiraDcNewConversationView)
+        mock_view.saas_user_auth = sample_user_auth
+        mock_view.job_context = MagicMock()
+        mock_view.job_context.issue_key = 'PROJ-1'
+        mock_view.job_context.issue_description = (
+            'Login fails on the client/server handshake. See '
+            'https://jira.acme.com/browse/PROJ-12 and '
+            'https://confluence.acme.com/display/ENG/Auth'
+        )
+        mock_view.job_context.user_msg = '@openhands fix this in acme/api'
+        repo = Repository(
+            id='2',
+            full_name='acme/api',
+            stargazers_count=0,
+            git_provider=ProviderType.GITHUB,
+            is_public=False,
+        )
+
+        async def _verify(name, **_):
+            if name == 'acme/api':
+                return repo
+            raise Exception('not a repository')
+
+        handler = MagicMock()
+        handler.verify_repo_provider = AsyncMock(side_effect=_verify)
+        jira_dc_manager._create_provider_handler = AsyncMock(return_value=handler)
+        jira_dc_manager._send_inaccessible_repos_comment = AsyncMock()
+
+        message = Message(source=SourceType.JIRA_DC, message={})
+        result = await jira_dc_manager.is_job_requested(message, mock_view)
+
+        assert result is True
+        assert mock_view.selected_repo == 'acme/api'
+        assert mock_view.additional_repos == []
+        assert mock_view.inaccessible_repos == []
+        jira_dc_manager._send_inaccessible_repos_comment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_is_job_requested_reports_unverified_comment_mention(
+        self, jira_dc_manager, sample_user_auth
+    ):
+        """A repository the user asked for in the comment but cannot access is
+        named in the reply; the start still happens with the rest."""
+        mock_view = MagicMock(spec=JiraDcNewConversationView)
+        mock_view.saas_user_auth = sample_user_auth
+        mock_view.job_context = MagicMock()
+        mock_view.job_context.issue_key = 'PROJ-1'
+        mock_view.job_context.issue_description = (
+            'See https://jira.acme.com/browse/PROJ-12'
+        )
+        mock_view.job_context.user_msg = '@openhands work in acme/api and acme/private'
+        repo = Repository(
+            id='2',
+            full_name='acme/api',
+            stargazers_count=0,
+            git_provider=ProviderType.GITHUB,
+            is_public=False,
+        )
+
+        async def _verify(name, **_):
+            if name == 'acme/api':
+                return repo
+            raise Exception('no access')
+
+        handler = MagicMock()
+        handler.verify_repo_provider = AsyncMock(side_effect=_verify)
+        jira_dc_manager._create_provider_handler = AsyncMock(return_value=handler)
+
+        message = Message(source=SourceType.JIRA_DC, message={})
+        result = await jira_dc_manager.is_job_requested(message, mock_view)
+
+        assert result is True
+        assert mock_view.selected_repo == 'acme/api'
+        assert mock_view.inaccessible_repos == ['acme/private']
+
+    @pytest.mark.asyncio
     async def test_is_job_requested_caps_additional_repos(
         self, jira_dc_manager, sample_job_context, sample_user_auth
     ):
