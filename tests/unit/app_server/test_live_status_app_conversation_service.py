@@ -1754,6 +1754,44 @@ class TestLiveStatusAppConversationService:
         assert llm.api_key.get_secret_value() == 'sk-proxy'
 
     @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_keeps_connection_key_on_managed_proxy(
+        self, monkeypatch
+    ):
+        """The managed key refresh must still see the link, so a linked LLM on
+        the managed proxy keeps its connection key (detach comes after it)."""
+        from pydantic import SecretStr as _SecretStr
+
+        self.service.app_mode = 'saas'
+        self.service.openhands_provider_base_url = 'https://llm-proxy.app.all-hands.dev'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        self.mock_user_context.get_mcp_api_key.return_value = None
+        get_key = AsyncMock(return_value='sk-managed-key')
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=AsyncMock(),
+            verify_key=AsyncMock(return_value=False),
+        )
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={
+                'llm': LLM(
+                    model='openhands/claude-test',
+                    base_url='https://llm-proxy.app.all-hands.dev',
+                    api_key=_SecretStr('sk-proxy'),
+                    provider_connection_id='proxy',
+                )
+            }
+        )
+
+        llm, _ = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id
+        )
+
+        assert llm.api_key.get_secret_value() == 'sk-proxy'
+        get_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_configure_llm_preserves_reasoning_effort(self):
         """User-configured reasoning_effort must survive _configure_llm.
 

@@ -173,8 +173,8 @@ def resolve_org_profile_llm(
     a linked connection's key and ``base_url``), then the canonical model name
     for bundled-proxy models. ``strict`` raises ``AgentLaunchError`` for a
     missing connection; otherwise the profile resolves with no key. Shared by
-    agent-profile launch (``OrgLLMProfileLoader``) and the
-    ``/api/v1/users/me`` overlay.
+    agent-profile launch (``OrgLLMProfileLoader``), the Model Router inline,
+    and the ``/api/v1/users/me`` overlay.
     """
     try:
         resolved = resolve_profile_llm(
