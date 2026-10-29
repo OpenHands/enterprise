@@ -192,6 +192,28 @@ class TestMentionedRepositories:
         assert [r.full_name for r in view.additional_repos] == ['psf/requests']
 
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    async def test_bitbucket_dc_browse_url_keeps_its_position(
+        self, mock_send_message, slack_manager, make_view, provider_handler, redis
+    ):
+        provider_handler.verify_repo_provider = AsyncMock(
+            side_effect=_verifier(
+                {
+                    'ENG/api': _repo('ENG/api', ProviderType.BITBUCKET_DATA_CENTER),
+                    'ENG/web': _repo('ENG/web', ProviderType.BITBUCKET_DATA_CENTER),
+                }
+            )
+        )
+        view = make_view(
+            '<@U1> fix https://bitbucket.acme.com/projects/ENG/repos/api/browse/src/x.py'
+            ' and update ENG/web'
+        )
+
+        assert await slack_manager.is_job_requested(MagicMock(), view) is True
+
+        assert view.selected_repo == 'ENG/api'
+        assert [r.full_name for r in view.additional_repos] == ['ENG/web']
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
     async def test_slack_permalink_is_not_a_repository(
         self, mock_send_message, slack_manager, make_view, provider_handler, redis
     ):

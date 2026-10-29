@@ -1015,6 +1015,9 @@ def _mentions_in_text_order(user_msg: str) -> list[str]:
 
     def position(mention: str) -> int:
         index = lowered.find(mention.lower())
+        if index < 0:
+            # Bitbucket DC browse URLs (/projects/KEY/repos/slug) infer KEY/slug.
+            index = lowered.find(f'/repos/{mention.rsplit("/", 1)[-1].lower()}')
         return index if index >= 0 else len(lowered)
 
     return sorted(infer_repo_from_message(text), key=position)
