@@ -185,13 +185,15 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
           "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
         token_url:
           "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
-        // Unlike migration 168's link-only row, logging in needs a userinfo
-        // endpoint; the Azure DevOps profile returns the user's `id`.
-        userinfo_url:
-          "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+        // No userinfo endpoint: Entra's is on Graph and rejects an Azure
+        // DevOps access token, so login reads the user from the ID token.
+        userinfo_url: null,
         scopes: [
-          "499b84ac-1321-427f-aa17-267ca6975798/.default",
+          "openid",
+          "email",
+          "profile",
           "offline_access",
+          "499b84ac-1321-427f-aa17-267ca6975798/.default",
         ],
       }),
     },

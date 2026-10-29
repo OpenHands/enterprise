@@ -423,11 +423,13 @@ describe("Super Admin Auth Providers page", () => {
             "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
           token_url:
             "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
-          userinfo_url:
-            "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1",
+          userinfo_url: null,
           scopes: [
-            "499b84ac-1321-427f-aa17-267ca6975798/.default",
+            "openid",
+            "email",
+            "profile",
             "offline_access",
+            "499b84ac-1321-427f-aa17-267ca6975798/.default",
           ],
           legacy_keycloak_type: null,
           named_secret: "AZURE_DEVOPS_TOKEN",
