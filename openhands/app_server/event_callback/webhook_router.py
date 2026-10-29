@@ -456,9 +456,25 @@ async def on_conversation_update(
         # Store merged tags (includes automation context, skills, etc.)
         tags=merged_tags,
     )
-    await app_conversation_info_service.save_app_conversation_info(
-        app_conversation_info
-    )
+    if is_new_conversation:
+        # The stub was read before the conversation's start saved its row; that
+        # save may have happened since. Insert only if the row is still absent so
+        # the stub's defaults never replace the start's title and repositories.
+        is_new_conversation = (
+            await app_conversation_info_service.create_app_conversation_info(
+                app_conversation_info
+            )
+        )
+        if not is_new_conversation:
+            _logger.info(
+                'Conversation %s was saved by its start while the webhook ran; '
+                'keeping that row',
+                conversation_info.id,
+            )
+    else:
+        await app_conversation_info_service.save_app_conversation_info(
+            app_conversation_info
+        )
 
     # Register SetTitleCallbackProcessor for new conversations created via webhook.
     # This enables auto-titling for conversations created directly on the agent-server

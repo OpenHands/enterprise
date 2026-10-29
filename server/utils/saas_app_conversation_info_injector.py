@@ -418,7 +418,17 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
 
         # Save the base conversation metadata
         await super().save_app_conversation_info(info)
+        await self._save_saas_metadata(info)
+        return info
 
+    async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
+        if not await super().create_app_conversation_info(info):
+            return False
+        await self._save_saas_metadata(info)
+        return True
+
+    async def _save_saas_metadata(self, info: AppConversationInfo) -> None:
+        """Create or update the SAAS metadata row (user and organization) for ``info``."""
         # Get current user_id for SAAS metadata
         # Fall back to info.created_by_user_id for webhook callbacks (which use ADMIN context)
         user_id_str = await self.user_context.get_user_id()
@@ -483,8 +493,6 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 self.db_session.add(saas_metadata)
 
             await self.db_session.commit()
-
-        return info
 
     def _to_info_with_user_id(
         self,
