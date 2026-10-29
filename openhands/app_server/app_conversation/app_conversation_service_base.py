@@ -231,7 +231,8 @@ def _git_credential_helper_script(web_url: str | None) -> str:
     it reads that provider's per-conversation exchange JWT from
     ``_GIT_CREDENTIAL_TOKEN_DIR`` and exchanges it at ``/api/v1/webhooks/secrets``
     for the user's current token. A ``user:secret`` token (Bitbucket) supplies
-    the username; otherwise git uses the configured ``credential.<host>.username``.
+    the username; a bare token or the ``x-token-auth:<token>`` form leaves the
+    configured ``credential.<host>.username`` in place.
     Mirrors ``_azure_devops_credential_helper_script``.
     """
     app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
@@ -267,6 +268,10 @@ if [ -z "$secret" ]; then
 fi
 
 case "$secret" in
+  x-token-auth:*)
+    # Not a user: keep the username configured for this host.
+    printf 'password=%s\\n' "${{secret#*:}}"
+    ;;
   *:*)
     printf 'username=%s\\n' "${{secret%%:*}}"
     printf 'password=%s\\n' "${{secret#*:}}"

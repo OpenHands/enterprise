@@ -1478,6 +1478,19 @@ async def test_configure_git_credential_helpers_command_and_helper_run(
     )
     assert got.stdout == 'username=alice@example.com\npassword=api-token\n'
 
+    # A Bitbucket token stored as x-token-auth:<token> is not a user: git keeps
+    # the username configured for the host (the Data Center lookup may have
+    # chosen the token owner's name for servers that reject x-token-auth).
+    env['FAKE_SECRET'] = 'x-token-auth:access-token'
+    got = subprocess.run(
+        [str(helper), 'gitlab', 'get'],
+        input='protocol=https\nhost=gitlab.example.com\n\n',
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert got.stdout == 'password=access-token\n'
+
     # Other operations (store, erase) are ignored.
     got = subprocess.run(
         [str(helper), 'gitlab', 'store'],
