@@ -7,7 +7,7 @@ import re
 import shlex
 import tempfile
 from abc import ABC
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
@@ -203,6 +203,83 @@ fi
 
 printf '%s\\n' "username=oauth2"
 printf 'password=%s\\n' "$token"
+"""
+
+
+# Per-conversation exchange JWTs for the other git providers, one file per
+# provider (``<provider>.token``, mode 600), read by the shared credential helper
+# below. The provider token the helper returns to git is never persisted.
+_GIT_CREDENTIAL_TOKEN_DIR = '$HOME/.openhands/git-credentials'
+_GIT_CREDENTIAL_HELPER = '$HOME/.openhands/git-credential-helper'
+
+# The git username each provider pairs with a token. Bitbucket tokens stored as
+# ``user:secret`` carry their own username, which the helper uses instead.
+_GIT_CREDENTIAL_USERNAMES = {
+    ProviderType.GITHUB: 'x-access-token',
+    ProviderType.GITLAB: 'oauth2',
+    ProviderType.BITBUCKET: 'x-token-auth',
+    ProviderType.BITBUCKET_DATA_CENTER: 'x-token-auth',
+    ProviderType.FORGEJO: 'x-access-token',
+}
+
+
+def _git_credential_helper_script(web_url: str | None) -> str:
+    """Git credential helper fetching a provider token on demand.
+
+    Installed once per sandbox and configured per provider host as
+    ``credential.<protocol>://<host>.helper = !<helper> <provider>``. On ``get``
+    it reads that provider's per-conversation exchange JWT from
+    ``_GIT_CREDENTIAL_TOKEN_DIR`` and exchanges it at ``/api/v1/webhooks/secrets``
+    for the user's current token. A ``user:secret`` token (Bitbucket) supplies
+    the username; a bare token or the ``x-token-auth:<token>`` form leaves the
+    configured ``credential.<host>.username`` in place.
+    Mirrors ``_azure_devops_credential_helper_script``.
+    """
+    app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
+    return f"""#!/bin/sh
+provider="$1"
+if [ "$2" != "get" ]; then
+  exit 0
+fi
+cat > /dev/null
+token_file="{_GIT_CREDENTIAL_TOKEN_DIR}/$provider.token"
+access_token=""
+if [ -r "$token_file" ]; then
+  access_token="$(cat "$token_file" 2>/dev/null)"
+fi
+webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
+app_base_url={app_base_url}
+if [ -n "$webhook_url" ]; then
+  base_url="${{webhook_url%/api/v1/webhooks}}"
+else
+  base_url="$app_base_url"
+fi
+if [ -z "$access_token" ] || [ -z "$base_url" ]; then
+  exit 0
+fi
+
+secret_url="$base_url/api/v1/webhooks/secrets"
+secret="$(curl -fsS \\
+  -H "X-Access-Token: $access_token" \\
+  "$secret_url" 2>/dev/null)"
+if [ -z "$secret" ]; then
+  echo "openhands: $provider credential exchange failed (token may be expired)" >&2
+  exit 0
+fi
+
+case "$secret" in
+  x-token-auth:*)
+    # Not a user: keep the username configured for this host.
+    printf 'password=%s\\n' "${{secret#*:}}"
+    ;;
+  *:*)
+    printf 'username=%s\\n' "${{secret%%:*}}"
+    printf 'password=%s\\n' "${{secret#*:}}"
+    ;;
+  *)
+    printf 'password=%s\\n' "$secret"
+    ;;
+esac
 """
 
 
@@ -449,6 +526,11 @@ class AppConversationServiceBase(AppConversationService, ABC):
             task._azure_devops_access_token,
             task.request.selected_repository,
             azure_devops_repositories(task.request.additional_repositories),
+        )
+        # Same for the other providers: a helper per provider host, so hooks and
+        # the agent can clone any repository the user can reach with plain git.
+        await self._configure_git_credential_helpers(
+            workspace, getattr(task, '_git_credential_access_tokens', None)
         )
 
         task._additional_repositories = await self.clone_additional_repositories(
@@ -1060,6 +1142,100 @@ class AppConversationServiceBase(AppConversationService, ABC):
             _logger.warning(
                 f'Azure DevOps git credential setup failed: {result.stderr}'
             )
+
+    async def _git_credential_username(self, provider_handler, provider) -> str:
+        """The git username to pair with ``provider``'s token.
+
+        Bitbucket Data Center decides per server and token which username it
+        accepts beside a bare token; ask its service, as the clone URL does.
+        """
+        if provider == ProviderType.BITBUCKET_DATA_CENTER:
+            try:
+                service = provider_handler.get_service(provider)
+                username, _ = await service.get_git_credentials()
+                if username:
+                    return username
+            except Exception as exc:
+                _logger.debug(
+                    f'Bitbucket Data Center git username lookup failed: {exc}'
+                )
+        return _GIT_CREDENTIAL_USERNAMES.get(provider, 'x-access-token')
+
+    async def _configure_git_credential_helpers(
+        self,
+        workspace: AsyncRemoteWorkspace,
+        access_tokens: Mapping[str, str] | None,
+    ) -> None:
+        """Deliver this conversation's per-provider credentials to the sandbox.
+
+        For each provider with a minted exchange JWT, writes the JWT to a
+        mode-600 file and configures the shared credential helper for that
+        provider's git host (``credential.<protocol>://<host>``) in the global
+        git config, so plain ``git clone/fetch/push`` of any repository on that
+        host, from the agent's terminal or a hook, authenticates with the
+        user's current token. The selected repository keeps its authenticated
+        remote URL, which git prefers over a helper. Skips entirely when nothing
+        was minted. Azure DevOps is handled by
+        ``_configure_azure_devops_git_credentials``.
+        """
+        if not isinstance(access_tokens, Mapping) or not access_tokens:
+            return
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+        except Exception as exc:
+            _logger.debug(f'No provider handler for git credential helpers: {exc}')
+            return
+
+        web_url = getattr(self, 'web_url', None)
+        if web_url is None:
+            _logger.debug(
+                'Git credential helper has no configured web_url; '
+                'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
+            )
+        helper_script = _git_credential_helper_script(web_url)
+        commands = [
+            f'token_dir="{_GIT_CREDENTIAL_TOKEN_DIR}"',
+            'mkdir -p "$token_dir"',
+            'chmod 700 "$token_dir"',
+            f'helper="{_GIT_CREDENTIAL_HELPER}"',
+            f'printf %s {shlex.quote(helper_script)} > "$helper"',
+            'chmod 700 "$helper"',
+        ]
+        configured: list[str] = []
+        for value, token in access_tokens.items():
+            try:
+                provider = ProviderType(value)
+            except ValueError:
+                continue
+            if provider == ProviderType.AZURE_DEVOPS or not token:
+                continue
+            try:
+                protocol, host = provider_handler.get_git_host(provider)
+            except ValueError as exc:
+                _logger.warning(f'Skipping git credential helper for {value}: {exc}')
+                continue
+            if not host:
+                continue
+            username = await self._git_credential_username(provider_handler, provider)
+            prefix = f'credential.{protocol}://{host}'
+            commands += [
+                # The token value is passed quoted and never echoed to stdout.
+                f'printf %s {shlex.quote(token)} > "$token_dir/{value}.token"',
+                f'chmod 600 "$token_dir/{value}.token"',
+                f'git config --global {shlex.quote(prefix + ".username")} '
+                f'{shlex.quote(username)}',
+                'git config --global --replace-all '
+                f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\" {value}"',
+            ]
+            configured.append(f'{value}@{host}')
+        if not configured:
+            return
+        # Run in '/', which always exists; every path here is absolute under $HOME.
+        result = await workspace.execute_command(' && '.join(commands), '/')
+        if result.exit_code:
+            _logger.warning(f'Git credential helper setup failed: {result.stderr}')
+        else:
+            _logger.info(f'Git credential helpers configured for {configured}')
 
     async def _configure_marketplace_git_credentials(
         self,

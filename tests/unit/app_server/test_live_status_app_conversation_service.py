@@ -7922,7 +7922,112 @@ async def test_mint_azure_devops_access_token_for_entra_user():
 
 
 def _task_for_mint():
-    return types.SimpleNamespace(_azure_devops_access_token=None)
+    return types.SimpleNamespace(
+        _azure_devops_access_token=None, _git_credential_access_tokens={}
+    )
+
+
+def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
+    from types import MethodType
+
+    service = Mock()
+    service.web_url = web_url
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in: f'jwt.{payload["provider_type"]}'
+    )
+    handler = Mock()
+    handler.provider_tokens = {provider: object() for provider in providers}
+    service.user_context = Mock()
+    service.user_context.get_provider_handler = AsyncMock(return_value=handler)
+    service.user_context.get_user_id = AsyncMock(return_value=user_id)
+    service._mint_git_credential_access_tokens = MethodType(
+        LiveStatusAppConversationService._mint_git_credential_access_tokens, service
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_one_per_provider_except_azure_devops():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com',
+        providers=[ProviderType.GITHUB, ProviderType.GITLAB, ProviderType.AZURE_DEVOPS],
+    )
+    task = _task_for_mint()
+
+    await service._mint_git_credential_access_tokens(task)
+
+    # One JWT per provider the user has a token for, scoped to that provider;
+    # Azure DevOps keeps its own helper and token.
+    assert task._git_credential_access_tokens == {
+        'github': 'jwt.github',
+        'gitlab': 'jwt.gitlab',
+    }
+    calls = service.jwt_service.create_jws_token.call_args_list
+    assert [c.kwargs['payload'] for c in calls] == [
+        {'user_id': 'user-1', 'provider_type': 'github'},
+        {'user_id': 'user-1', 'provider_type': 'gitlab'},
+    ]
+    assert all(
+        c.kwargs['expires_in'] == _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT for c in calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_skips_without_web_url():
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url=None, providers=[ProviderType.GITHUB]
+    )
+    task = _task_for_mint()
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert task._git_credential_access_tokens == {}
+    service.jwt_service.create_jws_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_never_raises():
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com', providers=[]
+    )
+    service.user_context.get_provider_handler = AsyncMock(
+        side_effect=RuntimeError('no tokens')
+    )
+    task = _task_for_mint()
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert task._git_credential_access_tokens == {}
+
+
+def test_register_git_credential_access_token_secrets_masks_each_jwt():
+    from pydantic import SecretStr
+
+    secrets: dict = {}
+    LiveStatusAppConversationService._register_git_credential_access_token_secrets(
+        secrets, {'gitlab': 'jwt.gitlab', 'bitbucket_data_center': 'jwt.dc', 'x': ''}
+    )
+    assert set(secrets) == {
+        'OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITLAB',
+        'OH_GIT_CREDENTIAL_ACCESS_TOKEN_BITBUCKET_DATA_CENTER',
+    }
+    value = secrets['OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITLAB'].value
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    assert value == 'jwt.gitlab'
+
+    LiveStatusAppConversationService._register_git_credential_access_token_secrets(
+        secrets, None
+    )
+    assert len(secrets) == 2
 
 
 def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
