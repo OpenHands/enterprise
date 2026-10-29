@@ -149,6 +149,13 @@ class TestApplyToPayload:
         out = conns.apply_to_payload({'model': 'm', 'provider_connection_id': 'c1'})
         assert json.loads(json.dumps(out))['api_key'] == 'sk-shared'
 
+    def test_missing_connection_warning_names_the_org(self):
+        with patch('openhands.app_server.settings.provider_connections.logger') as log:
+            ProviderConnections().apply_to_payload(
+                {'model': 'm', 'provider_connection_id': 'proxy'}, org_id='org-1'
+            )
+        assert 'org-1' in log.warning.call_args.args
+
 
 class TestUpdateRequestValidation:
     def test_rejects_null_api_key(self):

@@ -217,7 +217,11 @@ class ProviderConnections(BaseModel):
         )
 
     def apply_to_payload(
-        self, llm_payload: dict[str, Any], *, strict: bool = False
+        self,
+        llm_payload: dict[str, Any],
+        *,
+        strict: bool = False,
+        org_id: str | None = None,
     ) -> dict[str, Any]:
         """The provider connection rule, on an LLM payload (e.g. a settings dict).
 
@@ -228,7 +232,8 @@ class ProviderConnections(BaseModel):
           no key.
         - Connection missing: raises ``ProviderConnectionNotFoundError`` when
           ``strict``; otherwise logs and drops ``api_key``, so no other key is
-          sent to a host the linked LLM never chose.
+          sent to a host the linked LLM never chose. ``org_id`` is only for
+          that log line.
         """
         connection_id = llm_payload.get('provider_connection_id')
         if not connection_id:
@@ -239,8 +244,9 @@ class ProviderConnections(BaseModel):
             if strict:
                 raise ProviderConnectionNotFoundError(connection_id)
             logger.warning(
-                'LLM settings reference missing provider connection %s',
+                'LLM settings reference missing provider connection %s on org %s',
                 connection_id,
+                org_id,
             )
             return resolved
         resolved['base_url'] = connection.base_url

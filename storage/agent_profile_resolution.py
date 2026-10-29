@@ -154,7 +154,9 @@ def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str
     provider host the linked LLM never chose; the load still works. The rule
     is ``ProviderConnections.apply_to_payload``.
     """
-    return load_provider_connections(org).apply_to_payload(llm_payload)
+    return load_provider_connections(org).apply_to_payload(
+        llm_payload, org_id=str(org.id)
+    )
 
 
 def resolve_org_profile_llm(
