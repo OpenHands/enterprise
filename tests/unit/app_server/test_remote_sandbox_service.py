@@ -1346,6 +1346,42 @@ class TestBuildSandboxStartRequest:
         assert request['resource_factor'] == remote_sandbox_service.resource_factor
         assert request['environment'] == {'EXTRA': '2'}
 
+    @pytest.mark.asyncio
+    async def test_entrypoint_spec_omits_command_and_sends_args(
+        self, remote_sandbox_service
+    ):
+        """A spec without a command must leave `command` out of the request, so
+        the pod keeps the image ENTRYPOINT (tini) and gets only `args`."""
+        spec = RemoteSandboxSpecInfo(
+            id='ghcr.io/openhands/agent-server:1.0.0',
+            command=None,
+            args=['--port', '60000'],
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id-1', environment={}
+        )
+
+        assert 'command' not in request
+        assert request['args'] == ['--port', '60000']
+
+    @pytest.mark.asyncio
+    async def test_command_spec_without_args_omits_args(self, remote_sandbox_service):
+        """A command-only spec must not send `args`, so the request stays the
+        same shape that runtime-api versions without `args` support accept."""
+        spec = RemoteSandboxSpecInfo(
+            id='ghcr.io/openhands/agent-server:1.0.0',
+            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id-1', environment={}
+        )
+
+        assert 'args' not in request
+
 
 class TestSandboxSearch:
     """Test cases for sandbox search and retrieval."""

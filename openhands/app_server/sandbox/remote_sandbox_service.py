@@ -627,7 +627,6 @@ class RemoteSandboxService(SandboxService):
 
         start_request: dict[str, Any] = {
             'image': sandbox_spec.id,  # Use sandbox_spec.id as the container image
-            'command': sandbox_spec.command,
             'working_dir': sandbox_spec.working_dir,
             'environment': environment,
             'session_id': sandbox_id,  # Use sandbox_id as session_id
@@ -636,6 +635,14 @@ class RemoteSandboxService(SandboxService):
             'run_as_group': run_as_group,
             'fs_group': fs_group,
         }
+        # Omit an unset command so the pod keeps the image ENTRYPOINT (tini).
+        # Omit empty args so command-only requests stay valid for runtime-api
+        # versions that predate `args`.
+        if sandbox_spec.command:
+            start_request['command'] = sandbox_spec.command
+        args = getattr(sandbox_spec, 'args', None)
+        if args:
+            start_request['args'] = args
 
         # Add runtime class if specified
         if self.runtime_class == 'sysbox':
