@@ -173,6 +173,48 @@ class TestMentionedRepositories:
         assert 'Could not access: acme/missing.' in reply
 
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    async def test_first_named_repository_is_primary_before_a_later_link(
+        self, mock_send_message, slack_manager, make_view, provider_handler, redis
+    ):
+        provider_handler.verify_repo_provider = AsyncMock(
+            side_effect=_verifier(
+                {'acme/api': _repo('acme/api'), 'psf/requests': _repo('psf/requests')}
+            )
+        )
+        view = make_view(
+            '<@U123> fix the login bug in acme/api. Upstream report: '
+            '<https://github.com/psf/requests/issues/6000>'
+        )
+
+        assert await slack_manager.is_job_requested(MagicMock(), view) is True
+
+        assert view.selected_repo == 'acme/api'
+        assert [r.full_name for r in view.additional_repos] == ['psf/requests']
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    async def test_slack_permalink_is_not_a_repository(
+        self, mock_send_message, slack_manager, make_view, provider_handler, redis
+    ):
+        provider_handler.verify_repo_provider = AsyncMock(
+            side_effect=_verifier(
+                {'acme/web': _repo('acme/web'), 'acme/api': _repo('acme/api')}
+            )
+        )
+        view = make_view(
+            '<@U123> please update acme/web and acme/api, see '
+            '<https://openhands.slack.com/archives/C0123/p1700000|thread>'
+        )
+
+        assert await slack_manager.is_job_requested(MagicMock(), view) is True
+
+        assert view.selected_repo == 'acme/web'
+        assert view.inaccessible_repos == []
+        verified = [
+            c.args[0] for c in provider_handler.verify_repo_provider.call_args_list
+        ]
+        assert verified == ['acme/web', 'acme/api']
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
     async def test_single_verified_mention_is_unchanged(
         self, mock_send_message, slack_manager, make_view, provider_handler, redis
     ):

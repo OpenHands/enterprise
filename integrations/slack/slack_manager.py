@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 import httpx
@@ -67,6 +68,8 @@ SLACK_USER_MSG_KEY_PREFIX = 'slack_user_msg'
 SLACK_FORM_INTERACTION_KEY_PREFIX = 'slack_form_interaction'
 # Key prefix for the repositories currently chosen in the multi-select
 SLACK_FORM_REPOS_KEY_PREFIX = 'slack_form_repos'
+# Slack permalinks look like owner/repo to the inference but never name one.
+SLACK_LINK_PATTERN = re.compile(r'https?://[\w.-]*slack\.com/\S*', re.IGNORECASE)
 # Expiration time for stored user messages (5 minutes)
 # Arbitrary timeout based on typical user attention span; may be tuned based on feedback
 SLACK_USER_MSG_EXPIRATION = 300
@@ -846,7 +849,7 @@ class SlackManager(Manager[SlackViewInterface]):
             True if at least one mentioned repo was verified, False otherwise
         """
         user = slack_view.slack_to_openhands_user
-        mentioned_repos = infer_repo_from_message(slack_view.user_msg)
+        mentioned_repos = _mentions_in_text_order(slack_view.user_msg)
         if not mentioned_repos:
             return False
 
@@ -998,3 +1001,20 @@ class SlackManager(Manager[SlackViewInterface]):
             await self.send_message(
                 'Uh oh! There was an unexpected error starting the job :(', slack_view
             )
+
+
+def _mentions_in_text_order(user_msg: str) -> list[str]:
+    """Repository mentions in the order they appear in the message.
+
+    infer_repo_from_message returns URL matches before bare owner/repo
+    mentions; the primary must be the first repository the user named, not an
+    upstream link further down.
+    """
+    text = SLACK_LINK_PATTERN.sub(' ', user_msg)
+    lowered = text.lower()
+
+    def position(mention: str) -> int:
+        index = lowered.find(mention.lower())
+        return index if index >= 0 else len(lowered)
+
+    return sorted(infer_repo_from_message(text), key=position)
