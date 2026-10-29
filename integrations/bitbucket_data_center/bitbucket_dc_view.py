@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 from uuid import UUID, uuid4
 
 from jinja2 import Environment
 
+from integrations.mentioned_repositories import (
+    MentionedRepositories,
+    resolve_mentioned_repositories,
+)
 from integrations.models import Message
 from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
@@ -86,6 +90,9 @@ class BitbucketDCPR(ResolverViewInterface):
     # but keep this around for the things only the installer can do:
     # the per-commenter permission check and webhook lifecycle calls.
     installer_keycloak_user_id: str
+    mentioned_repositories: MentionedRepositories = field(
+        default_factory=MentionedRepositories, kw_only=True
+    )
 
     def _get_branch_name(self) -> str | None:
         return self.branch_name
@@ -159,6 +166,17 @@ class BitbucketDCPR(ResolverViewInterface):
         user_instructions, conversation_instructions = await self._get_instructions(
             jinja_env
         )
+
+        # The webhook's repository stays the primary; other repositories
+        # mentioned in the comment or the PR/issue body are cloned beside it.
+        self.mentioned_repositories = await resolve_mentioned_repositories(
+            saas_user_auth,
+            primary=self.full_repo_name,
+            provider=ProviderType.BITBUCKET_DATA_CENTER,
+            comment=getattr(self, 'comment_body', ''),
+            body=self.description,
+            log_prefix='[Bitbucket DC]',
+        )
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=user_instructions)]
         )
@@ -188,6 +206,9 @@ class BitbucketDCPR(ResolverViewInterface):
             selected_repository=self.full_repo_name,
             selected_branch=self._get_branch_name(),
             git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+            additional_repositories=(
+                self.mentioned_repositories.additional_repository_requests()
+            ),
             title=title,
             trigger=ConversationTrigger.RESOLVER,
             processors=[callback_processor],

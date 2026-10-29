@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 from github import Auth, Github, GithubIntegration
@@ -9,6 +9,10 @@ from integrations.github.github_types import (
     WorkflowRun,
     WorkflowRunGroup,
     WorkflowRunStatus,
+)
+from integrations.mentioned_repositories import (
+    MentionedRepositories,
+    resolve_mentioned_repositories,
 )
 from integrations.models import Message
 from integrations.resolver_context import ResolverUserContext
@@ -91,6 +95,9 @@ class GithubIssue(ResolverViewInterface):
     title: str
     description: str
     previous_comments: list[Comment]
+    mentioned_repositories: MentionedRepositories = field(
+        default_factory=MentionedRepositories, kw_only=True
+    )
 
     def _get_branch_name(self) -> str | None:
         return getattr(self, 'branch_name', None)
@@ -195,6 +202,17 @@ class GithubIssue(ResolverViewInterface):
 
         initial_user_text = await self._get_v1_initial_user_message(jinja_env)
 
+        # The webhook's repository stays the primary; other repositories
+        # mentioned in the comment or the issue/PR body are cloned beside it.
+        self.mentioned_repositories = await resolve_mentioned_repositories(
+            saas_user_auth,
+            primary=self.full_repo_name,
+            provider=ProviderType.GITHUB,
+            comment=getattr(self, 'comment_body', ''),
+            body=self.description,
+            log_prefix='[GitHub]',
+        )
+
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=initial_user_text)]
         )
@@ -212,6 +230,9 @@ class GithubIssue(ResolverViewInterface):
             selected_repository=self.full_repo_name,
             selected_branch=self._get_branch_name(),
             git_provider=ProviderType.GITHUB,
+            additional_repositories=(
+                self.mentioned_repositories.additional_repository_requests()
+            ),
             title=f'GitHub Issue #{self.issue_number}: {self.title}',
             trigger=ConversationTrigger.RESOLVER,
             processors=[github_callback_processor],

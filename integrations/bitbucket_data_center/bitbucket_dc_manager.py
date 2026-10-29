@@ -400,9 +400,11 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'for user {user_info.username}'
                 )
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
+                mentioned = bitbucket_view.mentioned_repositories
                 msg_info = (
-                    f"I'm on it! {user_info.username} can [track my progress at "
-                    f'all-hands.dev]({conversation_link})'
+                    f'{mentioned.on_it_message(bitbucket_view.full_repo_name)} '
+                    f'{user_info.username} can [track my progress at '
+                    f'all-hands.dev]({conversation_link}){mentioned.notes()}'
                 )
 
             except MissingSettingsError as e:

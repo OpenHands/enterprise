@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import unquote
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -205,6 +206,29 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     """
     normalized_msg = re.sub(r'\s+', ' ', user_msg.strip())
 
+    # Azure DevOps names a repository 'org/project/repo'. Web and clone URLs:
+    # dev.azure.com/<org>/<project>/_git/<repo> (optionally user@ before the
+    # host), the legacy <org>.visualstudio.com/[DefaultCollection/]<project>/
+    # _git/<repo>, and git@ssh.dev.azure.com:v3/<org>/<project>/<repo>. A
+    # project-less _git URL means the repo is named after its project. Matched
+    # first and blanked out so the generic patterns do not see 'org/project'.
+    azure_segment = r"[^/\s?#'\"<>()\[\]|]+"
+    azure_patterns = [
+        rf'https?://(?:[^/@\s]+@)?dev\.azure\.com/({azure_segment})/'
+        rf'(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'https?://(?:[^/@\s]+@)?([a-zA-Z0-9-]+)\.visualstudio\.com/'
+        rf'(?:DefaultCollection/)?(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'git@ssh\.dev\.azure\.com:v3/({azure_segment})/({azure_segment})/'
+        rf'({azure_segment})',
+    ]
+    azure_matches: list[tuple[int, str]] = []
+    for pattern in azure_patterns:
+        for m in re.finditer(pattern, normalized_msg):
+            org, project, repo = (unquote(g) if g else g for g in m.groups())
+            repo = re.sub(r'\.git$', '', repo.rstrip('.,;:!?'))
+            azure_matches.append((m.start(), f'{org}/{project or repo}/{repo}'))
+        normalized_msg = re.sub(pattern, ' ', normalized_msg)
+
     # Bitbucket Data Center web (browse/PR) URLs: /projects/<KEY>/repos/<slug>
     # and personal /users/<name>/repos/<slug>. Matched before the generic
     # pattern so the <KEY>/<slug> full name is captured rather than the literal
@@ -240,12 +264,31 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
         r'(?=\s|$|}}|[\]\)\'",.:;!?`|])'  # right boundary
     )
 
+    direct_three_part_pattern = (
+        r'(?:^|\s|{{|[\[\(\'":`])'
+        r'([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)'
+        r'(?=\s|$|}}|[\]\)\'",.:;!?`|])'
+    )
+
+    def _is_noise(owner: str, repo: str) -> bool:
+        full_match = f'{owner}/{repo}'
+        return bool(
+            re.match(r'^\d+\.\d+/\d+\.\d+$', full_match)
+            or re.match(r'^\d{1,2}/\d{1,2}$', full_match)
+            or re.match(r'^[A-Z]/[A-Z]$', full_match)
+            or repo.endswith(('.txt', '.md', '.py', '.js'))
+            or ('.' in repo and len(repo.split('.')) > 2)
+        )
+
     def _clean(repo: str) -> str:
         # Greedy captures keep trailing punctuation / .git; strip both.
         return re.sub(r'\.git$', '', repo.rstrip('.,;:!?'))
 
     # Use dict to preserve ordering
     matches: dict[str, bool] = {}
+
+    for _, name in sorted(azure_matches):
+        matches[name] = True
 
     # Bitbucket Data Center URLs first (most specific layout)
     for owner, repo in re.findall(bitbucket_dc_web_pattern, normalized_msg):
@@ -257,6 +300,14 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     for owner, repo in re.findall(git_url_pattern, normalized_msg):
         matches[f'{owner}/{_clean(repo)}'] = True
 
+    # Direct 'org/project/repo' mentions (Azure DevOps, GitLab subgroups)
+    for org, project, repo in re.findall(direct_three_part_pattern, normalized_msg):
+        repo = _clean(repo)
+        # Dates (2026/10/29) are not repositories.
+        if not repo or repo.isdigit() or _is_noise(f'{org}/{project}', repo):
+            continue
+        matches.setdefault(f'{org}/{project}/{repo}', True)
+
     # Direct mentions
     for owner, repo in re.findall(direct_pattern, normalized_msg):
         repo = _clean(repo)
@@ -264,13 +315,7 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
             continue
         full_match = f'{owner}/{repo}'
 
-        if (
-            re.match(r'^\d+\.\d+/\d+\.\d+$', full_match)
-            or re.match(r'^\d{1,2}/\d{1,2}$', full_match)
-            or re.match(r'^[A-Z]/[A-Z]$', full_match)
-            or repo.endswith(('.txt', '.md', '.py', '.js'))
-            or ('.' in repo and len(repo.split('.')) > 2)
-        ):
+        if _is_noise(owner, repo):
             continue
 
         if full_match not in matches:

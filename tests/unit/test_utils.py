@@ -258,3 +258,40 @@ def test_infer_repo_from_message():
         assert result == expected, (
             f'Failed for {repr(message)}: got {repr(result)}, expected {repr(expected)}'
         )
+
+
+def test_infer_repo_from_message_azure_devops():
+    test_cases = [
+        (
+            'See https://dev.azure.com/org1/proj/_git/svc for details',
+            ['org1/proj/svc'],
+        ),
+        (
+            'https://dev.azure.com/Org1/My%20Project/_git/repo-two?path=/README.md',
+            ['Org1/My Project/repo-two'],
+        ),
+        ('clone https://org1@dev.azure.com/org1/proj/_git/svc.git.', ['org1/proj/svc']),
+        (
+            '[PR](https://org1.visualstudio.com/DefaultCollection/proj/_git/svc/pullrequest/4)',
+            ['org1/proj/svc'],
+        ),
+        # A project-less _git URL names a repo called like its project.
+        ('https://dev.azure.com/org1/_git/proj', ['org1/proj/proj']),
+        ('git@ssh.dev.azure.com:v3/org1/proj/svc', ['org1/proj/svc']),
+        (
+            '<a href="https://dev.azure.com/org1/proj/_git/svc">svc</a>',
+            ['org1/proj/svc'],
+        ),
+        ('Also work in org1/proj/svc please', ['org1/proj/svc']),
+        ('Released 2026/10/29 with notes in docs/guide/intro.md', []),
+        (
+            'https://dev.azure.com/org1/proj/_git/svc and acme/widgets',
+            ['org1/proj/svc', 'acme/widgets'],
+        ),
+    ]
+
+    for message, expected in test_cases:
+        result = infer_repo_from_message(message)
+        assert result == expected, (
+            f'Failed for {repr(message)}: got {repr(result)}, expected {repr(expected)}'
+        )
