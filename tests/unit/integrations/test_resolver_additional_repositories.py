@@ -1,5 +1,5 @@
-"""The git-provider resolvers clone repositories mentioned in the comment or the
-issue/PR body beside the webhook's repository."""
+"""The git-provider resolvers clone repositories named in the triggering comment
+beside the webhook's repository."""
 
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -138,6 +138,14 @@ RESOLVERS = [
 RESOLVER_IDS = ['github', 'gitlab', 'bitbucket', 'bitbucket_dc', 'azure_devops']
 
 
+def _mention(name: str) -> str:
+    """Azure DevOps repositories are named by URL; others by owner/repo."""
+    org, *rest = name.split('/')
+    if len(rest) == 2:
+        return f'https://dev.azure.com/{org}/{rest[0]}/_git/{rest[1]}'
+    return name
+
+
 def _jinja_env():
     env = MagicMock()
     env.get_template.return_value.render.return_value = 'rendered'
@@ -195,9 +203,17 @@ async def _start(view, module, handler):
 async def test_mentioned_repository_is_cloned_beside_webhook_repository(
     make, module, provider, primary, other
 ):
-    view = make(f'@openhands also update {other} please')
-    view.description = f'Context: {primary} and https://docs.example.com/guide/intro'
-    handler = _handler({other.lower(): _repo(other, provider)})
+    view = make(f'@openhands also update {_mention(other)} please')
+    # The description may be written by someone else: it never adds repositories.
+    view.description = (
+        f'Context: {primary}, acme/upstream and https://docs.example.com/guide/intro'
+    )
+    handler = _handler(
+        {
+            other.lower(): _repo(other, provider),
+            'acme/upstream': _repo('acme/upstream', provider),
+        }
+    )
 
     request, _ = await _start(view, module, handler)
 
@@ -213,7 +229,6 @@ async def test_mentioned_repository_is_cloned_beside_webhook_repository(
     assert all(
         c.args[1] == provider for c in handler.verify_repo_provider.await_args_list
     )
-    # Unverified body text is ignored; nothing from the comment was inaccessible.
     assert view.mentioned_repositories.inaccessible == []
     assert view.mentioned_repositories.on_it_message(primary) == (
         f"I'm on it in {primary}, together with {other}!"
@@ -246,7 +261,10 @@ async def test_event_naming_no_other_repository_starts_as_before(
 async def test_inaccessible_comment_mention_is_reported_and_start_continues(
     make, module, provider, primary, other
 ):
-    view = make(f'@openhands use {other} and acme/secret')
+    view = make(
+        f'@openhands use {_mention(other)}, src/components and '
+        'https://example.com/acme/secret'
+    )
 
     request, _ = await _start(
         view, module, _handler({other.lower(): _repo(other, provider)})
@@ -272,18 +290,20 @@ async def test_verification_failure_starts_with_primary_only():
 
 
 @pytest.mark.asyncio
-async def test_github_labeled_issue_uses_issue_body_mentions():
-    """A labeled issue has no comment: body mentions count, none are reported."""
+async def test_github_labeled_issue_ignores_issue_body_mentions():
+    """A labeled issue has no comment, so it starts with the primary only."""
     view = GithubIssue(
         **{**COMMON, 'installation_id': 1}, full_repo_name='acme/web', uuid=None
     )
     view.description = 'Touches acme/api and acme/gone.'
     handler = _handler({'acme/api': _repo('acme/api', ProviderType.GITHUB)})
 
-    request, _ = await _start(view, 'integrations.github.github_view', handler)
+    request, create_handler = await _start(
+        view, 'integrations.github.github_view', handler
+    )
 
-    assert [r.repository for r in request.additional_repositories] == ['acme/api']
-    assert view.mentioned_repositories.inaccessible == []
+    assert request.additional_repositories is None
+    create_handler.assert_not_awaited()
 
 
 @pytest.mark.asyncio

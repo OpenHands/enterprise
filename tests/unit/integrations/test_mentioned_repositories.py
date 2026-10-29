@@ -34,7 +34,7 @@ def _handler(accessible: list[str]):
     return handler
 
 
-async def _resolve(handler, comment, body, primary='acme/web'):
+async def _resolve(handler, comment, primary='acme/web'):
     with patch(
         'integrations.mentioned_repositories.create_provider_handler',
         AsyncMock(return_value=handler),
@@ -44,25 +44,24 @@ async def _resolve(handler, comment, body, primary='acme/web'):
             primary=primary,
             provider=ProviderType.GITHUB,
             comment=comment,
-            body=body,
             log_prefix='[test]',
         )
 
 
 @pytest.mark.asyncio
-async def test_comment_mentions_come_before_body_mentions():
-    handler = _handler(['acme/body', 'acme/comment'])
-    result = await _resolve(handler, '@openhands use acme/comment', 'see acme/body')
-    assert [r.full_name for r in result.additional] == ['acme/comment', 'acme/body']
+async def test_comment_mentions_keep_their_order():
+    handler = _handler(['acme/api', 'acme/docs'])
+    result = await _resolve(handler, '@openhands use acme/docs and acme/api')
+    assert [r.full_name for r in result.additional] == ['acme/docs', 'acme/api']
 
 
 @pytest.mark.asyncio
-async def test_unverified_body_text_is_ignored_and_comment_text_reported():
+async def test_only_inaccessible_repository_urls_are_reported():
     handler = _handler(['acme/api'])
     result = await _resolve(
         handler,
-        '@openhands use acme/api and acme/missing',
-        'client/server split, see https://wiki.example.com/space/page',
+        '@openhands use acme/api; the form in src/components is broken, '
+        'see also https://github.com/acme/missing',
     )
     assert [r.full_name for r in result.additional] == ['acme/api']
     assert result.inaccessible == ['acme/missing']
@@ -74,7 +73,6 @@ async def test_primary_and_duplicate_forms_count_once():
     result = await _resolve(
         handler,
         '@openhands acme/web, ACME/api and https://github.com/acme/api/pull/2',
-        'acme/web',
     )
     assert [r.full_name for r in result.additional] == ['acme/api']
     looked_up = [c.args[0] for c in handler.verify_repo_provider.await_args_list]
@@ -84,7 +82,7 @@ async def test_primary_and_duplicate_forms_count_once():
 @pytest.mark.asyncio
 async def test_additional_repositories_are_capped():
     names = [f'acme/r{i}' for i in range(MAX_ADDITIONAL_REPOSITORIES + 2)]
-    result = await _resolve(_handler(names), '@openhands ' + ' '.join(names), '')
+    result = await _resolve(_handler(names), '@openhands ' + ' '.join(names))
     assert [r.full_name for r in result.additional] == names[
         :MAX_ADDITIONAL_REPOSITORIES
     ]
@@ -102,8 +100,7 @@ async def test_no_linked_provider_reports_comment_mentions():
             MagicMock(),
             primary='acme/web',
             provider=ProviderType.GITHUB,
-            comment='@openhands acme/api',
-            body='acme/body',
+            comment='@openhands https://github.com/acme/api',
             log_prefix='[test]',
         )
     assert result.additional == []

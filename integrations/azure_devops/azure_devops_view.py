@@ -199,13 +199,12 @@ class AzureDevOpsItem(ResolverViewInterface):
         )
 
         # The webhook's repository stays the primary; other repositories
-        # mentioned in the comment or the PR/issue body are cloned beside it.
+        # named in the triggering comment are cloned beside it.
         self.mentioned_repositories = await resolve_mentioned_repositories(
             saas_user_auth,
             primary=self.full_repo_name,
             provider=ProviderType.AZURE_DEVOPS,
             comment=getattr(self, 'comment_body', ''),
-            body=self.description,
             log_prefix='[Azure DevOps]',
         )
         initial_message = SendMessageRequest(

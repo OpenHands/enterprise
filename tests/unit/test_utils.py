@@ -282,7 +282,12 @@ def test_infer_repo_from_message_azure_devops():
             '<a href="https://dev.azure.com/org1/proj/_git/svc">svc</a>',
             ['org1/proj/svc'],
         ),
-        ('Also work in org1/proj/svc please', ['org1/proj/svc']),
+        # Bare three-part text is usually a path, not a repository.
+        ('The form in src/components/login and app/models/user.rb', []),
+        (
+            'Please fix acme/web: the login form in src/components/login is broken',
+            ['acme/web'],
+        ),
         ('Released 2026/10/29 with notes in docs/guide/intro.md', []),
         (
             'https://dev.azure.com/org1/proj/_git/svc and acme/widgets',

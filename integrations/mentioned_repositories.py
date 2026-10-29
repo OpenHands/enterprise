@@ -1,11 +1,11 @@
 """Repositories mentioned in an issue, PR or ticket, verified for one user.
 
 Text-driven start paths (the git-provider resolvers and Jira DC) infer
-``owner/repo`` mentions from the triggering comment and the issue/PR body,
-verify each one with the user's linked providers and clone the verified ones
-beside the primary repository.
+``owner/repo`` mentions from the user's text, verify each one with the user's
+linked providers and clone the verified ones beside the primary repository.
 """
 
+import re
 from dataclasses import dataclass, field
 
 from integrations.utils import infer_repo_from_message
@@ -17,6 +17,8 @@ from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType, Repository
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
+
+_URL = re.compile(r'(?:https?://|git@)[^\s<>"\'()\[\]|]+')
 
 
 @dataclass
@@ -133,17 +135,17 @@ def select_additional_repositories(
     primary: str,
     verified: list[Repository],
     unverified: list[str],
-    comment_mentions: list[str],
+    reportable: list[str],
 ) -> MentionedRepositories:
     """Split verified mentions into the repositories cloned beside ``primary``.
 
-    Only mentions from the comment that could not be accessed are reported:
-    unverified text from the description is usually not a repository at all.
+    Only unverified mentions listed in ``reportable`` are reported: other text
+    that looks like a/b is usually not a repository at all.
     """
     others = [r for r in verified if r.full_name.lower() != primary.lower()]
     return MentionedRepositories(
         additional=others[:MAX_ADDITIONAL_REPOSITORIES],
-        inaccessible=[m for m in unverified if m in comment_mentions],
+        inaccessible=[m for m in unverified if m in reportable],
         skipped=[r.full_name for r in others[MAX_ADDITIONAL_REPOSITORIES:]],
     )
 
@@ -153,22 +155,18 @@ async def resolve_mentioned_repositories(
     primary: str,
     provider: ProviderType,
     comment: str,
-    body: str,
     log_prefix: str,
 ) -> MentionedRepositories:
     """Repositories a resolver clones beside the webhook's repository.
 
-    Mentions in the triggering comment come first: they are the user's
-    deliberate choice, while the body often links to issues or docs that also
-    look like a/b. The webhook's repository stays the primary. Never raises:
-    a failure here starts the conversation with the primary only, as before.
+    Only the triggering comment counts: it is written by the user the job runs
+    as, while the issue/PR description may be written by anyone and cloning a
+    repository loads its skills. The webhook's repository stays the primary.
+    Never raises: a failure here starts with the primary only, as before.
     """
-    comment_mentions = infer_repo_from_message(comment or '')
     mentions = [
         m
-        for m in dict.fromkeys(
-            [*comment_mentions, *infer_repo_from_message(body or '')]
-        )
+        for m in infer_repo_from_message(comment or '')
         if m.lower() != primary.lower()
     ]
     if not mentions:
@@ -186,8 +184,11 @@ async def resolve_mentioned_repositories(
         logger.exception(f'{log_prefix} Could not verify mentioned repositories')
         return MentionedRepositories()
 
+    # Bare a/b text is often a file path; only a repository URL that cannot be
+    # accessed is worth telling the user about.
+    url_mentions = infer_repo_from_message(' '.join(_URL.findall(comment)))
     selection = select_additional_repositories(
-        primary, verified, unverified, comment_mentions
+        primary, verified, unverified, url_mentions
     )
     logger.info(
         '%s repo resolution primary=%s inferred=%s additional=%s',

@@ -196,7 +196,8 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     """Extract repository names as 'owner/repo' from URLs and direct mentions.
 
     Supports cloud and self-hosted Git providers: GitHub / GitHub Enterprise,
-    GitLab (incl. self-hosted), Bitbucket Cloud, and Bitbucket Data Center.
+    GitLab (incl. self-hosted), Bitbucket Cloud, Bitbucket Data Center and
+    Azure DevOps (URLs only; its full names are 'org/project/repo').
     Bitbucket Data Center URLs use a distinct layout
     (``/projects/<KEY>/repos/<slug>`` and ``/scm/<KEY>/<slug>``) that maps to
     the ``<KEY>/<slug>`` full name; every other provider uses the standard
@@ -264,22 +265,6 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
         r'(?=\s|$|}}|[\]\)\'",.:;!?`|])'  # right boundary
     )
 
-    direct_three_part_pattern = (
-        r'(?:^|\s|{{|[\[\(\'":`])'
-        r'([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)'
-        r'(?=\s|$|}}|[\]\)\'",.:;!?`|])'
-    )
-
-    def _is_noise(owner: str, repo: str) -> bool:
-        full_match = f'{owner}/{repo}'
-        return bool(
-            re.match(r'^\d+\.\d+/\d+\.\d+$', full_match)
-            or re.match(r'^\d{1,2}/\d{1,2}$', full_match)
-            or re.match(r'^[A-Z]/[A-Z]$', full_match)
-            or repo.endswith(('.txt', '.md', '.py', '.js'))
-            or ('.' in repo and len(repo.split('.')) > 2)
-        )
-
     def _clean(repo: str) -> str:
         # Greedy captures keep trailing punctuation / .git; strip both.
         return re.sub(r'\.git$', '', repo.rstrip('.,;:!?'))
@@ -300,14 +285,6 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     for owner, repo in re.findall(git_url_pattern, normalized_msg):
         matches[f'{owner}/{_clean(repo)}'] = True
 
-    # Direct 'org/project/repo' mentions (Azure DevOps, GitLab subgroups)
-    for org, project, repo in re.findall(direct_three_part_pattern, normalized_msg):
-        repo = _clean(repo)
-        # Dates (2026/10/29) are not repositories.
-        if not repo or repo.isdigit() or _is_noise(f'{org}/{project}', repo):
-            continue
-        matches.setdefault(f'{org}/{project}/{repo}', True)
-
     # Direct mentions
     for owner, repo in re.findall(direct_pattern, normalized_msg):
         repo = _clean(repo)
@@ -315,7 +292,13 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
             continue
         full_match = f'{owner}/{repo}'
 
-        if _is_noise(owner, repo):
+        if (
+            re.match(r'^\d+\.\d+/\d+\.\d+$', full_match)
+            or re.match(r'^\d{1,2}/\d{1,2}$', full_match)
+            or re.match(r'^[A-Z]/[A-Z]$', full_match)
+            or repo.endswith(('.txt', '.md', '.py', '.js'))
+            or ('.' in repo and len(repo.split('.')) > 2)
+        ):
             continue
 
         if full_match not in matches:
