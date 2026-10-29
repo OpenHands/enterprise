@@ -231,7 +231,9 @@ class SaasSecretsStore(SecretsStore):
                 continue
 
             if value is None:
-                kwargs[key] = value
+                # Convert None to empty string for Pydantic validation.
+                # CustomSecret.description expects str, not None.
+                kwargs[key] = ''
             else:
                 kwargs[key] = self._jwt_svc.decrypt_value(value)
 
