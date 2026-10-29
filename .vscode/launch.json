@@ -60,6 +60,7 @@
                 "USER_PROVISIONING_ENABLED": "1",
                 "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
                 "ENABLE_SUPER_ADMIN": "1",
+                "ENABLE_LEGACY_LITELLM": "0"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
