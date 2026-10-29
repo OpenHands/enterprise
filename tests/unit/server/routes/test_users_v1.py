@@ -395,6 +395,7 @@ class TestSdkCompatFields:
         from openhands.app_server.settings.llm_profiles import LLMProfiles
         from openhands.app_server.user.user_models import UserInfo
         from openhands.sdk.llm import LLM
+        from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
         from openhands.sdk.settings import OpenHandsAgentSettings
         from server.constants import LITE_LLM_API_URL
         from server.routes.users_v1 import get_current_user_saas
@@ -433,7 +434,9 @@ class TestSdkCompatFields:
 
         profile = json.loads(result.body)['llm_profiles']['profiles']['opus8']
         assert profile['api_key'] == 'sk-effective-key'
-        assert profile['base_url'] == LITE_LLM_API_URL
+        # The canonical form may drop the SaaS proxy base_url; the SDK fills it.
+        call = litellm_call_kwargs(profile['model'], profile['base_url'])
+        assert call['api_base'] == LITE_LLM_API_URL
 
     @pytest.mark.asyncio
     async def test_expose_secrets_keeps_byor_profile_own_key(self, mock_user_context):
@@ -477,6 +480,141 @@ class TestSdkCompatFields:
 
         profile = json.loads(result.body)['llm_profiles']['profiles']['byor']
         assert profile['api_key'] == 'sk-byor-key'
+
+    @pytest.mark.asyncio
+    async def test_expose_secrets_applies_profile_provider_connection(
+        self, mock_user_context, create_org, async_session_maker
+    ):
+        """The overlay loads the caller's org and applies a linked provider
+        connection; a profile-pinned automation run builds its LLM from this
+        response. The rule itself is tested in ``TestResolveOrgProfileLlm``."""
+        from unittest.mock import patch
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnection,
+            ProviderConnections,
+        )
+        from openhands.app_server.user.user_models import UserInfo
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
+        from server.routes.users_v1 import get_current_user_saas
+
+        connections = ProviderConnections(
+            connections={
+                'proxy': ProviderConnection(
+                    id='proxy',
+                    display_name='Proxy',
+                    api_key='sk-connection-key',
+                    base_url='https://llm-proxy.example.test',
+                )
+            }
+        )
+        org = create_org(
+            provider_connections=connections.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+        )
+        mock_user_context.get_user_info = AsyncMock(
+            return_value=UserInfo(
+                id='user-123',
+                agent_settings=OpenHandsAgentSettings(
+                    llm=LLM(model='anthropic/test-model', api_key='sk-effective-key')
+                ),
+                llm_profiles=LLMProfiles(
+                    profiles={
+                        'linked': LLM(
+                            model='anthropic/test-model',
+                            provider_connection_id='proxy',
+                        ),
+                        'dangling': LLM(
+                            model='anthropic/test-model',
+                            provider_connection_id='gone',
+                        ),
+                    }
+                ),
+            )
+        )
+
+        with (
+            patch(
+                'server.routes.users_v1._get_org_info_from_context',
+                return_value={'org_id': str(org.id)},
+            ),
+            patch(
+                'server.routes.users_v1.validate_session_key_ownership',
+                new_callable=AsyncMock,
+            ),
+            # Point the store at the test database (not a mock).
+            patch('storage.org_store.a_session_maker', async_session_maker),
+        ):
+            result = await get_current_user_saas(
+                user_context=mock_user_context,
+                expose_secrets=True,
+                x_session_api_key='session-key',
+            )
+
+        profiles = json.loads(result.body)['llm_profiles']['profiles']
+        assert profiles['linked']['base_url'] == 'https://llm-proxy.example.test'
+        assert profiles['linked']['api_key'] == 'sk-connection-key'
+        # /me is not strict: one dangling profile must not fail the whole
+        # response, and it gets no key rather than the fallback key.
+        assert profiles['dangling']['api_key'] is None
+
+    @pytest.mark.asyncio
+    async def test_expose_secrets_canonicalizes_profiles_without_an_org(
+        self, mock_user_context
+    ):
+        """Without org info, profiles still resolve as launch does, so the
+        response shape does not depend on the org lookup."""
+        from unittest.mock import patch
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.app_server.user.user_models import UserInfo
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.llm.utils.openhands_provider import (
+            OPENHANDS_LLM_PROXY_BASE_URL,
+        )
+        from openhands.sdk.settings import OpenHandsAgentSettings
+        from server.routes.users_v1 import get_current_user_saas
+
+        mock_user_context.get_user_info = AsyncMock(
+            return_value=UserInfo(
+                id='user-123',
+                agent_settings=OpenHandsAgentSettings(
+                    llm=LLM(model='openhands/test-model', api_key='sk-effective-key')
+                ),
+                llm_profiles=LLMProfiles(
+                    profiles={
+                        'proxy': LLM(
+                            model='litellm_proxy/claude-sonnet-5-5',
+                            base_url=OPENHANDS_LLM_PROXY_BASE_URL,
+                        )
+                    }
+                ),
+            )
+        )
+
+        with (
+            patch(
+                'server.routes.users_v1._get_org_info_from_context',
+                return_value=None,
+            ),
+            patch(
+                'server.routes.users_v1.validate_session_key_ownership',
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await get_current_user_saas(
+                user_context=mock_user_context,
+                expose_secrets=True,
+                x_session_api_key='session-key',
+            )
+
+        profile = json.loads(result.body)['llm_profiles']['profiles']['proxy']
+        assert profile['model'] == 'openhands/claude-sonnet-5-5'
+        assert profile['base_url'] is None
+        assert profile['api_key'] == 'sk-effective-key'
 
     @pytest.mark.asyncio
     async def test_non_expose_response_does_not_resolve_profile_keys(

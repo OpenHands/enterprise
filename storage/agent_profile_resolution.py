@@ -8,7 +8,8 @@ over the SaaS storage model. Everything domain-level is imported from
 store/loader/mutator Protocols.
 
 Used by the ``/api/agent-profiles`` router, the LLM-profile FK guard in
-``org_profiles``, and ``SaasSettingsStore.load``.
+``org_profiles``, ``SaasSettingsStore.load``, and the
+``/api/v1/users/me`` profile overlay.
 """
 
 from __future__ import annotations
@@ -175,6 +176,45 @@ def apply_provider_connection(
     return resolved
 
 
+def resolve_org_profile_llm(
+    org: Org | None,
+    llm: LLM,
+    *,
+    fallback_api_key: SecretStr | None,
+    strict: bool = False,
+) -> LLM:
+    """Turn a saved org LLM profile into the LLM a run launches with.
+
+    Fills the provider-default ``base_url`` and the fallback key
+    (``resolve_profile_llm``), canonicalizes bundled-proxy models, then applies
+    a linked provider connection of ``org``, whose ``api_key`` and ``base_url``
+    win. Without an org there are no connections, so that last step is
+    skipped. ``strict`` raises ``AgentLaunchError`` for a missing connection;
+    otherwise it is logged and the profile stays as resolved. Shared by
+    agent-profile launch (``OrgLLMProfileLoader``) and the
+    ``/api/v1/users/me`` overlay.
+
+    A linked profile never takes ``fallback_api_key``: its key comes only from
+    the connection. With the connection missing (or no org), it resolves with
+    no key, so the settings key is not sent to a provider host the profile
+    never chose.
+    """
+    linked = bool(llm.provider_connection_id)
+    resolved = resolve_profile_llm(
+        llm,
+        managed_proxy_url=LITE_LLM_API_URL,
+        fallback_api_key=None if linked else fallback_api_key,
+    )
+    payload = canonicalize_bundled_proxy_llm(
+        canonicalize_openhands_llm_payload(
+            resolved.model_dump(mode='json', context={'expose_secrets': True})
+        )
+    )
+    if org is not None:
+        payload = apply_provider_connection(org, payload, strict=strict)
+    return type(resolved).model_validate(payload)
+
+
 class OrgLLMProfileLoader:
     """``LLMProfileLoader`` over an org's LLM profiles — the resolver's ``llm_store``.
 
@@ -200,18 +240,8 @@ class OrgLLMProfileLoader:
             # The resolver maps this to ProfileNotFound (HTTP 4xx).
             raise FileNotFoundError(f'LLM profile {name!r} not found')
         if self._org is not None:
-            llm = resolve_profile_llm(
-                llm,
-                managed_proxy_url=LITE_LLM_API_URL,
-                fallback_api_key=self._fallback_api_key,
-            )
-            payload = canonicalize_bundled_proxy_llm(
-                canonicalize_openhands_llm_payload(
-                    llm.model_dump(mode='json', context={'expose_secrets': True})
-                )
-            )
-            llm = type(llm).model_validate(
-                apply_provider_connection(self._org, payload, strict=True)
+            llm = resolve_org_profile_llm(
+                self._org, llm, fallback_api_key=self._fallback_api_key, strict=True
             )
         return llm
 

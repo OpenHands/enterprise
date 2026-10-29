@@ -493,6 +493,146 @@ class TestApplyProviderConnection:
         )
 
 
+class TestResolveOrgProfileLlm:
+    """``resolve_org_profile_llm`` turns a saved org profile into the LLM a run
+    launches with; agent-profile launch and the ``/me`` overlay share it."""
+
+    @staticmethod
+    def _org(connections):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=uuid.uuid4(), provider_connections=connections)
+
+    @staticmethod
+    def _proxy_org():
+        return TestResolveOrgProfileLlm._org(
+            {
+                'connections': {
+                    'proxy': {
+                        'id': 'proxy',
+                        'display_name': 'Proxy',
+                        'api_key': 'sk-connection',
+                        'base_url': 'https://llm-proxy.example.test',
+                    }
+                }
+            }
+        )
+
+    def test_linked_profile_takes_the_connection_key_and_base_url(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        # A provider model with no base_url: without the connection it would
+        # go to the provider's default endpoint with the fallback key.
+        llm = resolve_org_profile_llm(
+            self._proxy_org(),
+            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        assert llm.base_url == 'https://llm-proxy.example.test'
+        assert llm.api_key is not None
+        assert llm.api_key.get_secret_value() == 'sk-connection'
+
+    def test_unlinked_keyless_profile_takes_the_fallback_key(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        llm = resolve_org_profile_llm(
+            self._org(None),
+            LLM(model='anthropic/claude-test'),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        assert llm.api_key is not None
+        assert llm.api_key.get_secret_value() == 'sk-settings'
+
+    def test_dangling_link_gets_no_key_when_not_strict(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        # The fallback key must not go to the provider's default host, which
+        # the profile never chose.
+        llm = resolve_org_profile_llm(
+            self._org({'connections': {}}),
+            LLM(model='anthropic/claude-test', provider_connection_id='gone'),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        assert llm.api_key is None
+
+    def test_linked_profile_without_an_org_gets_no_key(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        llm = resolve_org_profile_llm(
+            None,
+            LLM(model='anthropic/claude-test', provider_connection_id='proxy'),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        assert llm.api_key is None
+
+    def test_dangling_link_raises_when_strict(self):
+        from pydantic import SecretStr
+
+        from openhands.sdk.launch import AgentLaunchError
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import resolve_org_profile_llm
+
+        with pytest.raises(AgentLaunchError):
+            resolve_org_profile_llm(
+                self._org({'connections': {}}),
+                LLM(model='anthropic/claude-test', provider_connection_id='gone'),
+                fallback_api_key=SecretStr('sk-settings'),
+                strict=True,
+            )
+
+
+class TestOrgLlmProfileLoaderUsesTheSharedRule:
+    """Agent-profile launch resolves org profiles with ``resolve_org_profile_llm``
+    and keeps a missing connection an error."""
+
+    def test_launch_applies_the_connection_and_rejects_a_dangling_link(self):
+        from pydantic import SecretStr
+
+        from openhands.app_server.settings.llm_profiles import LLMProfiles
+        from openhands.sdk.launch import AgentLaunchError
+        from openhands.sdk.llm import LLM
+        from storage.agent_profile_resolution import OrgLLMProfileLoader
+
+        profiles = LLMProfiles(
+            profiles={
+                'linked': LLM(
+                    model='anthropic/claude-test', provider_connection_id='proxy'
+                ),
+                'dangling': LLM(
+                    model='anthropic/claude-test', provider_connection_id='gone'
+                ),
+            }
+        )
+        loader = OrgLLMProfileLoader(
+            profiles,
+            org=TestResolveOrgProfileLlm._proxy_org(),
+            fallback_api_key=SecretStr('sk-settings'),
+        )
+
+        linked = loader.load('linked')
+        assert linked.base_url == 'https://llm-proxy.example.test'
+        assert linked.api_key is not None
+        assert linked.api_key.get_secret_value() == 'sk-connection'
+        with pytest.raises(AgentLaunchError):
+            loader.load('dangling')
+
+
 class TestOrgUpdateSkipsBaseUrlInferenceForLinkedLlm:
     def test_linked_diff_keeps_base_url_null(self):
         from server.routes.org_models import OrgUpdate
