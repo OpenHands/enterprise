@@ -28,6 +28,7 @@ from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
     agent_working_dir,
+    hook_project_dir_setting,
     loads_repository_hooks,
     repositories_context,
 )
@@ -2968,8 +2969,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         hook_config: HookConfig | None = None
         if remote_workspace and not loads_repository_hooks(additional_repositories):
             _logger.info(
-                'Not loading repository hooks: with additional repositories they '
-                'would run from the parent folder, not the primary repository'
+                'Not loading repository hooks: with additional repositories this '
+                'agent-server would run them from the parent folder, not the '
+                'primary repository'
             )
         elif remote_workspace:
             try:
@@ -3022,6 +3024,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_definitions': agent_definitions,
                 'plugins': sdk_plugins,
                 'hook_config': hook_config,
+                **hook_project_dir_setting(hook_config, project_dir),
             }
         )
 

@@ -88,6 +88,7 @@ from openhands.app_server.user.user_models import (
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import (
@@ -1853,6 +1854,44 @@ class TestLiveStatusAppConversationService:
         )
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_build_request_carries_hook_project_dir_on_a_supporting_agent_server(
+        self,
+    ):
+        """With hooks loaded, the built request names the folder they run from."""
+        if 'hook_project_dir' not in ConversationSettings.model_fields:
+            pytest.skip('pinned SDK has no hook_project_dir; runs once the pin moves')
+        hooks = HookConfig.model_validate({'stop': [{'hooks': [{'command': 'true'}]}]})
+        self.service._load_hooks_from_workspace = AsyncMock(return_value=hooks)
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = real_llm
+        mock_agent.condenser = None
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
+        base = 'openhands.app_server.app_conversation.additional_repositories'
+
+        with patch(
+            f'{base}.agent_server_runs_hooks_from_project_dir', return_value=True
+        ):
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+                selected_repository='test_repo',
+            )
+
+        assert request.hook_config == hooks
+        assert request.hook_project_dir == '/test/dir/test_repo'
+        assert request.model_dump()['hook_project_dir'] == '/test/dir/test_repo'
 
     @pytest.mark.asyncio
     async def test_build_request_honours_a_profiles_tool_selection(self):

@@ -16,6 +16,7 @@ from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepositoryStatus,
     agent_working_dir,
     assign_repository_folders,
+    hook_project_dir_setting,
     loads_repository_hooks,
     merge_repository_skills,
     repositories_context,
@@ -845,9 +846,28 @@ def test_repositories_block_without_a_primary():
     assert '`a/b` at `/workspace/project/b`' in block
 
 
-def test_hooks_are_skipped_only_with_additional_repositories():
-    assert loads_repository_hooks([]) is True
-    assert loads_repository_hooks([_repo('a/b', 'b')]) is False
+def test_hooks_are_skipped_with_additional_repositories_on_an_old_agent_server():
+    extra = [_repo('a/b', 'b')]
+    assert loads_repository_hooks(extra, project_dir_supported=False) is False
+    assert loads_repository_hooks(extra, project_dir_supported=True) is True
+    base = 'openhands.app_server.app_conversation.additional_repositories'
+    for supported in (False, True):
+        with patch(
+            f'{base}.agent_server_runs_hooks_from_project_dir', return_value=supported
+        ):
+            assert loads_repository_hooks(extra) is supported
+
+
+def test_hook_project_dir_is_sent_only_with_hooks_on_a_supporting_agent_server():
+    base = 'openhands.app_server.app_conversation.additional_repositories'
+    config = object()
+    with patch(f'{base}.agent_server_runs_hooks_from_project_dir', return_value=True):
+        assert hook_project_dir_setting(config, '/workspace/project/app') == {
+            'hook_project_dir': '/workspace/project/app'
+        }
+        assert hook_project_dir_setting(None, '/workspace/project/app') == {}
+    with patch(f'{base}.agent_server_runs_hooks_from_project_dir', return_value=False):
+        assert hook_project_dir_setting(config, '/workspace/project/app') == {}
 
 
 # Single-repository invariants: without additional repositories the workspace
@@ -900,6 +920,7 @@ async def test_single_repository_invariant_skill_set():
 
 def test_single_repository_invariant_hooks():
     assert loads_repository_hooks([]) is True
+    assert loads_repository_hooks([], project_dir_supported=False) is True
 
 
 @pytest.mark.asyncio
