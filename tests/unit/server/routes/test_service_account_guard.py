@@ -202,6 +202,10 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         '/api/v1/webhooks/conversations/{conversation_id}/children',
     ): 'sandbox callback, authenticated by session key',
     (
+        'PUT',
+        '/api/v1/sandboxes/{sandbox_id}/credential-bindings/CODEX_AUTH_JSON',
+    ): 'sandbox callback, authenticated by session key',
+    (
         'POST',
         '/api/agent-profiles/{name}/materialize',
     ): 'dry run; reads the profile and writes nothing',
