@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.81.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.82.0} # x-release-please-version
 
 services:
   db:
