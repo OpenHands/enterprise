@@ -3,7 +3,7 @@
 Views are responsible for:
 - Holding the webhook payload and auth context
 - Lazy-loading issue details from Jira API when needed
-- Creating conversations with the selected repository
+- Creating conversations with the selected repositories
 """
 
 from dataclasses import dataclass, field
@@ -28,6 +28,10 @@ from integrations.utils import (
     infer_repo_from_message,
 )
 from openhands.agent_server.models import SendMessageRequest
+from openhands.app_server.app_conversation.additional_repositories import (
+    MAX_ADDITIONAL_REPOSITORIES,
+    AdditionalRepositoryRequest,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTaskStatus,
@@ -83,6 +87,9 @@ class JiraNewConversationView(JiraViewInterface):
 
     # Resolved org ID for V1 conversations
     resolved_org_id: UUID | None = None
+    additional_repos: list[Repository] = field(default_factory=list)
+    inaccessible_repos: list[str] = field(default_factory=list)
+    skipped_repos: list[str] = field(default_factory=list)
 
     async def get_issue_details(self) -> tuple[str, str]:
         """Fetch issue details from Jira API (cached after first call).
@@ -242,6 +249,15 @@ class JiraNewConversationView(JiraViewInterface):
             selected_repository=self.selected_repo,
             selected_branch=None,
             git_provider=self.git_provider if self.selected_repo else None,
+            # Cloned beside the primary; a failed clone is reported on the
+            # conversation and does not stop the start (require_all stays off).
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository=repo.full_name, git_provider=repo.git_provider
+                )
+                for repo in self.additional_repos
+            ]
+            or None,
             title=f'Jira Issue {self.payload.issue_key}: {self._issue_title or "Unknown"}',
             trigger=ConversationTrigger.JIRA,
             processors=[jira_callback_processor],
@@ -314,10 +330,37 @@ class JiraNewConversationView(JiraViewInterface):
     def get_response_msg(self) -> str:
         """Get the response message to send back to Jira."""
         conversation_link = CONVERSATION_URL.format(self.conversation_id)
-        message = f"I'm on it! {self.payload.display_name} can [track my progress here|{conversation_link}]."
+        # Name the resolved repos so the user can confirm we picked the right ones.
+        if self.selected_repo:
+            prefix = f"I'm on it in {self.selected_repo}"
+            if self.additional_repos:
+                prefix += f', together with {_join([r.full_name for r in self.additional_repos])}'
+            prefix += '!'
+        else:
+            prefix = "I'm on it!"
+        message = f'{prefix} {self.payload.display_name} can [track my progress here|{conversation_link}].'
         if self.selected_repo is None:
             message += '\n\nNote: This conversation started without a repository.'
+        if self.inaccessible_repos:
+            message += (
+                f'\n\nCould not access: {", ".join(self.inaccessible_repos)}. '
+                'Please ensure each repository exists and that the Git account '
+                'linked to your OpenHands user can access it.'
+            )
+        if self.skipped_repos:
+            message += (
+                f'\n\nNot included (a conversation can have at most '
+                f'{MAX_ADDITIONAL_REPOSITORIES + 1} repositories): '
+                f'{", ".join(self.skipped_repos)}.'
+            )
         return message
+
+
+def _join(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(names) < 2:
+        return ''.join(names)
+    return f'{", ".join(names[:-1])} and {names[-1]}'
 
 
 class JiraFactory:
@@ -325,11 +368,11 @@ class JiraFactory:
 
     The factory is responsible for:
     - Creating the appropriate view type
-    - Inferring and selecting the repository
+    - Inferring and selecting the repositories
     - Validating all required data is available
 
-    Repository selection happens here so view creation succeeds either with a
-    verified repository or with no repository when none was mentioned.
+    Repository selection happens here so view creation succeeds either with the
+    verified repositories or with no repository when none was mentioned.
     """
 
     @staticmethod
@@ -354,10 +397,17 @@ class JiraFactory:
         issue_title: str,
         issue_description: str,
         user_msg: str,
-    ) -> list[str]:
-        """Extract potential repository names from issue content."""
-        search_text = f'{issue_title}\n{issue_description}\n{user_msg}'
-        potential_repos = infer_repo_from_message(search_text)
+    ) -> tuple[list[str], list[str]]:
+        """Extract potential repository names from issue content.
+
+        Returns all mentions in order, and the subset from the triggering
+        comment. Comment mentions come first: they are the user's deliberate
+        choice, while the description often links to Jira, Confluence or
+        upstream issues that also look like a/b.
+        """
+        comment_mentions = infer_repo_from_message(user_msg or '')
+        issue_mentions = infer_repo_from_message(f'{issue_title}\n{issue_description}')
+        potential_repos = list(dict.fromkeys([*comment_mentions, *issue_mentions]))
 
         if potential_repos:
             logger.info(
@@ -369,26 +419,34 @@ class JiraFactory:
                 '[Jira] No repositories mentioned in issue content',
                 extra={'issue_key': issue_key},
             )
-        return potential_repos
+        return potential_repos, comment_mentions
 
     @staticmethod
     async def _verify_repos(
         issue_key: str,
         potential_repos: list[str],
         provider_handler: ProviderHandler,
-    ) -> list[Repository]:
-        """Verify which repos the user has access to."""
-        verified_repos: list[Repository] = []
+    ) -> tuple[list[Repository], list[str]]:
+        """Verify which repos the user has access to.
+
+        Returns the verified repos in mention order and the mentions that could
+        not be resolved.
+        """
+        # Dedupe by canonical full_name: two forms of one repo (case/URL
+        # variants, a rename) must not be cloned twice.
+        verified: dict[str, Repository] = {}
+        unverified: list[str] = []
 
         for repo_name in potential_repos:
             try:
                 repository = await provider_handler.verify_repo_provider(repo_name)
-                verified_repos.append(repository)
+                verified.setdefault(repository.full_name.lower(), repository)
                 logger.debug(
                     '[Jira] Repository verification succeeded',
                     extra={'issue_key': issue_key, 'repository': repository.full_name},
                 )
             except Exception as e:
+                unverified.append(repo_name)
                 logger.debug(
                     '[Jira] Repository verification failed',
                     extra={
@@ -398,68 +456,68 @@ class JiraFactory:
                     },
                 )
 
-        return verified_repos
+        return list(verified.values()), unverified
 
     @staticmethod
-    def _select_single_repo(
-        issue_key: str,
-        potential_repos: list[str],
-        verified_repos: list[Repository],
-    ) -> Repository:
-        """Select exactly one repo from verified repos.
-
-        Raises:
-            RepositorySelectionError: If zero or multiple repos verified.
-        """
-        if len(verified_repos) == 0:
-            raise RepositorySelectionError(
-                f'Could not access any of the mentioned repositories: {", ".join(potential_repos)}. '
-                'Please ensure you have access to the repository and it exists.'
-            )
-
-        if len(verified_repos) > 1:
-            verified_names = ', '.join(repo.full_name for repo in verified_repos)
-            raise RepositorySelectionError(
-                f'Multiple repositories found: {verified_names}. '
-                'Please specify exactly one repository in the issue description or comment.'
-            )
-
-        logger.info(
-            '[Jira] Verified repository access',
-            extra={'issue_key': issue_key, 'repository': verified_repos[0].full_name},
-        )
-        return verified_repos[0]
-
-    @staticmethod
-    async def _infer_repository(
-        payload: JiraWebhookPayload,
-        user_auth: UserAuth,
+    async def _select_repositories(
+        view: JiraNewConversationView,
         issue_title: str,
         issue_description: str,
-    ) -> Repository | None:
-        """Infer and verify the repository from issue content.
+    ) -> None:
+        """Infer, verify and set the view's repositories from issue content.
+
+        The first verified mention is the primary repository; the rest are
+        cloned beside it. Only mentions from the comment that could not be
+        accessed are reported: unverified text from the description is usually
+        not a repository at all.
 
         Raises:
-            RepositorySelectionError: If a mentioned repository cannot be selected.
+            RepositorySelectionError: If repositories are mentioned but none
+                can be used.
         """
-        potential_repos = JiraFactory._extract_potential_repos(
+        payload = view.payload
+        potential_repos, comment_mentions = JiraFactory._extract_potential_repos(
             payload.issue_key, issue_title, issue_description, payload.user_msg
         )
         if not potential_repos:
-            return None
+            return
 
-        provider_handler = await JiraFactory._create_provider_handler(user_auth)
+        provider_handler = await JiraFactory._create_provider_handler(
+            view.saas_user_auth
+        )
         if not provider_handler:
             raise RepositorySelectionError(
                 'No Git provider connected. Please connect a Git provider in OpenHands settings.'
             )
 
-        verified_repos = await JiraFactory._verify_repos(
+        verified_repos, unverified_repos = await JiraFactory._verify_repos(
             payload.issue_key, potential_repos, provider_handler
         )
+        if not verified_repos:
+            raise RepositorySelectionError(
+                f'Could not access any of the mentioned repositories: '
+                f'{", ".join(potential_repos)}. No conversation was started. '
+                'Please ensure each repository exists and that the Git account '
+                'linked to your OpenHands user can access it.'
+            )
 
-        return JiraFactory._select_single_repo(
-            payload.issue_key, potential_repos, verified_repos
+        primary, *additional = verified_repos
+        view.selected_repo = primary.full_name
+        view.git_provider = primary.git_provider
+        view.additional_repos = additional[:MAX_ADDITIONAL_REPOSITORIES]
+        view.skipped_repos = [
+            r.full_name for r in additional[MAX_ADDITIONAL_REPOSITORIES:]
+        ]
+        view.inaccessible_repos = [m for m in unverified_repos if m in comment_mentions]
+        logger.info(
+            '[Jira] Verified repository access',
+            extra={
+                'issue_key': payload.issue_key,
+                'repository': primary.full_name,
+                'additional_repositories': [r.full_name for r in view.additional_repos],
+                'inaccessible_repositories': view.inaccessible_repos,
+                'skipped_repositories': view.skipped_repos,
+            },
         )
 
     @staticmethod
@@ -470,12 +528,12 @@ class JiraFactory:
         user_auth: UserAuth,
         decrypted_api_key: str,
     ) -> JiraViewInterface:
-        """Create a Jira view with an optional selected repository.
+        """Create a Jira view with the mentioned repositories, if any.
 
         This factory method:
         1. Creates the view with payload and auth context
         2. Fetches issue details (needed for repo inference)
-        3. Infers and selects a repository when one is mentioned
+        3. Infers and selects the repositories that are mentioned
 
         If any step fails, an appropriate exception is raised with
         a user-friendly message.
@@ -488,11 +546,13 @@ class JiraFactory:
             decrypted_api_key: Decrypted service account API key
 
         Returns:
-            A JiraViewInterface with selected_repo set when one was verified
+            A JiraViewInterface with selected_repo (the first verified mention)
+            and additional_repos set when mentions were verified
 
         Raises:
             StartingConvoException: If view creation fails
-            RepositorySelectionError: If a mentioned repository cannot be selected
+            RepositorySelectionError: If repositories are mentioned but none
+                can be used
         """
         logger.info(
             '[Jira] Creating view',
@@ -517,16 +577,7 @@ class JiraFactory:
         except Exception as e:
             raise StartingConvoException('Failed to fetch issue details') from e
 
-        # Infer and select repository
-        repository = await JiraFactory._infer_repository(
-            payload=payload,
-            user_auth=user_auth,
-            issue_title=issue_title,
-            issue_description=issue_description,
-        )
-
-        view.selected_repo = repository.full_name if repository else None
-        view.git_provider = repository.git_provider if repository else None
+        await JiraFactory._select_repositories(view, issue_title, issue_description)
 
         logger.info(
             '[Jira] View created successfully',
@@ -534,6 +585,7 @@ class JiraFactory:
                 'issue_key': payload.issue_key,
                 'selected_repo': view.selected_repo,
                 'git_provider': view.git_provider.value if view.git_provider else None,
+                'additional_repos': [r.full_name for r in view.additional_repos],
             },
         )
 

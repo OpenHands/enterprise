@@ -2,6 +2,7 @@
 Tests for Jira view classes and factory.
 """
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -166,7 +167,7 @@ class TestJiraNewConversationView:
         """Test get_response_msg method"""
         response = new_conversation_view.get_response_msg()
 
-        assert "I'm on it!" in response
+        assert response.startswith("I'm on it in test/repo1!")
         assert 'Test User' in response
         assert 'track my progress here' in response
         assert 'conv-123' in response
@@ -178,6 +179,303 @@ class TestJiraNewConversationView:
         response = new_conversation_view.get_response_msg()
 
         assert 'Note: This conversation started without a repository.' in response
+        assert response.startswith("I'm on it!")
+
+    def test_get_response_msg_names_every_repository(self, new_conversation_view):
+        new_conversation_view.additional_repos = [
+            _repo('test/repo2'),
+            _repo('test/repo3'),
+        ]
+        new_conversation_view.inaccessible_repos = ['test/missing']
+        new_conversation_view.skipped_repos = ['test/eleventh']
+
+        response = new_conversation_view.get_response_msg()
+
+        assert response.startswith(
+            "I'm on it in test/repo1, together with test/repo2 and test/repo3!"
+        )
+        assert 'track my progress here' in response
+        assert 'Could not access: test/missing.' in response
+        assert (
+            'Not included (a conversation can have at most 10 repositories): '
+            'test/eleventh.'
+        ) in response
+        assert 'without a repository' not in response
+
+    def test_get_response_msg_single_repository_has_no_extra_notes(
+        self, new_conversation_view
+    ):
+        response = new_conversation_view.get_response_msg()
+
+        assert 'together with' not in response
+        assert 'Could not access' not in response
+        assert 'Not included' not in response
+
+    @pytest.mark.asyncio
+    @patch('integrations.jira.jira_view.get_app_conversation_service')
+    @patch('integrations.jira.jira_view.integration_store')
+    async def test_create_conversation_single_repository_sends_no_additional(
+        self, mock_store, mock_get_service, new_conversation_view, mock_jinja_env
+    ):
+        """One repository keeps the single-repository start request."""
+        new_conversation_view.git_provider = ProviderType.GITHUB
+        request = await _capture_start_request(
+            mock_store, mock_get_service, new_conversation_view, mock_jinja_env
+        )
+
+        assert request.selected_repository == 'test/repo1'
+        assert request.git_provider == ProviderType.GITHUB
+        assert request.additional_repositories is None
+        assert request.require_all is False
+
+    @pytest.mark.asyncio
+    @patch('integrations.jira.jira_view.get_app_conversation_service')
+    @patch('integrations.jira.jira_view.integration_store')
+    async def test_create_conversation_with_additional_repositories(
+        self, mock_store, mock_get_service, new_conversation_view, mock_jinja_env
+    ):
+        """Every verified repository after the first is passed with its own
+        provider; a failed clone must not stop the start."""
+        new_conversation_view.git_provider = ProviderType.GITHUB
+        new_conversation_view.additional_repos = [
+            _repo('test/repo2'),
+            _repo('group/repo3', ProviderType.GITLAB),
+        ]
+        request = await _capture_start_request(
+            mock_store, mock_get_service, new_conversation_view, mock_jinja_env
+        )
+
+        assert request.selected_repository == 'test/repo1'
+        assert request.git_provider == ProviderType.GITHUB
+        assert [
+            (r.repository, r.git_provider, r.branch)
+            for r in request.additional_repositories
+        ] == [
+            ('test/repo2', ProviderType.GITHUB, None),
+            ('group/repo3', ProviderType.GITLAB, None),
+        ]
+        assert request.require_all is False
+
+
+def _repo(full_name: str, provider: ProviderType = ProviderType.GITHUB) -> Repository:
+    return Repository(
+        id=full_name,
+        full_name=full_name,
+        stargazers_count=0,
+        git_provider=provider,
+        is_public=False,
+    )
+
+
+async def _capture_start_request(mock_store, mock_get_service, view, jinja_env):
+    view._issue_title = 'Test Issue'
+    view._issue_description = 'Test description'
+    mock_store.create_conversation = AsyncMock()
+    captured_requests = []
+
+    async def mock_start_generator(request):
+        captured_requests.append(request)
+        yield MagicMock(status=AppConversationStartTaskStatus.READY)
+
+    mock_service = MagicMock()
+    mock_service.start_app_conversation = mock_start_generator
+    mock_get_service.return_value.__aenter__.return_value = mock_service
+
+    with patch.object(view, '_get_resolved_org_id', new_callable=AsyncMock):
+        await view.create_or_update_conversation(jinja_env)
+
+    assert len(captured_requests) == 1
+    return captured_requests[0]
+
+
+class TestJiraFactoryRepositoryMentions:
+    """Mention handling with the real parser and a fake provider lookup."""
+
+    async def _create_view(
+        self,
+        payload,
+        workspace,
+        user,
+        user_auth,
+        *,
+        description: str = 'Test description',
+        accessible: dict[str, Repository],
+    ):
+        """Create a view; mentions whose lowercase name is in accessible verify."""
+
+        async def verify(name):
+            if name.lower() in accessible:
+                return accessible[name.lower()]
+            raise Exception(f'not found: {name}')
+
+        handler = MagicMock()
+        handler.verify_repo_provider = AsyncMock(side_effect=verify)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'fields': {'summary': 'Test Issue', 'description': description}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with (
+            patch('httpx.AsyncClient') as mock_client,
+            patch(
+                'integrations.jira.jira_view.JiraFactory._create_provider_handler',
+                new=AsyncMock(return_value=handler),
+            ),
+        ):
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+            view = await JiraFactory.create_view(
+                payload=payload,
+                workspace=workspace,
+                user=user,
+                user_auth=user_auth,
+                decrypted_api_key='test_api_key',
+            )
+        return view, handler
+
+    @staticmethod
+    def _accessible(*names: str) -> dict[str, Repository]:
+        return {n.lower(): _repo(n) for n in names}
+
+    @pytest.fixture
+    def args(
+        self,
+        sample_webhook_payload,
+        sample_jira_workspace,
+        sample_jira_user,
+        sample_user_auth,
+    ):
+        return (
+            sample_webhook_payload,
+            sample_jira_workspace,
+            sample_jira_user,
+            sample_user_auth,
+        )
+
+    @staticmethod
+    def _with_comment(args, comment):
+        payload, *rest = args
+        return (replace(payload, comment_body=comment), *rest)
+
+    @pytest.mark.asyncio
+    async def test_single_mention_unchanged(self, args):
+        view, _ = await self._create_view(
+            *self._with_comment(args, 'Fix acme/api @openhands'),
+            accessible=self._accessible('acme/api'),
+        )
+
+        assert view.selected_repo == 'acme/api'
+        assert view.git_provider == ProviderType.GITHUB
+        assert view.additional_repos == []
+        assert view.inaccessible_repos == []
+        assert view.skipped_repos == []
+
+    @pytest.mark.asyncio
+    async def test_several_mentions_start_one_conversation(self, args):
+        view, _ = await self._create_view(
+            *self._with_comment(args, 'Change acme/api and acme/web @openhands'),
+            accessible=self._accessible('acme/api', 'acme/web'),
+        )
+
+        assert view.selected_repo == 'acme/api'
+        assert [r.full_name for r in view.additional_repos] == ['acme/web']
+        assert view.inaccessible_repos == []
+
+    @pytest.mark.asyncio
+    async def test_unverified_comment_mention_is_reported_not_fatal(self, args):
+        view, _ = await self._create_view(
+            *self._with_comment(
+                args, 'Change acme/api, acme/missing and acme/web @openhands'
+            ),
+            accessible=self._accessible('acme/api', 'acme/web'),
+        )
+
+        assert view.selected_repo == 'acme/api'
+        assert [r.full_name for r in view.additional_repos] == ['acme/web']
+        assert view.inaccessible_repos == ['acme/missing']
+        assert 'Could not access: acme/missing.' in view.get_response_msg()
+
+    @pytest.mark.asyncio
+    async def test_zero_mentions_start_without_repository(self, args):
+        view, handler = await self._create_view(
+            *self._with_comment(args, 'Please fix this @openhands'),
+            description='No repository named here.',
+            accessible={},
+        )
+
+        assert view.selected_repo is None
+        assert view.git_provider is None
+        assert view.additional_repos == []
+        handler.verify_repo_provider.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_more_than_ten_mentions_are_capped(self, args):
+        names = [f'acme/repo{i}' for i in range(12)]
+        view, _ = await self._create_view(
+            *self._with_comment(args, ' '.join(names) + ' @openhands'),
+            accessible=self._accessible(*names),
+        )
+
+        assert view.selected_repo == 'acme/repo0'
+        assert [r.full_name for r in view.additional_repos] == names[1:10]
+        assert view.skipped_repos == names[10:]
+
+    @pytest.mark.asyncio
+    async def test_comment_mentions_come_before_description(self, args):
+        view, _ = await self._create_view(
+            *self._with_comment(args, 'Work in acme/api @openhands'),
+            description='Originally reported against acme/web.',
+            accessible=self._accessible('acme/api', 'acme/web'),
+        )
+
+        assert view.selected_repo == 'acme/api'
+        assert [r.full_name for r in view.additional_repos] == ['acme/web']
+
+    @pytest.mark.asyncio
+    async def test_unverified_description_text_is_ignored(self, args):
+        view, _ = await self._create_view(
+            *self._with_comment(args, 'Please fix this @openhands'),
+            description=(
+                'See https://acme.atlassian.net/browse/ABC-1 for the client/server '
+                'split; the code is in acme/web.'
+            ),
+            accessible=self._accessible('acme/web'),
+        )
+
+        assert view.selected_repo == 'acme/web'
+        assert view.additional_repos == []
+        assert view.inaccessible_repos == []
+        assert 'Could not access' not in view.get_response_msg()
+
+    @pytest.mark.asyncio
+    async def test_variants_of_one_repository_count_once(self, args):
+        repo = _repo('acme/api')
+        view, _ = await self._create_view(
+            *self._with_comment(args, 'acme/api @openhands'),
+            description='https://github.com/ACME/API',
+            accessible={'acme/api': repo},
+        )
+
+        assert view.selected_repo == 'acme/api'
+        assert view.additional_repos == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_verified_does_not_start(self, args):
+        with pytest.raises(RepositorySelectionError) as exc_info:
+            await self._create_view(
+                *self._with_comment(args, 'Change acme/one and acme/two @openhands'),
+                description='Also browse/ABC-1',
+                accessible={},
+            )
+
+        message = str(exc_info.value)
+        assert message.startswith(
+            'Could not access any of the mentioned repositories: '
+            'acme/one, acme/two, browse/ABC-1. No conversation was started.'
+        )
 
 
 class TestJiraFactory:
@@ -373,7 +671,7 @@ class TestJiraFactory:
         sample_jira_workspace,
         sample_repositories,
     ):
-        """Test factory raises error when multiple repos are verified."""
+        """Several verified repos start one conversation: first is primary."""
         mock_handler = MagicMock()
         # Both repos verify successfully
         mock_handler.verify_repo_provider = AsyncMock(
@@ -395,16 +693,16 @@ class TestJiraFactory:
                 return_value=mock_response
             )
 
-            with pytest.raises(
-                RepositorySelectionError, match='Multiple repositories found'
-            ):
-                await JiraFactory.create_view(
-                    payload=sample_webhook_payload,
-                    workspace=sample_jira_workspace,
-                    user=sample_jira_user,
-                    user_auth=sample_user_auth,
-                    decrypted_api_key='test_api_key',
-                )
+            view = await JiraFactory.create_view(
+                payload=sample_webhook_payload,
+                workspace=sample_jira_workspace,
+                user=sample_jira_user,
+                user_auth=sample_user_auth,
+                decrypted_api_key='test_api_key',
+            )
+
+        assert view.selected_repo == 'test/repo1'
+        assert [r.full_name for r in view.additional_repos] == ['test/repo2']
 
     @pytest.mark.asyncio
     @patch('integrations.jira.jira_view.JiraFactory._create_provider_handler')
