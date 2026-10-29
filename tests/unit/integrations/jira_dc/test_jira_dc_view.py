@@ -252,3 +252,96 @@ def test_get_response_msg_without_repository(new_conversation_view):
     response = new_conversation_view.get_response_msg()
 
     assert 'Note: This conversation started without a repository.' in response
+
+
+def _repo(full_name: str) -> Repository:
+    return Repository(
+        id=full_name,
+        full_name=full_name,
+        stargazers_count=0,
+        git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+        is_public=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_single_repository_sends_no_additional(
+    new_conversation_view, mock_jinja_env
+):
+    """One mentioned repository keeps the single-repository start request."""
+    captured_requests = []
+
+    async def _fake_start(request):
+        captured_requests.append(request)
+        return
+        yield
+
+    async with _make_start_conversation_patches()(new_conversation_view) as mock_svc:
+        mock_svc.start_app_conversation = _fake_start
+        await new_conversation_view.create_or_update_conversation(mock_jinja_env)
+
+    assert len(captured_requests) == 1
+    assert captured_requests[0].selected_repository == 'company/repo1'
+    assert captured_requests[0].additional_repositories is None
+    assert captured_requests[0].require_all is False
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_with_additional_repositories(
+    new_conversation_view, mock_jinja_env
+):
+    """Every verified repository after the first is passed as an additional
+    repository with its own provider; a failed clone must not stop the start."""
+    new_conversation_view.additional_repos = [
+        _repo('company/repo2'),
+        _repo('company/repo3'),
+    ]
+    captured_requests = []
+
+    async def _fake_start(request):
+        captured_requests.append(request)
+        return
+        yield
+
+    async with _make_start_conversation_patches()(new_conversation_view) as mock_svc:
+        mock_svc.start_app_conversation = _fake_start
+        await new_conversation_view.create_or_update_conversation(mock_jinja_env)
+
+    assert len(captured_requests) == 1
+    request = captured_requests[0]
+    assert request.selected_repository == 'company/repo1'
+    assert [
+        (r.repository, r.git_provider, r.branch)
+        for r in request.additional_repositories
+    ] == [
+        ('company/repo2', ProviderType.BITBUCKET_DATA_CENTER, None),
+        ('company/repo3', ProviderType.BITBUCKET_DATA_CENTER, None),
+    ]
+    assert request.require_all is False
+
+
+def test_get_response_msg_single_repository_unchanged(new_conversation_view):
+    response = new_conversation_view.get_response_msg()
+
+    assert response.startswith("I'm on it in company/repo1!")
+    assert 'Could not access' not in response
+    assert 'Not included' not in response
+
+
+def test_get_response_msg_names_every_repository(new_conversation_view):
+    new_conversation_view.additional_repos = [
+        _repo('company/repo2'),
+        _repo('company/repo3'),
+    ]
+    new_conversation_view.inaccessible_repos = ['company/missing']
+    new_conversation_view.skipped_repos = ['company/eleventh']
+
+    response = new_conversation_view.get_response_msg()
+
+    assert response.startswith(
+        "I'm on it in company/repo1, together with company/repo2 and company/repo3!"
+    )
+    assert 'track my progress here' in response
+    assert 'Could not access: company/missing.' in response
+    assert 'Not included' in response and 'company/eleventh' in response
+    assert 'without a repository' not in response
