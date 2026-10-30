@@ -717,7 +717,24 @@ def gated_client():
 
 
 def test_every_route_is_gated():
-    assert len(GATED_ROUTES) == len(service_accounts_router.routes)
+    """GATED_ROUTES names exactly the router's routes, so a new route fails
+    here until it is added to the 403 test below."""
+    base = '/api/organizations/{org_id}/service-accounts'
+    listed = {
+        (
+            method,
+            base
+            + ('/{sa_id}' if has_id else '')
+            + suffix.replace('/secrets/A', '/secrets/{secret_name}'),
+        )
+        for method, has_id, suffix, _body in GATED_ROUTES
+    }
+    routed = {
+        (method, route.path)
+        for route in service_accounts_router.routes
+        for method in route.methods
+    }
+    assert listed == routed
 
 
 @pytest.mark.asyncio
