@@ -187,11 +187,9 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     saas_user_auth,
                 )
                 conversation_link = CONVERSATION_URL.format(azure_view.conversation_id)
-                mentioned = azure_view.mentioned_repositories
                 msg_info = (
-                    f'{mentioned.on_it_message(azure_view.full_repo_name)} '
-                    f'{user_info.username} can [track my progress at '
-                    f'all-hands.dev]({conversation_link}){mentioned.notes()}'
+                    f"I'm on it! {user_info.username} can [track my progress at "
+                    f'all-hands.dev]({conversation_link})'
                 )
             except MissingSettingsError as e:
                 logger.warning(

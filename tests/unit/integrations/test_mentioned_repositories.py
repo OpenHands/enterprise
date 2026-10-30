@@ -1,11 +1,10 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from integrations.mentioned_repositories import (
     MentionedRepositories,
     join_names,
-    resolve_mentioned_repositories,
     select_additional_repositories,
     verify_mentioned_repos,
 )
@@ -34,91 +33,28 @@ def _handler(accessible: list[str]):
     return handler
 
 
-async def _resolve(handler, comment, primary='acme/web'):
-    with patch(
-        'integrations.mentioned_repositories.create_provider_handler',
-        AsyncMock(return_value=handler),
-    ):
-        return await resolve_mentioned_repositories(
-            MagicMock(),
-            primary=primary,
-            provider=ProviderType.GITHUB,
-            comment=comment,
-            log_prefix='[test]',
-        )
-
-
 @pytest.mark.asyncio
-async def test_comment_mentions_keep_their_order():
+async def test_verify_keeps_mention_order_and_reports_unverified():
     handler = _handler(['acme/api', 'acme/docs'])
-    result = await _resolve(handler, '@openhands use acme/docs and acme/api')
-    assert [r.full_name for r in result.additional] == ['acme/docs', 'acme/api']
-
-
-@pytest.mark.asyncio
-async def test_only_inaccessible_repository_urls_are_reported():
-    handler = _handler(['acme/api'])
-    result = await _resolve(
-        handler,
-        '@openhands use acme/api; the form in src/components is broken, as in '
-        'https://docs.python.org/3/library/re.html and '
-        'https://stackoverflow.com/questions/12345/how-to-x, '
-        'https://docs.github.com/en/rest/pulls/pulls and '
-        'https://gist.github.com/alice/abc123; '
-        'see also https://github.com/acme/missing',
+    verified, unverified = await verify_mentioned_repos(
+        handler, ['acme/docs', 'acme/missing', 'acme/api'], log_prefix='[test]'
     )
-    assert [r.full_name for r in result.additional] == ['acme/api']
-    assert result.inaccessible == ['acme/missing']
+    assert [r.full_name for r in verified] == ['acme/docs', 'acme/api']
+    assert unverified == ['acme/missing']
+    handler.verify_repo_provider.assert_any_await('acme/docs', is_optional=True)
 
 
 @pytest.mark.asyncio
-async def test_primary_and_duplicate_forms_count_once():
+async def test_verify_counts_duplicate_forms_once():
     handler = _handler(['acme/api'])
-    result = await _resolve(
-        handler,
-        '@openhands acme/web, ACME/api and https://github.com/acme/api/pull/2',
+    verified, unverified = await verify_mentioned_repos(
+        handler, ['ACME/api', 'acme/api'], log_prefix='[test]'
     )
-    assert [r.full_name for r in result.additional] == ['acme/api']
-    looked_up = [c.args[0] for c in handler.verify_repo_provider.await_args_list]
-    assert 'acme/web' not in looked_up
+    assert [r.full_name for r in verified] == ['acme/api']
+    assert unverified == []
 
 
-@pytest.mark.asyncio
-async def test_additional_repositories_are_capped():
-    names = [f'acme/r{i}' for i in range(MAX_ADDITIONAL_REPOSITORIES + 2)]
-    result = await _resolve(_handler(names), '@openhands ' + ' '.join(names))
-    assert [r.full_name for r in result.additional] == names[
-        :MAX_ADDITIONAL_REPOSITORIES
-    ]
-    assert result.skipped == names[MAX_ADDITIONAL_REPOSITORIES:]
-    assert f'at most {MAX_ADDITIONAL_REPOSITORIES + 1} repositories' in result.notes()
-
-
-@pytest.mark.asyncio
-async def test_no_linked_provider_reports_comment_mentions():
-    with patch(
-        'integrations.mentioned_repositories.create_provider_handler',
-        AsyncMock(return_value=None),
-    ):
-        result = await resolve_mentioned_repositories(
-            MagicMock(),
-            primary='acme/web',
-            provider=ProviderType.GITHUB,
-            comment='@openhands https://github.com/acme/api',
-            log_prefix='[test]',
-        )
-    assert result.additional == []
-    assert result.inaccessible == ['acme/api']
-
-
-@pytest.mark.asyncio
-async def test_verify_without_preferred_provider_keeps_jira_dc_call():
-    handler = _handler(['acme/api'])
-    await verify_mentioned_repos(handler, ['acme/api'], log_prefix='[Jira DC]')
-    handler.verify_repo_provider.assert_awaited_once_with('acme/api', is_optional=True)
-
-
-def test_select_additional_repositories_excludes_primary():
+def test_select_excludes_primary_and_reports_only_reportable():
     selection = select_additional_repositories(
         'acme/web',
         [_repo('acme/web'), _repo('acme/api')],
@@ -127,33 +63,29 @@ def test_select_additional_repositories_excludes_primary():
     )
     assert [r.full_name for r in selection.additional] == ['acme/api']
     assert selection.inaccessible == ['acme/x']
+    assert selection.skipped == []
 
 
-def test_messages():
-    assert MentionedRepositories().on_it_message('acme/web') == "I'm on it!"
-    assert MentionedRepositories().additional_repository_requests() is None
-    both = MentionedRepositories(additional=[_repo('acme/a'), _repo('acme/b')])
-    assert both.on_it_message('acme/web') == (
-        "I'm on it in acme/web, together with acme/a and acme/b!"
+def test_select_caps_additional_repositories():
+    names = [f'acme/r{i}' for i in range(MAX_ADDITIONAL_REPOSITORIES + 2)]
+    selection = select_additional_repositories(
+        'acme/web', [_repo(n) for n in names], [], []
     )
+    assert [r.full_name for r in selection.additional] == names[
+        :MAX_ADDITIONAL_REPOSITORIES
+    ]
+    assert selection.skipped == names[MAX_ADDITIONAL_REPOSITORIES:]
+    assert (
+        f'at most {MAX_ADDITIONAL_REPOSITORIES + 1} repositories' in selection.notes()
+    )
+
+
+def test_notes_and_join_names():
+    assert MentionedRepositories().notes() == ''
+    assert (
+        'Could not access: acme/x.'
+        in MentionedRepositories(inaccessible=['acme/x']).notes()
+    )
+    assert join_names(['a']) == 'a'
+    assert join_names(['a', 'b']) == 'a and b'
     assert join_names(['a', 'b', 'c']) == 'a, b and c'
-
-
-@pytest.mark.asyncio
-async def test_inaccessible_self_hosted_url_is_reported():
-    handler = _handler([])
-    handler.provider_tokens = {
-        ProviderType.GITLAB: MagicMock(host='https://git.example.com')
-    }
-    result = await _resolve(
-        handler, '@openhands see https://git.example.com/team/svc/-/issues/3'
-    )
-    assert result.inaccessible == ['team/svc']
-
-
-@pytest.mark.asyncio
-async def test_inaccessible_azure_devops_ssh_url_is_reported():
-    result = await _resolve(
-        _handler([]), '@openhands see git@ssh.dev.azure.com:v3/org1/proj/svc'
-    )
-    assert result.inaccessible == ['org1/proj/svc']

@@ -1,50 +1,19 @@
-"""Repositories mentioned in an issue, PR or ticket, verified for one user.
+"""Repositories mentioned in a ticket or message, verified for one user.
 
-Text-driven start paths (the git-provider resolvers and Jira DC) infer
-``owner/repo`` mentions from the user's text, verify each one with the user's
-linked providers and clone the verified ones beside the primary repository.
+Text-driven start paths (Jira DC today) infer ``owner/repo`` mentions from the
+user's text, verify each one with the user's linked providers and start the
+conversation with the verified ones.
 """
 
-import re
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
 
-from integrations.utils import infer_repo_from_message
 from openhands.app_server.app_conversation.additional_repositories import (
     MAX_ADDITIONAL_REPOSITORIES,
-    AdditionalRepositoryRequest,
 )
 from openhands.app_server.integrations.provider import ProviderHandler
-from openhands.app_server.integrations.service_types import ProviderType, Repository
+from openhands.app_server.integrations.service_types import Repository
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.constants import BITBUCKET_DATA_CENTER_HOST
-
-_URL = re.compile(r'(?:https?://|git@)[^\s<>"\'()\[\]|]+')
-
-
-def _host_of(url: str) -> str:
-    if url.startswith('git@'):
-        return url[4:].split(':', 1)[0].lower()
-    return (urlsplit(url).hostname or '').lower()
-
-
-# Azure DevOps serves repositories on subdomains too (ssh.dev.azure.com,
-# <org>.visualstudio.com); other providers' subdomains are docs or gists.
-_AZURE_DEVOPS_HOSTS = ('dev.azure.com', 'visualstudio.com')
-
-
-def _git_hosts(provider_handler: ProviderHandler | None) -> set[str]:
-    hosts = {*ProviderHandler.PROVIDER_DOMAINS.values(), *_AZURE_DEVOPS_HOSTS}
-    hosts.add(BITBUCKET_DATA_CENTER_HOST)
-    if provider_handler:
-        hosts.update(t.host or '' for t in provider_handler.provider_tokens.values())
-    return {_host_of(h if '://' in h else f'https://{h}') for h in hosts if h}
-
-
-def _on_git_host(url: str, hosts: set[str]) -> bool:
-    host = _host_of(url)
-    return host in hosts or host.endswith(tuple(f'.{h}' for h in _AZURE_DEVOPS_HOSTS))
 
 
 @dataclass
@@ -53,34 +22,10 @@ class MentionedRepositories:
 
     # Verified mentions other than the primary, in mention order.
     additional: list[Repository] = field(default_factory=list)
-    # Mentions from the triggering comment that could not be accessed.
+    # Mentions that could not be accessed and are worth reporting.
     inaccessible: list[str] = field(default_factory=list)
     # Verified mentions beyond the per-conversation limit.
     skipped: list[str] = field(default_factory=list)
-
-    def additional_repository_requests(
-        self,
-    ) -> list[AdditionalRepositoryRequest] | None:
-        # A failed clone is reported on the conversation and does not stop the
-        # start (require_all stays off); neither does a name the request rejects.
-        requests = []
-        for repo in self.additional:
-            try:
-                requests.append(
-                    AdditionalRepositoryRequest(
-                        repository=repo.full_name, git_provider=repo.git_provider
-                    )
-                )
-            except ValueError:
-                logger.warning(f'Skipping invalid repository name {repo.full_name!r}')
-        return requests or None
-
-    def on_it_message(self, primary: str) -> str:
-        """'I'm on it!', naming the repositories when there are several."""
-        if not self.additional:
-            return "I'm on it!"
-        names = join_names([r.full_name for r in self.additional])
-        return f"I'm on it in {primary}, together with {names}!"
 
     def notes(self) -> str:
         """Paragraphs about mentions that were not included, or ''."""
@@ -125,7 +70,6 @@ async def verify_mentioned_repos(
     provider_handler: ProviderHandler,
     mentioned_repos: list[str],
     log_prefix: str,
-    preferred_provider: ProviderType | None = None,
 ) -> tuple[list[Repository], list[str]]:
     """Resolve each mentioned repo with a targeted lookup.
 
@@ -139,14 +83,9 @@ async def verify_mentioned_repos(
     unverified: list[str] = []
     for repo_name in mentioned_repos:
         try:
-            if preferred_provider:
-                repo = await provider_handler.verify_repo_provider(
-                    repo_name, preferred_provider, is_optional=True
-                )
-            else:
-                repo = await provider_handler.verify_repo_provider(
-                    repo_name, is_optional=True
-                )
+            repo = await provider_handler.verify_repo_provider(
+                repo_name, is_optional=True
+            )
         except Exception as e:
             # INFO (not DEBUG) so the reason is visible in support bundles;
             # e carries the provider error incl. the attempted URL + status.
@@ -174,54 +113,3 @@ def select_additional_repositories(
         inaccessible=[m for m in unverified if m in reportable],
         skipped=[r.full_name for r in others[MAX_ADDITIONAL_REPOSITORIES:]],
     )
-
-
-async def resolve_mentioned_repositories(
-    user_auth: UserAuth,
-    primary: str,
-    provider: ProviderType,
-    comment: str,
-    log_prefix: str,
-) -> MentionedRepositories:
-    """Repositories a resolver clones beside the webhook's repository.
-
-    Only the triggering comment counts: it is written by the user the job runs
-    as, while the issue/PR description may be written by anyone and cloning a
-    repository loads its skills. The webhook's repository stays the primary.
-    Never raises: a failure here starts with the primary only, as before.
-    """
-    mentions = [
-        m
-        for m in infer_repo_from_message(comment or '')
-        if m.lower() != primary.lower()
-    ]
-    if not mentions:
-        return MentionedRepositories()
-
-    try:
-        provider_handler = await create_provider_handler(user_auth)
-        if provider_handler:
-            verified, unverified = await verify_mentioned_repos(
-                provider_handler, mentions, log_prefix, preferred_provider=provider
-            )
-        else:
-            verified, unverified = [], list(mentions)
-    except Exception:
-        logger.exception(f'{log_prefix} Could not verify mentioned repositories')
-        return MentionedRepositories()
-
-    # Bare a/b text is often a file path and most links are docs; only a URL on
-    # a Git provider's host that cannot be accessed is worth reporting.
-    hosts = _git_hosts(provider_handler)
-    repo_urls = [u for u in _URL.findall(comment) if _on_git_host(u, hosts)]
-    selection = select_additional_repositories(
-        primary, verified, unverified, infer_repo_from_message(' '.join(repo_urls))
-    )
-    logger.info(
-        '%s repo resolution primary=%s inferred=%s additional=%s',
-        log_prefix,
-        primary,
-        mentions,
-        [r.full_name for r in selection.additional],
-    )
-    return selection

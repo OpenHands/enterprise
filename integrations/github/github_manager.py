@@ -392,8 +392,7 @@ class GithubManager(Manager[GithubViewType]):
                 )
 
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
-                mentioned = github_view.mentioned_repositories
-                msg_info = f'{mentioned.on_it_message(github_view.full_repo_name)} {user_info.username} can [track my progress at all-hands.dev]({conversation_link}){mentioned.notes()}'
+                msg_info = f"I'm on it! {user_info.username} can [track my progress at all-hands.dev]({conversation_link})"
 
             except MissingSettingsError as e:
                 logger.warning(

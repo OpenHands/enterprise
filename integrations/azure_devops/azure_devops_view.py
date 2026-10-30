@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -11,10 +11,6 @@ from integrations.azure_devops.azure_devops_payload import (
     extract_org as _extract_org,
 )
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
-from integrations.mentioned_repositories import (
-    MentionedRepositories,
-    resolve_mentioned_repositories,
-)
 from integrations.models import Message
 from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
@@ -148,9 +144,6 @@ class AzureDevOpsItem(ResolverViewInterface):
     project_name: str
     project_id: str
     repository_id: str
-    mentioned_repositories: MentionedRepositories = field(
-        default_factory=MentionedRepositories, kw_only=True
-    )
 
     def _get_branch_name(self) -> str | None:
         # Only PR comments carry a branch; overridden there.
@@ -197,16 +190,6 @@ class AzureDevOpsItem(ResolverViewInterface):
         user_instructions, conversation_instructions = await self._get_instructions(
             jinja_env
         )
-
-        # The webhook's repository stays the primary; other repositories
-        # named in the triggering comment are cloned beside it.
-        self.mentioned_repositories = await resolve_mentioned_repositories(
-            saas_user_auth,
-            primary=self.full_repo_name,
-            provider=ProviderType.AZURE_DEVOPS,
-            comment=getattr(self, 'comment_body', ''),
-            log_prefix='[Azure DevOps]',
-        )
         initial_message = SendMessageRequest(
             role='user', content=[TextContent(text=user_instructions)]
         )
@@ -238,9 +221,6 @@ class AzureDevOpsItem(ResolverViewInterface):
             selected_repository=self.full_repo_name,
             selected_branch=self._get_branch_name(),
             git_provider=ProviderType.AZURE_DEVOPS,
-            additional_repositories=(
-                self.mentioned_repositories.additional_repository_requests()
-            ),
             title=f'{title_prefix} #{self.issue_number}: {self.title}',
             trigger=ConversationTrigger.RESOLVER,
             processors=[callback_processor],
