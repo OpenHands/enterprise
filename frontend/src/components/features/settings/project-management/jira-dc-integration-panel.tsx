@@ -420,7 +420,9 @@ export function JiraDcIntegrationPanel() {
   );
 
   const colHead = settingsListTableHeaderCellClassName;
-  const showServerAndServiceAccountSection = !serviceAccountManaged;
+  // A managed service account still needs the host typed in when nothing supplies it (email mode).
+  const showServerAndServiceAccountSection =
+    !serviceAccountManaged || !hostLocked;
 
   const serverAndServiceAccountSection = (
     <div className="flex flex-col gap-3">
