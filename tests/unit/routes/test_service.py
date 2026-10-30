@@ -1,5 +1,6 @@
 """Unit tests for service API routes."""
 
+import hmac
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,6 +42,19 @@ class TestValidateServiceApiKey:
                 await validate_service_api_key('wrong-key')
         assert exc_info.value.status_code == 401
         assert 'Invalid service API key' in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('provided', ['wrong-key', 'tést-service-key'])
+    async def test_invalid_service_key_is_rejected_in_constant_time(self, provided):
+        """Wrong or non-ASCII keys get 401 through a constant-time compare."""
+        with (
+            patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-service-key'),
+            patch('hmac.compare_digest', wraps=hmac.compare_digest) as spy,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await validate_service_api_key(provided)
+        assert exc_info.value.status_code == 401
+        spy.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_service_auth_not_configured(self):
@@ -123,6 +137,26 @@ class TestGetOrCreateApiKeyForUser:
         assert 'not found' in exc_info.value.detail
 
     @pytest.mark.asyncio
+    async def test_invalid_user_id_returns_404(self, valid_org_id, valid_request):
+        """A user_id that is not a UUID is treated as an unknown user, not a 500."""
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.UserStore.get_user_by_id', new_callable=AsyncMock
+            ) as mock_get_user:
+                mock_get_user.return_value = MagicMock()
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_or_create_api_key_for_user(
+                        user_id='not-a-uuid',
+                        org_id=valid_org_id,
+                        request=valid_request,
+                        x_service_api_key='test-key',
+                    )
+        assert exc_info.value.status_code == 404
+        assert 'not found' in exc_info.value.detail
+        # UserStore.get_user_by_id parses the ID too; it must not see invalid input.
+        mock_get_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_user_not_in_org(self, valid_user_id, valid_org_id, valid_request):
         """Test error when user is not a member of the org."""
         mock_user = MagicMock()
@@ -187,6 +221,48 @@ class TestGetOrCreateApiKeyForUser:
         assert response.name == 'automation'
 
         # Verify the store was called with correct arguments
+        mock_api_key_store.get_or_create_system_api_key.assert_called_once_with(
+            user_id=valid_user_id,
+            org_id=valid_org_id,
+            name='automation',
+        )
+
+    @pytest.mark.asyncio
+    async def test_key_is_minted_for_canonical_user_id(
+        self, valid_user_id, valid_org_id, valid_request
+    ):
+        """A non-canonical UUID spelling still mints the key for the canonical ID.
+
+        Bearer auth and member removal match keys to org_member rows by the
+        canonical (lowercase, hyphenated) user ID.
+        """
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.get_or_create_system_api_key = AsyncMock(
+            return_value='sk-oh-test-key-12345678901234567890'
+        )
+
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.UserStore.get_user_by_id', new_callable=AsyncMock
+            ) as mock_get_user:
+                with patch(
+                    'server.routes.service.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                ) as mock_get_member:
+                    with patch(
+                        'server.routes.service.ApiKeyStore.get_instance'
+                    ) as mock_get_store:
+                        mock_get_user.return_value = MagicMock()
+                        mock_get_member.return_value = MagicMock()
+                        mock_get_store.return_value = mock_api_key_store
+
+                        await get_or_create_api_key_for_user(
+                            user_id=valid_user_id.upper(),
+                            org_id=valid_org_id,
+                            request=valid_request,
+                            x_service_api_key='test-key',
+                        )
+
         mock_api_key_store.get_or_create_system_api_key.assert_called_once_with(
             user_id=valid_user_id,
             org_id=valid_org_id,
@@ -266,6 +342,34 @@ class TestDeleteUserApiKey:
         mock_api_key_store.make_system_key_name.assert_called_once_with('automation')
         mock_api_key_store.delete_api_key_by_name.assert_called_once_with(
             user_id='user-123',
+            org_id=valid_org_id,
+            name='__SYSTEM__:automation',
+            allow_system=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_uses_canonical_user_id(self, valid_org_id):
+        """Delete matches the canonical user ID that the mint endpoint stores."""
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.make_system_key_name.return_value = '__SYSTEM__:automation'
+        mock_api_key_store.delete_api_key_by_name = AsyncMock(return_value=True)
+        user_id = '5594c7b6-f959-4b81-92e9-b09c206f5081'
+
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.ApiKeyStore.get_instance'
+            ) as mock_get_store:
+                mock_get_store.return_value = mock_api_key_store
+
+                await delete_user_api_key(
+                    user_id=user_id.upper(),
+                    org_id=valid_org_id,
+                    key_name='automation',
+                    x_service_api_key='test-key',
+                )
+
+        mock_api_key_store.delete_api_key_by_name.assert_called_once_with(
+            user_id=user_id,
             org_id=valid_org_id,
             name='__SYSTEM__:automation',
             allow_system=True,
