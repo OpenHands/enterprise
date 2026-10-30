@@ -18,6 +18,9 @@ class SandboxSpecInfo(BaseModel):
 
     id: str
     command: list[str] | None
+    # Arguments for the image ENTRYPOINT. Leave `command` unset to keep that
+    # ENTRYPOINT (e.g. tini as PID 1) instead of overriding it.
+    args: list[str] | None = None
     created_at: datetime = Field(default_factory=utc_now)
     initial_env: dict[str, str] = Field(
         default_factory=dict, description='Initial Environment Variables'
