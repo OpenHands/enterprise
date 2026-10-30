@@ -87,12 +87,12 @@ async def _get_or_404(org_id: UUID, sa_id: UUID) -> ServiceAccountResponse:
 
 
 async def _owns_automation(org_id: UUID, sa_id: UUID, request: Request) -> bool:
-    """Ask the Automation Service whether ``sa_id`` owns an automation.
+    """Ask the Automation Service whether an automation runs as ``sa_id``.
 
     Automations live in that service's own database. The caller's own
     credentials are forwarded, as in ``instance_admin._org_has_automation``.
-    The ``owner_id`` filter of ``GET /v1`` makes ``total`` the number of
-    automations the account owns.
+    The ``run_as_user_id`` filter of ``GET /v1`` makes ``total`` the number of
+    automations that run as the account.
 
     If no Automation Service URL is configured, no automation can exist, so
     the answer is ``False``. Fails closed otherwise: any error reaching the
@@ -112,7 +112,7 @@ async def _owns_automation(org_id: UUID, sa_id: UUID, request: Request) -> bool:
         ) as client:
             response = await client.get(
                 f'{AUTOMATION_SERVICE_URL.rstrip("/")}/v1',
-                params={'owner_id': str(sa_id), 'limit': 1},
+                params={'run_as_user_id': str(sa_id), 'limit': 1},
                 headers=headers,
             )
             response.raise_for_status()
@@ -321,9 +321,9 @@ async def delete_service_account(
     request: Request,
     user_id: str = Depends(require_permission(Permission.MANAGE_SERVICE_ACCOUNTS)),
 ) -> Response:
-    """Delete a service account that owns no automation, and its sandboxes.
+    """Delete a service account that no automation runs as, and its sandboxes.
 
-    409 while it owns an automation. Its sandboxes, paused ones included, are
+    409 while an automation runs as it. Its sandboxes, paused ones included, are
     deleted first. 503 if the Automation Service cannot be reached or a
     sandbox could not be deleted; retry.
     """
@@ -331,7 +331,10 @@ async def delete_service_account(
     if await _owns_automation(org_id, sa_id, request):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            detail='Service account owns automations. Delete or transfer them first.',
+            detail=(
+                'Automations run as this service account. Delete them or '
+                'change who they run as first.'
+            ),
         )
     try:
         deleted = await AdminUserLifecycleService().delete_service_account(str(sa_id))
