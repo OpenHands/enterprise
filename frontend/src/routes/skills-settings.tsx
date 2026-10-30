@@ -248,6 +248,7 @@ function SkillsSettingsScreen() {
           const autoLoad = !!mp?.auto_load;
           return {
             name: plugin.name,
+            description: plugin.description,
             type: "plugin",
             source: `marketplace:${plugin.marketplace}`,
             id: `plugin:${plugin.marketplace}:${plugin.name}`,

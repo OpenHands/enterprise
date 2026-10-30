@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ChevronRight } from "lucide-react";
 import { SkillWithState } from "#/types/settings";
 import { Toggle } from "#/components/shared/toggle/toggle";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
@@ -65,6 +66,19 @@ export function SkillsTable({
   onRepositoryChange,
 }: SkillsTableProps) {
   const { t } = useTranslation();
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+
+  const toggleExpanded = useCallback((skillId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(skillId)) {
+        next.delete(skillId);
+      } else {
+        next.add(skillId);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <div className="flex flex-col gap-4">
@@ -146,50 +160,103 @@ export function SkillsTable({
               </tr>
             </thead>
             <tbody>
-              {skills.map((skill) => (
-                <tr
-                  key={skill.id}
-                  className="border-t border-[var(--oh-border)] transition-colors hover:bg-base-secondary/40"
-                >
-                  <td
-                    className={cn(CELL_CLASS, "font-medium text-content-2")}
-                    title={skill.name}
-                  >
-                    <span className="block truncate">{skill.name}</span>
-                  </td>
-                  <td className={cn(CELL_CLASS, "text-tertiary-alt")}>
-                    <span className="block truncate" title={skill.repository}>
-                      {skill.marketplaceName ?? skill.repository}
-                    </span>
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <span className="inline-flex items-center rounded-full bg-tertiary/60 px-2.5 py-0.5 text-xs font-medium text-tertiary-light">
-                      {skill.type}
-                    </span>
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <ScopeBadge scope={skill.scope} />
-                  </td>
-                  <td className={CELL_CLASS}>
-                    {skill.type === "plugin" ? (
-                      // Plugins are enabled via their marketplace's Auto-Load
-                      // toggle, so this reflects that state read-only.
-                      <Toggle
-                        checked={skill.isAutoLoad}
-                        disabled
-                        title={t(I18nKey.SETTINGS$PLUGIN_AUTOLOAD_READONLY)}
-                        aria-label={`Auto-load state for ${skill.name}`}
-                      />
-                    ) : (
-                      <Toggle
-                        checked={skill.isEnabled}
-                        onClick={() => onToggle(skill.id)}
-                        aria-label={`Toggle enabled for ${skill.name}`}
-                      />
+              {skills.map((skill) => {
+                const isExpanded = expandedIds.has(skill.id);
+                return (
+                  <React.Fragment key={skill.id}>
+                    <tr
+                      data-testid={`skill-row-${skill.id}`}
+                      onClick={() => toggleExpanded(skill.id)}
+                      className={cn(
+                        "cursor-pointer border-t border-[var(--oh-border)] transition-colors hover:bg-base-secondary/40",
+                        isExpanded && "bg-base-secondary/30",
+                      )}
+                    >
+                      <td
+                        className={cn(CELL_CLASS, "font-medium text-content-2")}
+                        title={skill.name}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            aria-expanded={isExpanded}
+                            aria-label={t(
+                              I18nKey.SETTINGS$SKILL_SHOW_DESCRIPTION,
+                              {
+                                name: skill.name,
+                              },
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleExpanded(skill.id);
+                            }}
+                            className="shrink-0 rounded text-tertiary-alt hover:text-content-2"
+                          >
+                            <ChevronRight
+                              aria-hidden
+                              className={cn(
+                                "h-4 w-4 transition-transform",
+                                isExpanded && "rotate-90",
+                              )}
+                            />
+                          </button>
+                          <span className="block truncate">{skill.name}</span>
+                        </span>
+                      </td>
+                      <td className={cn(CELL_CLASS, "text-tertiary-alt")}>
+                        <span
+                          className="block truncate"
+                          title={skill.repository}
+                        >
+                          {skill.marketplaceName ?? skill.repository}
+                        </span>
+                      </td>
+                      <td className={CELL_CLASS}>
+                        <span className="inline-flex items-center rounded-full bg-tertiary/60 px-2.5 py-0.5 text-xs font-medium text-tertiary-light">
+                          {skill.type}
+                        </span>
+                      </td>
+                      <td className={CELL_CLASS}>
+                        <ScopeBadge scope={skill.scope} />
+                      </td>
+                      <td
+                        className={CELL_CLASS}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {skill.type === "plugin" ? (
+                          // Plugins are enabled via their marketplace's Auto-Load
+                          // toggle, so this reflects that state read-only.
+                          <Toggle
+                            checked={skill.isAutoLoad}
+                            disabled
+                            title={t(I18nKey.SETTINGS$PLUGIN_AUTOLOAD_READONLY)}
+                            aria-label={`Auto-load state for ${skill.name}`}
+                          />
+                        ) : (
+                          <Toggle
+                            checked={skill.isEnabled}
+                            onClick={() => onToggle(skill.id)}
+                            aria-label={`Toggle enabled for ${skill.name}`}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr data-testid={`skill-description-${skill.id}`}>
+                        <td
+                          colSpan={5}
+                          className="bg-base-secondary/30 px-4 pb-4 pt-0"
+                        >
+                          <p className="whitespace-pre-wrap break-words pl-[22px] text-sm text-tertiary-alt">
+                            {skill.description ||
+                              t(I18nKey.SETTINGS$SKILL_NO_DESCRIPTION)}
+                          </p>
+                        </td>
+                      </tr>
                     )}
-                  </td>
-                </tr>
-              ))}
+                  </React.Fragment>
+                );
+              })}
               {skills.length === 0 && (
                 <tr className="border-t border-[var(--oh-border)]">
                   <td
