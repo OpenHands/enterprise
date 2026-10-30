@@ -72,6 +72,9 @@ services:
       ENABLE_BILLING: 'false'
       # Rate limiting adds nothing for a single evaluator.
       RATE_LIMITING_ENABLED: 'false'
+      # Product analytics for the first-install funnel (OHE-3657). Set POSTHOG_CLIENT_KEY to an
+      # empty value, or ENABLE_POSTHOG_ANALYTICS to 'false', to send nothing.
+      ENABLE_POSTHOG_ANALYTICS: ${ENABLE_POSTHOG_ANALYTICS:-true}
       POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
@@ -127,6 +130,9 @@ services:
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
+      # Same PostHog project as the app, so automation events join the first-install funnel.
+      AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY:-}
+      AUTOMATION_TELEMETRY_DEPLOYMENT_MODE: self_hosted
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s

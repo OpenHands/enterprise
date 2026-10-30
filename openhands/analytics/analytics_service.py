@@ -4,8 +4,8 @@ Provides a thin wrapper around the PostHog SDK with:
 - Consent gate: all calls are no-ops when consented=False
 - OSS/SaaS dual-mode: $process_person_profile is set to False in OSS mode;
   set_person_properties and group_identify are SaaS-only
-- Common properties: app_mode, deployment_kind, is_feature_env added to every
-  event
+- Common properties: app_mode, deployment_kind, is_feature_env,
+  license_key_configured added to every event
 - Feature-env distinct_id prefix: FEATURE_ prefix for staging/feature envs
 - SDK error isolation: all exceptions are caught and logged, never raised
 
@@ -30,6 +30,7 @@ from openhands.analytics.analytics_constants import (
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
+    OHE_INSTANCE_SETUP_COMPLETED,
     ONBOARDING_COMPLETED,
     PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
@@ -77,12 +78,14 @@ class AnalyticsService:
         app_mode: AppMode,
         is_feature_env: bool,
         deployment_kind: DeploymentKind | None = None,
+        license_key_configured: bool = False,
     ) -> None:
         self._app_mode = app_mode
         self._is_feature_env = is_feature_env
         self._deployment_kind = deployment_kind or (
             'remote' if app_mode == AppMode.SAAS else 'local'
         )
+        self._license_key_configured = license_key_configured
         self._client: Posthog = Posthog(
             project_api_key=api_key,
             host=host,
@@ -186,11 +189,15 @@ class AnalyticsService:
         *,
         email_domain: str | None = None,
         invitation_source: str = 'self_signup',
+        is_super_admin: bool = False,
+        is_instance_setup_user: bool = False,
         session_id: str | None = None,
     ) -> None:
         """Track 'user signed up' event.
 
-        Fired when a new user completes registration.
+        Fired when a new user completes registration. ``is_super_admin`` marks
+        an instance Super Admin and ``is_instance_setup_user`` the first Super
+        Admin of a self-hosted install (the one who runs the install wizard).
         """
         self.capture(
             ctx=ctx,
@@ -198,6 +205,8 @@ class AnalyticsService:
             properties={
                 'email_domain': email_domain,
                 'invitation_source': invitation_source,
+                'is_super_admin': is_super_admin,
+                'is_instance_setup_user': is_instance_setup_user,
             },
             session_id=session_id,
         )
@@ -447,6 +456,32 @@ class AnalyticsService:
             ctx=ctx,
             event=ONBOARDING_COMPLETED,
             properties=selections or {},
+            session_id=session_id,
+        )
+
+    def track_instance_setup_completed(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        company_name: str | None,
+        org_name: str | None,
+        has_company_logo: bool,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'ohe_instance_setup_completed' event.
+
+        Fired when the first Super Admin finishes the first-install wizard
+        (``wizard_completed`` flips to true), right after naming the company
+        and the first organization.
+        """
+        self.capture(
+            ctx=ctx,
+            event=OHE_INSTANCE_SETUP_COMPLETED,
+            properties={
+                'company_name': company_name,
+                'org_name': org_name,
+                'has_company_logo': has_company_logo,
+            },
             session_id=session_id,
         )
 
@@ -733,6 +768,7 @@ class AnalyticsService:
             'app_mode': self._app_mode.value,
             'deployment_kind': self._deployment_kind,
             'is_feature_env': self._is_feature_env,
+            'license_key_configured': self._license_key_configured,
         }
 
         if org_id is not None:
