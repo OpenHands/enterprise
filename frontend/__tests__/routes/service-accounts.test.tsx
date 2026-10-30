@@ -638,6 +638,11 @@ describe("Service accounts route", () => {
     expect(input).toHaveValue(12.5);
     expect(input.validity.stepMismatch).toBe(false);
     expect(Number(input.min)).toBeGreaterThan(0);
+
+    // Save follows the same floor as the field.
+    await userEvent.clear(input);
+    await userEvent.type(input, "0.005");
+    expect(screen.getByTestId("service-account-budget-save")).toBeDisabled();
   });
 
   it("shows the budget of the service account response without listing the org budgets", async () => {
