@@ -392,6 +392,47 @@ describe("Super Admin Instance page", () => {
       await waitFor(() => expect(toggle).not.toBeChecked());
     });
 
+    it("shows the saved value and stays disabled until the config refetch returns", async () => {
+      // Arrange — the refetch after the save is held until we release it.
+      const first = createMockWebClientConfig();
+      first.feature_flags.enable_service_accounts = true;
+      let releaseRefetch: (value: typeof first) => void = () => {};
+      vi.spyOn(OptionService, "getConfig")
+        .mockResolvedValueOnce(first)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseRefetch = resolve;
+            }),
+        );
+      server.use(
+        http.patch(`${FLAG_URL}/:key`, ({ params }) =>
+          HttpResponse.json({
+            key: params.key,
+            description: null,
+            enabled: false,
+          }),
+        ),
+      );
+      const user = userEvent.setup();
+      await renderInstancePage();
+      const toggle = screen.getByTestId(
+        "super-admin-instance-enable-service-accounts",
+      );
+
+      // Act
+      await user.click(toggle);
+
+      // Assert — saved value shown, no second click while the refetch runs.
+      await waitFor(() => expect(toggle).not.toBeChecked());
+      expect(toggle).toBeDisabled();
+      const refetched = createMockWebClientConfig();
+      refetched.feature_flags.enable_service_accounts = false;
+      releaseRefetch(refetched);
+      await waitFor(() => expect(toggle).toBeEnabled());
+      expect(toggle).not.toBeChecked();
+    });
+
     it("creates the flag with POST when PATCH answers 404", async () => {
       // Arrange
       mockServiceAccountsConfig(false, true);
