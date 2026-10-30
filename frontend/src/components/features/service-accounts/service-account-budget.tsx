@@ -49,8 +49,9 @@ export function ServiceAccountBudget({ account }: { account: ServiceAccount }) {
           testId="service-account-budget-input"
           label={t(I18nKey.SERVICE_ACCOUNTS$BUDGET_LABEL)}
           type="number"
-          min={0}
-          step={1}
+          // Save needs a value above 0; the API stores decimal limits.
+          min={0.01}
+          step={0.01}
           className="max-w-[200px]"
           value={value}
           onChange={setDraft}
