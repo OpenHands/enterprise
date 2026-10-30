@@ -1368,6 +1368,7 @@ class SaasUserAuth(UserAuth):
             user_id=str(user_id),
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
         )
         instance.set_effective_org_id_override(sandbox.credential_org_id)
         # Validate now, before any credential (including provider tokens) is read.
