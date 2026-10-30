@@ -17,9 +17,14 @@ from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
 from server.routes.org_models import ServiceAccountResponse
-from server.routes.service_accounts import service_accounts_router
+from server.routes.service_accounts import (
+    service_accounts_router,
+    validate_service_accounts_enabled,
+)
 from server.services.admin_user_lifecycle_service import LifecycleCleanupError
+from server.services.feature_flag_service import FeatureFlagService
 from server.services.service_account_service import ServiceAccountNameExistsError
+from storage.feature_flag_store import FeatureFlagStore
 from storage.saas_settings_store import ManagedLlmKeyRotation, ManagedLlmKeyStatus
 from storage.user_data_cleanup import UserCleanupConflict
 
@@ -45,11 +50,21 @@ def _role(name: str):
     return role
 
 
-@pytest.fixture
-def app():
+def _build_app() -> FastAPI:
     app = FastAPI()
     app.include_router(service_accounts_router)
     app.dependency_overrides[get_user_id] = lambda: CALLER_ID
+    return app
+
+
+@pytest.fixture
+def app():
+    """The router with the ENABLE_SERVICE_ACCOUNTS gate open.
+
+    The gate itself is covered by the ``Feature flag`` tests below.
+    """
+    app = _build_app()
+    app.dependency_overrides[validate_service_accounts_enabled] = lambda: None
     return app
 
 
@@ -669,3 +684,96 @@ async def test_delete_missing_secret_returns_404(client, as_admin, svc, secrets_
         resp = await c.delete(_secret_url('A'))
 
     assert resp.status_code == 404
+
+
+# --- Feature flag ---
+
+FLAG = 'ENABLE_SERVICE_ACCOUNTS'
+
+GATED_ROUTES = [
+    (m, _url(sfx, SA_ID if has_id else None), b) for m, has_id, sfx, b in ALL_ROUTES
+] + [
+    ('GET', _secret_url(), None),
+    ('PUT', _secret_url('A'), {'value': 'v'}),
+    ('DELETE', _secret_url('A'), None),
+]
+
+
+@pytest.fixture
+def flag_db(async_session_maker, monkeypatch):
+    """Resolve the flag through the real service against the test database."""
+    monkeypatch.delenv(FLAG, raising=False)
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+    with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+        yield
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+
+
+@pytest.fixture
+def gated_client():
+    return AsyncClient(
+        transport=ASGITransport(app=_build_app()), base_url='http://test'
+    )
+
+
+def test_every_route_is_gated():
+    assert len(GATED_ROUTES) == len(service_accounts_router.routes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('method', 'url', 'body'), GATED_ROUTES)
+async def test_routes_return_403_when_flag_is_off(
+    gated_client, flag_db, as_admin, svc, lifecycle, secrets_store, method, url, body
+):
+    async with gated_client as c:
+        resp = await c.request(method, url, json=body)
+
+    assert resp.status_code == 403
+    assert FLAG in resp.json()['detail']
+    svc.get_service_account.assert_not_awaited()
+    svc.list_service_accounts.assert_not_awaited()
+    svc.create_service_account.assert_not_awaited()
+    secrets_store.get_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('env_value', ['true', '1'])
+async def test_routes_work_when_env_var_is_on(
+    gated_client, flag_db, as_admin, svc, monkeypatch, env_value
+):
+    monkeypatch.setenv(FLAG, env_value)
+
+    async with gated_client as c:
+        resp = await c.get(_url(sa_id=None))
+
+    assert resp.status_code == 200
+    assert resp.json()['items'][0]['id'] == str(SA_ID)
+
+
+@pytest.mark.asyncio
+async def test_routes_work_when_database_row_is_on(
+    gated_client, flag_db, as_admin, svc, monkeypatch
+):
+    monkeypatch.setenv(FLAG, 'false')
+    await FeatureFlagStore.create_flag(key=FLAG, enabled=True)
+
+    async with gated_client as c:
+        resp = await c.get(_url(sa_id=None))
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_database_row_wins_over_env_var(
+    gated_client, flag_db, as_admin, svc, monkeypatch
+):
+    monkeypatch.setenv(FLAG, 'true')
+    await FeatureFlagStore.create_flag(key=FLAG, enabled=False)
+
+    async with gated_client as c:
+        resp = await c.get(_url(sa_id=None))
+
+    assert resp.status_code == 403
+    svc.list_service_accounts.assert_not_awaited()

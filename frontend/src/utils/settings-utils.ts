@@ -98,6 +98,11 @@ export function isSettingsPageHidden(
     path === "/settings/org-defaults/model-router"
   )
     return true;
+  if (
+    !featureFlags?.enable_service_accounts &&
+    path === "/settings/service-accounts"
+  )
+    return true;
   return false;
 }
 

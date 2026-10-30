@@ -246,7 +246,7 @@ describe("useSettingsNavItems", () => {
 
   describe("org-type and role-based filtering", () => {
     it("should include org routes by default for team org admin", async () => {
-      mockConfig("saas");
+      mockConfigWithFeatureFlags("saas", { enable_service_accounts: true });
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
       mockMe.data = { role: "admin", permissions: MOCK_ROLE_PERMISSIONS.admin };
@@ -336,8 +336,26 @@ describe("useSettingsNavItems", () => {
       expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
     });
 
-    it("shows service accounts only with manage_service_accounts in a team org", async () => {
+    it("hides service accounts while enable_service_accounts is off", async () => {
       mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(
+          findItemByPath(result.current, "/settings/org-members"),
+        ).toBeDefined();
+      });
+      expect(
+        findItemByPath(result.current, "/settings/service-accounts"),
+      ).toBeUndefined();
+    });
+
+    it("shows service accounts only with manage_service_accounts in a team org", async () => {
+      mockConfigWithFeatureFlags("saas", { enable_service_accounts: true });
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
       mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
