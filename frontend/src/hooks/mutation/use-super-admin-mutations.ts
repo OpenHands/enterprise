@@ -16,6 +16,7 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { adminService } from "#/api/admin-service/admin-service.api";
+import type { WebClientConfig } from "#/api/option-service/option.types";
 
 export const useGrantSuperAdmin = () => {
   const queryClient = useQueryClient();
@@ -231,8 +232,23 @@ export const useSetServiceAccountsEnabled = () => {
         throw error;
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG });
+    // Show the saved value at once, and keep the mutation pending (the switch
+    // disabled) until the refetched config arrives.
+    onSuccess: (flag) => {
+      queryClient.setQueryData<WebClientConfig>(
+        QUERY_KEYS.WEB_CLIENT_CONFIG,
+        (config) =>
+          config && {
+            ...config,
+            feature_flags: {
+              ...config.feature_flags,
+              enable_service_accounts: flag.enabled,
+            },
+          },
+      );
+      return queryClient.invalidateQueries({
+        queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+      });
     },
     onError: (error) => {
       displayErrorToast(
