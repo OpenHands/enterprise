@@ -21,6 +21,7 @@ def mock_user():
     """Create a mock user."""
     user = MagicMock()
     user.email = 'test@example.com'
+    user.account_type = 'human'
     return user
 
 
@@ -45,6 +46,33 @@ def mock_org_member(org_id, mock_user, mock_role):
     member.user = mock_user
     member.role = mock_role
     return member
+
+
+class TestOrgMemberFinancialAccountType:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('account_type', ['human', 'service'])
+    async def test_rows_carry_account_type(
+        self, org_id, mock_org_member, mock_user, account_type
+    ):
+        """GIVEN a member WHEN financial rows are built THEN each row has the user's account_type."""
+        mock_user.account_type = account_type
+        with (
+            patch(
+                'server.services.org_member_financial_service.OrgMemberStore.get_org_members_paginated',
+                new_callable=AsyncMock,
+                return_value=([mock_org_member], False),
+            ),
+            patch(
+                'server.services.org_member_financial_service.LiteLlmManager.get_team_members_financial_data',
+                new_callable=AsyncMock,
+                return_value={'team_spend': 0, 'members': {}},
+            ),
+        ):
+            result = await OrgMemberFinancialService.get_org_members_financial_data(
+                org_id=org_id, page_id=None, limit=10
+            )
+
+        assert result.items[0].account_type == account_type
 
 
 class TestOrgMemberFinancialServiceGetFinancialData:

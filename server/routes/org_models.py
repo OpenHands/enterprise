@@ -574,6 +574,51 @@ class OrgMemberPage(BaseModel):
     per_page: int = 10
 
 
+class ServiceAccountCreate(BaseModel):
+    """Request model for creating a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountUpdate(BaseModel):
+    """Request model for renaming a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountResponse(BaseModel):
+    """A service account of an organization."""
+
+    id: str
+    org_id: str
+    name: str
+    is_disabled: bool
+    role: str
+    # The per-user budget override, as in ``OrgBudgetUserOverrideUpdate``:
+    # ``monthly_limit`` is the cap, or ``None`` when there is no override or the
+    # override is unlimited; ``budget_limit_disabled`` is the override's
+    # ``is_disabled`` ("unlimited").
+    monthly_limit: float | None = None
+    budget_limit_disabled: bool = False
+
+
+class ServiceAccountSecretUpsert(BaseModel):
+    """Request model for setting one personal secret of a service account.
+
+    The value is write-only: no route returns it.
+    """
+
+    value: SecretStr
+    description: str | None = None
+
+
+class ServiceAccountPage(BaseModel):
+    """Paginated response for the service accounts of an organization."""
+
+    items: list[ServiceAccountResponse]
+    next_page_id: str | None = None
+
+
 class OrgMemberUpdate(BaseModel):
     """Request model for updating an organization member."""
 
@@ -796,6 +841,8 @@ class OrgMemberFinancialResponse(BaseModel):
 
     user_id: str
     email: str | None
+    # ``human`` or ``service``. A service account has no email.
+    account_type: str = 'human'
     lifetime_spend: float | None  # Total amount spent (None = never observed)
     current_budget: float | None  # Remaining budget (None = spend never observed)
     max_budget: float | None  # Total allocated budget (None = unlimited)
@@ -839,6 +886,7 @@ class OrgBudgetUserResponse(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
+    account_type: str = 'human'
     current_spend: float | None = None
     monthly_limit: float | None = None
     effective_monthly_limit: float | None = None
