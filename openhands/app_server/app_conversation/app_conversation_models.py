@@ -585,11 +585,12 @@ class AppConversationStartTask(OpenHandsModel):
     # credential helper can fetch the current token for any of that provider's
     # repositories, not only the selected one. Empty when nothing was minted.
     _git_credential_access_tokens: dict[str, str] = PrivateAttr(default_factory=dict)
-    # The providers whose credential helper the setup flow installed in the
-    # sandbox. A clone from one of them leaves the token out of its remote URL,
-    # so none lands in ``.git/config`` under the workspace (OHE-3812); every
-    # other clone keeps the authenticated URL. Empty until the helpers are set up.
-    _git_credential_providers: set[ProviderType] = PrivateAttr(default_factory=set)
+    # The ``<protocol>://<host>`` contexts whose credential helper the setup
+    # flow installed in the sandbox. A clone under one of them leaves the token
+    # out of its remote URL, so none lands in ``.git/config`` under the
+    # workspace (OHE-3812); every other clone keeps the authenticated URL.
+    # Empty until the helpers are set up.
+    _git_credential_prefixes: set[str] = PrivateAttr(default_factory=set)
     # Clone results of the request's additional repositories, saved on the
     # conversation once it starts.
     _additional_repositories: list[AdditionalRepository] = PrivateAttr(
