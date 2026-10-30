@@ -64,13 +64,6 @@ export const adminService = {
     await openHands.delete(`/api/admin/users/${userId}`);
   },
 
-  getFeatureFlag: async (key: string): Promise<AdminFeatureFlag> => {
-    const { data } = await openHands.get<AdminFeatureFlag>(
-      `/api/admin/feature-flags/${encodeURIComponent(key)}`,
-    );
-    return data;
-  },
-
   createFeatureFlag: async (flag: {
     key: string;
     description?: string;
