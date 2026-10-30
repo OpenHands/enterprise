@@ -453,6 +453,26 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_agent_canvas_banner is True
 
+    def test_enable_agent_canvas_mcp_false_by_default(self):
+        """Without ENABLE_AGENT_CANVAS_MCP the classic MCP editor stays."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_mcp is False
+
+    def test_enable_agent_canvas_mcp_true_when_env_var_true(self):
+        """ENABLE_AGENT_CANVAS_MCP=true hands MCP server management to Canvas."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_AGENT_CANVAS_MCP': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_agent_canvas_mcp is True
+
     def test_enable_super_admin_false_by_default(self):
         """When ENABLE_SUPER_ADMIN is unset, the Super Admin flag is False."""
         from openhands.app_server.web_client.default_web_client_config_injector import (

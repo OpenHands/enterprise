@@ -74,6 +74,9 @@ function MCPSettingsScreen() {
   const [serverToDelete, setServerToDelete] = useState<string | null>(null);
 
   const isSaasMode = config?.app_mode === "saas";
+  // Where Agent Canvas is deployed it owns MCP server management; this page
+  // keeps only the settings Canvas has no home for.
+  const mcpServersInCanvas = !!config?.feature_flags?.enable_agent_canvas_mcp;
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -242,24 +245,45 @@ function MCPSettingsScreen() {
             {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
           </p>
         </header>
-        <BrandButton
-          type="button"
-          variant="primary"
-          className="shrink-0 whitespace-nowrap"
-          onClick={() => {
-            resetTest();
-            setView("add");
-          }}
-        >
-          {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
-        </BrandButton>
+        {!mcpServersInCanvas && (
+          <BrandButton
+            type="button"
+            variant="primary"
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => {
+              resetTest();
+              setView("add");
+            }}
+          >
+            {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
+          </BrandButton>
+        )}
       </div>
 
-      <MCPServerList
-        servers={allServers}
-        onEdit={handleEditClick}
-        onDelete={handleDeleteClick}
-      />
+      {mcpServersInCanvas ? (
+        <section
+          data-testid="mcp-canvas-handoff"
+          className="flex flex-col items-start gap-4 rounded-xl border border-[var(--oh-border)] bg-base-secondary p-5"
+        >
+          <Typography.Paragraph className="text-sm leading-5">
+            {t(I18nKey.SETTINGS$MCP_MANAGED_IN_CANVAS)}
+          </Typography.Paragraph>
+          <BrandButton
+            testId="mcp-open-canvas"
+            type="button"
+            variant="primary"
+            onClick={() => window.location.assign("/canvas/mcp")}
+          >
+            {t(I18nKey.SETTINGS$MCP_OPEN_IN_CANVAS)}
+          </BrandButton>
+        </section>
+      ) : (
+        <MCPServerList
+          servers={allServers}
+          onEdit={handleEditClick}
+          onDelete={handleDeleteClick}
+        />
+      )}
 
       {!isSaasMode ? (
         <section
