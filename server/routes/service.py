@@ -9,7 +9,7 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
-from typing import Literal, get_args
+from typing import Literal, cast, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -65,7 +65,7 @@ def _membership_status(
     if stored is None:
         return 'active'
     if stored in get_args(MembershipStatus):
-        return stored  # type: ignore[return-value]
+        return cast(MembershipStatus, stored)
     logger.warning(
         'service:membership_status_unknown',
         extra={'user_id': user_id, 'org_id': str(org_id), 'status': stored},
