@@ -134,7 +134,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.settings.llm_profiles import (
     detach_provider_connection,
     resolve_profile_llm,
@@ -1507,6 +1507,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'provider_type': ProviderType.AZURE_DEVOPS.value,
                 },
                 expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
             )
         except Exception as exc:
             _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
@@ -1545,6 +1546,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 tokens[provider.value] = self.jwt_service.create_jws_token(
                     payload={'user_id': user_id, 'provider_type': provider.value},
                     expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                    audience=JwtAudience.SECRET_LOOKUP,
                 )
             task._git_credential_access_tokens = tokens
         except Exception as exc:
@@ -2023,7 +2025,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self, lookup_url: str, payload: dict[str, Any], description: str
     ) -> LookupSecret:
         access_token = self.jwt_service.create_jws_token(
-            payload=payload, expires_in=self.access_token_hard_timeout
+            payload=payload,
+            expires_in=self.access_token_hard_timeout,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
         return LookupSecret(
             url=lookup_url,
