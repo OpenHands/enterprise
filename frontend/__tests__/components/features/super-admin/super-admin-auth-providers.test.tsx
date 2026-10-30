@@ -276,6 +276,7 @@ describe("Super Admin Auth Providers page", () => {
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
           named_secret: null,
+          attribute_mapping: {},
         },
       }),
     );
@@ -383,6 +384,7 @@ describe("Super Admin Auth Providers page", () => {
           userinfo_url: "https://api.github.com/user",
           legacy_keycloak_type: null,
           named_secret: "GITHUB_TOKEN",
+          attribute_mapping: {},
         }),
       }),
     );
@@ -436,6 +438,7 @@ describe("Super Admin Auth Providers page", () => {
           ],
           legacy_keycloak_type: null,
           named_secret: "AZURE_DEVOPS_TOKEN",
+          attribute_mapping: {},
         }),
       }),
     );
