@@ -20,7 +20,7 @@ from openhands.app_server.app_conversation.conversation_secret_enricher import (
     ConversationSecretEnricher,
     ConversationSecretEnrichment,
 )
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -266,6 +266,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
                     'workspace_id': workspace.id,
                 },
                 expires_in=access_token_hard_timeout,
+                audience=JwtAudience.JIRA_DC_SECRET,
             )
             secrets['JIRA_DC_TOKEN'] = LookupSecret(
                 url=f'{web_url}/integration/jira-dc/secrets/token',

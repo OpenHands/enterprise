@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.services.jwt_service import JwtAudience
 from server.services.daily_sandbox_quota_service import (
     DailySandboxQuotaService,
 )
@@ -237,7 +238,9 @@ class QuotaIncreaseRequestService:
             'email': work_email,
         }
         return get_jwt_service().create_jws_token(
-            payload, expires_in=VERIFICATION_TOKEN_TTL
+            payload,
+            expires_in=VERIFICATION_TOKEN_TTL,
+            audience=JwtAudience.QUOTA_VERIFICATION,
         )
 
     @staticmethod
@@ -246,7 +249,12 @@ class QuotaIncreaseRequestService:
         from storage.encrypt_utils import get_jwt_service
 
         try:
-            payload = get_jwt_service().verify_jws_token(token)
+            payload = get_jwt_service().verify_jws_token(
+                token,
+                audience=JwtAudience.QUOTA_VERIFICATION,
+                # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+                accept_unscoped=lambda p: p.get('purpose') == TOKEN_PURPOSE,
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

@@ -17,7 +17,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth import oauth_v2_refresh
 from storage.auth_provider import AuthProvider
@@ -259,7 +259,7 @@ def test_cookie_payload_roundtrip(jwt_svc):
             'user-123', ate, accepted_tos=True, idp_provider_id=3
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
-        decoded = jwt_svc.verify_jws_token(signed)
+        decoded = jwt_svc.verify_jws_token(signed, audience=JwtAudience.SESSION)
     assert decoded['user_id'] == 'user-123'
     assert decoded['accepted_tos'] is True
     assert decoded['access_token_expires_at'] is not None
@@ -272,7 +272,7 @@ def test_cookie_payload_none_expiry(jwt_svc):
             'user-123', None, accepted_tos=False, idp_provider_id=None
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
-        decoded = jwt_svc.verify_jws_token(signed)
+        decoded = jwt_svc.verify_jws_token(signed, audience=JwtAudience.SESSION)
     assert decoded['access_token_expires_at'] is None
     assert decoded['accepted_tos'] is False
     # Key always present (even None) so decoders can tell this apart from a

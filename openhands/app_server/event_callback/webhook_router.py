@@ -62,7 +62,7 @@ from openhands.app_server.event_callback.sql_event_callback_service import (
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
@@ -658,6 +658,12 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
     return AuthUserContext(user_auth=user_auth)
 
 
+def _is_unscoped_secret_lookup_token(payload: dict[str, Any]) -> bool:
+    return 'user_id' in payload and (
+        'provider_type' in payload or 'oauth_provider_id' in payload
+    )
+
+
 @router.get('/secrets')
 async def get_secret(
     access_token: str = Depends(APIKeyHeader(name='X-Access-Token', auto_error=False)),
@@ -670,7 +676,12 @@ async def get_secret(
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
-        payload = jwt_service.verify_jws_token(access_token)
+        payload = jwt_service.verify_jws_token(
+            access_token,
+            audience=JwtAudience.SECRET_LOOKUP,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+            accept_unscoped=_is_unscoped_secret_lookup_token,
+        )
         user_id = payload['user_id']
         user_context = await _resolve_user_context(user_id)
 
