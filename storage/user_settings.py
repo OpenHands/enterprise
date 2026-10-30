@@ -59,6 +59,16 @@ class UserSettings(Base):
         EncryptedJSON, nullable=True
     )
     disabled_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    enabled_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    run_router_at_conversation_start: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    workspace_file_discovery: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default='{}'
+    )
+    default_profile_migrated: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
     search_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
     sandbox_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
     max_budget_per_task: Mapped[float | None] = mapped_column(nullable=True)

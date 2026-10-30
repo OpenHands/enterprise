@@ -820,6 +820,64 @@ class SaasSettingsStore(SettingsStore):
             org.llm_profiles = serialized
             await session.commit()
 
+    async def store_document_patch(
+        self,
+        payload: dict[str, Any],
+        effective_settings: Settings,
+    ) -> None:
+        """Persist only fields present in a canonical document patch.
+
+        Agent and conversation values remain sparse member overrides. Explicit
+        ``None`` removes an override so the organization default becomes effective.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .options(joinedload(User.org_members))
+                .filter(User.id == uuid.UUID(self.user_id))
+            )
+            user = result.scalars().first()
+            if user is None:
+                raise ValueError(f'User not found for ID {self.user_id}')
+
+            org_id = self._resolve_org_id(user)
+            org_member = next(
+                (member for member in user.org_members if member.org_id == org_id),
+                None,
+            )
+            if org_member is None:
+                raise ValueError(f'User {self.user_id} is not a member of org {org_id}')
+
+            agent_patch = payload.get('agent_settings_diff')
+            if isinstance(agent_patch, dict):
+                agent_patch = {
+                    key: value
+                    for key, value in agent_patch.items()
+                    if key not in MEMBER_PRIVATE_AGENT_KEYS
+                }
+                org_member.agent_settings_diff = deep_merge(
+                    dict(org_member.agent_settings_diff),
+                    agent_patch,
+                )
+
+            conversation_patch = payload.get('conversation_settings_diff')
+            if isinstance(conversation_patch, dict):
+                org_member.conversation_settings_diff = deep_merge(
+                    dict(org_member.conversation_settings_diff),
+                    conversation_patch,
+                )
+
+            for key in payload:
+                if key in ('agent_settings_diff', 'conversation_settings_diff'):
+                    continue
+                value = getattr(effective_settings, key)
+                if hasattr(user, key):
+                    setattr(user, key, value)
+                elif key == 'title_llm_profile':
+                    org_member.title_llm_profile = value
+
+            await session.commit()
+
     async def store(self, item: Settings):
         if item is not None and (
             item._resolved_view or item.active_agent_profile_id is not None

@@ -32,6 +32,10 @@ from openhands.app_server.settings.marketplace_composition import (
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
 )
+from openhands.app_server.settings.settings_document import (
+    build_settings_document,
+    settings_document_patch_payload,
+)
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     Settings,
@@ -57,7 +61,10 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
+    SettingsDocument,
+    SettingsDocumentPatch,
     export_agent_settings_schema,
+    export_settings_document_schema,
 )
 
 LITE_LLM_API_URL = os.environ.get(
@@ -467,6 +474,84 @@ async def store_settings(
         )
     except Exception as e:
         logger.warning(f'Something went wrong storing settings: {e}')
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={'error': 'Something went wrong storing settings'},
+        )
+
+
+@router.get('/document', response_model=SettingsDocument)
+async def load_settings_document(
+    settings: Settings = Depends(get_user_settings),
+) -> SettingsDocument:
+    """Return the effective organization + member settings document."""
+    return build_settings_document(settings)
+
+
+@router.get('/document-schema')
+async def load_settings_document_schema() -> dict[str, Any]:
+    """Return the SDK-owned rendering schema for the settings document."""
+    return export_settings_document_schema().model_dump(mode='json')
+
+
+@router.patch('/document', response_model=None)
+async def patch_settings_document(
+    patch: SettingsDocumentPatch,
+    settings_store: SettingsStore = Depends(get_user_settings_store),
+    user_id: str | None = Depends(get_user_id),
+) -> SettingsDocument | JSONResponse:
+    """Persist a sparse member patch over the effective organization settings."""
+    if 'resources' in patch.model_fields_set and patch.resources is not None:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                'error': (
+                    'Resource collections use their dedicated validated endpoints; '
+                    'document PATCH accepts agent, conversation, and product fields.'
+                )
+            },
+        )
+
+    payload = settings_document_patch_payload(patch)
+    cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
+    if cloud_analytics_consent_error is not None:
+        return cloud_analytics_consent_error
+
+    try:
+        existing_settings = await settings_store.load()
+        if existing_settings is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={'error': 'Settings not found'},
+            )
+
+        settings = existing_settings.model_copy()
+        settings.update(payload)
+        _post_merge_llm_fixups(settings)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm,
+                settings_store,
+                user_id,
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.sync_active_profile_from_settings()
+        await settings_store.store_document_patch(payload, settings)
+
+        reloaded_settings = await settings_store.load()
+        if reloaded_settings is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={'error': 'Settings not found'},
+            )
+        return build_settings_document(reloaded_settings)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={'error': str(exc)},
+        )
+    except Exception:
+        logger.warning('Failed to patch settings document', exc_info=True)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={'error': 'Something went wrong storing settings'},

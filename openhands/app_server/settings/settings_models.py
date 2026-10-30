@@ -790,6 +790,10 @@ class Settings(BaseModel):
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     disabled_skills: list[str] | None = None
+    enabled_skills: list[str] | None = None
+    run_router_at_conversation_start: bool = False
+    workspace_file_discovery: dict[str, Any] = Field(default_factory=dict)
+    default_profile_migrated: bool = False
     search_api_key: SecretStr | None = None
     sandbox_api_key: SecretStr | None = None
     max_budget_per_task: float | None = None
