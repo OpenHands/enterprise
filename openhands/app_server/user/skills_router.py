@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -14,7 +15,6 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-import openhands
 from openhands.app_server.app_conversation.skill_loader import (
     _match_url_source_to_provider,
     _split_git_url_source,
@@ -42,13 +42,16 @@ from openhands.sdk.plugin.format.claude_code import (
     PLUGIN_MANIFEST_DIRS,
     PLUGIN_MANIFEST_FILE,
 )
-from openhands.sdk.skills import Skill
+from openhands.sdk.skills import (
+    KeywordTrigger,
+    Skill,
+    TaskTrigger,
+    load_public_skills,
+)
 
 router = APIRouter(prefix='/skills', tags=['Skills'], dependencies=get_dependencies())
 user_context_dependency = depends_user_context()
 
-# skills/ is at the repo root, two levels above the openhands package __file__
-GLOBAL_SKILLS_DIR = Path(openhands.__file__).parent.parent / 'skills'
 USER_SKILLS_DIR = Path.home() / '.openhands' / 'microagents'
 
 # Same rule as the SDK's cached clones: only a full SHA needs full history.
@@ -70,6 +73,7 @@ class SkillInfo(BaseModel):
     type: str  # 'knowledge', 'repo', or 'task'
     source: str  # 'global' or 'user'
     triggers: list[str] | None = None
+    description: str | None = None
 
 
 class SkillPage(BaseModel):
@@ -208,6 +212,40 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
             logger.warning(f'Failed to parse skill file {md_file}: {e}')
 
     return skills
+
+
+def _public_skill_info(skill: Skill) -> SkillInfo:
+    trigger = skill.trigger
+    triggers: list[str] | None = None
+    if isinstance(trigger, KeywordTrigger):
+        triggers = trigger.keywords
+    elif isinstance(trigger, TaskTrigger):
+        triggers = trigger.triggers
+    return SkillInfo(
+        name=skill.name,
+        type='task' if isinstance(trigger, TaskTrigger) else 'knowledge',
+        source='global',
+        triggers=triggers or None,
+        description=skill.description,
+    )
+
+
+async def _load_global_skills() -> list[SkillInfo]:
+    """The public skills conversations load, from the OpenHands/extensions repo.
+
+    Uses the same loader, ref (``EXTENSIONS_REF``) and cached clone as the
+    agent-server. The SDK caches the result in-process, so repeated calls do
+    not re-read the clone. Returns no skills, rather than failing, when the
+    repository can't be reached and no clone is cached.
+    """
+    try:
+        skills = await asyncio.to_thread(load_public_skills)
+    except Exception as e:
+        logger.warning(f'Failed to load public skills: {e}')
+        return []
+    if not skills:
+        logger.warning('No public skills loaded from the extensions repository')
+    return [_public_skill_info(skill) for skill in skills]
 
 
 def _manifest_entry_skill_names(
@@ -350,13 +388,7 @@ async def search_skills(
 
     Returns skill metadata so the frontend can render a toggle list.
     """
-    skills: list[SkillInfo] = []
-
-    # Load global skills
-    try:
-        skills.extend(_load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global'))
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    skills = await _load_global_skills()
 
     # Load user-level skills
     try:
@@ -599,13 +631,7 @@ async def get_marketplace_skills(
     marketplace_layouts: dict[str, MarketplaceLayout] = {}
 
     # Built-in skill names, to flag marketplace skills that share one
-    builtin_names: set[str] = set()
-    try:
-        builtin_names = {
-            skill.name for skill in _load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global')
-        }
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    builtin_names = {skill.name for skill in await _load_global_skills()}
 
     # Track cloned directories for cleanup
     cloned_dirs: list[Path] = []

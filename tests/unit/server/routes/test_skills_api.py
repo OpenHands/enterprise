@@ -24,7 +24,6 @@ from openhands.app_server.settings.file_settings_store import FileSettingsStore
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.skills_router import (
-    GLOBAL_SKILLS_DIR,
     MarketplacePluginPreview,
     MarketplaceSkillsPreviewResponse,
     _bearer_auth_git_env,
@@ -33,6 +32,7 @@ from openhands.app_server.user.skills_router import (
     get_marketplace_skills,
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
+from openhands.sdk.context import AgentContext
 
 
 class MockUserAuth(UserAuth):
@@ -122,166 +122,173 @@ def _write_skill_file(
     (dir_path / f'{name}.md').write_text('\n'.join(lines))
 
 
-@pytest.mark.asyncio
-async def test_skills_search_returns_skills(test_client, tmp_path):
-    """Test that GET /api/v1/skills/search returns a paginated list of skills."""
-    global_dir = tmp_path / 'global'
-    _write_skill_file(global_dir, 'test_repo', skill_type='repo')
-    _write_skill_file(
-        global_dir, 'test_knowledge', skill_type='knowledge', triggers=['testword']
+_ROUTER = 'openhands.app_server.user.skills_router'
+
+
+@pytest.fixture(autouse=True)
+def extensions_dir(tmp_path, monkeypatch) -> Path:
+    """A local copy of OpenHands/extensions, read instead of cloning it.
+
+    ``EXTENSIONS_PATH`` is the SDK's own switch for this, so tests run the real
+    public-skills loader without network access.
+    """
+    path = tmp_path / 'extensions'
+    path.mkdir()
+    monkeypatch.setenv('EXTENSIONS_PATH', str(path))
+    return path
+
+
+def _write_public_skill(
+    extensions_dir: Path,
+    name: str,
+    description: str | None = None,
+    triggers: list[str] | None = None,
+    inputs: bool = False,
+    listed: bool = True,
+) -> None:
+    """Write skills/<name>/SKILL.md and list it in marketplaces/default.json."""
+    skill_dir = extensions_dir / 'skills' / name
+    skill_dir.mkdir(parents=True)
+    lines = ['---', f'name: {name}']
+    if description:
+        lines.append(f'description: {description}')
+    if triggers:
+        lines.append('triggers:')
+        lines.extend(f'- {t}' for t in triggers)
+    if inputs:
+        lines += ['inputs:', '- name: TARGET', '  description: what to work on']
+    lines += ['---', f'{name} content']
+    (skill_dir / 'SKILL.md').write_text('\n'.join(lines))
+
+    manifest_file = extensions_dir / 'marketplaces' / 'default.json'
+    manifest_file.parent.mkdir(exist_ok=True)
+    manifest = (
+        json.loads(manifest_file.read_text())
+        if manifest_file.exists()
+        else {'name': 'default', 'owner': {'name': 'OpenHands'}, 'plugins': []}
     )
+    if listed:
+        manifest['plugins'].append({'name': name, 'source': f'./skills/{name}'})
+    manifest_file.write_text(json.dumps(manifest))
 
-    with (
-        patch('openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir),
-        patch(
-            'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
-            tmp_path / 'nonexistent',
-        ),
-    ):
-        response = test_client.get('/api/v1/skills/search')
 
+def _search(test_client, user_dir: Path, **params) -> dict:
+    with patch(f'{_ROUTER}.USER_SKILLS_DIR', user_dir):
+        response = test_client.get('/api/v1/skills/search', params=params)
     assert response.status_code == 200
-    data = response.json()
-    assert 'items' in data
-    assert 'next_page_id' in data
-    assert len(data['items']) == 2
+    return response.json()
 
-    # Verify skill structure
-    skill_names = [s['name'] for s in data['items']]
-    assert 'test_repo' in skill_names
-    assert 'test_knowledge' in skill_names
 
-    # Check knowledge skill has triggers
-    knowledge_skill = next(s for s in data['items'] if s['name'] == 'test_knowledge')
-    assert knowledge_skill['triggers'] == ['testword']
-    assert knowledge_skill['type'] == 'knowledge'
+def test_skills_search_lists_public_skills_from_extensions(
+    test_client, tmp_path, extensions_dir
+):
+    _write_public_skill(
+        extensions_dir, 'github', description='Work with GitHub.', triggers=['github']
+    )
+    _write_public_skill(extensions_dir, 'fix-test', triggers=['/fix'], inputs=True)
+    _write_public_skill(extensions_dir, 'always-on')
+    _write_public_skill(extensions_dir, 'not-in-marketplace', listed=False)
 
-    # Check repo skill has no triggers
-    repo_skill = next(s for s in data['items'] if s['name'] == 'test_repo')
-    assert repo_skill['triggers'] is None
-    assert repo_skill['type'] == 'repo'
+    data = _search(test_client, tmp_path / 'no-user-skills')
 
-    # No next page when all results fit
+    items = {s['name']: s for s in data['items']}
+    assert items == {
+        'always-on': {
+            'name': 'always-on',
+            'type': 'knowledge',
+            'source': 'global',
+            'triggers': None,
+            'description': None,
+        },
+        'fix-test': {
+            'name': 'fix-test',
+            'type': 'task',
+            'source': 'global',
+            'triggers': ['/fix', '/fix-test'],
+            'description': None,
+        },
+        'github': {
+            'name': 'github',
+            'type': 'knowledge',
+            'source': 'global',
+            'triggers': ['github'],
+            'description': 'Work with GitHub.',
+        },
+    }
     assert data['next_page_id'] is None
 
 
-@pytest.mark.asyncio
-async def test_skills_search_handles_missing_dirs(test_client, tmp_path):
-    """Test that the endpoint handles missing directories gracefully."""
-    with (
-        patch(
-            'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR',
-            tmp_path / 'no_such_dir',
-        ),
-        patch(
-            'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
-            tmp_path / 'also_missing',
-        ),
-    ):
-        response = test_client.get('/api/v1/skills/search')
+def test_skills_search_matches_the_skills_a_conversation_loads(
+    test_client, tmp_path, extensions_dir
+):
+    """The listed names are the ones the agent loads, so disabling one works."""
+    _write_public_skill(extensions_dir, 'github', description='Work with GitHub.')
+    _write_public_skill(extensions_dir, 'ssh', description='Use SSH.', triggers=['ssh'])
+    _write_public_skill(extensions_dir, 'unlisted', listed=False)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data['items'] == []
-    assert data['next_page_id'] is None
+    data = _search(test_client, tmp_path / 'no-user-skills')
+    conversation = AgentContext(load_public_skills=True)
+
+    assert [(s['name'], s['description']) for s in data['items']] == sorted(
+        (s.name, s.description) for s in conversation.skills
+    )
+    disabled = AgentContext(load_public_skills=True, disabled_skills=['ssh'])
+    assert [s.name for s in disabled.skills] == ['github']
 
 
-@pytest.mark.asyncio
-async def test_skills_search_sorted_by_source_then_name(test_client, tmp_path):
-    """Test that skills are sorted by source (global first) then by name."""
-    global_dir = tmp_path / 'global'
+def test_skills_search_without_extensions_still_lists_user_skills(
+    test_client, tmp_path, monkeypatch
+):
+    monkeypatch.setenv('EXTENSIONS_PATH', str(tmp_path / 'missing'))
     user_dir = tmp_path / 'user'
+    _write_skill_file(user_dir, 'mine', skill_type='repo')
 
-    _write_skill_file(global_dir, 'z_global', skill_type='repo')
-    _write_skill_file(global_dir, 'a_global', skill_type='repo')
+    data = _search(test_client, user_dir)
+
+    assert [(s['name'], s['source']) for s in data['items']] == [('mine', 'user')]
+
+
+def test_skills_search_survives_a_public_skills_loader_error(test_client, tmp_path):
+    # Mocked: load_public_skills catches its own errors, so a raise can only be
+    # produced by replacing it.
+    user_dir = tmp_path / 'user'
+    _write_skill_file(user_dir, 'mine', skill_type='repo')
+
+    with patch(f'{_ROUTER}.load_public_skills', side_effect=RuntimeError('boom')):
+        data = _search(test_client, user_dir)
+
+    assert [s['name'] for s in data['items']] == ['mine']
+
+
+def test_skills_search_sorted_by_source_then_name(
+    test_client, tmp_path, extensions_dir
+):
+    _write_public_skill(extensions_dir, 'z-global')
+    _write_public_skill(extensions_dir, 'a-global')
+    user_dir = tmp_path / 'user'
     _write_skill_file(user_dir, 'b_user', skill_type='repo')
 
-    with (
-        patch('openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir),
-        patch('openhands.app_server.user.skills_router.USER_SKILLS_DIR', user_dir),
-    ):
-        response = test_client.get('/api/v1/skills/search')
+    data = _search(test_client, user_dir)
 
-    assert response.status_code == 200
-    data = response.json()
-    skills = data['items']
-
-    # Global skills should come first, sorted by name
-    assert skills[0]['name'] == 'a_global'
-    assert skills[0]['source'] == 'global'
-    assert skills[1]['name'] == 'z_global'
-    assert skills[1]['source'] == 'global'
-    # User skills should come last
-    assert skills[2]['name'] == 'b_user'
-    assert skills[2]['source'] == 'user'
+    assert [(s['name'], s['source']) for s in data['items']] == [
+        ('a-global', 'global'),
+        ('z-global', 'global'),
+        ('b_user', 'user'),
+    ]
 
 
-@pytest.mark.asyncio
-async def test_skills_search_pagination(test_client, tmp_path):
-    """Test cursor-based pagination."""
-    global_dir = tmp_path / 'global'
-    _write_skill_file(global_dir, 'skill_a', skill_type='repo')
-    _write_skill_file(global_dir, 'skill_b', skill_type='repo')
-    _write_skill_file(global_dir, 'skill_c', skill_type='repo')
+def test_skills_search_pagination(test_client, tmp_path, extensions_dir):
+    for name in ('skill-a', 'skill-b', 'skill-c'):
+        _write_public_skill(extensions_dir, name)
+    user_dir = tmp_path / 'no-user-skills'
 
-    with (
-        patch('openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir),
-        patch(
-            'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
-            tmp_path / 'nonexistent',
-        ),
-    ):
-        # First page with limit=2
-        response = test_client.get('/api/v1/skills/search', params={'limit': 2})
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data['items']) == 2
-        assert data['items'][0]['name'] == 'skill_a'
-        assert data['items'][1]['name'] == 'skill_b'
-        assert data['next_page_id'] == 'skill_b'
+    first = _search(test_client, user_dir, limit=2)
+    second = _search(test_client, user_dir, limit=2, page_id=first['next_page_id'])
 
-        # Second page using next_page_id
-        response = test_client.get(
-            '/api/v1/skills/search',
-            params={'limit': 2, 'page_id': data['next_page_id']},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data['items']) == 1
-        assert data['items'][0]['name'] == 'skill_c'
-        assert data['next_page_id'] is None
-
-
-def test_global_skills_dir_points_to_repo_root():
-    """Test that GLOBAL_SKILLS_DIR points to the correct location.
-
-    This test validates that GLOBAL_SKILLS_DIR is correctly configured to point
-    to the skills/ directory at the repo root. This prevents regressions like the
-    one introduced in fb98faf4a where an incorrect path caused no skills to load.
-    """
-    # The directory should exist
-    assert GLOBAL_SKILLS_DIR.exists(), (
-        f'GLOBAL_SKILLS_DIR does not exist: {GLOBAL_SKILLS_DIR}'
-    )
-
-    # It should be named 'skills'
-    assert GLOBAL_SKILLS_DIR.name == 'skills', (
-        f"Expected directory name 'skills', got '{GLOBAL_SKILLS_DIR.name}'"
-    )
-
-    # It should contain at least one .md file (skill definition)
-    md_files = list(GLOBAL_SKILLS_DIR.glob('*.md'))
-    assert len(md_files) > 0, (
-        f'GLOBAL_SKILLS_DIR contains no .md files: {GLOBAL_SKILLS_DIR}'
-    )
-
-    # Verify it's at repo root by checking for known skill files
-    # (github.md is a core skill that should always exist)
-    expected_skill = GLOBAL_SKILLS_DIR / 'github.md'
-    assert expected_skill.exists(), (
-        f'Expected skill file not found: {expected_skill}. '
-        f'GLOBAL_SKILLS_DIR may be pointing to wrong location.'
-    )
+    assert [s['name'] for s in first['items']] == ['skill-a', 'skill-b']
+    assert first['next_page_id'] == 'skill-b'
+    assert [s['name'] for s in second['items']] == ['skill-c']
+    assert second['next_page_id'] is None
 
 
 # Tests for marketplace-skills endpoint git clone failures
@@ -799,15 +806,12 @@ def _write_marketplace_manifest(repo_dir: Path, layout: str, source: str) -> Non
     (manifest_dir / 'marketplace.json').write_text(json.dumps(manifest))
 
 
-async def _preview_marketplace(repo_dir: Path, global_dir: Path):
+async def _preview_marketplace(repo_dir: Path):
     """Preview a marketplace whose clone is repo_dir against built-in skills."""
     marketplace = MarketplaceRegistration(name='acme', source='github:acme/skills')
-    with (
-        patch(
-            'openhands.app_server.user.skills_router._clone_marketplace_repo',
-            AsyncMock(return_value=(repo_dir, '')),
-        ),
-        patch('openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir),
+    with patch(
+        f'{_ROUTER}._clone_marketplace_repo',
+        AsyncMock(return_value=(repo_dir, '')),
     ):
         return await get_marketplace_skills([marketplace], user_context=MagicMock())
 
@@ -817,18 +821,19 @@ class TestMarketplaceSkillsNameConflicts:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('layout', ['plugin', 'skill', 'no-manifest'])
-    async def test_reports_skill_sharing_builtin_name(self, tmp_path, layout):
+    async def test_reports_skill_sharing_builtin_name(
+        self, tmp_path, extensions_dir, layout
+    ):
         """A marketplace skill named like a built-in skill is reported."""
         # Arrange
-        global_dir = tmp_path / 'global'
-        _write_skill_file(global_dir, 'github')
+        _write_public_skill(extensions_dir, 'github')
         repo_dir = tmp_path / 'repo'
         _write_skill_dir(repo_dir / 'skills' / 'custom', 'github')
         if layout != 'no-manifest':
             _write_marketplace_manifest(repo_dir, layout, './skills/custom')
 
         # Act
-        result = await _preview_marketplace(repo_dir, global_dir)
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert [conflict.model_dump() for conflict in result.conflicts] == [
@@ -842,33 +847,35 @@ class TestMarketplaceSkillsNameConflicts:
         assert result.errors == []
 
     @pytest.mark.asyncio
-    async def test_reports_no_conflict_for_unique_skill_name(self, tmp_path):
+    async def test_reports_no_conflict_for_unique_skill_name(
+        self, tmp_path, extensions_dir
+    ):
         """A marketplace skill with a unique name is not reported."""
         # Arrange
-        global_dir = tmp_path / 'global'
-        _write_skill_file(global_dir, 'github')
+        _write_public_skill(extensions_dir, 'github')
         repo_dir = tmp_path / 'repo'
         _write_skill_dir(repo_dir / 'skills' / 'custom', 'acme-github')
         _write_marketplace_manifest(repo_dir, 'plugin', './skills/custom')
 
         # Act
-        result = await _preview_marketplace(repo_dir, global_dir)
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert result.conflicts == []
 
     @pytest.mark.asyncio
-    async def test_ignores_manifest_entry_outside_marketplace_repo(self, tmp_path):
+    async def test_ignores_manifest_entry_outside_marketplace_repo(
+        self, tmp_path, extensions_dir
+    ):
         """A manifest entry pointing outside the cloned repo is not inspected."""
         # Arrange
-        global_dir = tmp_path / 'global'
-        _write_skill_file(global_dir, 'github')
+        _write_public_skill(extensions_dir, 'github')
         _write_skill_dir(tmp_path / 'outside', 'github')
         repo_dir = tmp_path / 'repo'
         _write_marketplace_manifest(repo_dir, 'plugin', '../outside')
 
         # Act
-        result = await _preview_marketplace(repo_dir, global_dir)
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert result.conflicts == []
@@ -891,7 +898,7 @@ class TestMarketplaceSkillsPlainRepository:
         _write_skill_dir(repo_dir / 'stray', 'stray')
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert [skill.name for skill in result.skills] == ['greet', 'commit']
@@ -906,7 +913,7 @@ class TestMarketplaceSkillsPlainRepository:
         _write_skill_dir(skills_dir / 'greet', 'greet')
 
         # Act
-        result = await _preview_marketplace(skills_dir, tmp_path / 'global')
+        result = await _preview_marketplace(skills_dir)
 
         # Assert
         assert [skill.name for skill in result.skills] == ['greet']
@@ -927,7 +934,7 @@ class TestMarketplaceSkillsPlainRepository:
         (skills_dir / 'tools' / '.mcp.json').write_text('{not json')
 
         # Act
-        result = await _preview_marketplace(tmp_path / 'repo', tmp_path / 'global')
+        result = await _preview_marketplace(tmp_path / 'repo')
 
         # Assert
         assert [skill.name for skill in result.skills] == ['greet']
@@ -942,7 +949,7 @@ class TestMarketplaceSkillsPlainRepository:
         _write_skill_file(repo_dir / 'docs', 'guide')
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert result.skills == []
@@ -974,7 +981,7 @@ class TestMarketplaceSkillsPlainRepository:
             manifest.write_text(json.dumps({'name': 'acme'}))
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert [skill.name for skill in result.skills] == ['greet']
@@ -990,7 +997,7 @@ class TestMarketplaceSkillsPlainRepository:
         (repo_dir / '.plugin' / 'plugin.json').write_text(json.dumps({'name': 'x'}))
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert result.marketplace_layouts == {'acme': 'marketplace'}
@@ -1005,7 +1012,7 @@ class TestMarketplaceSkillsPlainRepository:
         (repo_dir / '.plugin' / 'marketplace.json').write_text('{not json')
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert result.skills == []
@@ -1013,8 +1020,6 @@ class TestMarketplaceSkillsPlainRepository:
 
 
 # Tests for the marketplace-check endpoint (checked before saving)
-
-_ROUTER = 'openhands.app_server.user.skills_router'
 
 
 def _preview(
@@ -1161,7 +1166,6 @@ class TestMarketplaceCheck:
                 f'{_ROUTER}._clone_marketplace_repo',
                 AsyncMock(return_value=(repo_dir, '')),
             ),
-            patch(f'{_ROUTER}.GLOBAL_SKILLS_DIR', tmp_path / 'global'),
         ):
             result = await check_marketplace(marketplace, user_context=MagicMock())
 
