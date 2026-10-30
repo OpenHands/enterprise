@@ -3157,3 +3157,30 @@ async def test_delete_user_and_owned_data_leaves_a_personal_workspace_that_can_b
     assert deleted_org is not None
     async with async_session_maker() as session:
         assert await session.get(Org, user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_grant_super_admin_refuses_service_account(async_session_maker):
+    """A service account never becomes a super admin; nothing is written."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    service_account_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            User(
+                id=service_account_id,
+                current_org_id=org_id,
+                account_type='service',
+                display_name='CI bot',
+            )
+        )
+        await session.commit()
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2, pytest.raises(ValueError, match='service account'):
+        await UserStore.grant_super_admin(str(service_account_id))
+
+    async with async_session_maker() as session:
+        stored = await session.get(User, service_account_id)
+        assert stored is not None
+        assert stored.role_id is None

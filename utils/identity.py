@@ -25,13 +25,20 @@ def resolve_display_name(user_info: dict) -> str | None:
     return None
 
 
-def display_name_for_user(git_user_name: str | None, email: str | None) -> str | None:
-    """Best-effort human name for a stored ``User`` row.
+def display_name_for_user(
+    git_user_name: str | None,
+    email: str | None,
+    display_name: str | None = None,
+) -> str | None:
+    """Best-effort name for a stored ``User`` row.
 
-    ``User`` has no name column of its own -- the git profile name is the only
-    real name we persist, so fall back to the local part of the email (which
-    is what the rest of the admin UI shows) and finally to the email itself.
+    ``User.display_name`` comes first: service accounts have no git profile or
+    email, so it is their only name. Then the git profile name, then the local
+    part of the email (which is what the rest of the admin UI shows), and
+    finally the email itself.
     """
+    if display_name and display_name.strip():
+        return display_name.strip()
     if git_user_name and git_user_name.strip():
         return git_user_name.strip()
     if email and '@' in email:

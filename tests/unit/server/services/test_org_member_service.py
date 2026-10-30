@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from server.routes.org_models import (
     CannotModifySelfError,
+    InsufficientPermissionError,
     InvalidRoleError,
     LastOwnerError,
     MeResponse,
@@ -68,6 +69,26 @@ def member_role():
     role.name = 'member'
     role.rank = 1000
     return role
+
+
+@pytest.fixture
+def service_account_role():
+    """Create a mock service_account role."""
+    role = MagicMock(spec=Role)
+    role.id = 4
+    role.name = 'service_account'
+    role.rank = 2000
+    return role
+
+
+@pytest.fixture
+def target_membership_service_account(org_id, target_user_id, service_account_role):
+    """Create a mock target membership with service_account role."""
+    membership = MagicMock(spec=OrgMember)
+    membership.org_id = org_id
+    membership.user_id = target_user_id
+    membership.role_id = service_account_role.id
+    return membership
 
 
 @pytest.fixture
@@ -1074,6 +1095,49 @@ class TestOrgMemberServiceRemoveOrgMember:
             assert error == 'insufficient_permission'
 
     @pytest.mark.asyncio
+    async def test_cannot_remove_service_account_member(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_owner,
+        target_membership_service_account,
+        owner_role,
+        service_account_role,
+    ):
+        """GIVEN an owner and a service account member WHEN the owner removes it THEN it is refused without a write."""
+        # Arrange
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.OrgMemberService.remove_member_with_cleanup',
+                new_callable=AsyncMock,
+            ) as mock_remove,
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_owner,
+                target_membership_service_account,
+            ]
+            mock_get_role.side_effect = [owner_role, service_account_role]
+
+            # Act
+            success, error = await OrgMemberService.remove_org_member(
+                org_id, target_user_id, current_user_id
+            )
+
+            # Assert
+            assert success is False
+            assert error == 'insufficient_permission'
+            mock_remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_cannot_remove_last_owner_returns_error(
         self,
         org_id,
@@ -2015,6 +2079,120 @@ class TestOrgMemberServiceUpdateOrgMember:
                     current_user_id,
                     OrgMemberUpdate(role='admin'),
                 )
+
+    @pytest.mark.asyncio
+    async def test_cannot_set_role_to_service_account(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_owner,
+        target_membership_user,
+        owner_role,
+        member_role,
+        service_account_role,
+    ):
+        """GIVEN an owner and a human member WHEN the owner sets the role to service_account THEN it is refused without a write."""
+        # Arrange
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=service_account_role,
+            ),
+            patch(
+                'server.services.org_member_service.OrgMemberStore.update_user_role_in_org',
+                new_callable=AsyncMock,
+            ) as mock_update,
+            patch(
+                'server.services.org_member_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_owner,
+                target_membership_user,
+            ]
+            mock_get_role.side_effect = [owner_role, member_role]
+            mock_update.return_value = MagicMock(
+                spec=OrgMember, user_id=target_user_id, role_id=1, status='active'
+            )
+
+            # Act / Assert
+            with pytest.raises(InsufficientPermissionError):
+                await OrgMemberService.update_org_member(
+                    org_id,
+                    target_user_id,
+                    current_user_id,
+                    OrgMemberUpdate(role='service_account'),
+                )
+            mock_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cannot_change_service_account_role(
+        self,
+        org_id,
+        current_user_id,
+        target_user_id,
+        requester_membership_owner,
+        target_membership_service_account,
+        owner_role,
+        member_role,
+        service_account_role,
+    ):
+        """GIVEN an owner and a service account member WHEN the owner sets its role to member THEN it is refused without a write."""
+        # Arrange
+        with (
+            patch(
+                'server.services.org_member_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+            ) as mock_get_member,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_role,
+            patch(
+                'server.services.org_member_service.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=member_role,
+            ),
+            patch(
+                'server.services.org_member_service.OrgMemberStore.update_user_role_in_org',
+                new_callable=AsyncMock,
+            ) as mock_update,
+            patch(
+                'server.services.org_member_service.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_get_member.side_effect = [
+                requester_membership_owner,
+                target_membership_service_account,
+            ]
+            mock_get_role.side_effect = [owner_role, service_account_role]
+            mock_update.return_value = MagicMock(
+                spec=OrgMember, user_id=target_user_id, role_id=1, status='active'
+            )
+
+            # Act / Assert
+            with pytest.raises(InsufficientPermissionError):
+                await OrgMemberService.update_org_member(
+                    org_id,
+                    target_user_id,
+                    current_user_id,
+                    OrgMemberUpdate(role='member'),
+                )
+            mock_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_role_in_body_returns_current_member_state(

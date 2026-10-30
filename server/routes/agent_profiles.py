@@ -69,7 +69,7 @@ from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
 )
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.launch import LaunchRuntime, preview_launch
 from openhands.sdk.profiles import (
@@ -588,6 +588,7 @@ async def get_agent_profile(
     '/{name}',
     response_model=AgentProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
 )
 async def save_agent_profile(
     name: ProfileName,
@@ -630,7 +631,11 @@ async def save_agent_profile(
     )
 
 
-@router.delete('/{name}', response_model=AgentProfileMutationResponse)
+@router.delete(
+    '/{name}',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_agent_profile(
     name: ProfileName,
     scope: ScopeQuery = 'org',
@@ -679,7 +684,11 @@ async def delete_agent_profile(
     )
 
 
-@router.post('/{name}/rename', response_model=AgentProfileMutationResponse)
+@router.post(
+    '/{name}/rename',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def rename_agent_profile(
     name: ProfileName,
     request: RenameAgentProfileRequest = Body(...),
@@ -718,7 +727,11 @@ async def rename_agent_profile(
     )
 
 
-@router.post('/{profile_id}/activate', response_model=ActivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/activate',
+    response_model=ActivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def activate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -776,7 +789,11 @@ async def activate_agent_profile(
     )
 
 
-@router.post('/{profile_id}/deactivate', response_model=DeactivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/deactivate',
+    response_model=DeactivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def deactivate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,

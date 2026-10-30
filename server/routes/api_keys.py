@@ -8,7 +8,11 @@ from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.sandbox.session_auth import validate_session_key
-from openhands.app_server.user_auth import get_user_auth, get_user_id
+from openhands.app_server.user_auth import (
+    get_user_auth,
+    get_user_id,
+    reject_service_account,
+)
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
@@ -267,7 +271,7 @@ async def check_byor_permitted(
         ) from e
 
 
-@api_router.post('', tags=['Keys'])
+@api_router.post('', tags=['Keys'], dependencies=[Depends(reject_service_account)])
 async def create_api_key(
     key_data: ApiKeyCreate,
     user_id: str = Depends(get_user_id),
@@ -388,7 +392,11 @@ async def list_api_keys(
         )
 
 
-@api_router.delete('/{key_id}', tags=['Keys'])
+@api_router.delete(
+    '/{key_id}',
+    tags=['Keys'],
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_api_key(
     key_id: int,
     user_id: str = Depends(get_user_id),
@@ -481,6 +489,7 @@ async def get_current_api_key(
     '/llm/managed/refresh',
     tags=['Keys'],
     response_model=ManagedLlmApiKeyRefreshResponse,
+    dependencies=[Depends(reject_service_account)],
 )
 async def refresh_managed_llm_api_key(
     user_id: str = Depends(get_user_id),
@@ -633,7 +642,9 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
     return PlainTextResponse(key)
 
 
-@api_router.get('/llm/byor', tags=['Keys'])
+@api_router.get(
+    '/llm/byor', tags=['Keys'], dependencies=[Depends(reject_service_account)]
+)
 async def get_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -710,7 +721,11 @@ async def get_llm_api_key_for_byor(
         ) from e
 
 
-@api_router.post('/llm/byor/refresh', tags=['Keys'])
+@api_router.post(
+    '/llm/byor/refresh',
+    tags=['Keys'],
+    dependencies=[Depends(reject_service_account)],
+)
 async def refresh_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,

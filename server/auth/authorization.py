@@ -2,7 +2,7 @@
 
 This module provides FastAPI dependencies for checking user permissions
 within organizations. It uses a permission-based authorization model where
-roles (owner, admin, member) are mapped to specific permissions.
+roles (owner, admin, member, service_account) are mapped to specific permissions.
 
 Permissions are defined in the Permission enum and mapped to roles via
 ROLE_PERMISSIONS. This allows fine-grained access control while maintaining
@@ -98,13 +98,17 @@ class Permission(str, Enum):
     MANAGE_ORG_CLAIMS = 'manage_org_claims'
 
     # Automations
-    # Members get VIEW_AUTOMATIONS (read-only: list, get, runs).
+    # Members and service accounts get VIEW_AUTOMATIONS (read-only: list,
+    # get, runs).
     # MANAGE_AUTOMATIONS (create, edit, delete, dispatch) is admin/owner only.
     # The automation creator also retains edit access to their own automations
     # via an in-handler ownership check (automation.user_id == user.user_id),
     # not via a permission string.
     VIEW_AUTOMATIONS = 'view_automations'
     MANAGE_AUTOMATIONS = 'manage_automations'
+
+    # Manage service accounts (non-human org members). Admin/owner only.
+    MANAGE_SERVICE_ACCOUNTS = 'manage_service_accounts'
 
     # User provisioning (create new Keycloak/OpenHands users directly in an org)
     PROVISION_USER = 'provision_user'
@@ -159,11 +163,16 @@ class RoleName(str, Enum):
       the ``admin`` role row). Super permissions are defined explicitly
       in :data:`SUPER_ROLE_PERMISSIONS`; they do not inherit
       org-scoped role permissions.
+
+    ``service_account`` is org-scoped only and is held by non-human org
+    members. The member, invitation and instance-admin paths refuse to
+    assign it, and refuse to change or remove a member that holds it.
     """
 
     OWNER = 'owner'
     ADMIN = 'admin'
     MEMBER = 'member'
+    SERVICE_ACCOUNT = 'service_account'
 
 
 def super_role_name(role_name: str) -> str:
@@ -207,6 +216,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
+            # Service accounts
+            Permission.MANAGE_SERVICE_ACCOUNTS,
             # User provisioning
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
@@ -240,6 +251,8 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # Automations (full read/write)
             Permission.VIEW_AUTOMATIONS,
             Permission.MANAGE_AUTOMATIONS,
+            # Service accounts
+            Permission.MANAGE_SERVICE_ACCOUNTS,
             # User provisioning
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
@@ -263,6 +276,14 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             # create/edit/delete/dispatch; the creator of an automation
             # retains edit access via an in-handler ownership check)
             Permission.VIEW_AUTOMATIONS,
+        ]
+    ),
+    RoleName.SERVICE_ACCOUNT: frozenset(
+        [
+            # View only (non-human org member)
+            Permission.VIEW_AUTOMATIONS,
+            Permission.VIEW_ORG_SETTINGS,
+            Permission.VIEW_LLM_SETTINGS,
         ]
     ),
 }
@@ -294,6 +315,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
         ]
     ),
     RoleName.MEMBER: frozenset(),
+    RoleName.SERVICE_ACCOUNT: frozenset(),
 }
 
 # Granted to superadmin only while the Super Admin dashboard is on

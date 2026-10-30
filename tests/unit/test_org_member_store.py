@@ -1707,3 +1707,50 @@ async def test_update_all_members_settings_async_does_not_update_mcp_server_url(
         assert 'mcp_config' not in member.agent_settings_diff
         assert len(mcp_servers) == 1
         assert mcp_servers['myserver']['url'] == 'https://old-url.com'
+
+
+@pytest.mark.asyncio
+async def test_members_list_excludes_service_accounts(async_session_maker):
+    """The paginated members list and its count leave out service accounts."""
+    # Arrange
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        role = Role(name='member', rank=1000)
+        session.add_all([org, role])
+        await session.flush()
+
+        human = User(id=uuid.uuid4(), current_org_id=org.id, email='h@example.com')
+        service_account = User(
+            id=uuid.uuid4(),
+            current_org_id=org.id,
+            account_type='service',
+            display_name='CI bot',
+        )
+        session.add_all([human, service_account])
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    llm_api_key='test-key',
+                    status='active',
+                )
+                for user in (human, service_account)
+            ]
+        )
+        await session.commit()
+        org_id, human_id = org.id, human.id
+
+    # Act
+    with patch('storage.org_member_store.a_session_maker', async_session_maker):
+        members, has_more = await OrgMemberStore.get_org_members_paginated(
+            org_id=org_id
+        )
+        count = await OrgMemberStore.get_org_members_count(org_id=org_id)
+
+    # Assert
+    assert [member.user_id for member in members] == [human_id]
+    assert has_more is False
+    assert count == 1

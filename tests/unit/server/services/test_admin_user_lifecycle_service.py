@@ -8,6 +8,7 @@ from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LastSuperAdminError,
     LifecycleCleanupError,
+    ServiceAccountDeleteError,
 )
 from storage.role import Role
 from storage.user import User
@@ -350,3 +351,18 @@ async def test_team_conversation_requires_remaining_owner(
             await session.get(StoredConversationMetadataSaas, 'private')
         ).user_id == target.id
         assert not (await session.get(User, target.id)).is_disabled
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_service_account_but_disable_enable_work(
+    create_user, service, async_session_maker
+):
+    user = create_user(account_type='service')
+    with pytest.raises(ServiceAccountDeleteError):
+        await service.delete_user(str(user.id))
+    async with async_session_maker() as session:
+        stored = await session.get(User, user.id)
+        assert not stored.is_disabled and not stored.deletion_pending
+    # Disable and enable stay allowed: they are the kill switch.
+    await service.disable_user(str(user.id))
+    await service.enable_user(str(user.id))

@@ -9,6 +9,7 @@ downgrade to 196 would remove.
 """
 
 import json
+import uuid
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +40,30 @@ def _before_column_dropped(engine: Engine):
     with engine.begin() as conn:
         migration_197.op = Operations(MigrationContext.configure(conn))
         migration_197.downgrade()
+
+
+@pytest.fixture
+def create_user(engine: Engine, create_org):
+    """Insert ``user`` rows with raw SQL.
+
+    The ORM model has columns added after migration 196 (such as
+    ``account_type``), which this schema does not have yet.
+    """
+
+    def _create(**columns):
+        user_id = uuid.uuid4()
+        names = ', '.join(['id', 'current_org_id', *columns])
+        values = ', '.join(
+            [':id', ':current_org_id', *(f':{name}' for name in columns)]
+        )
+        with engine.begin() as conn:
+            conn.execute(
+                text(f'INSERT INTO "user" ({names}) VALUES ({values})'),
+                {'id': user_id, 'current_org_id': create_org().id, **columns},
+            )
+        return SimpleNamespace(id=user_id)
+
+    return _create
 
 
 def _flag(engine: Engine, user_id) -> bool:

@@ -11,7 +11,7 @@ from server.auth.authorization import (
     has_permission,
 )
 from server.auth.token_manager import TokenManager
-from server.constants import ROLE_ADMIN, ROLE_OWNER
+from server.constants import ROLE_ADMIN, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
 from server.routes.org_invitation_models import (
     EmailMismatchError,
     InsufficientPermissionError,
@@ -56,10 +56,18 @@ class OrgInvitationService:
         not apply to a super-role inviter, since seeding the first owner is
         the whole point of the superadmin path.
 
+        No caller may invite with the ``service_account`` role: service
+        accounts are not people and do not accept invitations.
+
         Raises:
             InsufficientPermissionError: If the caller may not invite, or
                 may not invite with the requested role.
         """
+        if role_name_lower == ROLE_SERVICE_ACCOUNT:
+            raise InsufficientPermissionError(
+                'Cannot invite with the service account role'
+            )
+
         inviter_member = await OrgMemberStore.get_org_member(org_id, inviter_id)
         inviter_role = (
             await RoleStore.get_role_by_id(inviter_member.role_id)

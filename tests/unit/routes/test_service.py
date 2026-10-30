@@ -9,8 +9,10 @@ from fastapi import HTTPException
 
 from server.routes.service import (
     CreateUserApiKeyRequest,
+    OrgMemberInfoResponse,
     delete_user_api_key,
     get_or_create_api_key_for_user,
+    get_org_member_info,
     validate_service_api_key,
 )
 
@@ -428,3 +430,171 @@ class TestDeleteUserApiKey:
 
         assert exc_info.value.status_code == 401
         assert 'X-Service-API-Key header is required' in exc_info.value.detail
+
+
+class TestGetOrgMemberInfo:
+    """Test cases for get_org_member_info (GET .../users/{user_id}/orgs/{org_id}/membership)."""
+
+    USER_ID = '5594c7b6-f959-4b81-92e9-b09c206f5081'
+    ORG_ID = uuid.UUID('7a1b2c3d-0000-4000-8000-000000000001')
+
+    def _user(self, account_type='human', is_disabled=False, deletion_pending=False):
+        user = MagicMock()
+        user.account_type = account_type
+        user.is_disabled = is_disabled
+        user.deletion_pending = deletion_pending
+        return user
+
+    def _member(self, status='active'):
+        member = MagicMock()
+        member.status = status
+        member.role_id = 4
+        return member
+
+    async def _call(self, user, member, role_name='member', user_id=None):
+        role = MagicMock()
+        role.name = role_name
+        with (
+            patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'),
+            patch(
+                'server.routes.service.UserStore.get_user_by_id',
+                new=AsyncMock(return_value=user),
+            ),
+            patch(
+                'server.routes.service.OrgMemberStore.get_org_member',
+                new=AsyncMock(return_value=member),
+            ),
+            patch(
+                'server.routes.service.RoleStore.get_role_by_id',
+                new=AsyncMock(return_value=role),
+            ),
+        ):
+            return await get_org_member_info(
+                user_id=user_id or self.USER_ID,
+                org_id=self.ORG_ID,
+                x_service_api_key='test-key',
+            )
+
+    @pytest.mark.asyncio
+    async def test_service_account(self):
+        result = await self._call(
+            self._user('service'), self._member(), 'service_account'
+        )
+
+        assert result.model_dump() == {
+            'user_id': self.USER_ID,
+            'org_id': str(self.ORG_ID),
+            'account_type': 'service',
+            'role': 'service_account',
+            'status': 'active',
+        }
+
+    @pytest.mark.asyncio
+    async def test_user_id_is_canonical(self):
+        result = await self._call(
+            self._user(), self._member(), user_id=self.USER_ID.upper()
+        )
+
+        assert result.user_id == self.USER_ID
+
+    def test_status_is_a_closed_set(self):
+        schema = OrgMemberInfoResponse.model_json_schema()
+
+        assert schema['properties']['status']['enum'] == [
+            'active',
+            'inactive',
+            'invited',
+            'disabled',
+        ]
+
+    @pytest.mark.asyncio
+    async def test_human(self):
+        result = await self._call(self._user(), self._member(), 'admin')
+
+        assert result.account_type == 'human'
+        assert result.role == 'admin'
+        assert result.status == 'active'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'user',
+        [
+            {'is_disabled': True},
+            {'deletion_pending': True},
+        ],
+    )
+    async def test_disabled_user_reports_disabled(self, user):
+        result = await self._call(self._user(**user), self._member())
+
+        assert result.status == 'disabled'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('member_status', ['inactive', 'invited'])
+    async def test_member_status_is_passed_through(self, member_status):
+        result = await self._call(self._user(), self._member(member_status))
+
+        assert result.status == member_status
+
+    @pytest.mark.asyncio
+    async def test_unknown_member_status_is_inactive_and_logged(self):
+        """A stored value outside the set must not turn the lookup into a 500:
+        the caller then sees "not an active service account", not a 502."""
+        with patch('server.routes.service.logger') as logger:
+            result = await self._call(self._user(), self._member('archived'))
+
+        assert result.status == 'inactive'
+        logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_null_member_status_is_active(self):
+        result = await self._call(self._user(), self._member(None))
+
+        assert result.status == 'active'
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_returns_404(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._call(None, self._member())
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_no_member_row_returns_404(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._call(self._user(), None)
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_non_uuid_user_id_returns_404(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._call(self._user(), self._member(), user_id='not-a-uuid')
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('configured', 'provided', 'code'),
+        [
+            ('test-key', None, 401),
+            ('test-key', 'wrong', 401),
+            ('', 'test-key', 503),
+        ],
+    )
+    async def test_service_key_is_checked_first(self, configured, provided, code):
+        with (
+            patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', configured),
+            patch(
+                'server.routes.service.UserStore.get_user_by_id',
+                new=AsyncMock(),
+            ) as get_user,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_org_member_info(
+                    user_id=self.USER_ID,
+                    org_id=self.ORG_ID,
+                    x_service_api_key=provided,
+                )
+
+        assert exc_info.value.status_code == code
+        get_user.assert_not_awaited()

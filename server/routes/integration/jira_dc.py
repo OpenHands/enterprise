@@ -36,6 +36,7 @@ from integrations.models import Message, SourceType
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.config import depends_jwt_service
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -846,7 +847,9 @@ async def update_jira_dc_workspace_status(
         ) from e
 
 
-@jira_dc_integration_router.post('/workspaces/link')
+@jira_dc_integration_router.post(
+    '/workspaces/link', dependencies=[Depends(reject_service_account)]
+)
 async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
     """Register a user mapping to a Jira DC workspace."""
     try:

@@ -44,6 +44,7 @@ from openhands.app_server.user_auth import (
     get_user_id,
     get_user_settings,
     get_user_settings_store,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.llm import (
@@ -353,6 +354,7 @@ async def load_settings(
         },
         500: {'description': 'Error storing settings', 'model': dict},
     },
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_settings(
     payload: dict[str, Any],
@@ -670,6 +672,7 @@ async def get_profile(
     '/profiles/{name}',
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
 )
 async def save_profile(
     name: ProfileName,
@@ -750,7 +753,11 @@ async def save_profile(
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
 
-@router.delete('/profiles/{name}', response_model=ProfileMutationResponse)
+@router.delete(
+    '/profiles/{name}',
+    response_model=ProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_profile(
     name: ProfileName,
     user_id: str | None = Depends(get_user_id),
@@ -768,7 +775,11 @@ async def delete_profile(
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
 
-@router.post('/profiles/{name}/activate', response_model=ActivateProfileResponse)
+@router.post(
+    '/profiles/{name}/activate',
+    response_model=ActivateProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def activate_profile(
     name: ProfileName,
     user_id: str | None = Depends(get_user_id),
@@ -812,7 +823,11 @@ async def activate_profile(
     )
 
 
-@router.post('/profiles/{name}/rename', response_model=ProfileMutationResponse)
+@router.post(
+    '/profiles/{name}/rename',
+    response_model=ProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def rename_profile(
     name: ProfileName,
     request: RenameProfileRequest,

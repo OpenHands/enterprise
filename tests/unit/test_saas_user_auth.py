@@ -689,6 +689,29 @@ async def test_background_user_auth_does_not_require_offline_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'build',
+    [
+        lambda: SaasUserAuth.get_for_user('test_user_id'),
+        lambda: get_user_auth_from_keycloak_id('test_user_id'),
+    ],
+    ids=['get_for_user', 'get_user_auth_from_keycloak_id'],
+)
+async def test_background_user_auth_keeps_service_account_type(build):
+    """A service account stays a service account on the background entry points."""
+    user = MagicMock()
+    user.account_type = 'service'
+
+    with patch(
+        'server.auth.saas_user_auth._require_active_user',
+        new=AsyncMock(return_value=user),
+    ):
+        built = await build()
+
+    assert built.is_service_account()
+
+
+@pytest.mark.asyncio
 async def test_get_user_settings_store():
     """Test that get_user_settings_store returns a settings store."""
     user_id = str(uuid.uuid4())
@@ -1746,3 +1769,39 @@ class TestOpenHandsApiKey:
             assert result is not None
             assert 'OPENHANDS_API_KEY' in result.custom_secrets
             assert len(result.custom_secrets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('account_type', 'expected'), [('service', True), ('human', False)]
+)
+async def test_saas_user_auth_from_bearer_sets_is_service_account(
+    account_type, expected
+):
+    """The bearer path reads ``user.account_type`` from the active-user check."""
+    mock_request = MagicMock()
+    mock_request.headers = {'Authorization': 'Bearer test_api_key'}
+    validation = ApiKeyValidationResult(
+        user_id=str(uuid.uuid4()),
+        org_id=uuid.uuid4(),
+        key_id=1,
+        key_name='k',
+        org_member_exists=True,
+    )
+    user = MagicMock()
+    user.account_type = account_type
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_store_cls,
+        patch(
+            'server.auth.saas_user_auth._require_active_user',
+            new=AsyncMock(return_value=user),
+        ),
+    ):
+        mock_store_cls.get_instance.return_value.validate_api_key = AsyncMock(
+            return_value=validation
+        )
+        result = await saas_user_auth_from_bearer(mock_request)
+
+    assert isinstance(result, SaasUserAuth)
+    assert result.is_service_account() is expected

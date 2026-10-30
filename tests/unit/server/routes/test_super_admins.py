@@ -18,6 +18,7 @@ from openhands.app_server.user_auth import get_user_id
 from server.routes.super_admins import admin_users_router, super_admin_router
 from server.services.admin_user_lifecycle_service import (
     LastSuperAdminError,
+    ServiceAccountDeleteError,
     UserLifecycleResult,
 )
 from storage.user_store import SuperAdminRevokeResult
@@ -459,6 +460,20 @@ async def test_delete_user_last_super_admin_conflict(
             resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_user_service_account_forbidden(
+    mock_app, grant_manage_super_admins
+):
+    with patch(
+        'server.routes.admin_users.AdminUserLifecycleService.delete_user',
+        AsyncMock(side_effect=ServiceAccountDeleteError('service account')),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/users/{uuid.uuid4()}')
+
+    assert resp.status_code == 403
 
 
 @pytest.mark.asyncio

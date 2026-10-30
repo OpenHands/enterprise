@@ -59,7 +59,7 @@ from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 from storage.user_store import UserStore
@@ -113,6 +113,9 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    # ``user.account_type`` (``human`` or ``service``), read when the API key
+    # was validated. Cookie sessions are always human.
+    account_type: str = 'human'
     _active_user_validated: bool = field(default=False, repr=False)
     # OAuth v2 (Phase 2) cookie session. When True, the instance was minted
     # from the small ``openhands_auth`` JWT cookie and resolves tokens via the
@@ -165,6 +168,9 @@ class SaasUserAuth(UserAuth):
     _effective_org_id_resolved: bool = False
     # Cached result of `get_provider_connections()`; org-scoped.
     _provider_connections: ProviderConnections | None = None
+
+    def is_service_account(self) -> bool:
+        return self.account_type == ACCOUNT_TYPE_SERVICE
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -1362,6 +1368,7 @@ class SaasUserAuth(UserAuth):
             user_id=str(user_id),
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
         )
         instance.set_effective_org_id_override(sandbox.credential_org_id)
         # Validate now, before any credential (including provider tokens) is read.
@@ -1374,11 +1381,12 @@ class SaasUserAuth(UserAuth):
         # user's Keycloak offline session either. The offline token (if any) is
         # loaded lazily by refresh() only when a Keycloak access token is
         # actually required; provider tokens resolve by user_id directly.
-        await _require_active_user(user_id)
+        user = await _require_active_user(user_id)
         return SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
             _active_user_validated=True,
         )
 
@@ -1438,7 +1446,7 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
             return None
-        await _require_active_user(validation_result.user_id)
+        user = await _require_active_user(validation_result.user_id)
         # A key bound to an org the user is not a member of (e.g. removed
         # since the key was minted) does not authenticate. Super roles are
         # exempt: they may bind keys to orgs they have not joined (see
@@ -1467,6 +1475,7 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
             user_id=validation_result.user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
             api_key_org_id=validation_result.org_id,
             api_key_id=validation_result.key_id,
             api_key_name=validation_result.key_name,
@@ -1641,7 +1650,7 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
-    await _require_active_user(keycloak_user_id)
+    user = await _require_active_user(keycloak_user_id)
     # Like get_for_user, this is a background / integration entry point that must
     # not require the offline session. Mark it BEARER so get_access_token()
     # degrades gracefully and refresh() lazily loads the offline token only if a
@@ -1650,5 +1659,6 @@ async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
         user_id=keycloak_user_id,
         refresh_token=SecretStr(''),
         auth_type=AuthType.BEARER,
+        account_type=user.account_type,
         _active_user_validated=True,
     )

@@ -1,9 +1,9 @@
 """SaaS-specific application lifespan service.
 
-On startup, optionally migrates the database, initializes PostHog analytics and
-prepares the sandbox specs (the Docker backend pulls missing images). On clean
-shutdown, flushes buffered events so none are lost when the server exits
-gracefully.
+On startup, optionally migrates the database, initializes PostHog analytics,
+logs role rows the code does not know, and prepares the sandbox specs (the
+Docker backend pulls missing images). On clean shutdown, flushes buffered
+events so none are lost when the server exits gracefully.
 """
 
 from __future__ import annotations
@@ -61,7 +61,8 @@ class SaasAppLifespanService(AppLifespanService):
 
     On enter: runs ``alembic upgrade head`` when RUN_MIGRATIONS_ON_STARTUP is
     set, then initialises the PostHog analytics singleton from environment vars,
-    then prepares the sandbox specs. Uvicorn opens the port only after this.
+    then checks the role rows, then prepares the sandbox specs. Uvicorn opens
+    the port only after this.
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
@@ -85,8 +86,28 @@ class SaasAppLifespanService(AppLifespanService):
             deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
         )
         await self._reconcile_org_condenser_defaults()
+        await self._check_role_names()
         await self._prepare_sandbox_specs()
         return self
+
+    async def _check_role_names(self) -> None:
+        """Log an ERROR for each ``role`` row that has no ``RoleName``.
+
+        A role without a ``RoleName`` grants no permissions. This never blocks
+        startup.
+        """
+        from server.auth.authorization import RoleName
+        from storage.role_store import RoleStore
+
+        try:
+            roles = await RoleStore.list_roles()
+        except Exception:
+            logger.exception('role_name_check_failed', stack_info=True)
+            return
+        known = {role_name.value for role_name in RoleName}
+        for role in roles:
+            if role.name not in known:
+                logger.error('role_name_unknown', extra={'role_name': role.name})
 
     async def _prepare_sandbox_specs(self) -> None:
         from openhands.app_server.config import get_global_config

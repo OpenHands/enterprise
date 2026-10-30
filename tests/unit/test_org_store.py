@@ -1,5 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from openhands.sdk.settings import (
 )
 from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgUpdate
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
@@ -2551,3 +2553,107 @@ async def test_gateway_off_keeps_byok_org(async_session_maker):
     assert result is not None
     assert result.agent_settings['llm']['model'] == 'openai/gpt-5'
     assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_delete_org_cascade_deletes_service_accounts(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: A team org with an owner who has another org, and a service
+           account whose only membership is in the team org
+    WHEN:  delete_org_cascade is called on the team org
+    THEN:  The service account user, its membership and its sandbox usage
+           rows are deleted with the org, its LiteLLM user is removed, and no
+           OrphanedUserError is raised.
+    """
+    org_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    service_account_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                Role(id=1, name='owner', rank=10),
+                Role(id=2, name='service_account', rank=2000),
+                Org(id=org_id, name='Team Org', contact_email='team@e.com'),
+                Org(id=owner_id, name='Owner Personal', contact_email='o@e.com'),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                User(id=owner_id, current_org_id=org_id),
+                User(
+                    id=service_account_id,
+                    current_org_id=org_id,
+                    account_type='service',
+                    display_name='CI bot',
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org_id,
+                    user_id=owner_id,
+                    role_id=1,
+                    status='active',
+                    llm_api_key='k1',
+                ),
+                OrgMember(
+                    org_id=owner_id,
+                    user_id=owner_id,
+                    role_id=1,
+                    status='active',
+                    llm_api_key='k2',
+                ),
+                OrgMember(
+                    org_id=org_id,
+                    user_id=service_account_id,
+                    role_id=2,
+                    status='active',
+                    llm_api_key='k3',
+                ),
+                DailySandboxUsage(
+                    user_id=service_account_id,
+                    usage_date=date.today(),
+                    sandbox_count=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.org_store.OrgStore._delete_litellm_user_best_effort',
+            new=AsyncMock(),
+        ) as mock_delete_litellm_user,
+    ):
+        result = await OrgStore.delete_org_cascade(
+            org_id, requester_user_id=str(owner_id)
+        )
+
+    assert result is not None
+    mock_delete_litellm_user.assert_called_once_with(str(service_account_id), org_id)
+    async with async_session_maker() as session:
+        assert await session.get(Org, org_id) is None
+        assert await session.get(User, service_account_id) is None
+        owner = await session.get(User, owner_id)
+        assert owner is not None
+        assert owner.current_org_id == owner_id
+        usage = (
+            (
+                await session.execute(
+                    select(DailySandboxUsage).filter_by(user_id=service_account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert usage == []
