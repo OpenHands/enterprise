@@ -7,6 +7,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import Injector
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_models import (
     NamedOAuthSecrets,
     UserInfo,
@@ -123,6 +124,14 @@ class UserContext(ABC):
     async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
         """The user's current access token for a named OAuth secret's provider."""
         return None
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The LLM provider connections that the user's linked profiles use.
+
+        Pass them to ``resolve_profile_llm``. Contexts without orgs return none,
+        so a linked profile resolves with no key.
+        """
+        return ProviderConnections()
 
     async def get_provider_handler(self) -> ProviderHandler:
         """Get a ProviderHandler bound to this user's provider tokens.

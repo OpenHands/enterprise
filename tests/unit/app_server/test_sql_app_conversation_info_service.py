@@ -1577,3 +1577,29 @@ class TestTagsContainsFilter:
         # Assert
         assert matching == 2
         assert missing == 0
+
+
+class TestCreateAppConversationInfo:
+    """``create_app_conversation_info`` inserts once and never overwrites."""
+
+    @pytest.mark.asyncio
+    async def test_inserts_once_and_keeps_the_existing_row(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        assert await service.create_app_conversation_info(sample_conversation_info)
+
+        stub_defaults = sample_conversation_info.model_copy(
+            update={'title': 'Conversation stub', 'selected_repository': None}
+        )
+        assert not await service.create_app_conversation_info(stub_defaults)
+
+        stored = await service.get_app_conversation_info(sample_conversation_info.id)
+        assert stored is not None
+        assert stored.title == 'Test Conversation'
+        assert stored.selected_repository == 'https://github.com/test/repo'
+        # The session is usable after the refused insert.
+        await service.update_title(sample_conversation_info.id, 'Renamed')
+        renamed = await service.get_app_conversation_info(sample_conversation_info.id)
+        assert renamed is not None and renamed.title == 'Renamed'

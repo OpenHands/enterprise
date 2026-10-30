@@ -24,7 +24,6 @@
                 "REDIS_PORT": "6379",
                 "OPENHANDS": "${workspaceFolder}",
                 "FRONTEND_DIRECTORY": "${workspaceFolder}/frontend/build",
-                //"WEB_HOST": "localhost:3030",
                 "OPENHANDS_CONFIG_CLS": "server.config.SaaSServerConfig",
                 "OPENHANDS_GITHUB_SERVICE_CLS": "integrations.github.github_service.SaaSGitHubService",
                 "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
@@ -61,6 +60,7 @@
                 "USER_PROVISIONING_ENABLED": "1",
                 "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
                 "ENABLE_SUPER_ADMIN": "1",
+                "ENABLE_LEGACY_LITELLM": "0"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,

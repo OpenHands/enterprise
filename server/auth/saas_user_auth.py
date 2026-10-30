@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -19,7 +20,9 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
@@ -50,6 +53,8 @@ from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
@@ -157,6 +162,8 @@ class SaasUserAuth(UserAuth):
     # needed to distinguish "not yet computed" from "computed and None".
     _effective_org_id: UUID | None = None
     _effective_org_id_resolved: bool = False
+    # Cached result of `get_provider_connections()`; org-scoped.
+    _provider_connections: ProviderConnections | None = None
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -193,6 +200,7 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        self._provider_connections = None
         # The v2 access token is org-independent but the memoized token must
         # not survive a re-scope that clears provider_tokens.
         self.access_token = None if self.oauth_v2_cookie else self.access_token
@@ -1164,6 +1172,30 @@ class SaasUserAuth(UserAuth):
         )
         return openhands_api_key
 
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The provider connections of the effective org, for a member of it.
+
+        Same rule as ``SaasSettingsStore.load``, which supplies the profiles
+        these connections apply to: no member row, no connections. So a super
+        admin acting in an org they did not join gets no connection keys.
+        """
+        if self._provider_connections is not None:
+            return self._provider_connections
+        # Imported locally to avoid a circular import, as above.
+        from storage.agent_profile_resolution import load_provider_connections
+        from storage.org_member_store import OrgMemberStore
+
+        connections = ProviderConnections()
+        org_id = await self.get_effective_org_id()
+        if org_id is not None and await OrgMemberStore.get_org_member(
+            org_id, UUID(self.user_id)
+        ):
+            org = await OrgStore.get_org_by_id(org_id)
+            if org is not None:
+                connections = load_provider_connections(org)
+        self._provider_connections = connections
+        return connections
+
     async def get_org_info(self) -> dict | None:
         """Get organization info for the current user.
 
@@ -1270,6 +1302,69 @@ class SaasUserAuth(UserAuth):
                 # Will raise if rate limit is reached.
                 if rate_limiter is not None:
                     await rate_limiter.hit('auth_uid', user_id)
+        return instance
+
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Authorize each lookup against the persisted launch principal and org.
+
+        Do not use get_user_by_id here: it can provision a missing user. Legacy
+        sandboxes with no trustworthy org binding must be recreated.
+        """
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
+            )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
+        try:
+            user_id = UUID(sandbox.created_by_user_id)
+        except ValueError:
+            deny('invalid_owner')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User, OrgMember, Org)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                deny('unknown_owner')
+            user, member, org = row
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
+        instance = cls(
+            user_id=str(user_id),
+            refresh_token=SecretStr(''),
+            auth_type=AuthType.BEARER,
+        )
+        instance.set_effective_org_id_override(sandbox.credential_org_id)
+        # Validate now, before any credential (including provider tokens) is read.
+        await instance.get_effective_org_id()
         return instance
 
     @classmethod
@@ -1394,6 +1489,13 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
+    # The same JwtService signs tokens for other purposes (git-token lookup
+    # secrets and credential helpers, quota-increase emails), and those carry a
+    # ``user_id`` too. Only a session cookie carries the session claims below
+    # (every cookie minted by create_oauth_v2_cookie_payload has both keys), so
+    # anything else must not be accepted as a login.
+    if 'accepted_tos' not in decoded or 'access_token_expires_at' not in decoded:
+        raise AuthError('OAuth v2 cookie is not a session cookie')
 
     accepted_tos = decoded.get('accepted_tos')
 

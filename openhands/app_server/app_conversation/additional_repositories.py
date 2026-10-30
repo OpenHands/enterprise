@@ -119,6 +119,65 @@ def agent_working_dir(
     return working_dir if additional_repositories else project_dir
 
 
+class ConversationRoot(BaseModel):
+    """A folder the conversation's read endpoints serve."""
+
+    path: str = Field(description='Absolute path of the folder in the sandbox')
+    folder: str | None = Field(
+        default=None,
+        description='Repository folder name; None for the working folder itself',
+    )
+    repository: str | None = None
+    primary: bool = False
+
+
+def conversation_roots(
+    working_dir: str,
+    selected_repository: str | None,
+    additional_repositories: Sequence[AdditionalRepository],
+) -> list[ConversationRoot]:
+    """The folders the read endpoints serve, in order; the first is the default.
+
+    The primary's folder comes first. Without a primary the working folder is
+    the default: it is the project folder of a repository-less conversation and
+    the parent of the clones otherwise. Each cloned additional repository
+    follows in request order; a failed clone has no folder to serve.
+    """
+    roots: list[ConversationRoot] = []
+    if selected_repository:
+        folder = selected_repository.split('/')[-1]
+        roots.append(
+            ConversationRoot(
+                path=f'{working_dir}/{folder}',
+                folder=folder,
+                repository=selected_repository,
+                primary=True,
+            )
+        )
+    else:
+        roots.append(ConversationRoot(path=working_dir))
+    for repo in additional_repositories:
+        if repo.status == AdditionalRepositoryStatus.CLONED:
+            roots.append(
+                ConversationRoot(
+                    path=repo.path, folder=repo.folder, repository=repo.repository
+                )
+            )
+    return roots
+
+
+def select_root(
+    roots: Sequence[ConversationRoot], repository: str | None
+) -> ConversationRoot | None:
+    """The root named by ``repository`` (a folder name), the default when None."""
+    if repository is None:
+        return roots[0] if roots else None
+    for root in roots:
+        if root.folder == repository:
+            return root
+    return None
+
+
 def loads_repository_hooks(
     additional_repositories: Sequence[AdditionalRepository],
 ) -> bool:
@@ -269,6 +328,11 @@ def _is_under(source: str | None, directory: str) -> bool:
     if not source:
         return False
     return source == directory or source.startswith(directory.rstrip('/') + '/')
+
+
+def skill_in_folder(skill: Skill, path: str) -> bool:
+    """Whether ``skill`` was loaded from a file under ``path``."""
+    return _is_under(skill.source, path)
 
 
 def _relative_glob(pattern: str) -> str:

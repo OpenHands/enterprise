@@ -38,6 +38,7 @@ from typing import Literal
 from urllib.parse import quote, urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
@@ -219,6 +220,48 @@ def _parse_token_response(
                 pass
             break
     return access_token, refresh_token, access_expires_at, refresh_expires_at
+
+
+def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
+    """Read the claims of an ID token received from the provider's token endpoint."""
+    details = _oauth_details(provider)
+    try:
+        # OIDC Core 3.1.3.7 lets the TLS connection to the token endpoint stand
+        # in for the signature check; audience and expiry are still enforced.
+        return jwt.decode(
+            id_token,
+            options={
+                'verify_signature': False,
+                'verify_aud': True,
+                'verify_exp': True,
+                'require': ['sub', 'aud', 'exp'],
+            },
+            audience=details.client_id,
+            leeway=details.permitted_drift_seconds,
+        )
+    except jwt.InvalidTokenError as exc:
+        logger.warning(
+            'oauth_v2 id_token rejected provider=%s error=%s', provider.id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Provider returned an invalid id_token',
+        ) from exc
+
+
+async def _get_userinfo(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """Claims from the userinfo endpoint, or from the ID token without one."""
+    if _oauth_details(provider).userinfo_url:
+        return await _fetch_userinfo(provider, access_token)
+    id_token = token_data.get('id_token')
+    if not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+        )
+    return _id_token_claims(provider, str(id_token))
 
 
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
@@ -509,7 +552,7 @@ async def oauth_v2_callback(
         user_id = link_user_id
         # Best-effort userinfo for the external subject link.
         try:
-            userinfo = await _fetch_userinfo(provider, access_token)
+            userinfo = await _get_userinfo(provider, token_data, access_token)
             subject = str(userinfo.get('sub') or userinfo.get('id') or user_id)
         except HTTPException:
             subject = user_id
@@ -520,7 +563,7 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _fetch_userinfo(provider, access_token)
+        userinfo = await _get_userinfo(provider, token_data, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(

@@ -1,3 +1,4 @@
+import os
 from types import MappingProxyType
 from unittest.mock import AsyncMock, patch
 
@@ -207,6 +208,48 @@ def test_get_provider_env_key():
     """Test provider environment key generation"""
     assert ProviderHandler.get_provider_env_key(ProviderType.GITHUB) == 'github_token'
     assert ProviderHandler.get_provider_env_key(ProviderType.GITLAB) == 'gitlab_token'
+
+
+def test_get_git_host_uses_token_host_and_strips_scheme_and_api_path():
+    """The host a credential helper is configured for matches the clone URL's."""
+    tokens = MappingProxyType(
+        {
+            ProviderType.GITLAB: ProviderToken(
+                token=SecretStr('t'), host='https://gitlab.example.com/api/v4/'
+            ),
+            ProviderType.GITHUB: ProviderToken(token=SecretStr('t')),
+            # Azure DevOps keeps its default domain: the host field may carry an
+            # organization/project path.
+            ProviderType.AZURE_DEVOPS: ProviderToken(
+                token=SecretStr('t'), host='alonaking'
+            ),
+        }
+    )
+    handler = ProviderHandler(provider_tokens=tokens)
+
+    assert handler.get_git_host(ProviderType.GITLAB) == ('https', 'gitlab.example.com')
+    assert handler.get_git_host(ProviderType.GITHUB) == ('https', 'github.com')
+    assert handler.get_git_host(ProviderType.AZURE_DEVOPS) == ('https', 'dev.azure.com')
+
+
+def test_get_git_host_refuses_plain_http_unless_allowed():
+    tokens = MappingProxyType(
+        {
+            ProviderType.FORGEJO: ProviderToken(
+                token=SecretStr('t'), host='http://forgejo.internal/forgejo'
+            )
+        }
+    )
+    handler = ProviderHandler(provider_tokens=tokens)
+
+    with patch.dict(os.environ, {'ALLOW_INSECURE_GIT_ACCESS': 'false'}):
+        with pytest.raises(ValueError):
+            handler.get_git_host(ProviderType.FORGEJO)
+    with patch.dict(os.environ, {'ALLOW_INSECURE_GIT_ACCESS': 'true'}):
+        assert handler.get_git_host(ProviderType.FORGEJO) == (
+            'http',
+            'forgejo.internal/forgejo',
+        )
 
 
 @pytest.mark.asyncio

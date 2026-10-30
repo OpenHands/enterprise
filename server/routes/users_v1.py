@@ -7,7 +7,6 @@ user endpoints with organization context (org_id, org_name, role, permissions).
 import logging
 from types import MappingProxyType
 from typing import Any, cast
-from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -27,23 +26,14 @@ from openhands.app_server.config import (
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
-from openhands.app_server.settings.provider_connections import (
-    ProviderConnectionNotFoundError,
-    ProviderConnections,
-)
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
-from server.constants import LITE_LLM_API_URL
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
-from server.routes.org_models import OrgNotFoundError
-from server.routes.org_provider_connections import (
-    _load_connections as load_provider_connections,
-)
-from storage.org_service import OrgService
+from storage.agent_profile_resolution import resolve_org_profile_llm
 
 _logger = logging.getLogger(__name__)
 
@@ -78,66 +68,32 @@ def _inject_sdk_compat_fields(
     content['mcp_config'] = agent_settings.get('mcp_config')
 
 
-def _resolve_exposed_llm_profiles(user_info: SaasUserInfo) -> None:
-    """Overlay each saved LLM profile with its effective runtime config.
+def _resolve_exposed_llm_profiles(
+    user_info: SaasUserInfo, connections: ProviderConnections
+) -> None:
+    """Overlay each saved LLM profile with the LLM a run launches with.
 
     SaaS profiles never persist a real api_key: the org-profiles routes lift
     real keys into the encrypted member column and store a masked placeholder,
     which the LLM validator nulls at load. The SDK's
     ``OpenHandsCloudWorkspace.get_llm(profile_name=...)`` builds an LLM
     verbatim from this response's ``llm_profiles``, so without this overlay a
-    profile-pinned run (e.g. SaaS automations) calls the LiteLLM proxy with no
-    credentials. Mirrors ``_seed_sandbox_profiles`` and the ``switch_profile``
-    endpoint: resolve the managed/provider-default ``base_url``, force
-    streaming, and fall back to the user's effective settings key for keyless
-    profiles; BYOR profiles with real keys keep their own key.
+    profile-pinned run (e.g. SaaS automations) gets no usable credentials.
+
+    Each profile resolves as agent-profile launch does
+    (``resolve_org_profile_llm``): provider-default ``base_url``, the effective
+    settings key for keyless profiles, and a linked provider connection's key
+    and ``base_url``. A linked profile whose connection is missing gets no key;
+    it is not raised, so one bad profile does not break the others.
     """
     # ACP agent-settings variants have no ``llm`` field, hence the getattrs.
     settings_llm = getattr(user_info.agent_settings, 'llm', None)
     fallback_api_key = getattr(settings_llm, 'api_key', None)
     profiles = user_info.llm_profiles.profiles
     for name, profile_llm in profiles.items():
-        profiles[name] = resolve_profile_llm(
-            profile_llm,
-            managed_proxy_url=LITE_LLM_API_URL,
-            fallback_api_key=fallback_api_key,
+        profiles[name] = resolve_org_profile_llm(
+            connections, profile_llm, fallback_api_key=fallback_api_key
         )
-
-
-async def _load_provider_connections_for_user(
-    user_info: SaasUserInfo, user_context: UserContext
-) -> ProviderConnections:
-    if not user_info.org_id:
-        return ProviderConnections()
-    try:
-        org_id = UUID(user_info.org_id)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f'Invalid organization id: {user_info.org_id}',
-        ) from exc
-
-    user_id = await user_context.get_user_id()
-    if user_id is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
-
-    try:
-        org = await OrgService.get_org_by_id(org_id=org_id, user_id=user_id)
-    except OrgNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    return load_provider_connections(org)
-
-
-def _provider_connection_422(exc: ProviderConnectionNotFoundError) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail=(
-            f"Profile references provider connection '{exc.connection_id}', "
-            'which does not exist. Update the profile or recreate the connection.'
-        ),
-    )
 
 
 @saas_users_v1_router.get('/me')
@@ -178,7 +134,9 @@ async def get_current_user_saas(
 
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        _resolve_exposed_llm_profiles(user_info)
+        _resolve_exposed_llm_profiles(
+            user_info, await user_context.get_provider_connections()
+        )
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
         return JSONResponse(content=content)  # type: ignore[return-value]

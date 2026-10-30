@@ -164,6 +164,29 @@ async def test_v2_cookie_missing_user_id_raises(jwt_svc):
 
 
 @pytest.mark.asyncio
+async def test_v2_cookie_rejects_a_jws_minted_for_another_purpose(jwt_svc):
+    """A token this service signs for something else (here the git-token
+    lookup-secret header, ``{user_id, provider_type}``) verifies and names a
+    user, but it is not a session cookie and must not log that user in."""
+    lookup_token = jwt_svc.create_jws_token(
+        {'user_id': str(uuid4()), 'provider_type': 'github'},
+        expires_in=timedelta(days=14),
+    )
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
+            new=AsyncMock(return_value=_active_user()),
+        ) as get_user,
+    ):
+        with pytest.raises(AuthError, match='not a session cookie'):
+            await saas_user_auth_from_oauth_v2_cookie(lookup_token)
+
+    get_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_v2_cookie_blacklisted_email_raises(jwt_svc):
     user_id = str(uuid4())
     cookie = _make_v2_cookie(jwt_svc, user_id=user_id)

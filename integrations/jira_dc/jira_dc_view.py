@@ -5,7 +5,7 @@ Views are responsible for:
 - Creating conversations using V1 app conversation system
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 from jinja2 import Environment
@@ -20,6 +20,10 @@ from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
 from integrations.utils import CONVERSATION_URL
 from openhands.agent_server.models import SendMessageRequest
+from openhands.app_server.app_conversation.additional_repositories import (
+    MAX_ADDITIONAL_REPOSITORIES,
+    AdditionalRepositoryRequest,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTaskStatus,
@@ -27,6 +31,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.config import get_app_conversation_service
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderType
+from openhands.app_server.integrations.service_types import Repository
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -58,6 +63,9 @@ class JiraDcNewConversationView(JiraDcViewInterface):
 
     # Resolved org ID for V1 conversations
     resolved_org_id: UUID | None = None
+    additional_repos: list[Repository] = field(default_factory=list)
+    inaccessible_repos: list[str] = field(default_factory=list)
+    skipped_repos: list[str] = field(default_factory=list)
 
     async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
         """Instructions passed when conversation is first initialized."""
@@ -129,6 +137,15 @@ class JiraDcNewConversationView(JiraDcViewInterface):
             selected_repository=self.selected_repo,
             selected_branch=None,
             git_provider=git_provider,
+            # Cloned beside the primary; a failed clone is reported on the
+            # conversation and does not stop the start (require_all stays off).
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository=repo.full_name, git_provider=repo.git_provider
+                )
+                for repo in self.additional_repos
+            ]
+            or None,
             title=f'Jira DC Issue {self.job_context.issue_key}: {self.job_context.issue_title or "Unknown"}',
             trigger=ConversationTrigger.JIRA,
             processors=[jira_dc_callback_processor],
@@ -207,16 +224,37 @@ class JiraDcNewConversationView(JiraDcViewInterface):
     def get_response_msg(self) -> str:
         """Get the response message to send back to Jira DC."""
         conversation_link = CONVERSATION_URL.format(self.conversation_id)
-        # Name the resolved repo so the user can confirm we picked the right one.
-        prefix = (
-            f"I'm on it in {self.selected_repo}!"
-            if self.selected_repo
-            else "I'm on it!"
-        )
+        # Name the resolved repos so the user can confirm we picked the right ones.
+        if self.selected_repo:
+            prefix = f"I'm on it in {self.selected_repo}"
+            if self.additional_repos:
+                prefix += f', together with {_join([r.full_name for r in self.additional_repos])}'
+            prefix += '!'
+        else:
+            prefix = "I'm on it!"
         message = f'{prefix} {self.job_context.display_name} can [track my progress here|{conversation_link}].'
         if self.selected_repo is None:
             message += '\n\nNote: This conversation started without a repository.'
+        if self.inaccessible_repos:
+            message += (
+                f'\n\nCould not access: {", ".join(self.inaccessible_repos)}. '
+                'Please ensure each repository exists and that the Git account '
+                'linked to your OpenHands user can access it.'
+            )
+        if self.skipped_repos:
+            message += (
+                f'\n\nNot included (a conversation can have at most '
+                f'{MAX_ADDITIONAL_REPOSITORIES + 1} repositories): '
+                f'{", ".join(self.skipped_repos)}.'
+            )
         return message
+
+
+def _join(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(names) < 2:
+        return ''.join(names)
+    return f'{", ".join(names[:-1])} and {names[-1]}'
 
 
 @dataclass
@@ -229,6 +267,9 @@ class JiraDcExistingConversationView(JiraDcViewInterface):
     jira_dc_workspace: JiraDcWorkspace
     selected_repo: str | None
     conversation_id: str
+    additional_repos: list[Repository] = field(default_factory=list)
+    inaccessible_repos: list[str] = field(default_factory=list)
+    skipped_repos: list[str] = field(default_factory=list)
 
     async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
         """Instructions passed when conversation is updated."""

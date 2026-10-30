@@ -303,6 +303,7 @@ async def test_setup_records_failures_in_the_start_task_detail():
     for name in (
         'clone_or_init_git_repo',
         '_configure_azure_devops_git_credentials',
+        '_configure_git_credential_helpers',
         'maybe_run_setup_script',
         'maybe_setup_git_hooks',
         'maybe_inject_memory_context',
@@ -697,6 +698,7 @@ def _setup_service(clone_results):
     for name in (
         'clone_or_init_git_repo',
         '_configure_azure_devops_git_credentials',
+        '_configure_git_credential_helpers',
         'maybe_run_setup_script',
         'maybe_setup_git_hooks',
         'maybe_inject_memory_context',
@@ -713,6 +715,31 @@ async def _run_setup(service, request):
     async for _ in service.run_setup_scripts(task, Mock(), workspace, 'url', uuid4()):
         pass
     return task, workspace
+
+
+@pytest.mark.asyncio
+async def test_setup_installs_the_credential_helpers_before_cloning():
+    """The per-provider credential helpers go in before any clone, and the
+    providers they cover are recorded on the task, so the clones can leave the
+    token out of their remote URL."""
+    service = _setup_service([])
+    order: list = []
+
+    async def configure_helpers(workspace, tokens):
+        order.append('helpers')
+        return {GITHUB}
+
+    async def clone(task, workspace, sandbox):
+        order.append(('clone', set(task._git_credential_providers)))
+
+    service._configure_git_credential_helpers = AsyncMock(side_effect=configure_helpers)
+    service.clone_or_init_git_repo = AsyncMock(side_effect=clone)
+
+    task, workspace = await _run_setup(service, _start_request())
+
+    assert order == ['helpers', ('clone', {GITHUB})]
+    assert task._git_credential_providers == {GITHUB}
+    service._configure_git_credential_helpers.assert_awaited_once_with(workspace, {})
 
 
 @pytest.mark.asyncio
