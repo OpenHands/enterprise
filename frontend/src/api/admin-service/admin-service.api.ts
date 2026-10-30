@@ -1,5 +1,5 @@
 import { openHands } from "../open-hands-axios";
-import { AdminUserPage } from "./admin.types";
+import { AdminFeatureFlag, AdminUserPage } from "./admin.types";
 
 /**
  * Admin Service API - instance-wide, super-admin-only endpoints that are
@@ -62,5 +62,36 @@ export const adminService = {
    */
   deleteUser: async (userId: string): Promise<void> => {
     await openHands.delete(`/api/admin/users/${userId}`);
+  },
+
+  getFeatureFlag: async (key: string): Promise<AdminFeatureFlag> => {
+    const { data } = await openHands.get<AdminFeatureFlag>(
+      `/api/admin/feature-flags/${encodeURIComponent(key)}`,
+    );
+    return data;
+  },
+
+  createFeatureFlag: async (flag: {
+    key: string;
+    description?: string;
+    enabled: boolean;
+  }): Promise<AdminFeatureFlag> => {
+    const { data } = await openHands.post<AdminFeatureFlag>(
+      "/api/admin/feature-flags",
+      flag,
+    );
+    return data;
+  },
+
+  /** Answers 404 when the flag has no database row yet. */
+  updateFeatureFlag: async (
+    key: string,
+    update: { enabled: boolean },
+  ): Promise<AdminFeatureFlag> => {
+    const { data } = await openHands.patch<AdminFeatureFlag>(
+      `/api/admin/feature-flags/${encodeURIComponent(key)}`,
+      update,
+    );
+    return data;
   },
 };

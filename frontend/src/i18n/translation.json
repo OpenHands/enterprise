@@ -32078,6 +32078,23 @@
     "uk": "Show Setup guide",
     "ca": "Show Setup guide"
   },
+  "SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS": {
+    "en": "Enable Service Accounts (beta)",
+    "ja": "Enable Service Accounts (beta)",
+    "zh-CN": "Enable Service Accounts (beta)",
+    "zh-TW": "Enable Service Accounts (beta)",
+    "ko-KR": "Enable Service Accounts (beta)",
+    "no": "Enable Service Accounts (beta)",
+    "it": "Enable Service Accounts (beta)",
+    "pt": "Enable Service Accounts (beta)",
+    "es": "Enable Service Accounts (beta)",
+    "ar": "Enable Service Accounts (beta)",
+    "fr": "Enable Service Accounts (beta)",
+    "tr": "Enable Service Accounts (beta)",
+    "de": "Enable Service Accounts (beta)",
+    "uk": "Enable Service Accounts (beta)",
+    "ca": "Enable Service Accounts (beta)"
+  },
   "SUPER_ADMIN$INSTANCE_DEFAULT_CREDITS": {
     "en": "Default credits for new organizations",
     "ja": "Default credits for new organizations",

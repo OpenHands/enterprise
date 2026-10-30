@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { http, HttpResponse } from "msw";
 import OptionService from "#/api/option-service/option-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminInstance } from "#/components/features/super-admin/super-admin-pages";
@@ -10,6 +11,7 @@ import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import translations from "#/i18n/translation.json";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { readImageFileAsDataUrl } from "#/utils/org/instance-logo";
+import { server } from "#/mocks/node";
 
 // jsdom cannot decode images, so resizing the picked file is stubbed.
 vi.mock("#/utils/org/instance-logo", () => ({
@@ -298,5 +300,171 @@ describe("Super Admin Instance page", () => {
     // Assert
     expect(updateSetupState).toHaveBeenCalledWith({ guide_dismissed: true });
     await waitFor(() => expect(setupGuideSwitch).not.toBeChecked());
+  });
+
+  describe("Enable Service Accounts switch", () => {
+    const FLAG_URL = "/api/admin/feature-flags";
+
+    function mockServiceAccountsConfig(...values: boolean[]) {
+      const spy = vi.spyOn(OptionService, "getConfig");
+      values.forEach((value) => {
+        const config = createMockWebClientConfig();
+        config.feature_flags.enable_service_accounts = value;
+        spy.mockResolvedValueOnce(config);
+      });
+      return spy;
+    }
+
+    it("renders with its label and reflects the resolved config value", async () => {
+      // Arrange
+      mockServiceAccountsConfig(true);
+
+      // Act
+      await renderInstancePage();
+
+      // Assert
+      const toggle = screen.getByLabelText(
+        "SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS",
+      );
+      expect(toggle).toHaveAttribute(
+        "data-testid",
+        "super-admin-instance-enable-service-accounts",
+      );
+      expect(toggle).toBeChecked();
+      expect(translations.SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS.en).toBe(
+        "Enable Service Accounts (beta)",
+      );
+    });
+
+    it("is off when the config has no enable_service_accounts", async () => {
+      // Arrange
+      const config = createMockWebClientConfig();
+      delete config.feature_flags.enable_service_accounts;
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
+
+      // Act
+      await renderInstancePage();
+
+      // Assert
+      expect(
+        screen.getByTestId("super-admin-instance-enable-service-accounts"),
+      ).not.toBeChecked();
+    });
+
+    it("sends PATCH for the flag and refetches the config", async () => {
+      // Arrange
+      const getConfig = mockServiceAccountsConfig(true, false);
+      const patchBodies: unknown[] = [];
+      const postSpy = vi.fn();
+      server.use(
+        http.patch(`${FLAG_URL}/:key`, async ({ params, request }) => {
+          const body = await request.json();
+          patchBodies.push({ key: params.key, body });
+          return HttpResponse.json({
+            key: params.key,
+            description: null,
+            enabled: false,
+          });
+        }),
+        http.post(FLAG_URL, () => {
+          postSpy();
+          return HttpResponse.json({}, { status: 201 });
+        }),
+      );
+      const user = userEvent.setup();
+      await renderInstancePage();
+      const toggle = screen.getByTestId(
+        "super-admin-instance-enable-service-accounts",
+      );
+      expect(toggle).toBeChecked();
+
+      // Act
+      await user.click(toggle);
+
+      // Assert
+      await waitFor(() =>
+        expect(patchBodies).toEqual([
+          { key: "ENABLE_SERVICE_ACCOUNTS", body: { enabled: false } },
+        ]),
+      );
+      expect(postSpy).not.toHaveBeenCalled();
+      await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(toggle).not.toBeChecked());
+    });
+
+    it("creates the flag with POST when PATCH answers 404", async () => {
+      // Arrange
+      mockServiceAccountsConfig(false, true);
+      const postBodies: unknown[] = [];
+      server.use(
+        http.patch(`${FLAG_URL}/:key`, () =>
+          HttpResponse.json({ detail: "Flag not found" }, { status: 404 }),
+        ),
+        http.post(FLAG_URL, async ({ request }) => {
+          const body = await request.json();
+          postBodies.push(body);
+          return HttpResponse.json(
+            { ...(body as object), rules: [] },
+            { status: 201 },
+          );
+        }),
+      );
+      const user = userEvent.setup();
+      await renderInstancePage();
+      const toggle = screen.getByTestId(
+        "super-admin-instance-enable-service-accounts",
+      );
+      expect(toggle).not.toBeChecked();
+
+      // Act
+      await user.click(toggle);
+
+      // Assert
+      await waitFor(() =>
+        expect(postBodies).toEqual([
+          {
+            key: "ENABLE_SERVICE_ACCOUNTS",
+            description: "Enable Service Accounts (beta)",
+            enabled: true,
+          },
+        ]),
+      );
+      await waitFor(() => expect(toggle).toBeChecked());
+    });
+
+    it("is disabled while the change is saving", async () => {
+      // Arrange
+      mockServiceAccountsConfig(false, true);
+      let release: () => void = () => {};
+      server.use(
+        http.patch(
+          `${FLAG_URL}/:key`,
+          () =>
+            new Promise<Response>((resolve) => {
+              release = () =>
+                resolve(
+                  HttpResponse.json({
+                    key: "ENABLE_SERVICE_ACCOUNTS",
+                    description: null,
+                    enabled: true,
+                  }),
+                );
+            }),
+        ),
+      );
+      const user = userEvent.setup();
+      await renderInstancePage();
+      const toggle = screen.getByTestId(
+        "super-admin-instance-enable-service-accounts",
+      );
+
+      // Act
+      await user.click(toggle);
+
+      // Assert
+      await waitFor(() => expect(toggle).toBeDisabled());
+      release();
+      await waitFor(() => expect(toggle).not.toBeDisabled());
+    });
   });
 });

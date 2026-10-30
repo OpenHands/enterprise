@@ -94,6 +94,12 @@ class WebClientFeatureFlags(BaseModel):
     # OH_WEB_CLIENT_FEATURE_FLAGS_* form, which the server reads too). Default
     # False so existing installs keep today's behavior.
     enable_model_router: bool = False
+    # Service accounts (OHE-3795): when false, the web client hides the
+    # Service Accounts settings page and the server answers 403 on
+    # /api/organizations/{org_id}/service-accounts*. A database feature flag
+    # (ENABLE_SERVICE_ACCOUNTS) that falls back to the env var of the same
+    # name, so a Super Admin can toggle it without a redeploy.
+    enable_service_accounts: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
