@@ -182,6 +182,46 @@ describe("MCP Server Mutation Hooks", () => {
         },
       });
     });
+    it("saves a remote server under the name it was given", async () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            shttp: { url: "https://other.example.com/mcp" },
+          },
+        },
+      } as any);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      const { result } = renderHook(() => useAddMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        type: "shttp",
+        name: "sonarqube",
+        url: "https://tools.example.com/sonarqube-mcp/mcp",
+        api_key: "${SONARQUBE_TOKEN}",
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const savedConfig = (
+        saveSettingsSpy.mock.calls[0][0] as {
+          agent_settings_diff: { mcp_config: Record<string, any> };
+        }
+      ).agent_settings_diff.mcp_config;
+      expect(Object.keys(savedConfig).sort()).toEqual(["shttp", "sonarqube"]);
+      expect(savedConfig.sonarqube).toEqual(
+        expect.objectContaining({
+          url: "https://tools.example.com/sonarqube-mcp/mcp",
+          auth: { strategy: "bearer", value: "${SONARQUBE_TOKEN}" },
+        }),
+      );
+    });
   });
 
   describe("useDeleteMcpServer", () => {
@@ -286,6 +326,56 @@ describe("MCP Server Mutation Hooks", () => {
       const serverUrls = Object.values(savedConfig).map((s) => s.url);
       expect(serverUrls).toContain("https://new-url.com");
       expect(savedConfig).toHaveProperty("myserver");
+    });
+
+    it("renames a remote server and keeps its stored credentials", async () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            shttp: {
+              url: "https://tools.example.com/sonarqube-mcp/mcp",
+              auth: { strategy: "bearer", value: "**********" },
+              timeout: 30,
+            },
+          },
+        },
+      } as any);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      const { result } = renderHook(() => useUpdateMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        serverId: "shttp-0",
+        server: {
+          type: "shttp",
+          name: "sonarqube",
+          url: "https://tools.example.com/sonarqube-mcp/mcp",
+          api_key: "**********",
+          timeout: 30,
+        },
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const savedConfig = (
+        saveSettingsSpy.mock.calls[0][0] as {
+          agent_settings_diff: { mcp_config: Record<string, any> };
+        }
+      ).agent_settings_diff.mcp_config;
+      // The old key is gone; the backend matches the redacted credential to
+      // the stored server by URL.
+      expect(Object.keys(savedConfig)).toEqual(["sonarqube"]);
+      expect(savedConfig.sonarqube).toEqual({
+        url: "https://tools.example.com/sonarqube-mcp/mcp",
+        auth: { strategy: "bearer", value: "**********" },
+        timeout: 30,
+      });
     });
 
     it("removes a cleared SHTTP timeout", async () => {
