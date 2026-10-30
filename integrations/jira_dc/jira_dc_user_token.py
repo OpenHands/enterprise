@@ -3,10 +3,12 @@
 import time
 from dataclasses import dataclass
 from typing import Final
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import SecretStr
 
+from integrations.jira_dc.jira_dc_auth_provider import get_jira_dc_access_token
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import (
@@ -43,8 +45,17 @@ async def get_user_jira_dc_token(
 ) -> JiraDcUserToken:
     """Resolve a valid per-user Jira DC access token, refreshing if necessary.
 
+    A token from a ``jira_dc`` auth provider for the configured Jira host wins
+    over the one stored by this integration's own OAuth link.
+
     Raises JiraDcUserTokenError when no usable token is available.
     """
+    auth_provider_token = await get_jira_dc_access_token(
+        keycloak_user_id, urlparse(JIRA_DC_BASE_URL).hostname
+    )
+    if auth_provider_token:
+        return JiraDcUserToken(SecretStr(auth_provider_token), 0)
+
     # TODO(jira-dc-refresh-race): single-flight refreshes with SELECT FOR UPDATE
     # or an advisory lock before exposing this token through shared account-level
     # integrations. Some IdPs rotate refresh tokens on use, so concurrent

@@ -70,6 +70,7 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.instance_settings import InstanceSettings
@@ -384,7 +385,7 @@ async def keycloak_callback(
     # only store the newly linked provider's broker tokens.
     if link_provider:
         provider = next((p for p in ProviderType if p.value == link_provider), None)
-        if provider is None or provider == ProviderType.ENTERPRISE_SSO:
+        if provider is None or provider not in GIT_PROVIDER_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f'Invalid link provider: {link_provider}',

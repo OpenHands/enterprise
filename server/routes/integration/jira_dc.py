@@ -23,6 +23,11 @@ from fastapi.security import APIKeyHeader
 from jwt import InvalidTokenError
 from pydantic import BaseModel, Field, field_validator
 
+from integrations.jira_dc.jira_dc_auth_provider import (
+    find_linked_jira_dc_provider,
+    get_provider_access_token,
+    get_provider_user_key,
+)
 from integrations.jira_dc.jira_dc_manager import JiraDcManager
 from integrations.jira_dc.jira_dc_service_account import (
     get_jira_dc_managed_service_account,
@@ -377,6 +382,24 @@ async def _handle_workspace_link_creation(
             )
     except Exception:
         logger.exception('analytics:jira_dc_integration_enabled:failed')
+
+
+async def _link_from_auth_provider(user_id: str, target_workspace: str) -> bool:
+    """Link the user with the Jira identity and token of their ``jira_dc`` auth
+    provider, skipping a second Jira consent. ``False`` when there is no usable
+    one, so the caller falls back to this integration's own OAuth flow."""
+    if target_workspace != urlparse(JIRA_DC_BASE_URL).hostname:
+        return False
+    provider = await find_linked_jira_dc_provider(user_id, target_workspace)
+    if provider is None:
+        return False
+    jira_dc_user_id = await get_provider_user_key(user_id, provider)
+    if not jira_dc_user_id or not await get_provider_access_token(user_id, provider):
+        return False
+    await _handle_workspace_link_creation(
+        user_id, jira_dc_user_id, target_workspace, replace_stale_active_link=True
+    )
+    return True
 
 
 async def _validate_workspace_update_permissions(user_id: str, target_workspace: str):
@@ -853,6 +876,17 @@ async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
             )
 
         target_workspace = link_data.workspace_name
+
+        if JIRA_DC_ENABLE_OAUTH and await _link_from_auth_provider(
+            user_id, target_workspace
+        ):
+            return JSONResponse(
+                content={
+                    'success': True,
+                    'redirect': False,
+                    'authorizationUrl': '',
+                }
+            )
 
         if JIRA_DC_ENABLE_OAUTH:
             # OAuth flow enabled

@@ -768,8 +768,9 @@ class TestDisconnectGitProvider:
         )
 
     @pytest.mark.asyncio
-    async def test_rejects_the_login_only_identity_provider(self, mock_user_context):
-        """enterprise_sso is a login IdP, not a git provider, so it can't be disconnected."""
+    @pytest.mark.parametrize('provider_value', ['enterprise_sso', 'jira', 'jira_dc'])
+    async def test_rejects_non_git_providers(self, mock_user_context, provider_value):
+        """Login/token-only brands are not git providers, so they can't be disconnected."""
         from unittest.mock import patch
 
         from fastapi import HTTPException
@@ -784,7 +785,7 @@ class TestDisconnectGitProvider:
             # Act / Assert
             with pytest.raises(HTTPException) as exc_info:
                 await disconnect_git_provider(
-                    provider=ProviderType.ENTERPRISE_SSO,
+                    provider=ProviderType(provider_value),
                     user_context=mock_user_context,
                 )
 

@@ -54,6 +54,7 @@ from server.auth.email_validation import (
 from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
 from server.auth.oauth_v2_refresh import get_oauth_v2_git_token
 from server.logger import logger
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
@@ -189,7 +190,7 @@ class TokenManager:
         user_id: str,
         keycloak_access_token: str,
     ):
-        if idp == ProviderType.ENTERPRISE_SSO:
+        if idp not in GIT_PROVIDER_TYPES:
             # Login-only IdP: its broker tokens are not git provider tokens
             # and have no consumers. Storing them creates auth_tokens rows
             # that surface enterprise_sso as a phantom git provider (see
