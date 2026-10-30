@@ -1495,6 +1495,23 @@
     "uk": "Назва",
     "ca": "Nom"
   },
+  "SETTINGS$MCP_RENAME_PROFILES_NOT_UPDATED": {
+    "en": "Server renamed, but agent profiles that use \"{{name}}\" could not be updated. Select the server again in those profiles.",
+    "ja": "サーバー名は変更されましたが、「{{name}}」を使用するエージェントプロファイルを更新できませんでした。該当するプロファイルでサーバーを選択し直してください。",
+    "zh-CN": "服务器已重命名，但无法更新使用“{{name}}”的代理配置文件。请在这些配置文件中重新选择该服务器。",
+    "zh-TW": "伺服器已重新命名，但無法更新使用「{{name}}」的代理設定檔。請在這些設定檔中重新選擇該伺服器。",
+    "ko-KR": "서버 이름이 변경되었지만 \"{{name}}\"을(를) 사용하는 에이전트 프로필을 업데이트하지 못했습니다. 해당 프로필에서 서버를 다시 선택하세요.",
+    "no": "Serveren ble omdøpt, men agentprofiler som bruker «{{name}}» kunne ikke oppdateres. Velg serveren på nytt i disse profilene.",
+    "it": "Server rinominato, ma non è stato possibile aggiornare i profili agente che usano \"{{name}}\". Seleziona di nuovo il server in quei profili.",
+    "pt": "Servidor renomeado, mas não foi possível atualizar os perfis de agente que usam \"{{name}}\". Selecione o servidor novamente nesses perfis.",
+    "es": "Servidor renombrado, pero no se pudieron actualizar los perfiles de agente que usan \"{{name}}\". Vuelve a seleccionar el servidor en esos perfiles.",
+    "ar": "تمت إعادة تسمية الخادم، لكن تعذر تحديث ملفات تعريف الوكيل التي تستخدم \"{{name}}\". اختر الخادم مرة أخرى في تلك الملفات.",
+    "fr": "Serveur renommé, mais les profils d'agent qui utilisent « {{name}} » n'ont pas pu être mis à jour. Sélectionnez de nouveau le serveur dans ces profils.",
+    "tr": "Sunucu yeniden adlandırıldı, ancak \"{{name}}\" kullanan ajan profilleri güncellenemedi. Bu profillerde sunucuyu yeniden seçin.",
+    "de": "Server umbenannt, aber Agentenprofile, die „{{name}}“ verwenden, konnten nicht aktualisiert werden. Wählen Sie den Server in diesen Profilen erneut aus.",
+    "uk": "Сервер перейменовано, але не вдалося оновити профілі агента, які використовують «{{name}}». Виберіть сервер у цих профілях ще раз.",
+    "ca": "S'ha canviat el nom del servidor, però no s'han pogut actualitzar els perfils d'agent que fan servir \"{{name}}\". Torneu a seleccionar el servidor en aquests perfils."
+  },
   "SETTINGS$MCP_NAME_HINT": {
     "en": "The agent sees this name on the server's tools",
     "ja": "エージェントはサーバーのツールでこの名前を参照します",
