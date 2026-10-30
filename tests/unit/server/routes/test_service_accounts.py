@@ -390,7 +390,7 @@ async def test_delete_blocked_by_owned_automation(client, as_admin, svc, lifecyc
     get.assert_awaited_once()
     call = get.await_args_list[0]
     assert call.args[0] == 'http://automation/v1'
-    assert call.kwargs['params']['owner_id'] == str(SA_ID)
+    assert call.kwargs['params']['run_as_user_id'] == str(SA_ID)
     assert call.kwargs['headers']['authorization'] == 'Bearer k'
     assert call.kwargs['headers']['X-Org-Id'] == str(ORG_ID)
 
@@ -466,7 +466,7 @@ async def test_delete_succeeds_when_no_automation_is_owned(
             resp = await c.delete(_url())
 
     assert resp.status_code == 204
-    assert get.await_args_list[0].kwargs['params']['owner_id'] == str(SA_ID)
+    assert get.await_args_list[0].kwargs['params']['run_as_user_id'] == str(SA_ID)
     lifecycle.delete_service_account.assert_awaited_once_with(str(SA_ID))
 
 
