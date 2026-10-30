@@ -64,6 +64,9 @@ from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
 )
 from server.auth.provider_identity import (
+    map_oauth_claims,
+)
+from server.auth.provider_identity import (
     require_enabled_provider as _require_enabled_provider,
 )
 from server.auth.provider_identity import (
@@ -252,16 +255,20 @@ def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
 async def _get_userinfo(
     provider: AuthProvider, token_data: dict, access_token: str
 ) -> dict:
-    """Claims from the userinfo endpoint, or from the ID token without one."""
-    if _oauth_details(provider).userinfo_url:
-        return await _fetch_userinfo(provider, access_token)
-    id_token = token_data.get('id_token')
-    if not id_token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
-        )
-    return _id_token_claims(provider, str(id_token))
+    """Identity claims (see ``map_oauth_claims``) from the userinfo endpoint,
+    or from the ID token without one."""
+    details = _oauth_details(provider)
+    if details.userinfo_url:
+        raw_claims = await _fetch_userinfo(provider, access_token)
+    else:
+        id_token = token_data.get('id_token')
+        if not id_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+            )
+        raw_claims = _id_token_claims(provider, str(id_token))
+    return map_oauth_claims(raw_claims, details.attribute_mapping)
 
 
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
@@ -553,7 +560,7 @@ async def oauth_v2_callback(
         # Best-effort userinfo for the external subject link.
         try:
             userinfo = await _get_userinfo(provider, token_data, access_token)
-            subject = str(userinfo.get('sub') or userinfo.get('id') or user_id)
+            subject = str(userinfo['sub'] or user_id)
         except HTTPException:
             subject = user_id
         await AuthProviderUserStore().link(
