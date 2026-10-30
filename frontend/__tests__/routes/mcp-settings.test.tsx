@@ -235,9 +235,10 @@ describe("MCPSettingsScreen", () => {
 });
 
 describe("MCPSettingsScreen with Agent Canvas", () => {
-  const mockConfig = (enabled: boolean) =>
+  const mockConfig = (enabled: boolean, appMode: "oss" | "saas" = "oss") =>
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
+        app_mode: appMode,
         feature_flags: {
           ...createMockWebClientConfig().feature_flags,
           enable_agent_canvas_mcp: enabled,
@@ -269,6 +270,21 @@ describe("MCPSettingsScreen with Agent Canvas", () => {
 
     await userEvent.click(screen.getByTestId("mcp-open-canvas"));
     expect(assign).toHaveBeenCalledWith("/canvas/mcp");
+  });
+
+  // OHE runs the app in SaaS mode, where this page never had the search-key
+  // section, so with Canvas managing servers the page holds only this.
+  it("shows only the Canvas MCP servers entry point in SaaS mode (OHE)", async () => {
+    mockConfig(true, "saas");
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    renderMcpSettingsScreen();
+
+    expect(await screen.findByTestId("mcp-canvas-handoff")).toBeInTheDocument();
+    expect(screen.queryByTestId("mcp-server-list")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("mcp-search-settings-section"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the server editor when Canvas does not manage MCP servers", async () => {
