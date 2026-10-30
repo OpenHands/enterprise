@@ -71,6 +71,12 @@ class WebClientFeatureFlags(BaseModel):
     # create/refresh) and show a "Please enable LiteLLM to use this
     # feature" placeholder instead. Set from the ENABLE_LEGACY_LITELLM env var.
     enable_litellm: bool = True
+    # When true, Agent Canvas is deployed alongside this app and owns MCP server
+    # management: the classic MCP settings page shows Canvas's MCP page in a
+    # frame instead of its own server editor. Set from ENABLE_AGENT_CANVAS_MCP
+    # (the OHE chart sets it whenever agent-canvas is enabled). Default False so
+    # SaaS and installs without Canvas keep the classic editor.
+    enable_agent_canvas_mcp: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

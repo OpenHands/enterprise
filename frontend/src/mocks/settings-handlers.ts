@@ -643,6 +643,8 @@ export const SETTINGS_HANDLERS = [
         enable_onboarding: false,
         enable_automations: true,
         enable_agent_canvas_banner: false,
+        enable_agent_canvas_mcp:
+          import.meta.env.VITE_MOCK_AGENT_CANVAS_MCP === "true",
         enable_byor_export: false,
         enable_super_admin: mockSaas,
       },
