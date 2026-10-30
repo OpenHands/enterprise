@@ -1,12 +1,18 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AxiosError, AxiosHeaders } from "axios";
+import AgentProfilesService from "#/api/agent-profiles-service/agent-profiles-service.api";
 import McpService from "#/api/mcp-service/mcp-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { useAddMcpServer } from "#/hooks/mutation/use-add-mcp-server";
 import { useTestMcpServer } from "#/hooks/mutation/use-test-mcp-server";
 import { useDeleteMcpServer } from "#/hooks/mutation/use-delete-mcp-server";
-import { useUpdateMcpServer } from "#/hooks/mutation/use-update-mcp-server";
+import {
+  repointAgentProfileMcpRefs,
+  useUpdateMcpServer,
+} from "#/hooks/mutation/use-update-mcp-server";
+import * as toasts from "#/utils/custom-toast-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import type { Settings } from "#/types/settings";
 
@@ -182,6 +188,46 @@ describe("MCP Server Mutation Hooks", () => {
         },
       });
     });
+    it("saves a remote server under the name it was given", async () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            shttp: { url: "https://other.example.com/mcp" },
+          },
+        },
+      } as any);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      const { result } = renderHook(() => useAddMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        type: "shttp",
+        name: "sonarqube",
+        url: "https://tools.example.com/sonarqube-mcp/mcp",
+        api_key: "${SONARQUBE_TOKEN}",
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const savedConfig = (
+        saveSettingsSpy.mock.calls[0][0] as {
+          agent_settings_diff: { mcp_config: Record<string, any> };
+        }
+      ).agent_settings_diff.mcp_config;
+      expect(Object.keys(savedConfig).sort()).toEqual(["shttp", "sonarqube"]);
+      expect(savedConfig.sonarqube).toEqual(
+        expect.objectContaining({
+          url: "https://tools.example.com/sonarqube-mcp/mcp",
+          auth: { strategy: "bearer", value: "${SONARQUBE_TOKEN}" },
+        }),
+      );
+    });
   });
 
   describe("useDeleteMcpServer", () => {
@@ -286,6 +332,60 @@ describe("MCP Server Mutation Hooks", () => {
       const serverUrls = Object.values(savedConfig).map((s) => s.url);
       expect(serverUrls).toContain("https://new-url.com");
       expect(savedConfig).toHaveProperty("myserver");
+    });
+
+    it("renames a remote server and keeps its stored credentials", async () => {
+      const listSpy = vi
+        .spyOn(AgentProfilesService, "listProfiles")
+        .mockResolvedValue({ profiles: [], active_agent_profile_id: null });
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            shttp: {
+              url: "https://tools.example.com/sonarqube-mcp/mcp",
+              auth: { strategy: "bearer", value: "**********" },
+              timeout: 30,
+            },
+          },
+        },
+      } as any);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+
+      const { result } = renderHook(() => useUpdateMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      result.current.mutate({
+        serverId: "shttp-0",
+        server: {
+          type: "shttp",
+          name: "sonarqube",
+          url: "https://tools.example.com/sonarqube-mcp/mcp",
+          api_key: "**********",
+          timeout: 30,
+        },
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const savedConfig = (
+        saveSettingsSpy.mock.calls[0][0] as {
+          agent_settings_diff: { mcp_config: Record<string, any> };
+        }
+      ).agent_settings_diff.mcp_config;
+      // The old key is gone; the backend matches the redacted credential to
+      // the stored server by URL.
+      expect(Object.keys(savedConfig)).toEqual(["sonarqube"]);
+      expect(listSpy).toHaveBeenCalledTimes(1);
+      expect(savedConfig.sonarqube).toEqual({
+        url: "https://tools.example.com/sonarqube-mcp/mcp",
+        auth: { strategy: "bearer", value: "**********" },
+        timeout: 30,
+      });
     });
 
     it("removes a cleared SHTTP timeout", async () => {
@@ -498,6 +598,126 @@ describe("MCP Server Mutation Hooks", () => {
         auth: null,
         headers: { "X-Tenant": "**********" },
       });
+    });
+  });
+
+  describe("repointAgentProfileMcpRefs", () => {
+    const summary = (
+      name: string,
+      scope: "personal" | "org",
+      refs: string[] | null,
+    ) => ({
+      id: `${name}-id`,
+      name,
+      agent_kind: "openhands" as const,
+      revision: 3,
+      llm_profile_ref: "default",
+      mcp_server_refs: refs,
+      scope,
+    });
+
+    it("points personal profiles that use the old name at the new one", async () => {
+      vi.spyOn(AgentProfilesService, "listProfiles").mockResolvedValue({
+        profiles: [
+          summary("reviewer", "personal", ["shttp", "github"]),
+          summary("writer", "personal", ["github"]),
+          summary("everything", "personal", null),
+          summary("team", "org", []),
+        ],
+        active_agent_profile_id: null,
+      });
+      vi.spyOn(AgentProfilesService, "getProfile").mockResolvedValue({
+        name: "reviewer",
+        scope: "personal",
+        profile: {
+          id: "reviewer-id",
+          name: "reviewer",
+          revision: 3,
+          agent_kind: "openhands",
+          llm_profile_ref: "default",
+          mcp_server_refs: ["shttp", "github"],
+          persona: "Reviews code",
+        },
+      });
+      const saveSpy = vi
+        .spyOn(AgentProfilesService, "saveProfile")
+        .mockResolvedValue();
+
+      await repointAgentProfileMcpRefs("shttp", "sonarqube");
+
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+      expect(saveSpy).toHaveBeenCalledWith(
+        "reviewer",
+        {
+          agent_kind: "openhands",
+          llm_profile_ref: "default",
+          mcp_server_refs: ["sonarqube", "github"],
+          persona: "Reviews code",
+        },
+        "personal",
+      );
+    });
+
+    it("does nothing on a backend without agent profiles", async () => {
+      vi.spyOn(AgentProfilesService, "listProfiles").mockRejectedValue(
+        new AxiosError("Not Found", "ERR_BAD_REQUEST", undefined, undefined, {
+          status: 404,
+          statusText: "Not Found",
+          data: {},
+          headers: {},
+          config: { headers: new AxiosHeaders() },
+        }),
+      );
+      const toastSpy = vi.spyOn(toasts, "displayErrorToast");
+
+      await repointAgentProfileMcpRefs("shttp", "sonarqube");
+
+      expect(toastSpy).not.toHaveBeenCalled();
+    });
+
+    it("reports profiles it could not update without failing the rename", async () => {
+      vi.spyOn(AgentProfilesService, "listProfiles").mockResolvedValue({
+        profiles: [summary("reviewer", "personal", ["shttp"])],
+        active_agent_profile_id: null,
+      });
+      vi.spyOn(AgentProfilesService, "getProfile").mockRejectedValue(
+        new Error("boom"),
+      );
+      const toastSpy = vi
+        .spyOn(toasts, "displayErrorToast")
+        .mockImplementation(() => {});
+
+      await expect(
+        repointAgentProfileMcpRefs("shttp", "sonarqube"),
+      ).resolves.toBeUndefined();
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not called when a server keeps its name", async () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: { shttp: { url: "https://old.example.com/mcp" } },
+        },
+      } as any);
+      vi.spyOn(SettingsService, "saveSettings").mockResolvedValue(true);
+      const listSpy = vi.spyOn(AgentProfilesService, "listProfiles");
+
+      const { result } = renderHook(() => useUpdateMcpServer(), {
+        wrapper: createWrapper(),
+      });
+      result.current.mutate({
+        serverId: "shttp-0",
+        server: {
+          type: "shttp",
+          name: "shttp",
+          url: "https://new.example.com/mcp",
+        },
+      });
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      expect(listSpy).not.toHaveBeenCalled();
     });
   });
 
