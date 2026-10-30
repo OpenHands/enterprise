@@ -76,7 +76,7 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
                 # runtime-api reports an omitted command as [], and older
                 # versions have no `args` field.
                 command=config['command'] or None,
-                args=config.get('args') or None,
+                args=config.get('args'),
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],
                 run_as_user=_default_if_none(

@@ -1382,6 +1382,40 @@ class TestBuildSandboxStartRequest:
 
         assert 'args' not in request
 
+    @pytest.mark.asyncio
+    async def test_spec_with_command_and_args_sends_both(self, remote_sandbox_service):
+        """A spec that sets both must send both: `args` go to the command."""
+        spec = RemoteSandboxSpecInfo(
+            id='ghcr.io/openhands/agent-server:1.0.0',
+            command=['/usr/local/bin/openhands-agent-server'],
+            args=['--port', '60000'],
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id-1', environment={}
+        )
+
+        assert request['command'] == ['/usr/local/bin/openhands-agent-server']
+        assert request['args'] == ['--port', '60000']
+
+    @pytest.mark.asyncio
+    async def test_empty_command_and_args_are_omitted(self, remote_sandbox_service):
+        """Empty lists count as unset, so neither key reaches runtime-api."""
+        spec = RemoteSandboxSpecInfo(
+            id='ghcr.io/openhands/agent-server:1.0.0',
+            command=[],
+            args=[],
+            working_dir='/workspace',
+        )
+
+        request = await remote_sandbox_service.build_sandbox_start_request(
+            spec, 'sandbox-id-1', environment={}
+        )
+
+        assert 'command' not in request
+        assert 'args' not in request
+
 
 class TestSandboxSearch:
     """Test cases for sandbox search and retrieval."""
