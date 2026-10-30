@@ -17,6 +17,7 @@ export type AuthProviderPresetKey =
   | "gitlab"
   | "bitbucket"
   | "azure_devops"
+  | "jira_dc"
   | "saml"
   | "password";
 
@@ -43,7 +44,8 @@ function oauthDetails(
     | "legacy_keycloak_type"
     | "named_secret"
     | "attribute_mapping"
-  >,
+  > &
+    Partial<Pick<OAuthProviderDetails, "attribute_mapping">>,
 ): OAuthProviderDetails {
   return {
     kind: "OAuthProviderDetails",
@@ -202,6 +204,24 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
           "499b84ac-1321-427f-aa17-267ca6975798/vso.project",
           "499b84ac-1321-427f-aa17-267ca6975798/vso.work_write",
         ],
+      }),
+    },
+  },
+  {
+    key: "jira_dc",
+    label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC,
+    params: {
+      ...LOGIN_DEFAULTS,
+      title: "Login with Jira DC",
+      color: "#4c64e1",
+      details: oauthDetails({
+        provider_type: "jira_dc",
+        authorization_url: "https://YOUR_DOMAIN/rest/oauth2/latest/authorize",
+        token_url: "https://YOUR_DOMAIN/rest/oauth2/latest/token",
+        userinfo_url: "https://YOUR_DOMAIN/rest/api/2/myself",
+        scopes: ["WRITE"],
+        // /rest/api/2/myself is not OIDC-shaped.
+        attribute_mapping: { sub: "key", email: "emailAddress" },
       }),
     },
   },

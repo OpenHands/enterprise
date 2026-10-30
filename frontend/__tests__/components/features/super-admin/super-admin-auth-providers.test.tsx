@@ -234,6 +234,7 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -445,6 +446,50 @@ describe("Super Admin Auth Providers page", () => {
     expect(params.icon).toContain("<svg");
     expect(params.icon).not.toContain("currentColor");
     expect(await screen.findByTestId("location")).toHaveTextContent("12");
+  });
+
+  it("creates a Jira DC provider that maps identity from /rest/api/2/myself", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 13 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() =>
+      expect(createAuthProvider).toHaveBeenCalledExactlyOnceWith({
+        title: "Login with Jira DC",
+        is_idp: true,
+        icon: null,
+        enabled: false,
+        color: "#4c64e1",
+        allow_registration: true,
+        allow_match_by_email: true,
+        details: {
+          kind: "OAuthProviderDetails",
+          provider_type: "jira_dc",
+          client_id: "PLACEHOLDER",
+          authorization_url: "https://YOUR_DOMAIN/rest/oauth2/latest/authorize",
+          token_url: "https://YOUR_DOMAIN/rest/oauth2/latest/token",
+          userinfo_url: "https://YOUR_DOMAIN/rest/api/2/myself",
+          scopes: ["WRITE"],
+          permitted_drift_seconds: 60,
+          legacy_keycloak_type: null,
+          named_secret: "JIRA_DC_TOKEN",
+          attribute_mapping: { sub: "key", email: "emailAddress" },
+        },
+      }),
+    );
+    expect(await screen.findByTestId("location")).toHaveTextContent("13");
   });
 
   it("creates a SAML provider with placeholder IdP values", async () => {

@@ -34,6 +34,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 from storage.agent_profile_resolution import resolve_org_profile_llm
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 
 _logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ async def disconnect_git_provider(
     the provider shows as not connected until the user links it again from
     Settings > Integrations.
     """
-    if provider == ProviderType.ENTERPRISE_SSO:
+    if provider not in GIT_PROVIDER_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Provider {provider.value} can't be disconnected",

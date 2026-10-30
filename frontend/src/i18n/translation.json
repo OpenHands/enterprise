@@ -36005,6 +36005,23 @@
     "uk": "Azure DevOps",
     "ca": "Azure DevOps"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC": {
+    "en": "Jira Data Center",
+    "ja": "Jira Data Center",
+    "zh-CN": "Jira Data Center",
+    "zh-TW": "Jira Data Center",
+    "ko-KR": "Jira Data Center",
+    "no": "Jira Data Center",
+    "it": "Jira Data Center",
+    "pt": "Jira Data Center",
+    "es": "Jira Data Center",
+    "ar": "Jira Data Center",
+    "fr": "Jira Data Center",
+    "tr": "Jira Data Center",
+    "de": "Jira Data Center",
+    "uk": "Jira Data Center",
+    "ca": "Jira Data Center"
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML": {
     "en": "Generic SAML",
     "ja": "Generic SAML",

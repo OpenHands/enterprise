@@ -226,7 +226,7 @@ class OAuthProviderDetails(AuthProviderDetails):
     def _legacy_keycloak_type_is_git_provider(
         cls, value: ProviderType | None
     ) -> ProviderType | None:
-        if value == ProviderType.ENTERPRISE_SSO:
+        if value is not None and value not in GIT_PROVIDER_TYPES:
             raise ValueError('legacy_keycloak_type must be a git provider')
         return value
 

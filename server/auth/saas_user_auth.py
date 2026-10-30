@@ -52,6 +52,7 @@ from server.logger import logger
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.org import Org
@@ -1067,8 +1068,8 @@ class SaasUserAuth(UserAuth):
                 idp_type = ProviderType(token.identity_provider)
                 if idp_type in provider_tokens:
                     continue
-                if idp_type == ProviderType.ENTERPRISE_SSO:
-                    # enterprise_sso is a login-only IdP, not a git provider:
+                if idp_type not in GIT_PROVIDER_TYPES:
+                    # Login-only IdPs (enterprise_sso, jira, ...) are not git providers:
                     # ProviderHandler has no service for it and its tokens
                     # cannot be refreshed (the row would be deleted and the
                     # request 401'd). Skip rows minted by older logins.

@@ -8,6 +8,7 @@ import httpx
 from fastapi import Request
 from jinja2 import Environment, FileSystemLoader
 
+from integrations.jira_dc.jira_dc_auth_provider import find_user_id_by_jira_dc_key
 from integrations.jira_dc.jira_dc_service_account import (
     resolve_jira_dc_service_account,
 )
@@ -48,7 +49,11 @@ from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import AuthError
-from server.auth.constants import JIRA_DC_ENABLE_OAUTH, JIRA_DC_HTTP_TIMEOUT
+from server.auth.constants import (
+    JIRA_DC_ENABLE_OAUTH,
+    JIRA_DC_HTTP_TIMEOUT,
+    is_oauth_v2_login_enabled,
+)
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
@@ -190,7 +195,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         else:
             jira_dc_user = await self.integration_store.get_active_user(
                 jira_dc_user_id, workspace_id
-            )
+            ) or await self._link_from_auth_provider(jira_dc_user_id, workspace_id)
 
         if not jira_dc_user:
             logger.warning(
@@ -205,6 +210,42 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         except AuthError:
             return None, None
         return jira_dc_user, saas_user_auth
+
+    async def _link_from_auth_provider(
+        self, jira_dc_user_id: str, workspace_id: int
+    ) -> JiraDcUser | None:
+        """Match a webhook's Jira user ``key`` through a ``jira_dc`` auth provider
+        login, which is as verified as this integration's own OAuth link.
+
+        Links the user to the workspace if they never were; a link they removed
+        (now inactive) stays removed, as does one to another workspace.
+        """
+        if not is_oauth_v2_login_enabled():
+            return None
+        workspace = await self.integration_store.get_workspace_by_id(workspace_id)
+        if not workspace:
+            return None
+        keycloak_user_id = await find_user_id_by_jira_dc_key(
+            jira_dc_user_id, workspace.name
+        )
+        if not keycloak_user_id:
+            return None
+        existing = await self.integration_store.get_user_by_keycloak_id_and_workspace(
+            keycloak_user_id, workspace_id
+        )
+        if existing is not None:
+            return existing if existing.status == 'active' else None
+        if await self.integration_store.get_user_by_active_workspace(keycloak_user_id):
+            return None
+        logger.info(
+            '[Jira DC] Linking user from their Jira DC auth provider login',
+            extra={'user_id': keycloak_user_id, 'workspace_id': workspace_id},
+        )
+        return await self.integration_store.create_workspace_link(
+            keycloak_user_id=keycloak_user_id,
+            jira_dc_user_id=jira_dc_user_id,
+            jira_dc_workspace_id=workspace_id,
+        )
 
     async def _create_provider_handler(
         self, user_auth: UserAuth

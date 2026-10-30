@@ -141,6 +141,28 @@ class AuthProviderUserStore:
             )
             return set(result.scalars().all())
 
+    async def list_links_by_subject(
+        self, provider_type: str, external_subject_id: str
+    ) -> list[tuple[UUID, AuthProvider]]:
+        """``(user_id, provider)`` for every link of ``external_subject_id`` on an
+        OAuth provider of ``provider_type``, git provider or not. As with
+        :meth:`get_git_user_ids`, several providers of one type may match, so the
+        caller narrows them down (e.g. by host)."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProviderUser.user_id, AuthProvider)
+                .join(
+                    AuthProvider, AuthProvider.id == AuthProviderUser.oauth_provider_id
+                )
+                .where(
+                    AuthProviderUser.external_subject_id == external_subject_id,
+                    AuthProvider.kind == 'OAuthProviderDetails',
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+                .order_by(AuthProvider.id)
+            )
+            return [(row[0], row[1]) for row in result.all()]
+
     async def get_by_user(
         self, user_id: UUID, oauth_provider_id: int
     ) -> AuthProviderUser | None:
