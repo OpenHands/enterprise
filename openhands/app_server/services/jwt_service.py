@@ -4,8 +4,9 @@ import json
 import logging
 from base64 import b64decode, b64encode
 from datetime import timedelta
+from enum import StrEnum, unique
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Callable
 
 import jwt
 from cryptography.fernet import Fernet, InvalidToken
@@ -30,6 +31,24 @@ _JWE_REGISTRY = jwe.JWERegistry(algorithms=['dir', 'A256GCM'])
 # Fernet fallback then masks). Encrypted DB columns such as ``org.llm_profiles``
 # can legitimately exceed 64KB, so lift the cap to a generous ceiling.
 _JWE_REGISTRY.max_ciphertext_length = 100 * 1024 * 1024  # 100MB
+
+
+@unique
+class JwtAudience(StrEnum):
+    """The ``aud`` claim of each kind of JWS this service signs.
+
+    Every token is signed with the same key, so the audience is what stops a
+    token minted for one purpose (e.g. a sandbox's git-token lookup) from being
+    accepted by the verifier of another (e.g. the login cookie).
+    """
+
+    SESSION = 'openhands:session'
+    KEYCLOAK_SESSION = 'openhands:keycloak-session'
+    SECRET_LOOKUP = 'openhands:secret-lookup'
+    JIRA_DC_SECRET = 'openhands:jira-dc-secret'
+    QUOTA_VERIFICATION = 'openhands:quota-verification'
+    SIGNUP_LINK = 'openhands:signup-link'
+    SLACK_OAUTH_STATE = 'openhands:slack-oauth-state'
 
 
 class JwtService:
@@ -72,6 +91,8 @@ class JwtService:
         payload: dict[str, Any],
         key_id: str | None = None,
         expires_in: timedelta | None = None,
+        *,
+        audience: JwtAudience,
     ) -> str:
         """Create a JWS (JSON Web Signature) token.
 
@@ -79,6 +100,8 @@ class JwtService:
             payload: The JWT payload
             key_id: The key ID to use for signing. If None, uses the newest key.
             expires_in: Token expiration time. If None, defaults to 1 hour.
+            audience: The ``aud`` claim; only a verifier for the same audience
+                accepts the token.
 
         Returns:
             The signed JWS token
@@ -99,6 +122,7 @@ class JwtService:
 
         jwt_payload = {
             **payload,
+            'aud': audience.value,
             'iat': int(now.timestamp()),
             'exp': int((now + expires_in).timestamp()),
         }
@@ -110,13 +134,25 @@ class JwtService:
             jwt_payload, secret_key, algorithm='HS256', headers={'kid': key_id}
         )
 
-    def verify_jws_token(self, token: str, key_id: str | None = None) -> dict[str, Any]:
+    def verify_jws_token(
+        self,
+        token: str,
+        key_id: str | None = None,
+        *,
+        audience: JwtAudience,
+        accept_unscoped: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
         """Verify and decode a JWS token.
 
         Args:
             token: The JWS token to verify
             key_id: The key ID to use for verification. If None, extracts from
                     token's kid header.
+            audience: The ``aud`` claim the token must carry.
+            accept_unscoped: Accepts a token with no ``aud`` claim when this
+                returns True for its payload. Such tokens were minted before
+                audiences existed; this fallback can go once they have all
+                expired (the longest-lived, ``openhands_auth``, last 30 days).
 
         Returns:
             The decoded JWT payload
@@ -144,10 +180,23 @@ class JwtService:
         secret_key = self._keys[key_id].key.get_secret_value()
 
         try:
-            payload = jwt.decode(token, secret_key, algorithms=['HS256'])
-            return payload
+            return jwt.decode(
+                token, secret_key, algorithms=['HS256'], audience=audience.value
+            )
+        except jwt.MissingRequiredClaimError as e:
+            if e.claim != 'aud' or accept_unscoped is None:
+                raise jwt.InvalidTokenError('Token verification failed') from e
         except jwt.InvalidTokenError as e:
             raise jwt.InvalidTokenError('Token verification failed') from e
+
+        # The token verified but has no ``aud``, so decoding without one is safe.
+        try:
+            payload = jwt.decode(token, secret_key, algorithms=['HS256'])
+        except jwt.InvalidTokenError as e:
+            raise jwt.InvalidTokenError('Token verification failed') from e
+        if not accept_unscoped(payload):
+            raise jwt.InvalidTokenError('Token verification failed')
+        return payload
 
     def create_jwe_token(
         self,

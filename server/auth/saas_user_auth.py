@@ -22,6 +22,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
@@ -1476,6 +1477,39 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         raise CookieError from exc
 
 
+def _is_unscoped_oauth_v2_cookie(payload: dict) -> bool:
+    # Every cookie create_oauth_v2_cookie_payload has ever minted carries both
+    # keys; the other tokens this service used to sign without an audience
+    # (git-token lookups, credential helpers, quota emails) carry neither.
+    return 'accepted_tos' in payload and 'access_token_expires_at' in payload
+
+
+def _is_unscoped_keycloak_auth_cookie(payload: dict) -> bool:
+    return 'access_token' in payload and 'refresh_token' in payload
+
+
+def decode_oauth_v2_cookie(signed_token: str) -> dict:
+    """Verify an ``openhands_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.SESSION,
+        accept_unscoped=_is_unscoped_oauth_v2_cookie,
+    )
+
+
+def decode_keycloak_auth_cookie(signed_token: str) -> dict:
+    """Verify a legacy ``keycloak_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.KEYCLOAK_SESSION,
+        accept_unscoped=_is_unscoped_keycloak_auth_cookie,
+    )
+
+
 async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth:
     """Build a ``SaasUserAuth`` from the small OAuth v2 JWT cookie.
 
@@ -1483,19 +1517,10 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     Tokens are NOT carried in the cookie; they are resolved lazily from the
     ``oauth_tokens`` table by ``get_access_token`` / ``get_provider_tokens``.
     """
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_oauth_v2_cookie(signed_token)
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
-    # The same JwtService signs tokens for other purposes (git-token lookup
-    # secrets and credential helpers, quota-increase emails), and those carry a
-    # ``user_id`` too. Only a session cookie carries the session claims below
-    # (every cookie minted by create_oauth_v2_cookie_payload has both keys), so
-    # anything else must not be accepted as a login.
-    if 'accepted_tos' not in decoded or 'access_token_expires_at' not in decoded:
-        raise AuthError('OAuth v2 cookie is not a session cookie')
 
     accepted_tos = decoded.get('accepted_tos')
 
@@ -1549,9 +1574,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     logger.debug('saas_user_auth_from_signed_token')
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_keycloak_auth_cookie(signed_token)
     logger.debug('saas_user_auth_from_signed_token:decoded')
     access_token = decoded['access_token']
     refresh_token = decoded['refresh_token']

@@ -36,7 +36,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.password_hashing import hash_password, verify_password
 from server.routes import idp
@@ -50,6 +50,7 @@ from server.routes.idp import (
 )
 from storage.auth_provider_details import PasswordProviderDetails
 from storage.instance_settings import InstanceSettings
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 # Fixed id used in route-dispatch tests (``/oauth/{id}/login`` etc.) that
 # exercise the integrated IDP through ``oauth_v2.py``'s generic
@@ -1518,13 +1519,15 @@ class TestSignupLinkToken:
         assert link.org_id is None
 
     def test_missing_role_claim_defaults_to_member(self, jwt_svc):
-        """Links minted before the ``role`` claim existed keep working."""
+        """Links minted before the ``role`` claim (and audiences) existed keep
+        working."""
         with _patch_jwt_service(jwt_svc):
-            token = jwt_svc.create_jws_token(
+            token = mint_unscoped_jws_token(
+                jwt_svc,
                 {
                     'purpose': idp._SIGNUP_LINK_PURPOSE,
                     'email': 'invitee@example.com',
-                }
+                },
             )
             link = idp._verify_signup_link_token(token)
         assert link.role == 'member'
@@ -1536,7 +1539,8 @@ class TestSignupLinkToken:
                     'purpose': idp._SIGNUP_LINK_PURPOSE,
                     'email': 'invitee@example.com',
                     'role': 'not-a-real-role',
-                }
+                },
+                audience=JwtAudience.SIGNUP_LINK,
             )
             with pytest.raises(ValueError):
                 idp._verify_signup_link_token(token)
@@ -1548,7 +1552,8 @@ class TestSignupLinkToken:
                     'purpose': idp._SIGNUP_LINK_PURPOSE,
                     'email': 'invitee@example.com',
                     'org_id': 'not-a-uuid',
-                }
+                },
+                audience=JwtAudience.SIGNUP_LINK,
             )
             with pytest.raises(ValueError):
                 idp._verify_signup_link_token(token)
@@ -1588,7 +1593,25 @@ class TestSignupLinkToken:
     def test_rejects_token_with_wrong_purpose(self, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             other_token = jwt_svc.create_jws_token(
-                {'purpose': 'something_else', 'email': 'invitee@example.com'}
+                {'purpose': 'something_else', 'email': 'invitee@example.com'},
+                audience=JwtAudience.SIGNUP_LINK,
+            )
+            with pytest.raises(ValueError):
+                idp._verify_signup_link_token(other_token)
+
+    def test_rejects_token_for_another_audience(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            other_token = jwt_svc.create_jws_token(
+                {'purpose': idp._SIGNUP_LINK_PURPOSE, 'email': 'invitee@example.com'},
+                audience=JwtAudience.SESSION,
+            )
+            with pytest.raises(ValueError):
+                idp._verify_signup_link_token(other_token)
+
+    def test_rejects_unscoped_token_with_wrong_purpose(self, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            other_token = mint_unscoped_jws_token(
+                jwt_svc, {'purpose': 'something_else', 'email': 'invitee@example.com'}
             )
             with pytest.raises(ValueError):
                 idp._verify_signup_link_token(other_token)

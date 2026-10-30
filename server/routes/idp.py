@@ -99,6 +99,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, field_validator
 
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -233,7 +234,9 @@ def _create_signup_link_token(
     if org_id is not None:
         payload['org_id'] = str(org_id)
     return get_jwt_service().create_jws_token(
-        payload, expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS)
+        payload,
+        expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS),
+        audience=JwtAudience.SIGNUP_LINK,
     )
 
 
@@ -253,7 +256,11 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     from storage.encrypt_utils import get_jwt_service
 
     try:
-        payload = get_jwt_service().verify_jws_token(token)
+        payload = get_jwt_service().verify_jws_token(
+            token,
+            audience=JwtAudience.SIGNUP_LINK,
+            accept_unscoped=lambda p: p.get('purpose') == _SIGNUP_LINK_PURPOSE,
+        )
     except (ValueError, pyjwt.InvalidTokenError) as exc:
         raise ValueError('Invalid or expired sign-up link') from exc
     if payload.get('purpose') != _SIGNUP_LINK_PURPOSE:

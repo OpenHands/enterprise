@@ -78,6 +78,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
@@ -1122,7 +1123,7 @@ class TestLiveStatusAppConversationService:
         )
         self.mock_user_context.get_latest_token = AsyncMock(return_value='legacy_value')
         self.mock_jwt_service.create_jws_token.side_effect = (
-            lambda payload, expires_in: f'jwt-{sorted(payload.items())}'
+            lambda payload, expires_in, audience: f'jwt-{sorted(payload.items())}'
         )
 
     @pytest.mark.asyncio
@@ -1141,11 +1142,13 @@ class TestLiveStatusAppConversationService:
         self.mock_jwt_service.create_jws_token.assert_any_call(
             payload={'user_id': self.mock_user.id, 'oauth_provider_id': 7},
             expires_in=None,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
         assert isinstance(result['GITLAB_TOKEN'], LookupSecret)
         self.mock_jwt_service.create_jws_token.assert_any_call(
             payload={'user_id': self.mock_user.id, 'provider_type': 'gitlab'},
             expires_in=None,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
 
     @pytest.mark.asyncio
@@ -8463,6 +8466,7 @@ async def test_mint_azure_devops_access_token_for_entra_user():
     }
     # Session-length, not the multi-day resume window nor the provider ceiling.
     assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+    assert kwargs['audience'] == JwtAudience.SECRET_LOOKUP
 
 
 def _task_for_mint():
@@ -8478,7 +8482,9 @@ def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
     service.web_url = web_url
     service.jwt_service = Mock()
     service.jwt_service.create_jws_token = Mock(
-        side_effect=lambda payload, expires_in: f'jwt.{payload["provider_type"]}'
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["provider_type"]}'
+        )
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
@@ -8520,6 +8526,7 @@ async def test_mint_git_credential_access_tokens_one_per_provider_except_azure_d
     assert all(
         c.kwargs['expires_in'] == _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT for c in calls
     )
+    assert all(c.kwargs['audience'] == JwtAudience.SECRET_LOOKUP for c in calls)
 
 
 @pytest.mark.asyncio
