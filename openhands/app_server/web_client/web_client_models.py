@@ -94,6 +94,12 @@ class WebClientFeatureFlags(BaseModel):
     # OH_WEB_CLIENT_FEATURE_FLAGS_* form, which the server reads too). Default
     # False so existing installs keep today's behavior.
     enable_model_router: bool = False
+    # When true, Agent Canvas is deployed alongside this app and owns MCP server
+    # management: the classic MCP settings page links to Canvas's MCP page
+    # instead of showing its own server editor. Set from ENABLE_AGENT_CANVAS_MCP
+    # (the OHE chart sets it whenever agent-canvas is enabled). Default False so
+    # SaaS and installs without Canvas keep the classic editor.
+    enable_agent_canvas_mcp: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
