@@ -186,6 +186,22 @@ async def test_membership_in_other_org_is_not_required(org_lookup, session_maker
 
 
 @pytest.mark.asyncio
+async def test_sandbox_auth_reports_a_service_account_owner(org_lookup, session_maker):
+    """A guard that checks is_service_account() must see the owner's type on
+    the sandbox path too, not only on request auth."""
+    sandbox, _org_a, _org_b, user = org_lookup
+    with session_maker() as session:
+        owner = session.get(User, user.id)
+        owner.account_type = 'service'
+        owner.display_name = 'ci-bot'
+        session.commit()
+
+    auth = await SaasUserAuth.get_for_sandbox(sandbox)
+
+    assert auth.is_service_account() is True
+
+
+@pytest.mark.asyncio
 async def test_bound_context_survives_sandbox_reload(org_lookup, async_session_maker):
     from unittest.mock import AsyncMock
 
