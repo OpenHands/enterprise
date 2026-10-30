@@ -690,12 +690,10 @@ async def test_delete_missing_secret_returns_404(client, as_admin, svc, secrets_
 
 FLAG = 'ENABLE_SERVICE_ACCOUNTS'
 
-GATED_ROUTES = [
-    (m, _url(sfx, SA_ID if has_id else None), b) for m, has_id, sfx, b in ALL_ROUTES
-] + [
-    ('GET', _secret_url(), None),
-    ('PUT', _secret_url('A'), {'value': 'v'}),
-    ('DELETE', _secret_url('A'), None),
+GATED_ROUTES = ALL_ROUTES + [
+    ('GET', True, '/secrets', None),
+    ('PUT', True, '/secrets/A', {'value': 'v'}),
+    ('DELETE', True, '/secrets/A', None),
 ]
 
 
@@ -723,12 +721,23 @@ def test_every_route_is_gated():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('method', 'url', 'body'), GATED_ROUTES)
+@pytest.mark.parametrize(('method', 'has_id', 'suffix', 'body'), GATED_ROUTES)
 async def test_routes_return_403_when_flag_is_off(
-    gated_client, flag_db, as_admin, svc, lifecycle, secrets_store, method, url, body
+    gated_client,
+    flag_db,
+    as_admin,
+    svc,
+    lifecycle,
+    secrets_store,
+    method,
+    has_id,
+    suffix,
+    body,
 ):
     async with gated_client as c:
-        resp = await c.request(method, url, json=body)
+        resp = await c.request(
+            method, _url(suffix, SA_ID if has_id else None), json=body
+        )
 
     assert resp.status_code == 403
     assert FLAG in resp.json()['detail']
