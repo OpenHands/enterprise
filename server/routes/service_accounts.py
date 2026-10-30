@@ -387,7 +387,9 @@ async def list_service_account_secrets(
         CustomSecretWithoutValue.model_construct(
             name=name, description=description, scope=CustomSecretScope.PERSONAL
         )
-        for name, description in sorted(await store.list_personal())
+        for name, description in sorted(
+            await store.list_personal(), key=lambda item: item[0]
+        )
     ]
     return CustomSecretPage(items=items, next_page_id=None)
 

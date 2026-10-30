@@ -588,6 +588,21 @@ async def test_list_secrets_returns_names_and_descriptions_only(
 
 
 @pytest.mark.asyncio
+async def test_list_secrets_with_a_duplicate_name_does_not_fail(
+    client, as_admin, svc, secrets_store
+):
+    """Names have no unique constraint; sorting must not compare descriptions,
+    one of which can be None."""
+    secrets_store.list_personal.return_value = [('A', 'second'), ('A', None)]
+
+    async with client as c:
+        resp = await c.get(_secret_url())
+
+    assert resp.status_code == 200
+    assert [i['name'] for i in resp.json()['items']] == ['A', 'A']
+
+
+@pytest.mark.asyncio
 async def test_put_secret_never_echoes_value(client, as_admin, svc, secrets_store):
     async with client as c:
         resp = await c.put(
