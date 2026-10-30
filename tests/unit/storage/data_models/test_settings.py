@@ -68,7 +68,7 @@ def test_settings_loads_persisted_settings_via_sdk_loaders():
             conversation_settings={'legacy': True},
         )
 
-    agent_loader.assert_called_once_with({'legacy': True})
+    agent_loader.assert_called_once_with({'legacy': True}, persisted=True)
     conversation_loader.assert_called_once_with({'legacy': True})
     assert settings.agent_settings.agent == 'migrated-agent'
     assert settings.conversation_settings.max_iterations == 77
@@ -331,6 +331,32 @@ def test_settings_update_preserves_redacted_mcp_auth_for_same_endpoint():
     server = settings.agent_settings.mcp_config['integration-hub']
     assert server.auth is not None
     assert server.auth.to_http_headers() == {'Authorization': 'Bearer real-key'}
+
+
+def test_settings_update_preserves_redacted_mcp_auth_across_rename():
+    # The settings page renames a remote server by resubmitting the catalog
+    # under the new key, with the stored key still redacted.
+    settings = _settings_with_mcp_auth()
+
+    settings.update(
+        {
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'sonarqube': {
+                        'url': 'https://integration.example.com/mcp',
+                        'auth': {'strategy': 'bearer', 'value': '**********'},
+                    }
+                }
+            }
+        }
+    )
+
+    mcp = settings.agent_settings.mcp_config
+    assert set(mcp) == {'sonarqube'}
+    assert mcp['sonarqube'].auth is not None
+    assert mcp['sonarqube'].auth.to_http_headers() == {
+        'Authorization': 'Bearer real-key'
+    }
 
 
 def test_settings_update_preserves_redacted_mcp_header_for_same_endpoint():

@@ -7,6 +7,10 @@ import { BrandButton } from "../brand-button";
 import { OptionalTag } from "../optional-tag";
 import { cn } from "#/utils/utils";
 import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
+import {
+  MCP_SERVER_NAME_PATTERN,
+  suggestMcpServerName,
+} from "#/utils/mcp-config";
 
 type MCPServerType = "sse" | "stdio" | "shttp";
 
@@ -55,16 +59,58 @@ export function MCPServerForm({
   const [error, setError] = React.useState<string | null>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
 
+  // All server types share one name space: the name is the server's config
+  // key, and the agent sees it on the server's tools.
+  const otherServerNames = React.useMemo(
+    () =>
+      (existingServers ?? [])
+        .filter((s) => mode === "add" || s.id !== server?.id)
+        .map((s) => s.name)
+        .filter((n): n is string => !!n),
+    [existingServers, mode, server?.id],
+  );
+  const isRemote = (type: MCPServerType) => type === "sse" || type === "shttp";
+
+  const [url, setUrl] = React.useState(server?.url || "");
+  const [name, setName] = React.useState(() => {
+    if (server?.name) return server.name;
+    // Legacy remote entries saved without a name get a suggested one on edit.
+    if (mode === "edit" && server?.url && isRemote(server.type)) {
+      return suggestMcpServerName(server.url, server.type, otherServerNames);
+    }
+    return "";
+  });
+  // Until the user types a name, a remote server's name follows its URL.
+  const [nameEdited, setNameEdited] = React.useState(mode === "edit");
+
+  const suggestName = (type: MCPServerType, forUrl: string) =>
+    forUrl.trim() ? suggestMcpServerName(forUrl, type, otherServerNames) : "";
+
+  const handleUrlChange = (value: string) => {
+    setUrl(value);
+    if (!nameEdited) setName(suggestName(serverType, value));
+  };
+
+  const handleNameChange = (value: string) => {
+    setName(value);
+    setNameEdited(value !== "");
+  };
+
+  const handleServerTypeChange = (type: MCPServerType) => {
+    setServerType(type);
+    if (!nameEdited) setName(isRemote(type) ? suggestName(type, url) : "");
+  };
+
   const serverTypeOptions = [
     { key: "sse", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE) },
     { key: "stdio", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_STDIO) },
     { key: "shttp", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP) },
   ];
 
-  const validateUrl = (url: string): string | null => {
-    if (!url) return t(I18nKey.SETTINGS$MCP_ERROR_URL_REQUIRED);
+  const validateUrl = (value: string): string | null => {
+    if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_URL_REQUIRED);
     try {
-      const urlObj = new URL(url);
+      const urlObj = new URL(value);
       if (!["http:", "https:"].includes(urlObj.protocol)) {
         return t(I18nKey.SETTINGS$MCP_ERROR_URL_INVALID_PROTOCOL);
       }
@@ -74,28 +120,28 @@ export function MCPServerForm({
     return null;
   };
 
-  const validateName = (name: string): string | null => {
-    if (!name) return t(I18nKey.SETTINGS$MCP_ERROR_NAME_REQUIRED);
-    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+  const validateName = (value: string): string | null => {
+    if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_NAME_REQUIRED);
+    if (!MCP_SERVER_NAME_PATTERN.test(value)) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_INVALID);
     }
     return null;
   };
 
-  const validateNameUniqueness = (name: string): string | null => {
-    if (!existingServers) return null;
-    const shouldCheckUniqueness =
-      mode === "add" || (mode === "edit" && server?.name !== name);
-    if (!shouldCheckUniqueness) return null;
-
-    const existingStdioNames = existingServers
-      .filter((s) => s.type === "stdio")
-      .map((s) => s.name)
-      .filter(Boolean);
-    if (existingStdioNames.includes(name)) {
+  const validateNameUniqueness = (candidate: string): string | null => {
+    const lower = candidate.toLowerCase();
+    if (otherServerNames.some((n) => n.toLowerCase() === lower)) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_DUPLICATE);
     }
     return null;
+  };
+
+  const validateServerName = (formData: FormData): string | null => {
+    const value = formData.get("name")?.toString().trim() || "";
+    // A stored name may predate these rules (e.g. saved by another client);
+    // keeping it unchanged must not block other edits.
+    if (mode === "edit" && server?.name && value === server.name) return null;
+    return validateName(value) ?? validateNameUniqueness(value);
   };
 
   const validateCommand = (command: string): string | null => {
@@ -106,14 +152,15 @@ export function MCPServerForm({
     return null;
   };
 
-  const validateUrlUniqueness = (url: string): string | null => {
+  const validateUrlUniqueness = (value: string): string | null => {
     if (!existingServers) return null;
     const originalUrl = server?.url;
-    const changed = mode === "add" || (mode === "edit" && originalUrl !== url);
+    const changed =
+      mode === "add" || (mode === "edit" && originalUrl !== value);
     if (!changed) return null;
     // For URL-based servers (sse/shttp), ensure URL is unique across both types
     const exists = existingServers.some(
-      (s) => (s.type === "sse" || s.type === "shttp") && s.url === url,
+      (s) => (s.type === "sse" || s.type === "shttp") && s.url === value,
     );
     if (exists) return t(I18nKey.SETTINGS$MCP_ERROR_URL_DUPLICATE);
     return null;
@@ -151,15 +198,11 @@ export function MCPServerForm({
   };
 
   const validateStdioServer = (formData: FormData): string | null => {
-    const name = formData.get("name")?.toString().trim() || "";
     const command = formData.get("command")?.toString().trim() || "";
     const envString = formData.get("env")?.toString() || "";
 
-    const nameError = validateName(name);
+    const nameError = validateServerName(formData);
     if (nameError) return nameError;
-
-    const uniquenessError = validateNameUniqueness(name);
-    if (uniquenessError) return uniquenessError;
 
     const commandError = validateCommand(command);
     if (commandError) return commandError;
@@ -173,11 +216,13 @@ export function MCPServerForm({
 
   const validateForm = (formData: FormData): string | null => {
     if (serverType === "sse" || serverType === "shttp") {
-      const url = formData.get("url")?.toString().trim() || "";
-      const urlError = validateUrl(url);
+      const formUrl = formData.get("url")?.toString().trim() || "";
+      const urlError = validateUrl(formUrl);
       if (urlError) return urlError;
-      const urlDupError = validateUrlUniqueness(url);
+      const urlDupError = validateUrlUniqueness(formUrl);
       if (urlDupError) return urlDupError;
+      const nameError = validateServerName(formData);
+      if (nameError) return nameError;
 
       // Validate timeout for SHTTP servers only
       if (serverType === "shttp") {
@@ -228,13 +273,15 @@ export function MCPServerForm({
     };
 
     if (serverType === "sse" || serverType === "shttp") {
-      const url = formData.get("url")?.toString().trim();
+      const serverUrl = formData.get("url")?.toString().trim();
+      const serverName = formData.get("name")?.toString().trim();
       const apiKey = formData.get("api_key")?.toString().trim();
       const timeoutStr = formData.get("timeout")?.toString().trim();
 
       const serverConfig: MCPServerConfig = {
         ...baseConfig,
-        url: url!,
+        name: serverName!,
+        url: serverUrl!,
         ...(apiKey && { api_key: apiKey }),
       };
 
@@ -250,7 +297,7 @@ export function MCPServerForm({
     }
 
     // stdio
-    const name = formData.get("name")?.toString().trim();
+    const stdioName = formData.get("name")?.toString().trim();
     const command = formData.get("command")?.toString().trim();
     const argsString = formData.get("args")?.toString().trim();
     const envString = formData.get("env")?.toString().trim();
@@ -265,7 +312,7 @@ export function MCPServerForm({
 
     return {
       ...baseConfig,
-      name: name!,
+      name: stdioName!,
       command: command!,
       ...(args.length > 0 && { args }),
       ...(Object.keys(env).length > 0 && { env }),
@@ -320,7 +367,9 @@ export function MCPServerForm({
           label={t(I18nKey.SETTINGS$MCP_SERVER_TYPE)}
           items={serverTypeOptions}
           selectedKey={serverType}
-          onSelectionChange={(key) => setServerType(key as MCPServerType)}
+          onSelectionChange={(key) =>
+            handleServerTypeChange(key as MCPServerType)
+          }
           onInputChange={() => {}} // Prevent input changes
           isClearable={false}
           allowsCustomValue={false}
@@ -332,18 +381,34 @@ export function MCPServerForm({
       {error && <p className="text-red-500 text-sm">{error}</p>}
 
       {(serverType === "sse" || serverType === "shttp") && (
-        <>
-          <SettingsInput
-            testId="url-input"
-            name="url"
-            type="url"
-            label={t(I18nKey.SETTINGS$MCP_URL)}
-            className="w-full"
-            required
-            defaultValue={server?.url || ""}
-            placeholder="https://api.example.com"
-          />
+        <SettingsInput
+          testId="url-input"
+          name="url"
+          type="url"
+          label={t(I18nKey.SETTINGS$MCP_URL)}
+          className="w-full"
+          required
+          value={url}
+          onChange={handleUrlChange}
+          placeholder="https://api.example.com"
+        />
+      )}
 
+      <SettingsInput
+        testId="name-input"
+        name="name"
+        type="text"
+        label={t(I18nKey.SETTINGS$MCP_NAME)}
+        hint={t(I18nKey.SETTINGS$MCP_NAME_HINT)}
+        className="w-full"
+        required
+        value={name}
+        onChange={handleNameChange}
+        placeholder="my-mcp-server"
+      />
+
+      {(serverType === "sse" || serverType === "shttp") && (
+        <>
           <SettingsInput
             testId="api-key-input"
             name="api_key"
@@ -374,18 +439,6 @@ export function MCPServerForm({
 
       {serverType === "stdio" && (
         <>
-          <SettingsInput
-            testId="name-input"
-            name="name"
-            type="text"
-            label={t(I18nKey.SETTINGS$MCP_NAME)}
-            className="w-full"
-            required
-            defaultValue={server?.name || ""}
-            placeholder="my-mcp-server"
-            pattern="^[a-zA-Z0-9_-]+$"
-          />
-
           <SettingsInput
             testId="command-input"
             name="command"

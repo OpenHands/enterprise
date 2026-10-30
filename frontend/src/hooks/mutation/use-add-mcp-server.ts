@@ -44,6 +44,7 @@ export function useAddMcpServer() {
 
       if (server.type === "sse") {
         const sseServer: MCPSSEServer = {
+          ...(server.name && { name: server.name }),
           url: server.url!,
           ...(server.api_key && { api_key: server.api_key }),
         };
@@ -58,6 +59,7 @@ export function useAddMcpServer() {
         newConfig.stdio_servers.push(stdioServer);
       } else if (server.type === "shttp") {
         const shttpServer: MCPSHTTPServer = {
+          ...(server.name && { name: server.name }),
           url: server.url!,
           ...(server.api_key && { api_key: server.api_key }),
           ...(server.timeout !== undefined && { timeout: server.timeout }),
