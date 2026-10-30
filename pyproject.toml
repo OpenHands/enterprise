@@ -23,7 +23,7 @@ dependencies = [
   "browsergym-core==0.13.3",                        # integrate browsergym-core as the browsing interface
   "certifi>=2026.10.19",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
-  "coredis==4.24.0",
+  "coredis==6.9.0",
   "cryptography==50.0.0",                           # SAML SP key pair generation (storage.auth_provider_details)
   "ddtrace==4.8.2",                                 # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
