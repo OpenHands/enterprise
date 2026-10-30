@@ -396,8 +396,10 @@ class TestInitHandshake:
             'env',
         }
         assert body['session_api_keys'] == [sandbox.session_api_key]
-        assert body['conversations_path'] == '/workspace/conversations'
-        assert body['bash_events_dir'] == '/workspace/bash_events'
+        # The agent server's state is kept outside the workspace the agent may
+        # serve on the app ports; the worktrees stay with the project.
+        assert body['conversations_path'] == '/var/openhands/conversations'
+        assert body['bash_events_dir'] == '/var/openhands/bash_events'
         assert body['conversation_worktree_root'] == '/workspace/worktrees'
         assert body['webhooks'] == [{'base_url': f'{WEB_URL}/api/v1/webhooks'}]
         assert body['allow_cors_origins'] == [WEB_URL]

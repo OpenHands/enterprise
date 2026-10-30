@@ -134,6 +134,11 @@ the app server has to present the same value to claim a sandbox. Without it
 server answers `POST /api/init` with a 401. Pass `--init-api-key` to rebuild a
 template without rotating its key.
 
+The agent server keeps conversations and bash events at `/var/openhands`,
+outside the workspace, so an agent serving its workspace on the app ports
+cannot publish them; a pause snapshots the whole filesystem, so they survive it
+like everything else.
+
 The template is built with 2 vCPU and 2048 MB, which is what this image has
 been exercised at. `--cpu-count` and `--memory-mb` change that, but a cluster
 node has to be able to fit the result: E2B rejects a `create()` it cannot
@@ -184,6 +189,7 @@ also selects `K8sAgentSandboxSpecService`.
 | `AGENT_SANDBOX_NAMESPACE` | Namespace of the warm pool. The app makes its claims there |
 | `AGENT_SANDBOX_WARM_POOL` | The `SandboxWarmPool` to claim from. Defaults to `openhands-agent-server` |
 | `AGENT_SANDBOX_INIT_API_KEY` | **Required.** The `OH_SECRET_KEY` in the pool's `SandboxTemplate`, sent as `X-Init-API-Key` on `POST /api/init` |
+| `AGENT_SANDBOX_STATE_DIR` | Directory the template mounts a volume at for the agent server's state, outside the workspace. `/var/openhands` with the example manifests. Unset, the state stays on the workspace volume next to the project, where an agent serving its workspace on the app ports can publish it |
 | `AGENT_SANDBOX_ROUTER_URL` | **Required.** Public URL of the agent-sandbox router's path prefix, for example `https://openhands.example.com/sandbox-router` |
 | `AGENT_SANDBOX_WEBHOOK_BASE_URL` | The app URL pods post events to, when it is not `OH_WEB_URL` |
 
@@ -208,7 +214,9 @@ set up:
 
 - A `SandboxTemplate` running the agent server image with `OH_DEFERRED_INIT=1`
   and `OH_SECRET_KEY` from that Secret, `service: true`, a readiness probe on
-  `/ready`, and a volume at `/workspace`. A claim that sets env or volumes is
+  `/ready`, a volume at `/workspace` for the project and one at
+  `/var/openhands` for the agent server's state (set
+  `AGENT_SANDBOX_STATE_DIR=/var/openhands`). A claim that sets env or volumes is
   cold-started instead of served from the pool, so the app sets neither.
   `envVarsInjectionPolicy` and `volumeClaimTemplatesPolicy` are `Disallowed`,
   so a claim that does fails loudly.

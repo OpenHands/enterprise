@@ -49,11 +49,25 @@ class K8sAgentSandboxSpecInfo(SandboxSpecInfo):
         default=DEFAULT_VSCODE_PORT,
         description='Port openvscode-server listens on inside the sandbox',
     )
+    state_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory the pool's SandboxTemplate mounts a volume at for the "
+            "agent server's own state (conversations, bash events), outside the "
+            'workspace, so an agent serving its workspace on the app ports cannot '
+            'publish it (OHE-3812). None keeps the state on the workspace volume, '
+            'next to the project, for a template with a single volume.'
+        ),
+    )
 
 
 def _default_init_api_key() -> SecretStr | None:
     init_api_key = os.getenv('AGENT_SANDBOX_INIT_API_KEY')
     return SecretStr(init_api_key) if init_api_key else None
+
+
+def _default_state_dir() -> str | None:
+    return os.getenv('AGENT_SANDBOX_STATE_DIR') or None
 
 
 def get_default_sandbox_specs() -> list[K8sAgentSandboxSpecInfo]:
@@ -68,6 +82,7 @@ def get_default_sandbox_specs() -> list[K8sAgentSandboxSpecInfo]:
             command=None,
             working_dir=DEFAULT_WORKING_DIR,
             init_api_key=_default_init_api_key(),
+            state_dir=_default_state_dir(),
         )
     ]
 
