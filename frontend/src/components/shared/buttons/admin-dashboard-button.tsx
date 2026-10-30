@@ -14,7 +14,9 @@ export function AdminDashboardButton() {
 
   const { data: meData, isLoading } = useMe();
 
-  const isAdmin = meData?.role === "owner" || meData?.role === "admin";
+  // The dashboard's API requires view_org_conversations.
+  const isAdmin =
+    meData?.permissions?.includes("view_org_conversations") === true;
 
   // Don't render anything while loading (prevents flash of wrong state)
   if (!isSaas || isLoading || !organizationId) {

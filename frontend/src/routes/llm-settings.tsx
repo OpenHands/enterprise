@@ -52,7 +52,6 @@ import { Typography } from "#/ui/typography";
 import { providerModelsQueryOptions } from "#/hooks/query/use-provider-models";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useAppMode } from "#/hooks/use-app-mode";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useProviderConnections } from "#/hooks/query/use-provider-connections";
 
@@ -140,8 +139,7 @@ export function LlmSettingsScreen({
   );
   const { data: config } = useConfig();
   const { organizationId } = useOrgTypeAndAccess();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   const [selectedProvider, setSelectedProvider] = React.useState<string | null>(
     null,

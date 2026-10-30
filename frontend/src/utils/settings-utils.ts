@@ -1,6 +1,7 @@
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { Settings, SettingsValue } from "#/types/settings";
 import { getProviderId } from "#/utils/map-provider";
+import { PermissionKey } from "#/utils/org/permissions";
 
 const extractBasicFormData = (formData: FormData) => {
   const providerDisplay = formData.get("llm-provider-input")?.toString();
@@ -38,9 +39,14 @@ export const extractSettings = (
   };
 };
 
-export const ADMIN_ONLY_SETTINGS_PATHS = new Set<string>([
-  "/settings/usage-monitoring",
-  "/settings/budgets",
+/**
+ * Org admin pages and the `/me` permission each one needs: the permission the
+ * backend enforces on the page's API. Used by the settings loader and the nav.
+ */
+export const ADMIN_ONLY_SETTINGS_PATHS = new Map<string, PermissionKey>([
+  ["/settings/usage-monitoring", "view_org_conversations"],
+  ["/settings/budgets", "edit_org_settings"],
+  ["/settings/service-accounts", "manage_service_accounts"],
 ]);
 
 /**

@@ -18,8 +18,7 @@ import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
 import { useOrgSecrets, useSearchSecrets } from "#/hooks/query/use-get-secrets";
-import { useMe } from "#/hooks/query/use-me";
-import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useCanManageOrgAgentProfiles } from "#/hooks/organizations/use-can-manage-org-agent-profiles";
 import { useSkills } from "#/hooks/query/use-skills";
 import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
 import SkillsService from "#/api/skills-service";
@@ -130,8 +129,6 @@ export function AgentProfilesView() {
   // Same query as the ACP credential form, so the list is fetched once.
   const secretsQuery = useSearchSecrets();
   const orgSecrets = useOrgSecrets();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
   const { data: skills, isError: skillsLoadFailed } = useSkills();
   const saveProfile = useSaveAgentProfile();
   const renameProfile = useRenameAgentProfile();
@@ -182,9 +179,7 @@ export function AgentProfilesView() {
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
   // Org admins manage the organization's shared profiles here when the
   // org-profiles flag is on; everyone else only sets one as their default.
-  const canManageOrg =
-    !!config?.feature_flags?.enable_org_agent_profiles &&
-    hasPermission("manage_org_agent_profiles");
+  const canManageOrg = useCanManageOrgAgentProfiles();
   const isOrgEditor = editingScope === "org";
   // The org editor seeds its secrets list from the org's shared secrets, so
   // it also waits for that list to have loaded.

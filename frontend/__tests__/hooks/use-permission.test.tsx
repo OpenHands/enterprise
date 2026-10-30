@@ -1,98 +1,113 @@
-import { describe, it, expect } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { usePermission } from "#/hooks/organizations/use-permissions";
-import { rolePermissions } from "#/utils/org/permissions";
-import { OrganizationUserRole } from "#/types/org";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import OptionService from "#/api/option-service/option-service.api";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { OrganizationMember, OrganizationUserRole } from "#/types/org";
+
+vi.mock("react-router", () => ({
+  useRevalidator: () => ({ revalidate: vi.fn() }),
+}));
+
+const mockMe = (
+  overrides: Partial<OrganizationMember> = {},
+): OrganizationMember => ({
+  org_id: "org-1",
+  user_id: "user-1",
+  email: "me@example.com",
+  role: "member",
+  llm_api_key: "",
+  max_iterations: 100,
+  llm_model: "gpt-4",
+  llm_base_url: "",
+  status: "active",
+  ...overrides,
+});
+
+// Renders the hook once `/me` has loaded for the selected org.
+const setup = async (me: OrganizationMember) => {
+  const getMeSpy = vi.spyOn(organizationService, "getMe").mockResolvedValue(me);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const { result } = renderHook(() => usePermission(), {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+  await waitFor(() => expect(getMeSpy).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(queryClient.getQueryData(["organizations", "org-1", "me"])).toEqual(
+      me,
+    ),
+  );
+  return result;
+};
 
 describe("usePermission", () => {
-  const setup = (role: OrganizationUserRole) =>
-    renderHook(() => usePermission(role)).result.current;
-
-  describe("hasPermission", () => {
-    it("returns true when the role has the permission", () => {
-      const { hasPermission } = setup("admin");
-
-      expect(hasPermission("invite_user_to_organization")).toBe(true);
-    });
-
-    it("returns false when the role does not have the permission", () => {
-      const { hasPermission } = setup("member");
-
-      expect(hasPermission("invite_user_to_organization")).toBe(false);
-    });
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      app_mode: "saas",
+    } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
   });
 
-  describe("rolePermissions integration", () => {
-    it("matches the permissions defined for the role", () => {
-      const { hasPermission } = setup("member");
+  it("returns true when /me grants the permission", async () => {
+    const result = await setup(
+      mockMe({ role: "admin", permissions: ["invite_user_to_organization"] }),
+    );
 
-      rolePermissions.member.forEach((permission) => {
-        expect(hasPermission(permission)).toBe(true);
-      });
-    });
+    await waitFor(() =>
+      expect(result.current.hasPermission("invite_user_to_organization")).toBe(
+        true,
+      ),
+    );
   });
 
-  describe("change_user_role permission behavior", () => {
-    const run = (
-      activeUserRole: OrganizationUserRole,
-      targetUserId: string,
-      targetRole: OrganizationUserRole,
-      activeUserId = "123",
-    ) => {
-      const { hasPermission } = renderHook(() =>
-        usePermission(activeUserRole),
-      ).result.current;
+  it("returns false when /me does not grant the permission", async () => {
+    const result = await setup(
+      mockMe({ role: "admin", permissions: ["manage_secrets"] }),
+    );
 
-      // users can't change their own roles
-      if (activeUserId === targetUserId) return false;
+    await waitFor(() =>
+      expect(result.current.hasPermission("manage_secrets")).toBe(true),
+    );
+    expect(result.current.hasPermission("invite_user_to_organization")).toBe(
+      false,
+    );
+  });
 
-      return hasPermission(`change_user_role:${targetRole}`);
-    };
+  it("uses /me permissions, not the role", async () => {
+    const result = await setup(
+      mockMe({ role: "member", permissions: ["change_user_role:owner"] }),
+    );
 
-    describe("member role", () => {
-      it("cannot change any roles", () => {
-        expect(run("member", "u2", "member")).toBe(false);
-        expect(run("member", "u2", "admin")).toBe(false);
-        expect(run("member", "u2", "owner")).toBe(false);
-      });
-    });
+    await waitFor(() =>
+      expect(result.current.hasPermission("change_user_role:owner")).toBe(true),
+    );
+  });
 
-    describe("admin role", () => {
-      it("cannot change owner role", () => {
-         expect(run("admin", "u2", "owner")).toBe(false);
-      });
+  it("grants nothing when /me has no permissions list (fail closed)", async () => {
+    const result = await setup(mockMe({ role: "owner" }));
 
-      it("can change member or admin roles", () => {
-        expect(run("admin", "u2", "member")).toBe(
-          rolePermissions.admin.includes("change_user_role:member")
-        );
-        expect(run("admin", "u2", "admin")).toBe(
-          rolePermissions.admin.includes("change_user_role:admin")
-        );
-      });
-    });
+    expect(result.current.hasPermission("manage_secrets")).toBe(false);
+    expect(result.current.hasPermission("delete_organization")).toBe(false);
+  });
 
-    describe("owner role", () => {
-      it("can change owner, admin, and member roles", () => {
-        expect(run("owner", "u2", "admin")).toBe(
-          rolePermissions.owner.includes("change_user_role:admin"),
-        );
+  it("does not throw for an unknown role", async () => {
+    const result = await setup(
+      mockMe({
+        role: "service_account" as OrganizationUserRole,
+        permissions: ["manage_secrets"],
+      }),
+    );
 
-        expect(run("owner", "u2", "member")).toBe(
-          rolePermissions.owner.includes("change_user_role:member"),
-        );
-
-        expect(run("owner", "u2", "owner")).toBe(
-          rolePermissions.owner.includes("change_user_role:owner"),
-        );
-      });
-    });
-
-    describe("self role change", () => {
-      it("is always disallowed", () => {
-        expect(run("owner", "u2", "member", "u2")).toBe(false);
-        expect(run("admin", "u2", "member", "u2")).toBe(false);
-      });
-    });
+    await waitFor(() =>
+      expect(result.current.hasPermission("manage_secrets")).toBe(true),
+    );
+    expect(result.current.hasPermission("view_billing")).toBe(false);
   });
 });

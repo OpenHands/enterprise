@@ -8,6 +8,8 @@ import {
 } from "#/utils/org/permission-guard";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { adminService } from "#/api/admin-service/admin-service.api";
+import { OrganizationUserRole } from "#/types/org";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // Mock dependencies before importing the module under test
 vi.mock("react-router", () => ({
@@ -78,6 +80,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",
@@ -100,6 +103,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "admin@example.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",
@@ -114,6 +118,75 @@ describe("createPermissionGuard", () => {
       // Assert: should not redirect; return concrete loader data
       expect(replace).not.toHaveBeenCalled();
       expect(result).toEqual({});
+    });
+
+    it("does not throw for an unknown role", async () => {
+      // Arrange: a role the frontend does not know, with no permissions
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "sa@example.com",
+        role: "service_account" as OrganizationUserRole,
+        permissions: [],
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      await guard(createMockRequest("/settings/billing"));
+
+      // Assert: redirects instead of throwing
+      expect(replace).toHaveBeenCalledWith("/settings/user");
+    });
+
+    it("uses permissions, not role", async () => {
+      // Arrange: the role is member, but /me grants view_billing
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "test@example.com",
+        role: "member",
+        permissions: ["view_billing"],
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      const result = await guard(createMockRequest("/settings/billing"));
+
+      // Assert: allowed by the /me permission
+      expect(replace).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+
+    it("redirects when /me has no permissions, whatever the role", async () => {
+      // Arrange: an owner without a permissions list (fail closed)
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "owner@example.com",
+        role: "owner",
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      await guard(createMockRequest("/settings/billing"));
+
+      // Assert
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should redirect when user is undefined (no org selected)", async () => {
@@ -150,6 +223,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",

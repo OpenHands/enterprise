@@ -19,7 +19,6 @@ import { getSettingsQueryFn } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { getIsSuperAdminWithIntegratedIdp } from "#/utils/org/permission-guard";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
-import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ORG_QUERY_PARAM,
@@ -32,7 +31,7 @@ import {
 } from "#/utils/settings-utils";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useConfig } from "#/hooks/query/use-config";
-import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
 
 const SAAS_ONLY_PATHS = [
@@ -50,6 +49,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults/model-router",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/service-accounts",
   "/settings/your-budget",
 ];
 
@@ -73,7 +73,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const url = new URL(request.url);
   const { pathname } = url;
 
-  const isAdminOnlyPath = ADMIN_ONLY_SETTINGS_PATHS.has(pathname);
+  const adminOnlyPermission = ADMIN_ONLY_SETTINGS_PATHS.get(pathname);
 
   // Step 1: Get config first (needed for all checks, no user data required).
   // Network/proxy failures must not crash the settings shell into ErrorBoundary.
@@ -178,7 +178,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
-    isAdminOnlyPath
+    adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
 
@@ -198,9 +198,11 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     );
     const isPersonalOrg = selectedOrg?.is_personal === true;
     const isTeamOrg = !!selectedOrg && !selectedOrg.is_personal;
+    // `/me` permissions are what the backend enforces. Missing = none.
+    const permissions = user?.permissions ?? [];
     const billingHidden = isBillingHidden(
       config,
-      rolePermissions[user?.role ?? "member"].includes("view_billing"),
+      permissions.includes("view_billing"),
     );
 
     if (pathname === "/settings/billing") {
@@ -231,18 +233,12 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     }
 
     if (pathname === "/settings/org") {
-      const role = user?.role ?? "member";
-      if (
-        !user ||
-        !rolePermissions[role].includes("view_billing") ||
-        isPersonalOrg
-      ) {
+      if (!user || !permissions.includes("view_billing") || isPersonalOrg) {
         return replace("/settings");
       }
     }
 
     if (pathname === "/settings/org-members") {
-      const role = user?.role ?? "member";
       // Instance-level super admins keep access here even with the Personal
       // Workspace selected -- it becomes the instance-wide "All Users" view
       // rather than this org's member list (see ManageOrganizationMembers).
@@ -253,16 +249,19 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       if (
         !isSuperAdmin &&
         (!user ||
-          !rolePermissions[role].includes("invite_user_to_organization") ||
+          !permissions.includes("invite_user_to_organization") ||
           isPersonalOrg)
       ) {
         return replace("/settings");
       }
     }
 
-    if (isAdminOnlyPath) {
-      const role = user?.role ?? "member";
-      if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
+    if (adminOnlyPermission) {
+      if (
+        !user ||
+        !permissions.includes(adminOnlyPermission) ||
+        isPersonalOrg
+      ) {
         return replace("/settings");
       }
     }
@@ -285,15 +284,17 @@ function SettingsScreen() {
   const navItems = useSettingsNavItems();
   const { data: config } = useConfig();
   const { isTeamOrg } = useOrgTypeAndAccess();
-  const { data: me } = useMe();
+  const { hasPermission } = usePermission();
 
   // Determine if we should show the org-wide settings badge
   const isOrgWideBadgePath = ORG_WIDE_BADGE_PATHS.has(location.pathname);
   const isSaasMode = config?.app_mode === "saas";
   const shouldShowOrgWideBadge = isOrgWideBadgePath && isTeamOrg && isSaasMode;
-  // Members see a read-only message; Admins/Owners see the org-wide notice.
-  const orgWideBadgeVariant =
-    me?.role === "member" ? "managed-by-admin" : "org-wide";
+  // Users who cannot edit org settings see a read-only message; the others
+  // see the org-wide notice.
+  const orgWideBadgeVariant = hasPermission("edit_org_settings")
+    ? "org-wide"
+    : "managed-by-admin";
 
   const { currentSectionTitle, currentSectionSubtitle } = useMemo(() => {
     const currentRenderedItem = navItems.find(
