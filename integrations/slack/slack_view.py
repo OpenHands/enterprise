@@ -21,6 +21,10 @@ from integrations.slack.slack_v1_callback_processor import SlackV1CallbackProces
 from integrations.utils import (
     CONVERSATION_URL,
 )
+from openhands.app_server.app_conversation.additional_repositories import (
+    MAX_ADDITIONAL_REPOSITORIES,
+    AdditionalRepositoryRequest,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTaskStatus,
@@ -29,6 +33,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.config import get_app_conversation_service
 from openhands.app_server.integrations.provider import ProviderHandler
+from openhands.app_server.integrations.service_types import Repository
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
@@ -68,6 +73,11 @@ class SlackNewConversationView(SlackViewInterface):
     conversation_id: str
     team_id: str
     attachment_image_urls: list[str] = field(default_factory=list, init=False)
+    # Verified repositories cloned beside selected_repo, mentions that could
+    # not be accessed, and verified mentions beyond the per-conversation limit.
+    additional_repos: list[Repository] = field(default_factory=list, init=False)
+    inaccessible_repos: list[str] = field(default_factory=list, init=False)
+    skipped_repos: list[str] = field(default_factory=list, init=False)
 
     def _get_initial_prompt(self, text: str, blocks: list[dict]):
         bot_id = self._get_bot_id(blocks)
@@ -270,6 +280,15 @@ class SlackNewConversationView(SlackViewInterface):
             initial_message=initial_message,
             selected_repository=self.selected_repo,
             git_provider=git_provider,
+            # Cloned beside the primary; a failed clone is reported on the
+            # conversation and does not stop the start (require_all stays off).
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository=repo.full_name, git_provider=repo.git_provider
+                )
+                for repo in self.additional_repos
+            ]
+            or None,
             title=f'Slack conversation from {self.slack_to_openhands_user.slack_display_name}',
             trigger=ConversationTrigger.SLACK,
             processors=[slack_callback_processor],
@@ -299,11 +318,42 @@ class SlackNewConversationView(SlackViewInterface):
     def get_response_msg(self) -> str:
         user_info: SlackUser = self.slack_to_openhands_user
         conversation_link = CONVERSATION_URL.format(self.conversation_id)
-        return f"I'm on it! {user_info.slack_display_name} can [track my progress here]({conversation_link})."
+        # Name the repos so the user can confirm we picked the right ones.
+        if self.selected_repo:
+            prefix = f"I'm on it in {self.selected_repo}"
+            if self.additional_repos:
+                prefix += f', together with {_join([r.full_name for r in self.additional_repos])}'
+            prefix += '!'
+        else:
+            prefix = "I'm on it!"
+        message = f'{prefix} {user_info.slack_display_name} can [track my progress here]({conversation_link}).'
+        if self.inaccessible_repos:
+            message += (
+                f'\n\nCould not access: {", ".join(self.inaccessible_repos)}. '
+                'Please ensure each repository exists and that the Git account '
+                'linked to your OpenHands user can access it.'
+            )
+        if self.skipped_repos:
+            message += (
+                f'\n\nNot included (a conversation can have at most '
+                f'{MAX_ADDITIONAL_REPOSITORIES + 1} repositories): '
+                f'{", ".join(self.skipped_repos)}.'
+            )
+        return message
+
+
+def _join(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    if len(names) < 2:
+        return ''.join(names)
+    return f'{", ".join(names[:-1])} and {names[-1]}'
 
 
 @dataclass
 class SlackNewConversationFromRepoFormView(SlackNewConversationView):
+    # Repositories picked after the first one, in selection order.
+    requested_additional_repos: list[str] = field(default_factory=list)
+
     def _verify_necessary_values_are_set(self):
         # Exclude selected repo check from parent
         # User can start conversations without a repo when specified via the repo selection form
@@ -578,6 +628,7 @@ class SlackFactory:
                 send_summary_instruction=True,
                 conversation_id='',
                 team_id=team_id,
+                requested_additional_repos=payload.get('additional_repos') or [],
             )
 
         else:
