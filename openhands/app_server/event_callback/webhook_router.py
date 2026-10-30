@@ -679,6 +679,7 @@ async def get_secret(
         payload = jwt_service.verify_jws_token(
             access_token,
             audience=JwtAudience.SECRET_LOOKUP,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
             accept_unscoped=_is_unscoped_secret_lookup_token,
         )
         user_id = payload['user_id']

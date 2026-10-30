@@ -83,6 +83,7 @@ def verify_slack_oauth_state(jwt_service: JwtService, state: str) -> dict:
     return jwt_service.verify_jws_token(
         state,
         audience=JwtAudience.SLACK_OAUTH_STATE,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
         accept_unscoped=lambda payload: 'slack_user_id' in payload,
     )
 

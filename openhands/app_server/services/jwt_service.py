@@ -151,8 +151,7 @@ class JwtService:
             audience: The ``aud`` claim the token must carry.
             accept_unscoped: Accepts a token with no ``aud`` claim when this
                 returns True for its payload. Such tokens were minted before
-                audiences existed; this fallback can go once they have all
-                expired (the longest-lived, ``openhands_auth``, last 30 days).
+                audiences existed; this is temporary, see the TODO below.
 
         Returns:
             The decoded JWT payload
@@ -189,6 +188,13 @@ class JwtService:
         except jwt.InvalidTokenError as e:
             raise jwt.InvalidTokenError('Token verification failed') from e
 
+        # TODO(OHE-3812): remove after 2026-12-15 -- this fallback, the
+        # ``accept_unscoped`` parameter and every rule passed to it, plus
+        # tests/unit/unscoped_jws.py and the tests that use it. By then every
+        # token minted before audiences has expired (``openhands_auth`` cookies,
+        # the longest-lived, last 30 days). Self-hosted installs that upgrade
+        # straight from a pre-audience release to the removal release will sign
+        # their users out once.
         # The token verified but has no ``aud``, so decoding without one is safe.
         try:
             payload = jwt.decode(token, secret_key, algorithms=['HS256'])

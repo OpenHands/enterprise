@@ -259,6 +259,7 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
         payload = get_jwt_service().verify_jws_token(
             token,
             audience=JwtAudience.SIGNUP_LINK,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
             accept_unscoped=lambda p: p.get('purpose') == _SIGNUP_LINK_PURPOSE,
         )
     except (ValueError, pyjwt.InvalidTokenError) as exc:

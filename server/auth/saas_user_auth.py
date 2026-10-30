@@ -1495,6 +1495,7 @@ def decode_oauth_v2_cookie(signed_token: str) -> dict:
     return get_jwt_service().verify_jws_token(
         signed_token,
         audience=JwtAudience.SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
         accept_unscoped=_is_unscoped_oauth_v2_cookie,
     )
 
@@ -1506,6 +1507,7 @@ def decode_keycloak_auth_cookie(signed_token: str) -> dict:
     return get_jwt_service().verify_jws_token(
         signed_token,
         audience=JwtAudience.KEYCLOAK_SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
         accept_unscoped=_is_unscoped_keycloak_auth_cookie,
     )
 

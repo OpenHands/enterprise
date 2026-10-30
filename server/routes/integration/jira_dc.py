@@ -243,6 +243,7 @@ async def get_jira_dc_secret_token(
         payload = jwt_service.verify_jws_token(
             access_token,
             audience=JwtAudience.JIRA_DC_SECRET,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
             accept_unscoped=lambda p: (
                 p.get('integration') == 'jira_dc'
                 and p.get('secret_name') == 'JIRA_DC_TOKEN'
