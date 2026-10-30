@@ -1,8 +1,6 @@
 """The GitLab webhook installer's per-run claims, against a real database.
 
-GitLab is the one fake: an in-memory list of hooks per resource, so the tests
-can assert how many hooks a resource ends up with and that a delivery signed
-with a hook's credentials authenticates.
+GitLab is the one fake (``tests.unit.gitlab_fakes``).
 """
 
 import asyncio
@@ -19,83 +17,12 @@ from integrations.gitlab.webhook_installation import (
     install_claimed_webhook,
 )
 from integrations.types import GitLabResourceType
-from integrations.utils import GITLAB_WEBHOOK_URL
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
 from sync.install_gitlab_webhooks import CLAIM_LEASE, VerifyWebhookStatus
 from sync.repair_gitlab_hooks import main as repair_main
 from sync.repair_gitlab_hooks import request_repair
-
-USER = 'user-1'
-
-
-class FakeGitLab:
-    def __init__(self):
-        self.hooks: dict[str, list[dict]] = {}
-        self.resource_exists = True
-        self.is_admin = True
-        self.delete_status = None
-        self.lose_create_response = False
-        self.fail_create = False
-        self.on_resource_check = None
-        self.on_admin_check = None
-        self.before_create = None
-        self._next_id = 1
-
-    def add_hook(self, resource_id, secret='old-secret', uuid='old-uuid'):
-        hook = {
-            'id': self._next_id,
-            'url': GITLAB_WEBHOOK_URL,
-            'secret': secret,
-            'uuid': uuid,
-        }
-        self._next_id += 1
-        self.hooks.setdefault(resource_id, []).append(hook)
-        return hook
-
-    async def check_resource_exists(self, resource_type, resource_id):
-        if self.on_resource_check:
-            await self.on_resource_check()
-        return self.resource_exists, None
-
-    async def check_user_has_admin_access_to_resource(self, resource_type, resource_id):
-        if self.on_admin_check:
-            await self.on_admin_check()
-        return self.is_admin, None
-
-    async def check_webhook_exists_on_resource(
-        self, resource_type, resource_id, webhook_url
-    ):
-        exists = any(h['url'] == webhook_url for h in self.hooks.get(resource_id, []))
-        return exists, None
-
-    async def install_webhook(
-        self,
-        *,
-        resource_type,
-        resource_id,
-        webhook_name,
-        webhook_url,
-        webhook_secret,
-        webhook_uuid,
-        scopes,
-    ):
-        if self.before_create:
-            await self.before_create()
-        if self.fail_create:
-            raise RuntimeError('pod stopped before the create')
-        hook = self.add_hook(resource_id, webhook_secret, webhook_uuid)
-        if self.lose_create_response:
-            return None, WebhookStatus.INVALID
-        return str(hook['id']), None
-
-    async def delete_webhooks_with_url(self, resource_type, resource_id, webhook_url):
-        if self.delete_status:
-            return 0, self.delete_status
-        hooks = self.hooks.get(resource_id, [])
-        keep = [h for h in hooks if h['url'] != webhook_url]
-        self.hooks[resource_id] = keep
-        return len(hooks) - len(keep), None
+from tests.unit.gitlab_fakes import USER, FakeGitLab, assert_delivery_authenticates
 
 
 @pytest.fixture
@@ -107,9 +34,7 @@ def gitlab():
 def store(async_session_maker, gitlab, monkeypatch):
     monkeypatch.setattr(store_module, 'a_session_maker', async_session_maker)
     monkeypatch.setattr(job_module, 'a_session_maker', async_session_maker)
-    monkeypatch.setattr(
-        job_module, 'GitLabServiceImpl', lambda external_auth_id: gitlab
-    )
+    monkeypatch.setattr(job_module, 'GitLabServiceImpl', gitlab.for_user)
     return GitlabWebhookStore()
 
 
@@ -155,10 +80,6 @@ def take_over(async_session_maker, store):
 
 async def run_job():
     await VerifyWebhookStatus().install_webhooks()
-
-
-async def assert_delivery_authenticates(store, hook):
-    assert await store.get_webhook_secret(hook['uuid'], USER) == hook['secret']
 
 
 async def test_overlapping_runs_claim_different_rows(store, add_row):
