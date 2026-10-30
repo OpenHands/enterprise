@@ -1528,6 +1528,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """
         if not self.web_url:
             return
+        # The helper exchanges each JWT at the webhook secrets endpoint; when
+        # the sandbox cannot call back, nothing is minted and the clones keep
+        # their authenticated URL (``_clone_repository``).
+        if not self._secret_lookup_url():
+            return
         try:
             provider_handler = await self.user_context.get_provider_handler()
             user_id = await self.user_context.get_user_id()

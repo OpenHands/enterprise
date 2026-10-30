@@ -3243,6 +3243,37 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-token'
         )
 
+    @pytest.mark.parametrize('acp', [False, True])
+    @pytest.mark.asyncio
+    async def test_scoped_profile_keeps_git_credential_helper_token_masked(self, acp):
+        from openhands.app_server.sandbox.sandbox_service import (
+            GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
+        )
+        from openhands.sdk.conversation.secret_registry import SecretRegistry
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.active_agent_profile_secret_refs = []
+        self.mock_user_context.get_secrets = AsyncMock(return_value={})
+        self.mock_user_context.get_provider_tokens = AsyncMock(return_value={})
+        settings = (
+            ACPAgentSettings(acp_server='claude-code')
+            if acp
+            else OpenHandsAgentSettings(llm={'model': 'gpt-4', 'api_key': 'test-key'})
+        )
+        result = await self._build_request_with_agent_settings(
+            settings,
+            git_credential_access_tokens={'github': 'profile-scoped-git-jwt'},
+        )
+        # The helper reads this JWT from a file the agent can also read, so it is
+        # registered as a conversation secret even under a scoped profile.
+        name = GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX + 'GITHUB'
+        assert set(result.secrets) == {name}
+        registry = SecretRegistry()
+        registry.update_secrets({name: result.secrets[name]})
+        assert 'profile-scoped-git-jwt' not in registry.mask_secrets_in_output(
+            'credential: profile-scoped-git-jwt'
+        )
+
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
@@ -8557,6 +8588,24 @@ def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
         LiveStatusAppConversationService._mint_azure_devops_access_token, service
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_skips_when_sandbox_cannot_call_back():
+    """Without a webhook secrets URL the sandbox can reach, no helper JWT is
+    minted and the clones keep their authenticated URL."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com', providers=[ProviderType.GITHUB]
+    )
+    service._secret_lookup_url = Mock(return_value=None)
+    task = _task_for_mint()
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert task._git_credential_access_tokens == {}
+    service.jwt_service.create_jws_token.assert_not_called()
 
 
 def test_exception_detail_unwraps_dict_message():

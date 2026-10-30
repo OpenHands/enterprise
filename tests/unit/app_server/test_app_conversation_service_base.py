@@ -22,6 +22,7 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
     AppConversationServiceBase,
     _azure_devops_credential_helper_script,
     _git_credential_helper_script,
+    _git_credential_target,
 )
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import (
@@ -1570,6 +1571,153 @@ def test_git_credential_helper_script_auth_source():
 
 
 @pytest.mark.asyncio
+async def test_configure_git_credential_helpers_reports_the_configured_providers(
+    mock_workspace,
+):
+    """The providers whose helper is in place are returned, so the clones can
+    leave the token out of their remote URL; Azure DevOps is not among them."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(), bind_methods=_GIT_CREDENTIAL_BIND
+    )
+    service.web_url = 'https://app.example.com'
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_git_credential_provider_handler(
+            {
+                ProviderType.GITLAB: ('https', 'gitlab.example.com'),
+                ProviderType.GITHUB: ('https', 'github.com'),
+            }
+        )
+    )
+
+    providers = await service._configure_git_credential_helpers(
+        mock_workspace,
+        {'gitlab': 'jwt.gitlab', 'github': 'jwt.github', 'azure_devops': 'jwt.ado'},
+    )
+
+    assert providers == {ProviderType.GITLAB, ProviderType.GITHUB}
+
+
+@pytest.mark.asyncio
+async def test_configure_git_credential_helpers_reports_nothing_when_setup_fails():
+    """A failed install must not break the start: no provider is reported, so
+    the clones keep their authenticated URL."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(), bind_methods=_GIT_CREDENTIAL_BIND
+    )
+    service.web_url = 'https://app.example.com'
+    mock_user_context.get_provider_handler = AsyncMock(
+        return_value=_git_credential_provider_handler(
+            {ProviderType.GITHUB: ('https', 'github.com')}
+        )
+    )
+    workspace = MockWorkspace(working_dir='/workspace/project')
+    workspace.execute_command = AsyncMock(
+        return_value=MockCommandResult(exit_code=1, stderr='read-only file system')
+    )
+
+    providers = await service._configure_git_credential_helpers(
+        workspace, {'github': 'jwt.github'}
+    )
+
+    assert providers == set()
+
+
+_GITHUB_TOKEN_URL = 'https://ghp_cloneSecret@github.com/owner/repo.git'
+
+
+def _git_credential_clone_service():
+    """A service cloning ``owner/repo`` from GitHub with a token-bearing URL."""
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+            '_strip_origin_credentials',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value=_GITHUB_TOKEN_URL
+    )
+    return service
+
+
+def _github_clone_task(credential_providers: set[ProviderType]):
+    """A start task whose setup flow installed the credential helper for
+    ``credential_providers``."""
+    task = Mock()
+    task.request = Mock(
+        selected_repository='owner/repo',
+        selected_branch=None,
+        git_provider=ProviderType.GITHUB,
+    )
+    task._git_credential_providers = credential_providers
+    return task
+
+
+def _commands(workspace) -> list[str]:
+    return [call.args[0] for call in workspace.execute_command.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_clone_leaves_the_token_out_of_the_url_with_a_credential_helper(
+    mock_workspace,
+):
+    """With the provider's credential helper installed, the clone URL carries
+    no credentials, so the git token never reaches ``.git/config``."""
+    service = _git_credential_clone_service()
+
+    await service.clone_or_init_git_repo(
+        _github_clone_task({ProviderType.GITHUB}), mock_workspace
+    )
+
+    commands = _commands(mock_workspace)
+    assert 'git clone --depth 1 https://github.com/owner/repo.git repo' in commands
+    assert not any('ghp_cloneSecret' in c for c in commands)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('credential_providers', [set(), {ProviderType.GITLAB}])
+async def test_clone_keeps_authenticated_url_without_a_credential_helper(
+    mock_workspace, credential_providers
+):
+    """No helper for the URL's provider (nothing minted, or the setup failed):
+    the clone is unchanged."""
+    service = _git_credential_clone_service()
+
+    await service.clone_or_init_git_repo(
+        _github_clone_task(credential_providers), mock_workspace
+    )
+
+    assert f'git clone --depth 1 {_GITHUB_TOKEN_URL} repo' in _commands(mock_workspace)
+
+
+@pytest.mark.asyncio
+async def test_shared_sandbox_clone_strips_credentials_from_existing_origin():
+    """A repository an earlier conversation cloned with the token in ``origin``
+    is rewritten to the clean URL once the helper supplies the credential."""
+    service = _git_credential_clone_service()
+    workspace = MockWorkspace(working_dir='/workspace/project')
+
+    async def execute_command(command, cwd=None, timeout=None):
+        if ' clone ' in command:
+            return MockCommandResult(exit_code=128, stderr='already exists')
+        if command == 'git remote get-url origin':
+            return MockCommandResult(stdout=f'{_GITHUB_TOKEN_URL}\n')
+        return MockCommandResult()
+
+    workspace.execute_command = AsyncMock(side_effect=execute_command)
+
+    await service.clone_or_init_git_repo(
+        _github_clone_task({ProviderType.GITHUB}), workspace
+    )
+
+    assert 'git remote set-url origin https://github.com/owner/repo.git' in _commands(
+        workspace
+    )
+
+
+@pytest.mark.asyncio
 async def test_configure_git_user_settings_both_name_and_email(mock_workspace):
     """Test configuring both git user name and email."""
     user_info = MockUserInfo(
@@ -2764,6 +2912,56 @@ def test_azure_devops_credential_helper_script_auth_source():
     assert 'SESSION_API_KEY' not in script
     assert 'X-Session-API-Key' not in script
     assert '/api/v1/sandboxes/' not in script
+
+
+@pytest.mark.parametrize(
+    ('url', 'git_provider', 'expected'),
+    [
+        (
+            'https://ghp_tok@github.com/o/r.git',
+            ProviderType.GITHUB,
+            (ProviderType.GITHUB, 'github.com'),
+        ),
+        (
+            'https://ghp_tok@github.com/o/r.git',
+            None,
+            (ProviderType.GITHUB, 'github.com'),
+        ),
+        # GitLab is told apart by its oauth2 username; a port stays part of the host.
+        (
+            'https://oauth2:glpat@gitlab.example.com:8443/o/r.git',
+            None,
+            (ProviderType.GITLAB, 'gitlab.example.com:8443'),
+        ),
+        (
+            'https://me%40ex.com:apitok@bitbucket.org/o/r.git',
+            ProviderType.BITBUCKET,
+            (ProviderType.BITBUCKET, 'bitbucket.org'),
+        ),
+        (
+            'https://jdoe:pw@bbdc.example.com/scm/p/r.git',
+            ProviderType.BITBUCKET_DATA_CENTER,
+            (ProviderType.BITBUCKET_DATA_CENTER, 'bbdc.example.com'),
+        ),
+        # Not covered: no credentials, Azure DevOps (its own helper), Forgejo,
+        # and an unspecified provider the URL shape cannot identify.
+        ('https://github.com/o/r.git', ProviderType.GITHUB, None),
+        ('https://org:pat@dev.azure.com/org/p/_git/r', ProviderType.AZURE_DEVOPS, None),
+        ('https://tok@codeberg.org/o/r.git', ProviderType.FORGEJO, None),
+        ('https://tok@ghe.example.com/o/r.git', None, None),
+        ('https://jdoe:pw@bbdc.example.com/scm/p/r.git', None, None),
+    ],
+)
+def test_git_credential_target(url, git_provider, expected):
+    """Which authenticated clone URLs the credential helper stands in for, and
+    the host git hands it; the clean URL loses only its userinfo."""
+    target = _git_credential_target(url, git_provider)
+
+    if expected is None:
+        assert target is None
+        return
+    assert (target.provider, target.host) == expected
+    assert target.clean_url == 'https://' + url.split('@', 1)[1]
 
 
 # =============================================================================
