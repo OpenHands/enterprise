@@ -21,6 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openhands.agent_server.models import Success
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
+from openhands.app_server.app_conversation.additional_repositories import (
+    ConversationRoot,
+    conversation_roots,
+    select_root,
+    skill_in_folder,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
 )
@@ -83,9 +89,15 @@ from openhands.app_server.services.httpx_client_injector import (
     set_httpx_client_keep_open,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
@@ -295,6 +307,42 @@ async def _get_agent_server_context(
         agent_server_url=agent_server_url,
         session_api_key=sandbox.session_api_key,
     )
+
+
+# Query parameter shared by the endpoints that read a conversation's workspace.
+RepositoryQuery = Annotated[
+    str | None,
+    Query(
+        description=(
+            'Folder name of the repository to read, as returned in the '
+            "conversation's ``repositories[].folder``. Defaults to the primary "
+            'repository, or the working folder when there is none.'
+        ),
+    ),
+]
+
+
+def _select_root(ctx: AgentServerContext, repository: str | None) -> ConversationRoot:
+    """The folder a read request is about: the primary's by default.
+
+    Every repository of a multi-repository conversation has its own folder
+    under the working directory; ``repository`` names one of them. A name that
+    is not one of the conversation's cloned repositories is a 404.
+    """
+    root = select_root(
+        conversation_roots(
+            ctx.sandbox_spec.working_dir,
+            ctx.conversation.selected_repository,
+            ctx.conversation.additional_repositories,
+        ),
+        repository,
+    )
+    if root is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Repository folder {repository!r} is not part of this conversation',
+        )
+    return root
 
 
 # Read methods
@@ -735,6 +783,7 @@ async def _persist_conversation_model(
     responses={
         404: {'description': 'Conversation, sandbox, or profile not found'},
         409: {'description': 'Sandbox is not running'},
+        422: {'description': 'Profile links to a missing provider connection'},
         502: {'description': 'Agent server returned an error'},
     },
 )
@@ -742,6 +791,7 @@ async def switch_conversation_profile(
     conversation_id: UUID,
     request: SwitchProfileRequest,
     user_settings: Settings | None = Depends(get_user_settings),
+    user_context: UserContext = user_context_dependency,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -775,12 +825,23 @@ async def switch_conversation_profile(
     # plus the effective settings key when the profile carries none (managed
     # profiles persist a masked key, so without this the agent server would hit
     # the litellm proxy unauthenticated). Locally, profiles carry their own key.
+    # A linked profile takes its key and base_url from its provider connection;
+    # a missing connection is a config problem, so 422 before the switch.
     settings_llm = getattr(user_settings.agent_settings, 'llm', None)
-    profile_llm = resolve_profile_llm(
-        profile_llm,
-        managed_proxy_url=LITE_LLM_API_URL,
-        fallback_api_key=getattr(settings_llm, 'api_key', None),
-    )
+    try:
+        profile_llm = resolve_profile_llm(
+            profile_llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            fallback_api_key=getattr(settings_llm, 'api_key', None),
+            connections=await user_context.get_provider_connections(),
+            strict=True,
+        )
+    except ProviderConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.profile_detail,
+        ) from exc
+    profile_llm = detach_provider_connection(profile_llm)
 
     # The agent-server's LLM registry is first-write-wins by ``usage_id``:
     # ``switch_llm`` returns the cached entry under that key and silently
@@ -1246,6 +1307,7 @@ async def read_conversation_file(
         str,
         Query(title='Path to the file to read within the sandbox workspace'),
     ] = '/workspace/project/PLAN.md',
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1259,6 +1321,8 @@ async def read_conversation_file(
     Args:
         conversation_id: The UUID of the conversation
         file_path: Path to the file to read within the sandbox workspace
+        repository: Folder name of the repository the path is relative to;
+            the primary repository by default
 
     Returns:
         The content of the file or an empty string if the file doesn't exist
@@ -1313,7 +1377,7 @@ async def read_conversation_file(
         agent_server_url=agent_server_url,
         session_api_key=sandbox.session_api_key,
     )
-    resolved_path = _resolve_file_path(file_path, ctx)
+    resolved_path = _resolve_file_path(file_path, ctx, repository)
 
     # Read the file at the specified path
     temp_file_path = None
@@ -1352,8 +1416,9 @@ async def read_conversation_file(
 async def _proxy_git_runtime_call(
     conversation_id: UUID,
     runtime_path: str,
-    path: str,
+    path: str | None,
     ref: str | None,
+    repository: str | None,
     app_conversation_service: AppConversationService,
     sandbox_service: SandboxService,
     sandbox_spec_service: SandboxSpecService,
@@ -1365,6 +1430,11 @@ async def _proxy_git_runtime_call(
     origins on most paths), so the frontend hits these endpoints on the cloud
     API host instead and we make the runtime hop server-side using the
     sandbox's session API key.
+
+    A caller-supplied ``path`` without ``repository`` is forwarded as is. With
+    ``repository``, or without a path, it is resolved against the selected
+    repository's folder: the folder itself for ``/api/git/changes``, a file
+    under it for ``/api/git/diff``.
     """
     ctx = await _get_agent_server_context(
         conversation_id,
@@ -1382,6 +1452,12 @@ async def _proxy_git_runtime_call(
             status_code=status.HTTP_409_CONFLICT,
             detail='Sandbox is paused; resume it before reading git state.',
         )
+
+    if repository is not None or path is None:
+        if runtime_path == '/api/git/changes':
+            path = _resolve_workspace_dir(path, ctx, repository)
+        else:
+            path = _resolve_file_path(path or '', ctx, repository)
 
     headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     params: dict[str, str] = {'path': path}
@@ -1437,16 +1513,18 @@ async def _proxy_git_runtime_call(
 async def get_conversation_git_changes(
     conversation_id: UUID,
     path: Annotated[
-        str,
+        str | None,
         Query(
             description=(
-                'Absolute path to the git repository root (e.g. /workspace/project)'
+                'Absolute path to the git repository root (e.g. /workspace/project). '
+                "Defaults to the selected repository's folder."
             ),
         ),
-    ],
+    ] = None,
     ref: Annotated[
         str | None, Query(description='Optional git ref to diff against')
     ] = None,
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1460,6 +1538,7 @@ async def get_conversation_git_changes(
         '/api/git/changes',
         path,
         ref,
+        repository,
         app_conversation_service,
         sandbox_service,
         sandbox_spec_service,
@@ -1470,10 +1549,19 @@ async def get_conversation_git_changes(
 @router.get('/{conversation_id}/git/diff')
 async def get_conversation_git_diff(
     conversation_id: UUID,
-    path: Annotated[str, Query(description='The file path to diff')],
+    path: Annotated[
+        str,
+        Query(
+            description=(
+                'The file path to diff; relative to the selected repository '
+                'when ``repository`` is given'
+            ),
+        ),
+    ],
     ref: Annotated[
         str | None, Query(description='Optional git ref to diff against')
     ] = None,
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1487,6 +1575,7 @@ async def get_conversation_git_diff(
         '/api/git/diff',
         path,
         ref,
+        repository,
         app_conversation_service,
         sandbox_service,
         sandbox_spec_service,
@@ -1530,33 +1619,34 @@ def _build_workspace_list_command() -> str:
     )
 
 
-def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
+def _resolve_workspace_dir(
+    path: str | None, ctx: AgentServerContext, repository: str | None = None
+) -> str:
     """Resolve the directory to list files in.
 
     The caller may pass ``path`` (e.g. the value the frontend computed from its
     working-dir convention), but that convention does not always match the
     runtime's actual working directory — different deployments clone the repo
     at ``{working_dir}/{repo_name}``, ``{working_dir}/{conversation_id}``, or
-    plain ``working_dir``. The authoritative project root is derived from the
-    sandbox spec's ``working_dir`` and the conversation's
-    ``selected_repository`` (the same resolution the skills/hooks endpoints
+    plain ``working_dir``. The authoritative root is the selected repository's
+    folder, derived from the sandbox spec's ``working_dir`` and the
+    conversation's repositories (the same resolution the skills/hooks endpoints
     use), so prefer it. ``path`` is only honored when it points at a real
-    subdirectory the runtime exposes — i.e. it is the resolved project dir or a
+    subdirectory the runtime exposes — i.e. it is the resolved root or a
     descendant of it — which keeps "list a subdirectory of the workspace"
-    working without ever listing outside the workspace.
+    working without ever listing outside the selected repository.
     """
-    project_dir = get_project_dir(
-        ctx.sandbox_spec.working_dir, ctx.conversation.selected_repository
-    )
+    project_dir = _select_root(ctx, repository).path
     if not path:
         return project_dir
-    # Accept the caller's path only when it is the resolved project dir or a
+    # Accept the caller's path only when it is the resolved root or a
     # descendant of it, so "list a subdirectory of the workspace" still works
-    # without ever listing outside the conversation's project. The bare
+    # without ever listing outside the selected repository. The bare
     # ``working_dir`` is deliberately NOT a candidate when a repository is
     # selected: it is a *parent* of the clone, so treating it as an anchor
     # would accept any sibling path (e.g. ``/workspace/project`` under
     # ``/workspace``) and list the wrong — often nonexistent — directory.
+    # Another repository of the conversation is read through ``repository``.
     base = project_dir.rstrip('/')
     normalized = path.rstrip('/')
     if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
@@ -1564,8 +1654,10 @@ def _resolve_workspace_dir(path: str | None, ctx: AgentServerContext) -> str:
     return project_dir
 
 
-def _resolve_file_path(file_path: str, ctx: AgentServerContext) -> str:
-    """Resolve a file path to an absolute path inside the conversation's project.
+def _resolve_file_path(
+    file_path: str, ctx: AgentServerContext, repository: str | None = None
+) -> str:
+    """Resolve a file path to an absolute path inside the selected repository.
 
     The runtime's ``/api/file/download`` requires an **absolute** path and does
     not join it with the workspace's ``working_dir``, so the path we hand it
@@ -1580,25 +1672,22 @@ def _resolve_file_path(file_path: str, ctx: AgentServerContext) -> str:
     ``/workspace/enterprise``). The download then 404s and the endpoint
     silently returns ``""``.
 
-    This remaps the path onto the authoritative project dir derived from the
-    sandbox spec (the same ``get_project_dir`` resolution used by
-    ``_resolve_workspace_dir`` and the skills/hooks endpoints):
+    This remaps the path onto the authoritative root: the selected
+    repository's folder (the primary's by default), the same resolution
+    ``_resolve_workspace_dir`` and the skills/hooks endpoints use:
 
-    * an absolute path already inside the project dir is used as-is;
+    * an absolute path already inside the root is used as-is;
     * an absolute path rooted at a stale frontend default is re-anchored by
       stripping the stale root prefix (longest match first, so
       ``/workspace/project/enterprise`` is preferred over ``/workspace``) and
-      re-joining under the project dir;
-    * a relative path is joined under the project dir (the runtime rejects
+      re-joining under the root;
+    * a relative path is joined under the root (the runtime rejects
       relative paths, so this also fixes that case).
     """
     working_dir = ctx.sandbox_spec.working_dir
-    repo_name = (
-        ctx.conversation.selected_repository.split('/')[-1]
-        if ctx.conversation.selected_repository
-        else None
-    )
-    project_dir = get_project_dir(working_dir, ctx.conversation.selected_repository)
+    selected = _select_root(ctx, repository)
+    repo_name = selected.folder
+    project_dir = selected.path
 
     if not file_path:
         return project_dir
@@ -1641,12 +1730,12 @@ async def list_conversation_files(
         Query(
             description=(
                 'Optional absolute path to the workspace directory to list. '
-                'When omitted, or when it does not match the conversation '
-                'workspace, the directory is resolved from the sandbox spec '
-                "and the conversation's selected repository."
+                'When omitted, or when it does not match the selected '
+                "repository's folder, that folder is listed."
             ),
         ),
     ] = None,
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1681,7 +1770,7 @@ async def list_conversation_files(
             detail='Sandbox is paused; resume it before listing files.',
         )
 
-    cwd = _resolve_workspace_dir(path, ctx)
+    cwd = _resolve_workspace_dir(path, ctx, repository)
     headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     try:
         upstream = await httpx_client.post(
@@ -1748,6 +1837,7 @@ async def list_conversation_files(
 @router.get('/{conversation_id}/skills')
 async def get_conversation_skills(
     conversation_id: UUID,
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1763,7 +1853,10 @@ async def get_conversation_skills(
     - User skills (~/.openhands/skills/)
     - Organization skills (org/.openhands repository)
     - Repository skills (repo .agents/skills/, .openhands/microagents/, and legacy .openhands/skills/)
+      of every repository of the conversation, additional ones scoped to their folder
     - Registered marketplaces (auto-load plugins from instance/org/user settings)
+
+    With ``repository``, only that repository's project skills are returned.
 
     Returns:
         JSONResponse: A JSON response containing the list of skills.
@@ -1781,6 +1874,7 @@ async def get_conversation_skills(
             return ctx
         if ctx is None:
             return JSONResponse(status_code=status.HTTP_200_OK, content={'skills': []})
+        root = _select_root(ctx, repository) if repository is not None else None
 
         # Load skills from all sources
         logger.info(f'Loading skills for conversation {conversation_id}')
@@ -1803,7 +1897,10 @@ async def get_conversation_skills(
                 project_dir,
                 ctx.agent_server_url,
                 registered_marketplaces=registered_marketplaces,
+                additional_repositories=ctx.conversation.additional_repositories,
             )
+        if root is not None:
+            all_skills = [s for s in all_skills if skill_in_folder(s, root.path)]
 
         logger.info(
             f'Loaded {len(all_skills)} skills for conversation {conversation_id}: '
@@ -1844,6 +1941,8 @@ async def get_conversation_skills(
             content={'skills': [s.model_dump() for s in skills_response]},
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(
             f'Error getting skills for conversation {conversation_id}',
@@ -1858,6 +1957,7 @@ async def get_conversation_skills(
 @router.get('/{conversation_id}/hooks')
 async def get_conversation_hooks(
     conversation_id: UUID,
+    repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1869,6 +1969,8 @@ async def get_conversation_hooks(
 
     This endpoint loads hooks from the conversation's project directory in the
     workspace (i.e. `{project_dir}/.openhands/hooks.json`) at request time.
+    ``repository`` reads another repository's `.openhands/hooks.json` instead;
+    only the primary repository's hooks are loaded when a conversation starts.
 
     Note:
         This is intentionally a "live" view of the workspace configuration.
@@ -1895,13 +1997,9 @@ async def get_conversation_hooks(
 
         from openhands.app_server.app_conversation.hook_loader import (
             fetch_hooks_from_agent_server,
-            get_project_dir_for_hooks,
         )
 
-        project_dir = get_project_dir_for_hooks(
-            ctx.sandbox_spec.working_dir,
-            ctx.conversation.selected_repository,
-        )
+        project_dir = _select_root(ctx, repository).path
 
         # Load hooks from agent-server (using the error-raising variant so
         # HTTP/connection failures are surfaced to the user, not hidden).
@@ -1991,6 +2089,8 @@ async def get_conversation_hooks(
             content=GetHooksResponse(hooks=hooks_response).model_dump(by_alias=True),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(
             f'Error getting hooks for conversation {conversation_id}',

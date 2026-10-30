@@ -106,6 +106,17 @@ class AppConversationInfoService(ABC):
         Return the stored info
         """
 
+    async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
+        """Store ``info`` only if no row exists for its id; return whether it was stored.
+
+        A writer that found no row must not overwrite one another writer saved
+        in the meantime. Implementations backed by a database insert atomically.
+        """
+        if await self.get_app_conversation_info(info.id) is not None:
+            return False
+        await self.save_app_conversation_info(info)
+        return True
+
     @abstractmethod
     async def process_stats_event(
         self,

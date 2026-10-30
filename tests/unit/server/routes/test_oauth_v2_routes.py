@@ -98,6 +98,7 @@ def _fake_provider(
     userinfo_url: str | None = 'https://example.com/user',
     legacy_keycloak_type: str | None = None,
     enabled: bool = True,
+    attribute_mapping: dict[str, str] | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -117,6 +118,7 @@ def _fake_provider(
         legacy_keycloak_type=(
             ProviderType(legacy_keycloak_type) if legacy_keycloak_type else None
         ),
+        attribute_mapping=attribute_mapping or {},
     )
     return provider
 
@@ -1414,6 +1416,122 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
     )
     invalidate_cache.assert_awaited_once_with(ProviderType.GITHUB, 'ext-2')
     store_tokens.assert_awaited_once()
+
+
+JIRA_DC_MAPPING = {'sub': 'key', 'email': 'emailAddress'}
+JIRA_DC_USERINFO = {
+    'self': 'https://jira.example.com/rest/api/2/user?username=tofarr',
+    'key': 'JIRAUSER10501',
+    'name': 'tofarr',
+    'emailAddress': 'Tim@Example.com',
+    'displayName': "Tim O'Farrell",
+}
+
+
+def _login_callback(client, jwt_svc, provider, userinfo, fake_user):
+    """Run a login-mode callback; return (response, link mock)."""
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+    return response, link
+
+
+def test_callback_login_reads_identity_from_mapped_claims(client, jwt_svc):
+    provider = _fake_provider(
+        category='enterprise_sso', is_idp=True, attribute_mapping=JIRA_DC_MAPPING
+    )
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    response, link = _login_callback(
+        client, jwt_svc, provider, JIRA_DC_USERINFO, fake_user
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='JIRAUSER10501',
+        external_email='tim@example.com',
+    )
+
+
+def test_callback_login_mapped_subject_missing_400(client, jwt_svc):
+    provider = _fake_provider(
+        category='enterprise_sso', is_idp=True, attribute_mapping=JIRA_DC_MAPPING
+    )
+
+    response, link = _login_callback(
+        client, jwt_svc, provider, {'id': 42, 'emailAddress': 'a@b.com'}, None
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Provider did not return a subject identifier'
+    link.assert_not_awaited()
+
+
+def test_callback_link_reads_subject_from_mapped_claim(client, jwt_svc):
+    provider = _fake_provider(attribute_mapping=JIRA_DC_MAPPING)
+    user_id = uuid4()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, JIRA_DC_USERINFO),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=user_id,
+        external_subject_id='JIRAUSER10501',
+    )
 
 
 @pytest.mark.parametrize(

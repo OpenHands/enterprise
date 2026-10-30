@@ -330,3 +330,95 @@ def test_admin_directory_routes_follow_super_admin_flag(
     # The instance-wide user list (``super_admins.admin_users_router``) is not
     # part of the directory and stays mounted either way.
     assert matches['/api/admin/users'] == 'list_all_users'
+
+
+@pytest.mark.parametrize(
+    ('oauth_v2_flag', 'expect_mounted'),
+    [('true', True), ('1', True), ('false', False)],
+)
+def test_git_provider_webhook_routes_follow_oauth_v2_flag(
+    tmp_path, oauth_v2_flag, expect_mounted
+):
+    """OAuth v2 git providers come from Auth Providers, not provider env vars.
+
+    The settings page renders their webhook managers from that list, so the
+    routes behind them must be served even when no provider env var is set.
+    Unmounted, the paths fall through to the '/' SPA mount and return HTML.
+    """
+    frontend_build = tmp_path / 'frontend' / 'build'
+    frontend_build.mkdir(parents=True)
+    (frontend_build / 'index.html').write_text('<html>app</html>')
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    for name in (
+        'AZURE_DEVOPS_CLIENT_ID',
+        'GITLAB_APP_CLIENT_ID',
+        'BITBUCKET_DATA_CENTER_HOST',
+        'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN',
+    ):
+        env.pop(name, None)
+    env['FRONTEND_DIRECTORY'] = str(frontend_build)
+    env['PYTHONPATH'] = f'{repo_root}:{env.get("PYTHONPATH", "")}'
+    env['OPENHANDS_SUPPRESS_BANNER'] = '1'
+    env['POSTHOG_CLIENT_KEY'] = 'test-posthog-key'
+    env['SERVE_FRONTEND'] = 'false'
+    env['ENABLE_OAUTH_V2_LOGIN'] = oauth_v2_flag
+
+    script = textwrap.dedent(
+        """
+        from starlette.routing import Match
+
+        import saas_server
+
+        def matched_route(path):
+            scope = {
+                'type': 'http',
+                'path': path,
+                'root_path': '',
+                'method': 'GET',
+                'scheme': 'http',
+                'server': ('testserver', 80),
+                'client': ('testclient', 50000),
+                'headers': [],
+                'query_string': b'',
+            }
+            for route in saas_server.app.router.routes:
+                match, _ = route.matches(scope)
+                if match == Match.FULL:
+                    return getattr(route, 'name', None)
+            return None
+
+        for path in (
+            '/integration/azure-devops/organizations',
+            '/integration/azure-devops/resources',
+            '/integration/gitlab/resources',
+            '/integration/bitbucket-dc/resources',
+        ):
+            print(f'RESULT {path}={matched_route(path)}')
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    matches = {
+        line.removeprefix('RESULT ').split('=', 1)[0]: line.split('=', 1)[1]
+        for line in result.stdout.splitlines()
+        if line.startswith('RESULT ')
+    }
+
+    expected = {
+        '/integration/azure-devops/organizations': 'get_azure_devops_organizations',
+        '/integration/azure-devops/resources': 'get_azure_devops_resources',
+        '/integration/gitlab/resources': 'get_gitlab_resources',
+        '/integration/bitbucket-dc/resources': 'get_bitbucket_dc_resources',
+    }
+    if not expect_mounted:
+        expected = dict.fromkeys(expected, 'dist')
+    assert matches == expected

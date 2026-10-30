@@ -134,10 +134,16 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -475,6 +481,22 @@ def _compose_system_message_suffix(
     return '\n\n'.join(parts) if parts else None
 
 
+def _profile_runtime_requirement(
+    agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+) -> str | None:
+    """What this launch needs from an openhands-sdk >=1.54.0 runtime, or None.
+
+    An older agent-server rejects the ACP ``agent_settings`` transport and
+    silently drops a profile persona; it honors everything else the launch
+    request carries.
+    """
+    if isinstance(agent_settings, ACPAgentSettings):
+        return 'an ACP agent'
+    if agent_settings.persona is not None:
+        return 'an Agent Profile persona'
+    return None
+
+
 @dataclass
 class LiveStatusAppConversationService(AppConversationServiceBase):
     """AppConversationService which combines live status info from the sandbox with stored data."""
@@ -738,15 +760,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             # Resolve the profile as switch_profile does, and copy rather than
             # mutate: the user context may cache the resolved settings.
-            agent_settings = agent_settings.model_copy(
-                update={
-                    'llm': resolve_profile_llm(
-                        profile_llm,
-                        managed_proxy_url=LITE_LLM_API_URL,
-                        fallback_api_key=agent_settings.llm.api_key,
-                    )
-                }
-            )
+            try:
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=agent_settings.llm.api_key,
+                    connections=await self.user_context.get_provider_connections(),
+                    strict=True,
+                )
+            except ProviderConnectionNotFoundError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=exc.profile_detail,
+                ) from exc
+            agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
             user = user.model_copy(update={'agent_settings': agent_settings})
 
         # Org Model Router "Run on first message": the launch carries the
@@ -777,7 +804,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
             browser_available = await self._ensure_profile_runtime(
-                agent_server_url, sandbox.session_api_key
+                agent_server_url, sandbox.session_api_key, agent_settings
             )
 
             # Get the working dir
@@ -1480,6 +1507,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'provider_type': ProviderType.AZURE_DEVOPS.value,
                 },
                 expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
             )
         except Exception as exc:
             _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
@@ -1501,6 +1529,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """
         if not self.web_url:
             return
+        # The helper exchanges each JWT at the webhook secrets endpoint; when
+        # the sandbox cannot call back, nothing is minted and the clones keep
+        # their authenticated URL (``_clone_repository``).
+        if not self._secret_lookup_url():
+            return
         try:
             provider_handler = await self.user_context.get_provider_handler()
             user_id = await self.user_context.get_user_id()
@@ -1513,6 +1546,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 tokens[provider.value] = self.jwt_service.create_jws_token(
                     payload={'user_id': user_id, 'provider_type': provider.value},
                     expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                    audience=JwtAudience.SECRET_LOOKUP,
                 )
             task._git_credential_access_tokens = tokens
         except Exception as exc:
@@ -1579,6 +1613,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     user, settings_llm
                 )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
+            connections = await self.user_context.get_provider_connections()
         except Exception:
             _logger.exception(
                 'Failed to load profiles for sandbox %s',
@@ -1600,7 +1635,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     profile_llm,
                     managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=fallback_api_key,
+                    connections=connections,
                 )
+                resolved = detach_provider_connection(resolved)
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
                     json={
@@ -1703,8 +1740,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
         return agent_server_url
 
-    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> bool:
-        """Require a compatible runtime and return its browser availability."""
+    async def _ensure_profile_runtime(
+        self,
+        url: str,
+        api_key: str | None,
+        agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+    ) -> bool:
+        """Return the runtime's browser availability; reject what it cannot run.
+
+        A sandbox on openhands-sdk <1.54.0 (one created before an image bump)
+        still runs an ordinary launch, so that proceeds with a warning rather
+        than stranding the sandbox. Only launches that need the newer runtime
+        (see ``_profile_runtime_requirement``) fail fast.
+        """
         response = await self.httpx_client.get(
             f'{url}/server_info',
             headers={'X-Session-API-Key': api_key} if api_key else {},
@@ -1720,9 +1768,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except InvalidVersion:
             compatible = False
         if not compatible:
-            raise SandboxError(
-                'This sandbox requires openhands-sdk >=1.54.0 for Agent Profiles. '
-                'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+            requirement = _profile_runtime_requirement(agent_settings)
+            if requirement:
+                raise SandboxError(
+                    f'This sandbox requires openhands-sdk >=1.54.0 to launch {requirement}. '
+                    'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+                )
+            _logger.warning(
+                'Sandbox %s reports openhands-sdk %s (<1.54.0); launching without '
+                'Agent Profile runtime support',
+                url,
+                reported,
             )
 
         return BROWSER_TOOL_NAME in info.get('usable_tools', [])
@@ -1969,7 +2025,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self, lookup_url: str, payload: dict[str, Any], description: str
     ) -> LookupSecret:
         access_token = self.jwt_service.create_jws_token(
-            payload=payload, expires_in=self.access_token_hard_timeout
+            payload=payload,
+            expires_in=self.access_token_hard_timeout,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
         return LookupSecret(
             url=lookup_url,
@@ -2433,6 +2491,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             },
         )
         llm = await self._maybe_refresh_managed_llm_key(user, llm)
+        # Detach after the refresh: it reads the link to treat a linked LLM as
+        # BYOK. The connection's key and base_url are already applied, by
+        # settings load or by the ``llm_profile`` resolution.
+        llm = detach_provider_connection(llm)
 
         mcp_servers: dict[str, MCPServer] = {}
 

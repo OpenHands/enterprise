@@ -10,7 +10,8 @@ from abc import ABC
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, NamedTuple
+from urllib.parse import unquote, urlsplit, urlunsplit
 from uuid import UUID
 
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
@@ -204,6 +205,60 @@ fi
 printf '%s\\n' "username=oauth2"
 printf 'password=%s\\n' "$token"
 """
+
+
+class _GitCredentialTarget(NamedTuple):
+    """What a clone needs to leave an authenticated URL's credentials to the
+    sandbox's git credential helper."""
+
+    provider: ProviderType
+    # ``host[:port]``, the ``host`` git hands the credential helper.
+    host: str
+    # The authenticated URL without its userinfo.
+    clean_url: str
+
+
+def _git_credential_target(
+    remote_repo_url: str, git_provider: ProviderType | None
+) -> _GitCredentialTarget | None:
+    """The credential-helper target for an authenticated clone URL, or None.
+
+    None when the URL carries no credentials, when the provider has no helper
+    here (Azure DevOps has its own; Forgejo keeps its token URL), or when an
+    unspecified provider cannot be told apart from the URL shape
+    ``get_authenticated_git_url`` gave it.
+    """
+    parsed = urlsplit(remote_repo_url)
+    hostname = parsed.hostname
+    if not hostname or not parsed.username:
+        return None
+    if git_provider == ProviderType.AZURE_DEVOPS or 'dev.azure.com' in hostname:
+        return None
+    host = hostname if parsed.port is None else f'{hostname}:{parsed.port}'
+    if parsed.password is None:
+        # ``<token>@host``: GitHub, or Forgejo.
+        if git_provider not in (None, ProviderType.GITHUB):
+            return None
+        if git_provider is None and hostname != 'github.com':
+            return None
+        provider = ProviderType.GITHUB
+    else:
+        if git_provider is None:
+            if unquote(parsed.username) == 'oauth2':
+                git_provider = ProviderType.GITLAB
+            elif hostname == 'bitbucket.org':
+                git_provider = ProviderType.BITBUCKET
+            else:
+                return None
+        if git_provider not in (
+            ProviderType.GITLAB,
+            ProviderType.BITBUCKET,
+            ProviderType.BITBUCKET_DATA_CENTER,
+        ):
+            return None
+        provider = git_provider
+    clean_url = urlunsplit(parsed._replace(netloc=host))
+    return _GitCredentialTarget(provider, host, clean_url)
 
 
 # Per-conversation exchange JWTs for the other git providers, one file per
@@ -516,6 +571,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         task.status = AppConversationStartTaskStatus.PREPARING_REPOSITORY
         yield task
+        # Deliver this conversation's per-provider git credentials before any
+        # clone: a helper per provider host, so hooks and the agent can clone any
+        # repository the user can reach with plain git, and so the clones below
+        # can leave the token out of their remote URL (OHE-3812).
+        task._git_credential_providers = await self._configure_git_credential_helpers(
+            workspace, getattr(task, '_git_credential_access_tokens', None)
+        )
         await self.clone_or_init_git_repo(task, workspace, sandbox)
 
         # Deliver this conversation's Azure DevOps credential (per conversation,
@@ -526,11 +588,6 @@ class AppConversationServiceBase(AppConversationService, ABC):
             task._azure_devops_access_token,
             task.request.selected_repository,
             azure_devops_repositories(task.request.additional_repositories),
-        )
-        # Same for the other providers: a helper per provider host, so hooks and
-        # the agent can clone any repository the user can reach with plain git.
-        await self._configure_git_credential_helpers(
-            workspace, getattr(task, '_git_credential_access_tokens', None)
         )
 
         task._additional_repositories = await self.clone_additional_repositories(
@@ -893,6 +950,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             request.selected_branch,
             request.git_provider,
             full_clone,
+            task=task,
         )
         if not cloned:
             at_branch = (
@@ -915,13 +973,31 @@ class AppConversationServiceBase(AppConversationService, ABC):
         branch: str | None,
         git_provider: ProviderType | None,
         full_clone: bool,
+        task: AppConversationStartTask | None = None,
     ) -> bool:
         """Clone a repository into ``dir_name`` and check out its branch.
 
         Returns False when nothing usable was cloned. Never includes git's
         output in errors: the URL and that output can hold credentials.
+
+        With ``task``, a repository on a provider whose credential helper the
+        setup flow installed (``_configure_git_credential_helpers``) is cloned
+        with the URL stripped of its embedded credentials, so none lands in
+        ``.git/config`` (OHE-3812); the helper supplies the token to git.
+        Otherwise the authenticated URL is cloned as before.
         """
-        quoted_remote_repo_url = shlex.quote(remote_repo_url)
+        clone_url = remote_repo_url
+        helper_host: str | None = None
+        target = _git_credential_target(remote_repo_url, git_provider)
+        providers = getattr(task, '_git_credential_providers', None)
+        if (
+            target is not None
+            and isinstance(providers, (set, frozenset))
+            and target.provider in providers
+        ):
+            clone_url = target.clean_url
+            helper_host = target.host
+        quoted_remote_repo_url = shlex.quote(clone_url)
         quoted_dir_name = shlex.quote(dir_name)
         git_dir = Path(workspace.working_dir) / dir_name
         azure_devops_bearer_token = await self._get_azure_devops_bearer_token_for_git(
@@ -966,6 +1042,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
             )
             if existing.exit_code:
                 return False
+            if helper_host:
+                await self._strip_origin_credentials(workspace, git_dir, helper_host)
 
         # Checkout the appropriate branch
         if branch:
@@ -1008,7 +1086,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         ) -> AdditionalRepository:
             async with semaphore:
                 error = await self._clone_additional_repository(
-                    workspace, item, folder, full_clone
+                    workspace, item, folder, full_clone, task=task
                 )
             return AdditionalRepository(
                 repository=item.repository,
@@ -1041,6 +1119,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         item: AdditionalRepositoryRequest,
         folder: str,
         full_clone: bool,
+        task: AppConversationStartTask | None = None,
     ) -> str | None:
         """Clone one additional repository; return an error message on failure."""
         at_branch = f' at branch {item.branch!r}' if item.branch else ''
@@ -1062,6 +1141,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 item.branch,
                 item.git_provider,
                 full_clone,
+                task=task,
             ):
                 return None
         except Exception as exc:
@@ -1082,6 +1162,36 @@ class AppConversationServiceBase(AppConversationService, ABC):
             return None
 
         return await get_azure_devops_bearer_token(self.user_context)
+
+    async def _strip_origin_credentials(
+        self, workspace: AsyncRemoteWorkspace, git_dir: Path, helper_host: str
+    ) -> None:
+        """Drop embedded credentials from ``origin`` of an already-present clone.
+
+        A sub-conversation sharing its sandbox finds the repository cloned by an
+        earlier conversation with the token in the remote URL. Now that the
+        credential helper supplies the token for ``helper_host``, the URL is
+        rewritten without its userinfo so it leaves ``.git/config``.
+        """
+        result = await workspace.execute_command('git remote get-url origin', git_dir)
+        if result.exit_code:
+            return
+        parsed = urlsplit(result.stdout.strip())
+        hostname = parsed.hostname
+        if not hostname or not parsed.username:
+            return
+        host = hostname if parsed.port is None else f'{hostname}:{parsed.port}'
+        if host != helper_host:
+            return
+        clean_url = urlunsplit(parsed._replace(netloc=host))
+        result = await workspace.execute_command(
+            f'git remote set-url origin {shlex.quote(clean_url)}', git_dir
+        )
+        if result.exit_code:
+            _logger.warning(
+                'Git remote set-url failed: '
+                f'{redact_url_credentials_in_text(result.stderr)}'
+            )
 
     async def _configure_azure_devops_git_credentials(
         self,
@@ -1165,7 +1275,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         self,
         workspace: AsyncRemoteWorkspace,
         access_tokens: Mapping[str, str] | None,
-    ) -> None:
+    ) -> set[ProviderType]:
         """Deliver this conversation's per-provider credentials to the sandbox.
 
         For each provider with a minted exchange JWT, writes the JWT to a
@@ -1173,18 +1283,19 @@ class AppConversationServiceBase(AppConversationService, ABC):
         provider's git host (``credential.<protocol>://<host>``) in the global
         git config, so plain ``git clone/fetch/push`` of any repository on that
         host, from the agent's terminal or a hook, authenticates with the
-        user's current token. The selected repository keeps its authenticated
-        remote URL, which git prefers over a helper. Skips entirely when nothing
-        was minted. Azure DevOps is handled by
+        user's current token. Returns the providers whose helper is in place:
+        ``_clone_repository`` clones their repositories without the token in
+        the remote URL. Empty, and the clones keep their authenticated URL,
+        when nothing was minted or the setup failed. Azure DevOps is handled by
         ``_configure_azure_devops_git_credentials``.
         """
         if not isinstance(access_tokens, Mapping) or not access_tokens:
-            return
+            return set()
         try:
             provider_handler = await self.user_context.get_provider_handler()
         except Exception as exc:
             _logger.debug(f'No provider handler for git credential helpers: {exc}')
-            return
+            return set()
 
         web_url = getattr(self, 'web_url', None)
         if web_url is None:
@@ -1202,6 +1313,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             'chmod 700 "$helper"',
         ]
         configured: list[str] = []
+        providers: set[ProviderType] = set()
         for value, token in access_tokens.items():
             try:
                 provider = ProviderType(value)
@@ -1228,14 +1340,16 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\" {value}"',
             ]
             configured.append(f'{value}@{host}')
+            providers.add(provider)
         if not configured:
-            return
+            return set()
         # Run in '/', which always exists; every path here is absolute under $HOME.
         result = await workspace.execute_command(' && '.join(commands), '/')
         if result.exit_code:
             _logger.warning(f'Git credential helper setup failed: {result.stderr}')
-        else:
-            _logger.info(f'Git credential helpers configured for {configured}')
+            return set()
+        _logger.info(f'Git credential helpers configured for {configured}')
+        return providers
 
     async def _configure_marketplace_git_credentials(
         self,
@@ -1330,19 +1444,25 @@ class AppConversationServiceBase(AppConversationService, ABC):
         if pre_commit_command_result.exit_code:
             return
 
+        # File transfers need absolute paths inside the repository.
+        hook_path = f'{project_dir}/{PRE_COMMIT_HOOK}'
+        local_hook_path = f'{project_dir}/{PRE_COMMIT_LOCAL}'
+
         # Check if there's an existing pre-commit hook
-        with tempfile.TemporaryFile(mode='w+t') as temp_file:
-            download_result = await workspace.file_download(
-                PRE_COMMIT_HOOK, str(temp_file)
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            existing_hook = Path(temp_dir) / 'pre-commit'
+            download_result = await workspace.file_download(hook_path, existing_hook)
             if download_result.success:
                 _logger.info('Preserving existing pre-commit hook')
                 # an existing pre-commit hook exists
-                if 'This hook was installed by OpenHands' not in temp_file.read():
+                if (
+                    'This hook was installed by OpenHands'
+                    not in existing_hook.read_text(errors='replace')
+                ):
                     # Move the existing hook to pre-commit.local
                     command = (
-                        f'mv {PRE_COMMIT_HOOK} {PRE_COMMIT_LOCAL} &&'
-                        f'chmod +x {PRE_COMMIT_LOCAL}'
+                        f'mv {shlex.quote(hook_path)} {shlex.quote(local_hook_path)} && '
+                        f'chmod +x {shlex.quote(local_hook_path)}'
                     )
                     mv_chmod_result = await workspace.execute_command(
                         command, project_dir
@@ -1354,13 +1474,18 @@ class AppConversationServiceBase(AppConversationService, ABC):
                         return
 
         # write the pre-commit hook
-        await workspace.file_upload(
+        upload_result = await workspace.file_upload(
             source_path=Path(__file__).parent / 'git' / 'pre-commit.sh',
-            destination_path=PRE_COMMIT_HOOK,
+            destination_path=hook_path,
         )
+        if not upload_result.success:
+            _logger.error(f'Failed to write pre-commit hook: {upload_result.error}')
+            return
 
         # Make the pre-commit hook executable
-        chmod_result = await workspace.execute_command(f'chmod +x {PRE_COMMIT_HOOK}')
+        chmod_result = await workspace.execute_command(
+            f'chmod +x {shlex.quote(hook_path)}', project_dir
+        )
         if chmod_result.exit_code:
             _logger.error(
                 f'Failed to make pre-commit hook executable: {chmod_result.stderr}'

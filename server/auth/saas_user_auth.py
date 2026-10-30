@@ -22,6 +22,8 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
@@ -161,6 +163,8 @@ class SaasUserAuth(UserAuth):
     # needed to distinguish "not yet computed" from "computed and None".
     _effective_org_id: UUID | None = None
     _effective_org_id_resolved: bool = False
+    # Cached result of `get_provider_connections()`; org-scoped.
+    _provider_connections: ProviderConnections | None = None
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -197,6 +201,7 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        self._provider_connections = None
         # The v2 access token is org-independent but the memoized token must
         # not survive a re-scope that clears provider_tokens.
         self.access_token = None if self.oauth_v2_cookie else self.access_token
@@ -1168,6 +1173,30 @@ class SaasUserAuth(UserAuth):
         )
         return openhands_api_key
 
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The provider connections of the effective org, for a member of it.
+
+        Same rule as ``SaasSettingsStore.load``, which supplies the profiles
+        these connections apply to: no member row, no connections. So a super
+        admin acting in an org they did not join gets no connection keys.
+        """
+        if self._provider_connections is not None:
+            return self._provider_connections
+        # Imported locally to avoid a circular import, as above.
+        from storage.agent_profile_resolution import load_provider_connections
+        from storage.org_member_store import OrgMemberStore
+
+        connections = ProviderConnections()
+        org_id = await self.get_effective_org_id()
+        if org_id is not None and await OrgMemberStore.get_org_member(
+            org_id, UUID(self.user_id)
+        ):
+            org = await OrgStore.get_org_by_id(org_id)
+            if org is not None:
+                connections = load_provider_connections(org)
+        self._provider_connections = connections
+        return connections
+
     async def get_org_info(self) -> dict | None:
         """Get organization info for the current user.
 
@@ -1448,6 +1477,41 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         raise CookieError from exc
 
 
+def _is_unscoped_oauth_v2_cookie(payload: dict) -> bool:
+    # Every cookie create_oauth_v2_cookie_payload has ever minted carries both
+    # keys; the other tokens this service used to sign without an audience
+    # (git-token lookups, credential helpers, quota emails) carry neither.
+    return 'accepted_tos' in payload and 'access_token_expires_at' in payload
+
+
+def _is_unscoped_keycloak_auth_cookie(payload: dict) -> bool:
+    return 'access_token' in payload and 'refresh_token' in payload
+
+
+def decode_oauth_v2_cookie(signed_token: str) -> dict:
+    """Verify an ``openhands_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_oauth_v2_cookie,
+    )
+
+
+def decode_keycloak_auth_cookie(signed_token: str) -> dict:
+    """Verify a legacy ``keycloak_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.KEYCLOAK_SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_keycloak_auth_cookie,
+    )
+
+
 async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth:
     """Build a ``SaasUserAuth`` from the small OAuth v2 JWT cookie.
 
@@ -1455,9 +1519,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     Tokens are NOT carried in the cookie; they are resolved lazily from the
     ``oauth_tokens`` table by ``get_access_token`` / ``get_provider_tokens``.
     """
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_oauth_v2_cookie(signed_token)
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
@@ -1514,9 +1576,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     logger.debug('saas_user_auth_from_signed_token')
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_keycloak_auth_cookie(signed_token)
     logger.debug('saas_user_auth_from_signed_token:decoded')
     access_token = decoded['access_token']
     refresh_token = decoded['refresh_token']

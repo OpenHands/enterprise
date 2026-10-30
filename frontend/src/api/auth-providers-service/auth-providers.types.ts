@@ -35,6 +35,10 @@ export interface OAuthProviderDetails {
   /** Conversation secret name a linked user's access token is exposed
    * under (with OAuth v2 login enabled). ``null`` keeps it out. */
   named_secret: string | null;
+  /** Identity field (``sub`` / ``email`` / ``email_verified``) -> the
+   * userinfo / ID-token claim the provider sends it as. Empty uses the OIDC
+   * defaults. */
+  attribute_mapping: Record<string, string>;
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the

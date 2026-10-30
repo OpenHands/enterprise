@@ -382,3 +382,21 @@ async def test_get_provider_handler_accepts_plain_dict_tokens(
 
     assert isinstance(handler.provider_tokens, MappingProxyType)
     assert handler.provider_tokens[ProviderType.GITHUB] is token
+
+
+@pytest.mark.asyncio
+async def test_resolver_context_delegates_provider_connections():
+    """Resolver flows seed linked profiles too, so they need the connections."""
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
+
+    connections = ProviderConnections()
+
+    class FakeSaasUserAuth:
+        async def get_provider_connections(self):
+            return connections
+
+    context = ResolverUserContext(saas_user_auth=FakeSaasUserAuth())
+
+    assert await context.get_provider_connections() is connections

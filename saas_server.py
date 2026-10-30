@@ -30,6 +30,7 @@ from server.auth.constants import (  # noqa: E402
     ENABLE_SUPER_ADMIN,
     GITHUB_APP_CLIENT_ID,
     GITLAB_APP_CLIENT_ID,
+    is_oauth_v2_login_enabled,
 )
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
@@ -165,8 +166,12 @@ if GITHUB_APP_CLIENT_ID:
         github_integration_router
     )  # Add additional route for integration webhook events
 
-# Add GitLab integration router only if GITLAB_APP_CLIENT_ID is set
-if GITLAB_APP_CLIENT_ID:
+# With OAuth v2 a super admin adds git providers at runtime (Auth Providers), so
+# their env vars may be unset while the frontend still renders webhook managers.
+OAUTH_V2_LOGIN_ENABLED = is_oauth_v2_login_enabled()
+
+# Add GitLab integration router only if GitLab is configured.
+if GITLAB_APP_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
         GitlabV1CallbackProcessor,
@@ -192,7 +197,7 @@ if BITBUCKET_APP_CLIENT_ID:
     base_app.include_router(bitbucket_integration_router)
 
 # Add Azure DevOps integration router only if Azure DevOps OAuth is configured.
-if AZURE_DEVOPS_CLIENT_ID:
+if AZURE_DEVOPS_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     from integrations.azure_devops.azure_devops_v1_callback_processor import (  # noqa: E402
         AzureDevOpsV1CallbackProcessor,
     )
@@ -270,6 +275,7 @@ if BITBUCKET_DATA_CENTER_HOST:
 
     base_app.include_router(bitbucket_dc_proxy_router)
 
+if BITBUCKET_DATA_CENTER_HOST or OAUTH_V2_LOGIN_ENABLED:
     # Bitbucket Data Center resolver webhook (PR comment trigger).
     from integrations.bitbucket_data_center.bitbucket_dc_v1_callback_processor import (  # noqa: E402
         BitbucketDCV1CallbackProcessor,
