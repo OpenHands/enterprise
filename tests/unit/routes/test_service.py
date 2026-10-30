@@ -536,6 +536,16 @@ class TestGetOrgMemberInfo:
         assert result.status == member_status
 
     @pytest.mark.asyncio
+    async def test_unknown_member_status_is_inactive_and_logged(self):
+        """A stored value outside the set must not turn the lookup into a 500:
+        the caller then sees "not an active service account", not a 502."""
+        with patch('server.routes.service.logger') as logger:
+            result = await self._call(self._user(), self._member('archived'))
+
+        assert result.status == 'inactive'
+        logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_null_member_status_is_active(self):
         result = await self._call(self._user(), self._member(None))
 

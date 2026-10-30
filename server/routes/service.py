@@ -9,7 +9,7 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
-from typing import Literal, cast
+from typing import Literal, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -51,6 +51,26 @@ class CreateUserApiKeyResponse(BaseModel):
 
 
 MembershipStatus = Literal['active', 'inactive', 'invited', 'disabled']
+
+
+def _membership_status(
+    stored: str | None, user_id: str, org_id: UUID
+) -> MembershipStatus:
+    """The membership status to report for a stored ``org_member.status``.
+
+    NULL is ``active``. A value outside ``MembershipStatus`` is reported as
+    ``inactive`` with a warning, so the Automation Service answers "not an
+    active service account" instead of failing on a 500.
+    """
+    if stored is None:
+        return 'active'
+    if stored in get_args(MembershipStatus):
+        return stored  # type: ignore[return-value]
+    logger.warning(
+        'service:membership_status_unknown',
+        extra={'user_id': user_id, 'org_id': str(org_id), 'status': stored},
+    )
+    return 'inactive'
 
 
 class OrgMemberInfoResponse(BaseModel):
@@ -302,8 +322,7 @@ async def get_org_member_info(
         role=role.name,
         status='disabled'
         if user.is_disabled or user.deletion_pending
-        # Pydantic rejects a stored value outside the Literal.
-        else cast(MembershipStatus, org_member.status or 'active'),
+        else _membership_status(org_member.status, str(user_uuid), org_id),
     )
 
 
