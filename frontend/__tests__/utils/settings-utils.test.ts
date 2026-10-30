@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { extractSettings } from "#/utils/settings-utils";
+import { extractSettings, isSettingsPageHidden } from "#/utils/settings-utils";
+import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 
 describe("extractSettings", () => {
   it("should preserve model name case when extracting settings", () => {
@@ -40,5 +41,30 @@ describe("extractSettings", () => {
     const llm = as?.llm as Record<string, unknown>;
     expect(llm?.model).toBe("sambanova/Meta-Llama-3.1-8B-Instruct");
     expect(llm?.model).not.toBe("custom-model-name");
+  });
+});
+
+describe("isSettingsPageHidden - service accounts", () => {
+  const path = "/settings/service-accounts";
+
+  it("hides the page when the feature flags are missing", () => {
+    expect(isSettingsPageHidden(path, undefined)).toBe(true);
+  });
+
+  it("hides the page when enable_service_accounts is missing or false", () => {
+    expect(isSettingsPageHidden(path, {} as WebClientFeatureFlags)).toBe(true);
+    expect(
+      isSettingsPageHidden(path, {
+        enable_service_accounts: false,
+      } as WebClientFeatureFlags),
+    ).toBe(true);
+  });
+
+  it("shows the page when enable_service_accounts is true", () => {
+    expect(
+      isSettingsPageHidden(path, {
+        enable_service_accounts: true,
+      } as WebClientFeatureFlags),
+    ).toBe(false);
   });
 });

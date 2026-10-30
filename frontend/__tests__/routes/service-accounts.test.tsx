@@ -103,6 +103,9 @@ const userWithRole = (role: "owner" | "member"): OrganizationMember => ({
   status: "active",
 });
 
+const SAAS_CONFIG = createMockWebClientConfig({ app_mode: "saas" });
+SAAS_CONFIG.feature_flags.enable_service_accounts = true;
+
 let queryClient: QueryClient;
 
 const renderPage = (client: QueryClient = queryClient) =>
@@ -150,9 +153,7 @@ describe("Service accounts route", () => {
       items: INITIAL_MOCK_ORGS,
       currentOrgId: MOCK_TEAM_ORG_ACME.id,
     });
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ app_mode: "saas" }),
-    );
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(SAAS_CONFIG);
     vi.spyOn(organizationService, "getMe").mockResolvedValue(
       userWithRole("owner"),
     );
@@ -704,6 +705,20 @@ describe("Service accounts route", () => {
   it("redirects a member away from the page", async () => {
     vi.spyOn(organizationService, "getMe").mockResolvedValue(
       userWithRole("member"),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByTestId("user-settings-screen"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("service-accounts-settings"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("redirects an owner away while enable_service_accounts is off", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
     );
     renderPage();
 

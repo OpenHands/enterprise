@@ -1424,6 +1424,103 @@ class TestResolveFlag:
         assert config.feature_flags.allow_user_llm_configuration is True
 
 
+class TestEnableServiceAccounts:
+    """enable_service_accounts resolves from the ENABLE_SERVICE_ACCOUNTS
+    database flag first, then from the env var of the same name.
+
+    The feature flag service runs for real against the test database; only
+    the global config and the unrelated integrated-IDP lookup are stubbed.
+    """
+
+    @pytest.mark.parametrize(
+        ('env', 'expected'),
+        [
+            ({}, False),
+            ({'ENABLE_SERVICE_ACCOUNTS': 'true'}, True),
+            ({'ENABLE_SERVICE_ACCOUNTS': '1'}, True),
+            ({'ENABLE_SERVICE_ACCOUNTS': 'false'}, False),
+        ],
+    )
+    def test_env_fallback(self, env, expected):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, env):
+            if not env:
+                os.environ.pop('ENABLE_SERVICE_ACCOUNTS', None)
+            assert _get_feature_flags().enable_service_accounts is expected
+
+    @pytest.fixture
+    def flag_db(self, async_session_maker):
+        from server.services.feature_flag_service import FeatureFlagService
+
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+            yield
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+
+    async def _config(self, env_value: str | None):
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        env = {} if env_value is None else {'ENABLE_SERVICE_ACCOUNTS': env_value}
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.dict(os.environ, env),
+        ):
+            if env_value is None:
+                os.environ.pop('ENABLE_SERVICE_ACCOUNTS', None)
+            injector = mod.DefaultWebClientConfigInjector()
+            return await injector.get_web_client_config()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'), [(None, False), ('false', False), ('true', True)]
+    )
+    async def test_env_var_when_no_row(self, flag_db, env_value, expected):
+        config = await self._config(env_value)
+        assert config.feature_flags.enable_service_accounts is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (True, None), (False, 'true')]
+    )
+    async def test_database_row_wins(self, flag_db, row_enabled, env_value):
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_SERVICE_ACCOUNTS', enabled=row_enabled
+        )
+        config = await self._config(env_value)
+        assert config.feature_flags.enable_service_accounts is row_enabled
+
+    @pytest.mark.asyncio
+    async def test_toggle_takes_effect_without_restart(self, flag_db):
+        """A row change shows up on the same injector after invalidation."""
+        from server.services.feature_flag_service import feature_flag_service
+        from storage.feature_flag_store import FeatureFlagStore
+
+        assert (await self._config(None)).feature_flags.enable_service_accounts is False
+        await FeatureFlagStore.create_flag(key='ENABLE_SERVICE_ACCOUNTS', enabled=True)
+        feature_flag_service.invalidate('ENABLE_SERVICE_ACCOUNTS')
+        assert (await self._config(None)).feature_flags.enable_service_accounts is True
+        await FeatureFlagStore.update_flag(key='ENABLE_SERVICE_ACCOUNTS', enabled=False)
+        feature_flag_service.invalidate('ENABLE_SERVICE_ACCOUNTS')
+        assert (await self._config(None)).feature_flags.enable_service_accounts is False
+
+
 class TestResolveEnableIntegratedIdp:
     """Tests for _resolve_enable_integrated_idp and its wiring into feature_flags.
 

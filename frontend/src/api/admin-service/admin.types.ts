@@ -10,3 +10,10 @@ export interface AdminUserPage {
   current_page: number;
   per_page: number;
 }
+
+/** A database feature flag (``/api/admin/feature-flags``). */
+export interface AdminFeatureFlag {
+  key: string;
+  description: string | null;
+  enabled: boolean;
+}

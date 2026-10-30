@@ -84,6 +84,10 @@ export interface WebClientFeatureFlags {
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
   enable_model_router?: boolean;
+  /** When true, the Service Accounts settings page is shown and the
+   *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
+   *  database flag, then the env var; off by default (OHE-3795). */
+  enable_service_accounts?: boolean;
 }
 
 /** One entry of a model picker; built from what an ACP session reported. */
