@@ -640,8 +640,11 @@ class RemoteSandboxService(SandboxService):
         # versions that predate `args`.
         if sandbox_spec.command:
             start_request['command'] = sandbox_spec.command
-        if sandbox_spec.args:
-            start_request['args'] = sandbox_spec.args
+        # getattr like the security context above: callers may pass duck-typed
+        # specs without `args` (see test_sandbox_org_secret_binding).
+        args = getattr(sandbox_spec, 'args', None)
+        if args:
+            start_request['args'] = args
 
         # Add runtime class if specified
         if self.runtime_class == 'sysbox':
