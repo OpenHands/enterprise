@@ -108,7 +108,6 @@ async def test_worker_takes_scheduled_jobs_only_once_one_is_enabled(
         started_with.update(kwargs)
 
     monkeypatch.setattr(app, 'run_worker_async', run_worker_async)
-    monkeypatch.setattr(openhands_logger, 'propagate', True)
     monkeypatch.setenv('OH_WORKER_SCHEDULED_JOBS_RESEND_SYNC', 'true')
 
     with caplog.at_level(logging.INFO, logger=openhands_logger.name):

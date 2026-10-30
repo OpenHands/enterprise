@@ -854,7 +854,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with environment variables including LLM_*
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -944,7 +944,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with host network mode
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -1024,7 +1024,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with bridge network mode (network_mode=None)
             call_kwargs = mock_docker_client.containers.run.call_args[1]

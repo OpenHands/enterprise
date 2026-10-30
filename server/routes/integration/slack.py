@@ -55,7 +55,14 @@ class SlackStatusResponse(BaseModel):
     connected: bool
 
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+# slack-sdk >= 3.43 rejects an unset signing secret, so the verifier is only
+# built when one is configured. The routes below require SLACK_WEBHOOKS_ENABLED,
+# which is never set without a signing secret.
+signature_verifier = (
+    SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+    if SLACK_SIGNING_SECRET
+    else None
+)
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
@@ -330,7 +337,7 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_event', extra={'payload': payload})
 
     # First verify the signature
-    if not signature_verifier.is_valid(
+    if signature_verifier is None or not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('x-slack-request-timestamp'),
         signature=request.headers.get('x-slack-signature'),
@@ -415,7 +422,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
     logger.info('slack_on_options_load', extra={'payload': payload})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if signature_verifier is None or not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
         signature=request.headers.get('X-Slack-Signature'),
@@ -518,7 +525,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     logger.info('slack_on_form_interaction', extra={'payload': payload})
 
     # Verify the signature
-    if not signature_verifier.is_valid(
+    if signature_verifier is None or not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('X-Slack-Request-Timestamp'),
         signature=request.headers.get('X-Slack-Signature'),
