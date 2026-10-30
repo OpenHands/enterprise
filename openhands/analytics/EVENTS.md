@@ -18,7 +18,7 @@ Every event respects user consent.
 
 | # | Event | When It Fires | Key Properties |
 |---|---|---|---|
-| 1 | **user signed up** | New user completes OAuth registration (once per user) | `idp`, `email_domain`, `invitation_source` |
+| 1 | **user signed up** | New user completes OAuth registration (once per user) | `idp`, `email_domain`, `invitation_source`, `is_super_admin`, `is_instance_setup_user` |
 | 2 | **user logged in** | Every successful authentication (Keycloak or device auth) | `idp` |
 | 3 | **conversation created** | A new conversation is initialized | `conversation_id`, `trigger`, `llm_model`, `agent_type`, `has_repository` |
 | 4 | **conversation finished** | Conversation reaches a successful or stopped terminal state | `conversation_id`, `terminal_state`, `turn_count`, `accumulated_cost_usd`, `prompt_tokens`, `completion_tokens`, `llm_model`, `trigger` |
@@ -36,14 +36,17 @@ Every event respects user consent.
 | 16 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
 | 17 | **slack integration enabled** | User links their Slack account | — |
 | 18 | **jira integration enabled** | User links their Jira workspace | `workspace_name` |
+| 19 | **ohe_instance_setup_completed** | The first Super Admin finishes the first-install wizard (`PATCH /api/admin/setup-state` flips `wizard_completed` to true) | `company_name`, `org_name`, `has_company_logo` |
 
 \*Error types: `budget_exceeded`, `model_error`, `runtime_error`, `timeout`, `user_cancelled`, `unknown`
 
 \*\*`settings_changed` is a list of payload keys that were modified (e.g., `['llm_model']`, `['agent_settings_diff']`, etc.)
 
-Every event also carries: `app_mode` (saas/oss), `is_feature_env`, and `org_id` when available.
+Every event also carries: `app_mode` (saas/oss), `deployment_kind` (remote for Cloud, local for self-hosted Enterprise), `is_feature_env`, `license_key_configured`, and `org_id` when available.
 
 **Note:** Backend events fire in SaaS only. The `AnalyticsService` is never initialized in OSS — `get_analytics_service()` returns `None` and all call sites are guarded.
+
+**Self-hosted Enterprise (OHE):** the service is initialized with an empty key (capture disabled) unless `ENABLE_POSTHOG_ANALYTICS=true` is set alongside `POSTHOG_CLIENT_KEY`. `LICENSE_KEY_CONFIGURED=true` sets the `license_key_configured` property; it defaults to false because no license concept exists in the app yet (OHE-3657). Event #19 uses the `ohe_`-prefixed snake_case name the product owner asked for.
 
 ---
 
@@ -54,6 +57,7 @@ Every event also carries: `app_mode` (saas/oss), `is_feature_env`, and `org_id` 
 | **Identify user** | Login (Keycloak or device auth) | Person: `email`, `org_id`, `org_name`, `idp`, `last_login_at`, `first_name`, `last_name`. Group (org): `org_name`, `member_count`. |
 | **Update person** | Signup, org switch | `signed_up_at` on signup; `org_id`, `org_name` on org switch |
 | **Update org group** | Login, onboarding | `member_count`, `onboarding_completed_at` |
+| **Update person + org group** | First-install wizard completed | Person: `company_name`, `org_name`, `org_id`. Group (org): `org_name`, `company_name`, `setup_completed_at` |
 
 ---
 

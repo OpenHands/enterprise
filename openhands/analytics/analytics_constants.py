@@ -32,3 +32,7 @@ CLI_DEVICE_LINKED = 'cli device linked'
 PULL_REQUEST_CREATED = 'pull request created'
 SLACK_INTEGRATION_ENABLED = 'slack integration enabled'
 JIRA_INTEGRATION_ENABLED = 'jira integration enabled'
+
+# OHE first-install onboarding (OHE-3657). The product owner asked for
+# ``ohe_``-prefixed snake_case names for these events.
+OHE_INSTANCE_SETUP_COMPLETED = 'ohe_instance_setup_completed'

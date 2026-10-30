@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
@@ -1064,17 +1065,72 @@ async def update_setup_state(
                 detail='Only the first Super Admin can change the setup state',
             )
         guide_org_id = changes.get('guide_org_id')
-        if guide_org_id is not None and await session.get(Org, guide_org_id) is None:
+        guide_org = (
+            await session.get(Org, guide_org_id) if guide_org_id is not None else None
+        )
+        if guide_org_id is not None and guide_org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Organization not found',
             )
+        wizard_just_completed = (
+            changes.get('wizard_completed') is True and not settings.wizard_completed
+        )
         for field, value in changes.items():
             setattr(settings, field, value)
         await session.commit()
+        if wizard_just_completed and guide_org is None and settings.guide_org_id:
+            guide_org = await session.get(Org, settings.guide_org_id)
 
     logger.info(
         'admin:setup_state:update',
         extra={'caller_user_id': user_id, 'fields': sorted(changes)},
     )
+    if wizard_just_completed:
+        await _track_instance_setup_completed(user_id, settings, guide_org)
     return await _setup_state_response(settings, user_id, request)
+
+
+async def _track_instance_setup_completed(
+    user_id: str, settings: InstanceSettings, org: Org | None
+) -> None:
+    """Best-effort PostHog capture of the first-install wizard finishing.
+
+    Records the company and organization names the Super Admin just chose on
+    the event, on their person profile, and on the ``org`` group.
+    """
+    try:
+        analytics = get_analytics_service()
+        if not analytics:
+            return
+        ctx = await resolve_analytics_context(user_id)
+        if org is not None:
+            ctx.org_id = str(org.id)
+        org_name = org.name if org is not None else None
+        analytics.track_instance_setup_completed(
+            ctx=ctx,
+            company_name=settings.company_name,
+            org_name=org_name,
+            has_company_logo=settings.logo is not None,
+        )
+        analytics.set_person_properties(
+            ctx=ctx,
+            properties={
+                'company_name': settings.company_name,
+                'org_name': org_name,
+                'org_id': ctx.org_id,
+            },
+        )
+        if ctx.org_id:
+            analytics.group_identify(
+                ctx=ctx,
+                group_type='org',
+                group_key=ctx.org_id,
+                properties={
+                    'org_name': org_name,
+                    'company_name': settings.company_name,
+                    'setup_completed_at': datetime.now(UTC).isoformat(),
+                },
+            )
+    except Exception:
+        logger.exception('analytics:instance_setup_completed:failed', stack_info=True)

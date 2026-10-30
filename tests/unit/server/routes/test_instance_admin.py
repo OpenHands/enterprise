@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
@@ -1479,6 +1480,94 @@ async def test_update_setup_state_rejects_an_unknown_organization(
 
     # Assert
     assert resp.status_code == 404
+
+
+@pytest.fixture
+def analytics_capture():
+    """A fake AnalyticsService whose context resolves to the consented caller."""
+    analytics = MagicMock()
+    ctx = AnalyticsContext(
+        user_id=CALLER_USER_ID, consented=True, org_id=None, user=None
+    )
+    with (
+        patch(
+            'server.routes.instance_admin.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'server.routes.instance_admin.resolve_analytics_context',
+            AsyncMock(return_value=ctx),
+        ),
+    ):
+        yield analytics
+
+
+@pytest.mark.asyncio
+async def test_finishing_the_wizard_reports_the_company_and_organization(
+    mock_app, instance_settings_db, async_session_maker, analytics_capture
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            InstanceSettings(
+                id=1,
+                setup_user_id=uuid.UUID(CALLER_USER_ID),
+                company_name='Acme',
+                logo='data:image/png;base64,iVBORw0KGgo=',
+            )
+        )
+        await session.commit()
+    org_id = await _add_org(async_session_maker)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state',
+            json={'wizard_completed': True, 'guide_org_id': str(org_id)},
+        )
+
+    # Assert
+    assert resp.status_code == 200
+    event = analytics_capture.track_instance_setup_completed.call_args.kwargs
+    assert event['company_name'] == 'Acme'
+    assert event['org_name'] == f'org-{org_id}'
+    assert event['has_company_logo'] is True
+    assert event['ctx'].org_id == str(org_id)
+    person = analytics_capture.set_person_properties.call_args.kwargs['properties']
+    assert person == {
+        'company_name': 'Acme',
+        'org_name': f'org-{org_id}',
+        'org_id': str(org_id),
+    }
+    group = analytics_capture.group_identify.call_args.kwargs
+    assert (group['group_type'], group['group_key']) == ('org', str(org_id))
+    assert group['properties']['company_name'] == 'Acme'
+    assert group['properties']['org_name'] == f'org-{org_id}'
+    assert 'setup_completed_at' in group['properties']
+
+
+@pytest.mark.asyncio
+async def test_updating_a_finished_wizard_does_not_report_setup_again(
+    mock_app, instance_settings_db, async_session_maker, analytics_capture
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            InstanceSettings(
+                id=1, setup_user_id=uuid.UUID(CALLER_USER_ID), wizard_completed=True
+            )
+        )
+        await session.commit()
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state', json={'wizard_completed': True}
+        )
+
+    # Assert
+    assert resp.status_code == 200
+    analytics_capture.track_instance_setup_completed.assert_not_called()
 
 
 @pytest.mark.asyncio
