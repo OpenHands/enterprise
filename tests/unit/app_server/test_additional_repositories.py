@@ -720,25 +720,25 @@ async def _run_setup(service, request):
 @pytest.mark.asyncio
 async def test_setup_installs_the_credential_helpers_before_cloning():
     """The per-provider credential helpers go in before any clone, and the
-    providers they cover are recorded on the task, so the clones can leave the
+    hosts they cover are recorded on the task, so the clones can leave the
     token out of their remote URL."""
     service = _setup_service([])
     order: list = []
 
     async def configure_helpers(workspace, tokens):
         order.append('helpers')
-        return {GITHUB}
+        return {'https://github.com'}
 
     async def clone(task, workspace, sandbox):
-        order.append(('clone', set(task._git_credential_providers)))
+        order.append(('clone', set(task._git_credential_prefixes)))
 
     service._configure_git_credential_helpers = AsyncMock(side_effect=configure_helpers)
     service.clone_or_init_git_repo = AsyncMock(side_effect=clone)
 
     task, workspace = await _run_setup(service, _start_request())
 
-    assert order == ['helpers', ('clone', {GITHUB})]
-    assert task._git_credential_providers == {GITHUB}
+    assert order == ['helpers', ('clone', {'https://github.com'})]
+    assert task._git_credential_prefixes == {'https://github.com'}
     service._configure_git_credential_helpers.assert_awaited_once_with(workspace, {})
 
 
