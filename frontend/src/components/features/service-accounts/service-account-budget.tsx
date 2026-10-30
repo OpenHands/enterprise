@@ -12,6 +12,10 @@ import { I18nKey } from "#/i18n/declaration";
  * override, "Remove limit" deletes it. An "unlimited" override is shown
  * explicitly and stays until a limit is saved or the override is removed.
  */
+// Smallest monthly limit Save accepts. The API stores decimal limits, so it
+// is also the input's step.
+const MIN_BUDGET = 0.01;
+
 export function ServiceAccountBudget({ account }: { account: ServiceAccount }) {
   const { t } = useTranslation();
   const { mutate: setBudget, isPending } = useSetServiceAccountBudget(
@@ -24,7 +28,8 @@ export function ServiceAccountBudget({ account }: { account: ServiceAccount }) {
   const hasOverride = isUnlimited || savedLimit !== null;
   const value = draft ?? (savedLimit === null ? "" : String(savedLimit));
   const parsed = Number(value);
-  const isValid = value !== "" && Number.isFinite(parsed) && parsed > 0;
+  const isValid =
+    value !== "" && Number.isFinite(parsed) && parsed >= MIN_BUDGET;
 
   return (
     <section className="flex flex-col gap-2">
@@ -49,9 +54,8 @@ export function ServiceAccountBudget({ account }: { account: ServiceAccount }) {
           testId="service-account-budget-input"
           label={t(I18nKey.SERVICE_ACCOUNTS$BUDGET_LABEL)}
           type="number"
-          // Save needs a value above 0; the API stores decimal limits.
-          min={0.01}
-          step={0.01}
+          min={MIN_BUDGET}
+          step={MIN_BUDGET}
           className="max-w-[200px]"
           value={value}
           onChange={setDraft}
