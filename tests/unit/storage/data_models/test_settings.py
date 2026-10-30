@@ -333,6 +333,32 @@ def test_settings_update_preserves_redacted_mcp_auth_for_same_endpoint():
     assert server.auth.to_http_headers() == {'Authorization': 'Bearer real-key'}
 
 
+def test_settings_update_preserves_redacted_mcp_auth_across_rename():
+    # The settings page renames a remote server by resubmitting the catalog
+    # under the new key, with the stored key still redacted.
+    settings = _settings_with_mcp_auth()
+
+    settings.update(
+        {
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'sonarqube': {
+                        'url': 'https://integration.example.com/mcp',
+                        'auth': {'strategy': 'bearer', 'value': '**********'},
+                    }
+                }
+            }
+        }
+    )
+
+    mcp = settings.agent_settings.mcp_config
+    assert set(mcp) == {'sonarqube'}
+    assert mcp['sonarqube'].auth is not None
+    assert mcp['sonarqube'].auth.to_http_headers() == {
+        'Authorization': 'Bearer real-key'
+    }
+
+
 def test_settings_update_preserves_redacted_mcp_header_for_same_endpoint():
     settings = _settings_with_mcp_auth()
 

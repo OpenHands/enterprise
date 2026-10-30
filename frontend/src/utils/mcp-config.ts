@@ -210,6 +210,68 @@ function getUniqueName(base: string, usedNames: Set<string>): string {
   return `${base}_${suffix}`;
 }
 
+export const MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+// URL parts that say nothing about which service a remote server is.
+const GENERIC_URL_PARTS = new Set([
+  "mcp",
+  "sse",
+  "shttp",
+  "http",
+  "https",
+  "api",
+  "v1",
+  "v2",
+  "www",
+  "app",
+  "server",
+]);
+
+function nameToken(part: string): string {
+  return part
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .split(/[-_]+/)
+    .filter((word) => word && !GENERIC_URL_PARTS.has(word))
+    .join("-");
+}
+
+/**
+ * Suggest a server name for a remote MCP server from its URL, e.g.
+ * ``https://tools.example.com/sonarqube-mcp/mcp`` -> ``sonarqube`` and
+ * ``https://mcp.linear.app/sse`` -> ``linear``. The last meaningful path
+ * segment wins, then the host's main label, then ``fallback``. Adds a numeric
+ * suffix when the name is already in ``takenNames`` (compared case-insensitively).
+ */
+export function suggestMcpServerName(
+  url: string,
+  fallback: string,
+  takenNames: Iterable<string> = [],
+): string {
+  let base = "";
+  try {
+    const parsed = new URL(url.trim());
+    const segments = parsed.pathname.split("/").map(nameToken).filter(Boolean);
+    base = segments[segments.length - 1] ?? "";
+    const isIpAddress =
+      /^[\d.]+$/.test(parsed.hostname) || parsed.hostname.includes(":");
+    if (!base && !isIpAddress) {
+      const labels = parsed.hostname.split(".").map(nameToken).filter(Boolean);
+      // Drop the top-level domain unless it is all that is left.
+      base = labels.length > 1 ? labels[labels.length - 2] : (labels[0] ?? "");
+    }
+  } catch {
+    base = "";
+  }
+  if (!base) base = fallback;
+
+  const taken = new Set(Array.from(takenNames, (name) => name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  let suffix = 2;
+  while (taken.has(`${base}-${suffix}`.toLowerCase())) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
 /**
  * Parse an SDK mcp_config value and convert it to the frontend MCPConfig
  * format used by UI components.

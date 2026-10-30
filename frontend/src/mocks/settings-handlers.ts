@@ -746,6 +746,16 @@ export const SETTINGS_HANDLERS = [
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
+        // Like the backend, a submitted MCP catalog without null entries
+        // replaces the stored one, so renames and deletions drop old keys.
+        const mcpConfig = agentSettingsPatch.mcp_config;
+        if (
+          mcpConfig &&
+          typeof mcpConfig === "object" &&
+          !Object.values(mcpConfig).includes(null)
+        ) {
+          merged.mcp_config = mcpConfig;
+        }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 

@@ -53,6 +53,9 @@ export function updatedRemoteServer(
     ...(typeof current === "object" ? current : {}),
     url: server.url!,
   };
+  // Renaming changes the config key; the entry keeps its credentials and
+  // stored OAuth state.
+  if (server.name) updated.name = server.name;
   if (server.type === "shttp" && server.timeout !== undefined) {
     updated.timeout = server.timeout;
   } else {
