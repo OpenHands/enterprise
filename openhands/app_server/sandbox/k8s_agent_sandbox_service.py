@@ -667,12 +667,15 @@ class K8sAgentSandboxService(ManagedSandboxService):
         accepts.
         """
         # The spec's working dir is the project checkout; its parent is the
-        # workspace root the agent server keeps its own state under, which is
-        # the template's volume.
+        # workspace root, which is the template's volume. The agent server's
+        # own state goes to the template's state volume when the spec names
+        # one, so an agent serving its workspace on the app ports cannot
+        # publish it (OHE-3812); otherwise it stays on the workspace volume.
         working_dir = sandbox_spec.working_dir.rstrip('/')
         workspace_dir = dirname(working_dir)
         if workspace_dir in ('', '/'):
             workspace_dir = working_dir
+        state_dir = (sandbox_spec.state_dir or workspace_dir).rstrip('/')
         body: dict[str, Any] = {
             'session_api_keys': [session_api_key],
             # What the agent server uses when it has no secret key of its own.
@@ -680,8 +683,8 @@ class K8sAgentSandboxService(ManagedSandboxService):
             # It lives as long as the session key, so secrets persisted on the
             # volume still decrypt after a resume.
             'secret_key': session_api_key,
-            'conversations_path': f'{workspace_dir}/conversations',
-            'bash_events_dir': f'{workspace_dir}/bash_events',
+            'conversations_path': f'{state_dir}/conversations',
+            'bash_events_dir': f'{state_dir}/bash_events',
             'conversation_worktree_root': f'{workspace_dir}/worktrees',
             # `get_agent_server_env` is resolved here rather than baked into
             # the spec's initial_env, because it can carry LLM_API_KEY and the
