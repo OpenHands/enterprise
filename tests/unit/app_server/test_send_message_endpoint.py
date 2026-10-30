@@ -1,8 +1,8 @@
 """Unit tests for the send_message_to_conversation endpoint.
 
 This module tests the send-message endpoint, focusing on:
-- Sandbox status handling (RUNNING, PAUSED, MISSING, ERROR)
-- Requiring sandbox to be in RUNNING state
+- Sandbox status handling (RUNNING, PAUSED, STARTING, MISSING, ERROR)
+- Auto-resuming a PAUSED sandbox and awaiting a STARTING one before sending
 - Agent server communication
 - Error handling
 """
@@ -22,6 +22,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.app_conversation.app_conversation_router import (
     send_message_to_conversation,
 )
+from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -257,15 +258,12 @@ class TestSendMessageToConversation:
         assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert 'error state' in exc_info.value.detail.lower()
 
-    async def test_returns_409_for_paused_sandbox(self):
-        """Test that 409 is returned when sandbox is PAUSED.
+    async def test_resumes_paused_sandbox_then_sends(self):
+        """A PAUSED sandbox is resumed and awaited, then the message is delivered.
 
-        The endpoint does not auto-resume sandboxes. Callers must resume
-        the sandbox first via POST /api/v1/sandboxes/{id}/resume.
-
-        Arrange: Create conversation with PAUSED sandbox
+        Arrange: PAUSED sandbox; resume + wait_for_sandbox_running yield a RUNNING one
         Act: Call send_message_to_conversation
-        Assert: HTTPException with 409 is raised
+        Assert: resume is called once, the message is proxied, and 200 is returned
         """
         # Arrange
         conversation_id = uuid4()
@@ -273,12 +271,105 @@ class TestSendMessageToConversation:
         conversation = _make_mock_conversation(
             conversation_id=conversation_id, sandbox_id=sandbox_id
         )
-        sandbox = _make_mock_sandbox(
+        paused_sandbox = _make_mock_sandbox(
+            sandbox_id=sandbox_id, sandbox_status=SandboxStatus.PAUSED
+        )
+        running_sandbox = _make_mock_sandbox(
+            sandbox_id=sandbox_id, sandbox_status=SandboxStatus.RUNNING
+        )
+
+        mock_conversation_service = _make_mock_conversation_service(conversation)
+        mock_sandbox_service = _make_mock_sandbox_service(paused_sandbox)
+        mock_sandbox_service.resume_sandbox = AsyncMock(return_value=True)
+        mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running_sandbox
+        )
+        mock_httpx_client = _make_mock_httpx_client()
+
+        # Act
+        result = await send_message_to_conversation(
+            conversation_id=conversation_id,
+            request=_make_mock_request(),
+            app_conversation_service=mock_conversation_service,
+            sandbox_service=mock_sandbox_service,
+            httpx_client=mock_httpx_client,
+        )
+
+        # Assert
+        assert result.success is True
+        assert result.sandbox_status == SandboxStatus.RUNNING
+        mock_sandbox_service.resume_sandbox.assert_awaited_once_with(sandbox_id)
+        mock_sandbox_service.wait_for_sandbox_running.assert_awaited_once()
+        mock_httpx_client.post.assert_called_once()
+
+    async def test_awaits_starting_sandbox_without_resume_then_sends(self):
+        """A STARTING sandbox is awaited (not resumed), then the message is delivered.
+
+        Arrange: STARTING sandbox; wait_for_sandbox_running yields a RUNNING one
+        Act: Call send_message_to_conversation
+        Assert: resume is NOT called, the message is proxied, and 200 is returned
+        """
+        # Arrange
+        conversation_id = uuid4()
+        sandbox_id = str(uuid4())
+        conversation = _make_mock_conversation(
+            conversation_id=conversation_id, sandbox_id=sandbox_id
+        )
+        starting_sandbox = _make_mock_sandbox(
+            sandbox_id=sandbox_id, sandbox_status=SandboxStatus.STARTING
+        )
+        running_sandbox = _make_mock_sandbox(
+            sandbox_id=sandbox_id, sandbox_status=SandboxStatus.RUNNING
+        )
+
+        mock_conversation_service = _make_mock_conversation_service(conversation)
+        mock_sandbox_service = _make_mock_sandbox_service(starting_sandbox)
+        mock_sandbox_service.resume_sandbox = AsyncMock(return_value=True)
+        mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running_sandbox
+        )
+        mock_httpx_client = _make_mock_httpx_client()
+
+        # Act
+        result = await send_message_to_conversation(
+            conversation_id=conversation_id,
+            request=_make_mock_request(),
+            app_conversation_service=mock_conversation_service,
+            sandbox_service=mock_sandbox_service,
+            httpx_client=mock_httpx_client,
+        )
+
+        # Assert
+        assert result.success is True
+        assert result.sandbox_status == SandboxStatus.RUNNING
+        mock_sandbox_service.resume_sandbox.assert_not_awaited()
+        mock_sandbox_service.wait_for_sandbox_running.assert_awaited_once()
+        mock_httpx_client.post.assert_called_once()
+
+    async def test_returns_503_when_paused_sandbox_cannot_resume(self):
+        """A resume that never reaches RUNNING surfaces as 503, not a bare 500/409.
+
+        Arrange: PAUSED sandbox; wait_for_sandbox_running raises SandboxError
+        Act: Call send_message_to_conversation
+        Assert: HTTPException with 503 is raised and no message is proxied
+        """
+        # Arrange
+        conversation_id = uuid4()
+        sandbox_id = str(uuid4())
+        conversation = _make_mock_conversation(
+            conversation_id=conversation_id, sandbox_id=sandbox_id
+        )
+        paused_sandbox = _make_mock_sandbox(
             sandbox_id=sandbox_id, sandbox_status=SandboxStatus.PAUSED
         )
 
         mock_conversation_service = _make_mock_conversation_service(conversation)
-        mock_sandbox_service = _make_mock_sandbox_service(sandbox)
+        mock_sandbox_service = _make_mock_sandbox_service(paused_sandbox)
+        mock_sandbox_service.resume_sandbox = AsyncMock(return_value=True)
+        mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            side_effect=SandboxError('Sandbox did not start in time')
+        )
+        mock_httpx_client = _make_mock_httpx_client()
 
         # Act & Assert
         with pytest.raises(HTTPException) as exc_info:
@@ -287,47 +378,11 @@ class TestSendMessageToConversation:
                 request=_make_mock_request(),
                 app_conversation_service=mock_conversation_service,
                 sandbox_service=mock_sandbox_service,
-                httpx_client=MagicMock(),
+                httpx_client=mock_httpx_client,
             )
 
-        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
-        assert 'paused' in exc_info.value.detail.lower()
-        assert '/resume' in exc_info.value.detail.lower()
-
-    async def test_returns_409_for_starting_sandbox(self):
-        """Test that 409 is returned when sandbox is STARTING.
-
-        Callers must wait for sandbox to reach RUNNING state before sending messages.
-
-        Arrange: Create conversation with STARTING sandbox
-        Act: Call send_message_to_conversation
-        Assert: HTTPException with 409 is raised
-        """
-        # Arrange
-        conversation_id = uuid4()
-        sandbox_id = str(uuid4())
-        conversation = _make_mock_conversation(
-            conversation_id=conversation_id, sandbox_id=sandbox_id
-        )
-        sandbox = _make_mock_sandbox(
-            sandbox_id=sandbox_id, sandbox_status=SandboxStatus.STARTING
-        )
-
-        mock_conversation_service = _make_mock_conversation_service(conversation)
-        mock_sandbox_service = _make_mock_sandbox_service(sandbox)
-
-        # Act & Assert
-        with pytest.raises(HTTPException) as exc_info:
-            await send_message_to_conversation(
-                conversation_id=conversation_id,
-                request=_make_mock_request(),
-                app_conversation_service=mock_conversation_service,
-                sandbox_service=mock_sandbox_service,
-                httpx_client=MagicMock(),
-            )
-
-        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
-        assert 'starting' in exc_info.value.detail.lower()
+        assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        mock_httpx_client.post.assert_not_called()
 
     async def test_returns_502_on_agent_server_http_error(self):
         """Test that 502 is returned when agent server returns HTTP error.
