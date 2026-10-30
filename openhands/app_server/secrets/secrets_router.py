@@ -85,9 +85,8 @@ router = APIRouter(
 # Redis distributed lock so multiple worker processes serialize against
 # each other; if Redis is unreachable in SaaS we fail the request rather
 # than silently re-introduce the race. The Redis TTL guards against a
-# crashed worker leaving the lock held forever. SaaS deployments that don't
-# configure Redis (no REDIS_HOST, e.g. the Docker Compose stack) use the
-# asyncio.Lock instead.
+# crashed worker leaving the lock held forever. SaaS deployments without
+# REDIS_HOST use the asyncio.Lock instead.
 
 _SECRETS_WRITE_LOCK_KEY_PREFIX = 'app_secrets:write'
 # TTL acts as a safety net if a worker crashes mid-operation. The store
