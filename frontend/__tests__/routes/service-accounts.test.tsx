@@ -621,6 +621,25 @@ describe("Service accounts route", () => {
     ).toBeInTheDocument();
   });
 
+  it("accepts a stored decimal budget and refuses zero in the input", async () => {
+    // The API stores floats; the field must not mark 12.5 as a step mismatch,
+    // and must not allow 0, which Save refuses.
+    setServiceAccountBudget(MOCK_TEAM_ORG_ACME.id, "sa-1", 12.5);
+    renderPage();
+    await userEvent.click(
+      within(await findRow("nightly-report")).getByTestId(
+        "manage-service-account",
+      ),
+    );
+
+    const input = (await screen.findByTestId(
+      "service-account-budget-input",
+    )) as HTMLInputElement;
+    expect(input).toHaveValue(12.5);
+    expect(input.validity.stepMismatch).toBe(false);
+    expect(Number(input.min)).toBeGreaterThan(0);
+  });
+
   it("shows the budget of the service account response without listing the org budgets", async () => {
     setServiceAccountBudget(MOCK_TEAM_ORG_ACME.id, "sa-1", 40);
     const getBudgets = vi.spyOn(organizationService, "getBudgetSettings");
