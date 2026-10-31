@@ -11,6 +11,7 @@ from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
@@ -97,7 +98,9 @@ def test_set_response_cookie(mock_response, mock_request):
         assert kwargs['domain'] == 'example.com'
 
         # Verify the JWT token contains the correct data
-        token_data = jwt_svc.verify_jws_token(kwargs['value'])
+        token_data = jwt_svc.verify_jws_token(
+            kwargs['value'], audience=JwtAudience.KEYCLOAK_SESSION
+        )
         assert token_data['access_token'] == 'test_access_token'
         assert token_data['refresh_token'] == 'test_refresh_token'
         assert token_data['accepted_tos'] is True
@@ -2970,6 +2973,12 @@ async def test_accept_tos_tracks_only_first_signup_with_validated_entry(mock_req
     assert kwargs['email_domain'] == 'example.com'
     assert kwargs['signup_entry_source'] == 'local_canvas'
     assert kwargs['campaign'] == {'utm_source': 'newsletter'}
+    get_analytics.return_value.set_person_properties.assert_called_once()
+    properties = get_analytics.return_value.set_person_properties.call_args.kwargs[
+        'properties'
+    ]
+    assert properties['email'] == 'user@example.com'
+    assert properties['signed_up_at']
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,9 @@ ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
 # in output. The helper reads the JWT from a per-conversation file (not this env
 # var); this name is only the registry key for masking.
 AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE = 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'
+# Same role for the other git providers' credential-helper JWTs; the provider
+# type value is appended in upper case (``OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITLAB``).
+GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX = 'OH_GIT_CREDENTIAL_ACCESS_TOKEN_'
 
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
 # on a 401 (#5189). These names are the contract consumed by the agent-server's

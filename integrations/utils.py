@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import unquote
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -195,7 +196,8 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     """Extract repository names as 'owner/repo' from URLs and direct mentions.
 
     Supports cloud and self-hosted Git providers: GitHub / GitHub Enterprise,
-    GitLab (incl. self-hosted), Bitbucket Cloud, and Bitbucket Data Center.
+    GitLab (incl. self-hosted), Bitbucket Cloud, Bitbucket Data Center and
+    Azure DevOps (URLs only; its full names are 'org/project/repo').
     Bitbucket Data Center URLs use a distinct layout
     (``/projects/<KEY>/repos/<slug>`` and ``/scm/<KEY>/<slug>``) that maps to
     the ``<KEY>/<slug>`` full name; every other provider uses the standard
@@ -204,6 +206,29 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     only act on inferred names that resolve to a repo the user can access.
     """
     normalized_msg = re.sub(r'\s+', ' ', user_msg.strip())
+
+    # Azure DevOps names a repository 'org/project/repo'. Web and clone URLs:
+    # dev.azure.com/<org>/<project>/_git/<repo> (optionally user@ before the
+    # host), the legacy <org>.visualstudio.com/[DefaultCollection/]<project>/
+    # _git/<repo>, and git@ssh.dev.azure.com:v3/<org>/<project>/<repo>. A
+    # project-less _git URL means the repo is named after its project. Matched
+    # first and blanked out so the generic patterns do not see 'org/project'.
+    azure_segment = r"[^/\s?#'\"<>()\[\]|]+"
+    azure_patterns = [
+        rf'https?://(?:[^/@\s]+@)?dev\.azure\.com/({azure_segment})/'
+        rf'(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'https?://(?:[^/@\s]+@)?([a-zA-Z0-9-]+)\.visualstudio\.com/'
+        rf'(?:DefaultCollection/)?(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'git@ssh\.dev\.azure\.com:v3/({azure_segment})/({azure_segment})/'
+        rf'({azure_segment})',
+    ]
+    azure_matches: list[tuple[int, str]] = []
+    for pattern in azure_patterns:
+        for m in re.finditer(pattern, normalized_msg):
+            org, project, repo = (unquote(g) if g else g for g in m.groups())
+            repo = re.sub(r'\.git$', '', repo.rstrip('.,;:!?'))
+            azure_matches.append((m.start(), f'{org}/{project or repo}/{repo}'))
+        normalized_msg = re.sub(pattern, ' ', normalized_msg)
 
     # Bitbucket Data Center web (browse/PR) URLs: /projects/<KEY>/repos/<slug>
     # and personal /users/<name>/repos/<slug>. Matched before the generic
@@ -246,6 +271,9 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
 
     # Use dict to preserve ordering
     matches: dict[str, bool] = {}
+
+    for _, name in sorted(azure_matches):
+        matches[name] = True
 
     # Bitbucket Data Center URLs first (most specific layout)
     for owner, repo in re.findall(bitbucket_dc_web_pattern, normalized_msg):

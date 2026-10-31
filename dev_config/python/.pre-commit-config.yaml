@@ -8,6 +8,8 @@ repos:
         exclude: ^(docs/|modules/|python/|openhands-ui/)
       - id: check-yaml
         args: ["--allow-multiple-documents"]
+        # Compose overlays use Compose-only tags such as !reset, which check-yaml cannot parse.
+        exclude: ^docker-compose\..+\.yml$
       - id: debug-statements
 
 

@@ -451,6 +451,38 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
             >
               {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT)}
             </p>
+            <SettingsInput
+              testId="super-admin-auth-provider-named-secret"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET)}
+              type="text"
+              value={form.namedSecret}
+              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET_HINT)}
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, namedSecret: value }))
+              }
+              showOptionalTag
+              autoComplete="off"
+            />
+            <SettingsTextarea
+              testId="super-admin-auth-provider-oauth-attribute-mapping"
+              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
+              value={form.attributeMapping}
+              description={
+                <p
+                  data-testid="super-admin-auth-provider-oauth-attribute-mapping-hint"
+                  className="text-xs text-tertiary-alt"
+                >
+                  {t(
+                    I18nKey.SUPER_ADMIN$AUTH_PROVIDER_OAUTH_ATTRIBUTE_MAPPING_HINT,
+                  )}
+                </p>
+              }
+              onChange={(value) =>
+                setForm((prev) => ({ ...prev, attributeMapping: value }))
+              }
+              rows={3}
+              showOptionalTag
+            />
           </>
         ) : null}
         {form.kind === KIND_SAML ? (

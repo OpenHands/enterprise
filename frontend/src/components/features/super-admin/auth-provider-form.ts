@@ -45,6 +45,13 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
 
 export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
 
+/** The ``named_secret`` a new provider of ``brand`` starts with -- the
+ * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
+ * (migration 198 backfills it). Login-only brands expose no token. */
+export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
+  return brand === "enterprise_sso" ? null : `${brand.toUpperCase()}_TOKEN`;
+}
+
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
     option.key !== "enterprise_sso",
@@ -58,12 +65,11 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-/** Parses the attribute-mapping field's ``openhands_field=saml_attr``
- * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``
- * (keyed by ``openhands_field`` -- see ``server.routes.saml
- * ._extract_mapped_attribute``, which looks up ``attribute_mapping[field]``
- * to get the SAML attribute name to read). Blank entries and entries
- * missing a ``=`` are dropped. */
+/** Parses the attribute-mapping field's ``openhands_field=provider_attr``
+ * comma/newline-separated text into the OAuth/SAML ``attribute_mapping``
+ * (keyed by ``openhands_field`` -- see ``server.auth.provider_identity
+ * .map_oauth_claims`` and ``server.routes.saml._extract_mapped_attribute``).
+ * Blank entries and entries missing a ``=`` are dropped. */
 function parseAttributeMapping(value: string): Record<string, string> {
   const mapping: Record<string, string> = {};
   value
@@ -129,6 +135,8 @@ export interface AuthProviderFormState {
   permittedDriftSeconds: string;
   /** ``""`` when unset -- see ``OAuthProviderDetails.legacy_keycloak_type``. */
   legacyKeycloakType: LegacyKeycloakType | "";
+  /** ``""`` when unset -- see ``OAuthProviderDetails.named_secret``. */
+  namedSecret: string;
   metadataUrl: string;
   idpEntityId: string;
   ssoUrl: string;
@@ -143,10 +151,9 @@ export interface AuthProviderFormState {
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
   spX509Cert: string;
   nameIdFormat: string;
-  /** ``openhands_field=saml_attr`` pairs, comma/newline-separated -- see
-   * ``parseAttributeMapping``. Only the ``email`` key currently has any
-   * effect server-side (``server.routes.saml._extract_mapped_attribute``
-   * is only ever called for ``'email'``). */
+  /** ``openhands_field=provider_attr`` pairs, comma/newline-separated --
+   * see ``parseAttributeMapping``. Shared by OAuth (``sub`` / ``email`` /
+   * ``email_verified``) and SAML (``sub`` / ``email``). */
   attributeMapping: string;
 }
 
@@ -168,6 +175,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   scopes: "",
   permittedDriftSeconds: DEFAULT_PERMITTED_DRIFT_SECONDS,
   legacyKeycloakType: "",
+  namedSecret: "",
   metadataUrl: "",
   idpEntityId: "",
   ssoUrl: "",
@@ -200,6 +208,8 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       scopes: details.scopes?.join(" ") ?? "",
       permittedDriftSeconds: String(details.permitted_drift_seconds),
       legacyKeycloakType: details.legacy_keycloak_type ?? "",
+      namedSecret: details.named_secret ?? "",
+      attributeMapping: formatAttributeMapping(details.attribute_mapping),
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -254,7 +264,9 @@ function oauthDetailsUnchanged(
     form.scopes.trim() === initial.scopes.trim() &&
     form.permittedDriftSeconds.trim() ===
       initial.permittedDriftSeconds.trim() &&
-    form.legacyKeycloakType === initial.legacyKeycloakType
+    form.legacyKeycloakType === initial.legacyKeycloakType &&
+    form.namedSecret.trim() === initial.namedSecret.trim() &&
+    form.attributeMapping.trim() === initial.attributeMapping.trim()
   );
 }
 
@@ -318,6 +330,8 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       ? Number(form.permittedDriftSeconds)
       : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
     legacy_keycloak_type: form.legacyKeycloakType || null,
+    named_secret: form.namedSecret.trim() || null,
+    attribute_mapping: parseAttributeMapping(form.attributeMapping),
   };
 }
 

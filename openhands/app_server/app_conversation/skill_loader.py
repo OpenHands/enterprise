@@ -13,7 +13,7 @@ All source-specific skill loading is handled by the agent-server.
 import asyncio
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, cast
 from urllib.parse import unquote, urlparse
@@ -31,7 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.auth import looks_like_jwt
-from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
+from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ class SkillInfo(BaseModel):
     name: str
     content: str
     triggers: list[str] = []
+    paths: list[str] = []
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
@@ -282,6 +283,7 @@ _URL_RESOLVE_CONCURRENCY = 8
 async def build_org_configs(
     selected_repository: str | None,
     user_context: UserContext,
+    additional_repositories: Sequence[str] = (),
 ) -> list[OrgConfig]:
     """Build the list of global org/user skill-repo configs for the agent-server.
 
@@ -290,7 +292,8 @@ async def build_org_configs(
     organization/group they belong to (across all authenticated providers),
     resolving both ``.openhands`` and ``.agents`` repos for GitHub-style
     providers. When a repository is selected, the repo owner's repos are
-    included too. Only repos whose authenticated URL resolves are returned, and
+    included too, then the owners of any additional repositories. Only repos
+    whose authenticated URL resolves are returned, and
     duplicate repo paths are collapsed. Failures degrade to fewer (or no)
     configs rather than raising.
 
@@ -321,6 +324,20 @@ async def build_org_configs(
                 candidates.append((f'{org_name}/.agents', org_name, selected_provider))
         except Exception as e:
             _logger.debug(f'Failed to determine selected-repo org config: {e}')
+
+    for repository in additional_repositories:
+        if len(repository.split('/')) < 2:
+            continue
+        try:
+            org_openhands_repo, org_name = await _determine_org_repo_path(
+                repository, user_context
+            )
+            repo_provider = await _get_provider_type(repository, user_context)
+            candidates.append((org_openhands_repo, org_name, repo_provider))
+            if repo_provider == 'github':
+                candidates.append((f'{org_name}/.agents', org_name, repo_provider))
+        except Exception as e:
+            _logger.debug(f'Failed to determine additional-repo org config: {e}')
 
     # 2. Global owners: the user's account plus their orgs/groups, per provider.
     try:
@@ -617,17 +634,22 @@ async def azure_devops_marketplace_orgs(
 async def azure_devops_user_orgs(
     user_context: UserContext,
     selected_repository: str | None = None,
+    additional_repositories: Sequence[str] = (),
 ) -> list[str]:
     """Return every Azure DevOps organization the user can reach.
 
     Covers the organizations the user's Azure DevOps token is installed on, plus
-    the selected repository's organization when one is given, so the git
-    credential helper is installed for all of the user's Azure DevOps repos (not
-    only the selected one). Failures degrade to the orgs already collected.
+    the organizations of the selected repository and of any additional Azure
+    DevOps repositories, so the git credential helper is installed for all of
+    the user's Azure DevOps repos (not only the selected one). Failures degrade
+    to the orgs already collected.
     """
     orgs: list[str] = []
-    if selected_repository and len(selected_repository.split('/')) >= 2:
-        orgs.append(selected_repository.split('/')[0])
+    for repository in (selected_repository, *additional_repositories):
+        if repository and len(repository.split('/')) >= 2:
+            org = repository.split('/')[0]
+            if org not in orgs:
+                orgs.append(org)
     try:
         provider_handler = await user_context.get_provider_handler()
         if ProviderType.AZURE_DEVOPS in provider_handler.provider_tokens:
@@ -883,9 +905,13 @@ def _convert_skill_info_to_skill(skill_info: SkillInfo) -> Skill:
     Returns:
         Skill object
     """
-    trigger: TaskTrigger | KeywordTrigger | None = None
+    trigger: PathTrigger | TaskTrigger | KeywordTrigger | None = None
 
-    if skill_info.triggers:
+    if skill_info.paths:
+        # Path-triggered rule: injected on file-touch. As in the SDK loader,
+        # paths take precedence over keyword/task triggers.
+        trigger = PathTrigger(paths=skill_info.paths)
+    elif skill_info.triggers:
         # Determine trigger type based on content
         if any(t.startswith('/') for t in skill_info.triggers):
             trigger = TaskTrigger(triggers=skill_info.triggers)

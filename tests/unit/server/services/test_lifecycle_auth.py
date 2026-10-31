@@ -4,6 +4,7 @@ from uuid import uuid4
 import jwt
 import pytest
 
+from openhands.app_server.services.jwt_service import JwtAudience
 from server.auth.auth_error import AuthError
 from server.auth.saas_user_auth import (
     SaasUserAuth,
@@ -29,11 +30,17 @@ async def test_cookie_revocation_survives_enable(
             ),
             'refresh_token': 'refresh',
         }
+        audience = JwtAudience.KEYCLOAK_SESSION
         authenticate = saas_user_auth_from_signed_token
     else:
-        payload = {'user_id': str(user.id)}
+        payload = {
+            'user_id': str(user.id),
+            'accepted_tos': True,
+            'access_token_expires_at': None,
+        }
+        audience = JwtAudience.SESSION
         authenticate = saas_user_auth_from_oauth_v2_cookie
-    old = get_jwt_service().create_jws_token(payload)
+    old = get_jwt_service().create_jws_token(payload, audience=audience)
     assert (await authenticate(old)).user_id == str(user.id)
     async with async_session_maker() as session:
         stored = await session.get(User, user.id)
@@ -55,7 +62,7 @@ async def test_cookie_revocation_survives_enable(
     from freezegun import freeze_time
 
     with freeze_time(datetime.now(timezone.utc) + timedelta(seconds=2)):
-        fresh = get_jwt_service().create_jws_token(payload)
+        fresh = get_jwt_service().create_jws_token(payload, audience=audience)
         assert (await authenticate(fresh)).user_id == str(user.id)
 
 

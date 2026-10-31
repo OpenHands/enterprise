@@ -34,6 +34,7 @@ from pydantic import (
 
 from openhands.app_server.settings.llm_profiles import has_real_api_key
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.llm import LLM
 
 # Connection ids: 1-128 chars, alphanumeric start, then alphanumeric/._-.
 # Same shape as the SDK's CONNECTION_ID_PATTERN / profile names — blocks path
@@ -77,6 +78,14 @@ class ProviderConnectionNotFoundError(LookupError):
     def __init__(self, connection_id: str) -> None:
         self.connection_id = connection_id
         super().__init__(f"Provider connection '{connection_id}' not found")
+
+    @property
+    def profile_detail(self) -> str:
+        """The 422 detail for a profile that links to this missing connection."""
+        return (
+            f"Profile references provider connection '{self.connection_id}', "
+            'which does not exist. Update the profile or recreate the connection.'
+        )
 
 
 class ProviderConnectionLimitExceededError(ValueError):
@@ -188,6 +197,63 @@ class ProviderConnections(BaseModel):
 
     def has(self, connection_id: str) -> bool:
         return connection_id in self.connections
+
+    def apply(self, llm: LLM, *, strict: bool = False) -> LLM:
+        """Overlay the linked connection's ``api_key`` and ``base_url`` on ``llm``.
+
+        Same rule as :meth:`apply_to_payload`, for an ``LLM``.
+        """
+        if not llm.provider_connection_id:
+            return llm
+        payload = self.apply_to_payload(
+            {'provider_connection_id': llm.provider_connection_id}, strict=strict
+        )
+        api_key = payload.get('api_key')
+        return llm.model_copy(
+            update={
+                'base_url': payload.get('base_url', llm.base_url),
+                'api_key': SecretStr(api_key) if api_key is not None else None,
+            }
+        )
+
+    def apply_to_payload(
+        self,
+        llm_payload: dict[str, Any],
+        *,
+        strict: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, Any]:
+        """The provider connection rule, on an LLM payload (e.g. a settings dict).
+
+        - No ``provider_connection_id``: returned unchanged.
+        - Connection found: its ``api_key`` (a plain string, so the payload
+          stays JSON) and ``base_url`` win. ``base_url`` is applied as-is,
+          including ``None``. A connection with no key leaves the payload with
+          no key.
+        - Connection missing: raises ``ProviderConnectionNotFoundError`` when
+          ``strict``; otherwise logs and drops ``api_key``, so no other key is
+          sent to a host the linked LLM never chose. ``org_id`` is only for
+          that log line.
+        """
+        connection_id = llm_payload.get('provider_connection_id')
+        if not connection_id:
+            return llm_payload
+        resolved = {k: v for k, v in llm_payload.items() if k != 'api_key'}
+        connection = self.get(connection_id)
+        if connection is None:
+            if strict:
+                raise ProviderConnectionNotFoundError(connection_id)
+            logger.warning(
+                'LLM settings reference missing provider connection %s on org %s',
+                connection_id,
+                org_id,
+            )
+            return resolved
+        resolved['base_url'] = connection.base_url
+        api_key = connection.api_key_value()
+        if api_key is not None:
+            resolved['api_key'] = api_key
+        return resolved
 
     def all(self) -> list[ProviderConnection]:
         return list(self.connections.values())

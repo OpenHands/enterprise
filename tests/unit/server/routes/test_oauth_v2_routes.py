@@ -19,20 +19,25 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
+import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.routes import oauth_v2
 from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
@@ -93,6 +98,7 @@ def _fake_provider(
     userinfo_url: str | None = 'https://example.com/user',
     legacy_keycloak_type: str | None = None,
     enabled: bool = True,
+    attribute_mapping: dict[str, str] | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -112,6 +118,7 @@ def _fake_provider(
         legacy_keycloak_type=(
             ProviderType(legacy_keycloak_type) if legacy_keycloak_type else None
         ),
+        attribute_mapping=attribute_mapping or {},
     )
     return provider
 
@@ -426,19 +433,24 @@ def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt
     _override_user_context(app, user_id)
     github = _fake_provider(provider_id=1, category='github')
     gitlab = _fake_provider(provider_id=2, category='gitlab')
-    for provider in (github, gitlab):
+    bitbucket = _fake_provider(provider_id=3, category='bitbucket')
+    for provider in (github, gitlab, bitbucket):
         provider.icon = None
         provider.color = '#000000'
 
     async def fake_get_raw(store):
-        return object() if store.oauth_provider_id == 1 else None
+        if store.oauth_provider_id == 1:
+            return SimpleNamespace(invalidated_at=None)
+        if store.oauth_provider_id == 3:
+            return SimpleNamespace(invalidated_at=datetime.now(timezone.utc))
+        return None
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
         patch.object(
             oauth_v2.AuthProviderStore,
             'get_git_providers',
-            new=AsyncMock(return_value=[github, gitlab]),
+            new=AsyncMock(return_value=[github, gitlab, bitbucket]),
         ),
         patch.object(oauth_v2.OAuthTokenStore, 'get_raw', new=fake_get_raw),
     ):
@@ -446,9 +458,13 @@ def test_list_git_providers_reports_connected_from_oauth_tokens(client, app, jwt
 
     assert response.status_code == 200
     body = response.json()
-    assert [(p['id'], p['provider_type'], p['connected']) for p in body] == [
-        (1, 'github', True),
-        (2, 'gitlab', False),
+    assert [
+        (p['id'], p['provider_type'], p['connected'], p['needs_reconnect'])
+        for p in body
+    ] == [
+        (1, 'github', True, False),
+        (2, 'gitlab', False, False),
+        (3, 'bitbucket', True, True),
     ]
     assert 'client_id' not in body[0]
 
@@ -482,7 +498,9 @@ def test_list_git_providers_hides_disabled_unless_already_connected(
     disabled_linked.enabled = False
 
     async def fake_get_raw(store):
-        return object() if store.oauth_provider_id == 3 else None
+        if store.oauth_provider_id == 3:
+            return SimpleNamespace(invalidated_at=None)
+        return None
 
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -500,6 +518,127 @@ def test_list_git_providers_hides_disabled_unless_already_connected(
         (1, False),
         (3, True),
     ]
+
+
+# ── POST /oauth/git-providers/{id}/check ─────────────────────────────────
+
+
+def _override_secrets(app, secrets: Secrets | None):
+    app.dependency_overrides[get_secrets] = lambda: secrets
+
+
+@contextmanager
+def _patch_check(provider, result, invalidated_at=None):
+    """Patch the provider lookup, the check itself and the re-read row."""
+    check = AsyncMock(return_value=result)
+    row = SimpleNamespace(invalidated_at=invalidated_at) if result else None
+    with (
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        patch.object(oauth_v2, 'check_git_provider_token', new=check),
+        patch.object(
+            oauth_v2.OAuthTokenStore, 'get_raw', new=AsyncMock(return_value=row)
+        ),
+    ):
+        yield check
+
+
+def test_check_git_provider_requires_auth(client, app):
+    _override_user_context(app, None)
+    _override_secrets(app, None)
+    response = client.post('/oauth/git-providers/1/check')
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ('check_status', 'invalidated_at', 'needs_reconnect'),
+    [
+        ('valid', None, False),
+        ('invalid', datetime.now(timezone.utc), True),
+        # An unreachable provider reports whatever was already recorded.
+        ('unavailable', datetime.now(timezone.utc), True),
+    ],
+)
+def test_check_git_provider_reports_result(
+    client, app, check_status, invalidated_at, needs_reconnect
+):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=4, category='github')
+    with _patch_check(provider, check_status, invalidated_at) as check:
+        response = client.post('/oauth/git-providers/4/check')
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'id': 4,
+        'status': check_status,
+        'needs_reconnect': needs_reconnect,
+    }
+    check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
+
+
+def test_check_git_provider_accepts_git_provider_that_is_also_the_idp(client, app):
+    user_id = uuid4()
+    _override_user_context(app, user_id)
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=3, category='github', is_idp=True)
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/3/check')
+
+    assert response.status_code == 200
+    assert response.json() == {'id': 3, 'status': 'valid', 'needs_reconnect': False}
+    check.assert_awaited_once_with(user_id, provider, ProviderType.GITHUB, None)
+
+
+def test_check_git_provider_uses_the_users_stored_host(client, app):
+    _override_user_context(app, uuid4())
+    _override_secrets(
+        app,
+        Secrets(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(host='gitlab.example.com')
+            }
+        ),
+    )
+    provider = _fake_provider(provider_id=2, category='gitlab')
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/2/check')
+
+    assert response.status_code == 200
+    assert check.await_args.args[3] == 'gitlab.example.com'
+
+
+def test_check_git_provider_not_linked(client, app):
+    _override_user_context(app, uuid4())
+    _override_secrets(app, None)
+    provider = _fake_provider(provider_id=1, category='github')
+    with _patch_check(provider, None):
+        response = client.post('/oauth/git-providers/1/check')
+
+    assert response.status_code == 404
+    assert response.json()['detail'] == 'Git provider not connected'
+
+
+@pytest.mark.parametrize(
+    'provider',
+    [
+        _fake_provider(provider_id=7, category='enterprise_sso'),
+        _fake_provider(provider_id=7, category='enterprise_sso', is_idp=True),
+        _fake_saml_provider(provider_id=7),
+    ],
+)
+def test_check_git_provider_rejects_non_git_rows(client, app, provider):
+    _override_user_context(app, uuid4())
+    _override_secrets(app, None)
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/7/check')
+
+    assert response.status_code == 404
+    check.assert_not_awaited()
 
 
 def test_list_idp_providers_hides_disabled(client, jwt_svc):
@@ -1279,6 +1418,122 @@ def test_callback_link_flow_with_matching_nonce_cookie(client, jwt_svc):
     store_tokens.assert_awaited_once()
 
 
+JIRA_DC_MAPPING = {'sub': 'key', 'email': 'emailAddress'}
+JIRA_DC_USERINFO = {
+    'self': 'https://jira.example.com/rest/api/2/user?username=tofarr',
+    'key': 'JIRAUSER10501',
+    'name': 'tofarr',
+    'emailAddress': 'Tim@Example.com',
+    'displayName': "Tim O'Farrell",
+}
+
+
+def _login_callback(client, jwt_svc, provider, userinfo, fake_user):
+    """Run a login-mode callback; return (response, link mock)."""
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(
+            oauth_v2.UserStore, 'create_user', new=AsyncMock(return_value=fake_user)
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+    return response, link
+
+
+def test_callback_login_reads_identity_from_mapped_claims(client, jwt_svc):
+    provider = _fake_provider(
+        category='enterprise_sso', is_idp=True, attribute_mapping=JIRA_DC_MAPPING
+    )
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    response, link = _login_callback(
+        client, jwt_svc, provider, JIRA_DC_USERINFO, fake_user
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='JIRAUSER10501',
+        external_email='tim@example.com',
+    )
+
+
+def test_callback_login_mapped_subject_missing_400(client, jwt_svc):
+    provider = _fake_provider(
+        category='enterprise_sso', is_idp=True, attribute_mapping=JIRA_DC_MAPPING
+    )
+
+    response, link = _login_callback(
+        client, jwt_svc, provider, {'id': 42, 'emailAddress': 'a@b.com'}, None
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'Provider did not return a subject identifier'
+    link.assert_not_awaited()
+
+
+def test_callback_link_reads_subject_from_mapped_claim(client, jwt_svc):
+    provider = _fake_provider(attribute_mapping=JIRA_DC_MAPPING)
+    user_id = uuid4()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, JIRA_DC_USERINFO),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=user_id,
+        external_subject_id='JIRAUSER10501',
+    )
+
+
 @pytest.mark.parametrize(
     ('headers', 'issued_at', 'detail'),
     [
@@ -1332,6 +1587,141 @@ def test_callback_link_rejects_state_not_bound_to_this_browser(
     store_tokens.assert_not_awaited()
 
 
+# ── callback: ID token claims when there is no userinfo endpoint ──────────
+
+
+def _id_token(**overrides) -> str:
+    claims = {
+        'sub': 'entra-sub',
+        'aud': 'cid',
+        'exp': int(time.time()) + 300,
+        'email': 'User@Example.com',
+        **overrides,
+    }
+    return jwt.encode(claims, 'k' * 32, algorithm='HS256')
+
+
+def _login_without_userinfo_url(client, jwt_svc, token_response: dict):
+    """Run a login callback against a provider with no ``userinfo_url``.
+
+    The userinfo GET is canned with a different subject, so a test can tell
+    whether the claims came from the ID token or from that endpoint.
+    """
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=_fake_provider(userinfo_url=None)),
+        ),
+        _patch_httpx(token_response, {'sub': 'userinfo-endpoint-sub'}),
+        patch.object(
+            oauth_v2.AuthProviderUserStore, 'get', new=AsyncMock(return_value=None)
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(return_value=fake_user),
+        ) as create_user,
+        patch.object(
+            oauth_v2.UserStore,
+            'get_user_by_id',
+            new=AsyncMock(return_value=fake_user),
+        ),
+        patch.object(
+            oauth_v2.UserStore, 'is_user_disabled', new=AsyncMock(return_value=False)
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()
+        ) as store_tokens,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+    return response, create_user, link, store_tokens
+
+
+def test_callback_login_reads_id_token_when_no_userinfo_url(client, jwt_svc):
+    response, create_user, link, store_tokens = _login_without_userinfo_url(
+        client,
+        jwt_svc,
+        {'access_token': 'at', 'refresh_token': 'rt', 'id_token': _id_token()},
+    )
+
+    assert response.status_code == 302
+    assert create_user.await_args.args[1]['email'] == 'user@example.com'
+    assert link.await_args.kwargs['external_subject_id'] == 'entra-sub'
+    store_tokens.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    'id_token',
+    [
+        pytest.param(_id_token(aud='another-client'), id='wrong-audience'),
+        pytest.param(_id_token(exp=int(time.time()) - 600), id='expired'),
+        pytest.param(_id_token(sub=None), id='no-subject'),
+        pytest.param('not-a-jwt', id='malformed'),
+    ],
+)
+def test_callback_login_rejects_an_invalid_id_token(client, jwt_svc, id_token):
+    response, create_user, _, store_tokens = _login_without_userinfo_url(
+        client, jwt_svc, {'access_token': 'at', 'id_token': id_token}
+    )
+
+    assert response.status_code == 502
+    create_user.assert_not_awaited()
+    store_tokens.assert_not_awaited()
+
+
+def test_callback_login_without_userinfo_url_or_id_token_400(client, jwt_svc):
+    response, create_user, _, store_tokens = _login_without_userinfo_url(
+        client, jwt_svc, {'access_token': 'at'}
+    )
+
+    assert response.status_code == 400
+    create_user.assert_not_awaited()
+    store_tokens.assert_not_awaited()
+
+
+def test_callback_link_reads_id_token_when_no_userinfo_url(client, jwt_svc):
+    user_id = uuid4()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=_fake_provider(userinfo_url=None)),
+        ),
+        _patch_httpx(
+            {'access_token': 'at', 'id_token': _id_token()},
+            {'sub': 'userinfo-endpoint-sub'},
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=1, user_id=user_id, external_subject_id='entra-sub'
+    )
+
+
 def test_callback_missing_code_400(client, jwt_svc):
     provider = _fake_provider()
     with (
@@ -1374,7 +1764,7 @@ def test_callback_error_param_400(client, jwt_svc):
     [
         ('gitlab', False, 'oauth_v2_login_on', True),
         ('github', False, 'oauth_v2_login_on', False),
-        ('gitlab', True, 'oauth_v2_login_on', False),
+        ('gitlab', True, 'oauth_v2_login_on', True),
         ('gitlab', False, 'oauth_v2_login_off', False),
     ],
 )
@@ -1530,8 +1920,14 @@ def test_link_requires_auth(app, client, jwt_svc):
     assert response.status_code == 401
 
 
-def test_link_idp_provider_400(app, client, jwt_svc):
-    provider = _fake_provider(is_idp=True)
+@pytest.mark.parametrize(
+    ('category', 'expected_status'),
+    [('enterprise_sso', 400), ('github', 200)],
+)
+def test_link_idp_provider_only_if_git_provider(
+    app, client, jwt_svc, category, expected_status
+):
+    provider = _fake_provider(category=category, is_idp=True)
     user_id = uuid4()
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -1543,7 +1939,7 @@ def test_link_idp_provider_400(app, client, jwt_svc):
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
-    assert response.status_code == 400
+    assert response.status_code == expected_status
 
 
 def test_link_unknown_provider_kind_404(app, client, jwt_svc):

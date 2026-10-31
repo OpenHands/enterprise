@@ -38,15 +38,21 @@ from typing import Literal
 from urllib.parse import quote, urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.git_token_check import (
+    GitTokenCheckStatus,
+    check_git_provider_token,
+)
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
@@ -58,6 +64,9 @@ from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
 )
 from server.auth.provider_identity import (
+    map_oauth_claims,
+)
+from server.auth.provider_identity import (
     require_enabled_provider as _require_enabled_provider,
 )
 from server.auth.provider_identity import (
@@ -66,17 +75,20 @@ from server.auth.provider_identity import (
 from server.auth.provider_identity import (
     set_oauth_v2_cookie as _set_oauth_v2_cookie,
 )
+from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
+    GIT_PROVIDER_TYPES,
     OAuthProviderDetails,
     PasswordProviderDetails,
     SamlProviderDetails,
 )
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
+from storage.oauth_token import OAuthToken
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_store import UserStore
 
@@ -211,6 +223,52 @@ def _parse_token_response(
                 pass
             break
     return access_token, refresh_token, access_expires_at, refresh_expires_at
+
+
+def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
+    """Read the claims of an ID token received from the provider's token endpoint."""
+    details = _oauth_details(provider)
+    try:
+        # OIDC Core 3.1.3.7 lets the TLS connection to the token endpoint stand
+        # in for the signature check; audience and expiry are still enforced.
+        return jwt.decode(
+            id_token,
+            options={
+                'verify_signature': False,
+                'verify_aud': True,
+                'verify_exp': True,
+                'require': ['sub', 'aud', 'exp'],
+            },
+            audience=details.client_id,
+            leeway=details.permitted_drift_seconds,
+        )
+    except jwt.InvalidTokenError as exc:
+        logger.warning(
+            'oauth_v2 id_token rejected provider=%s error=%s', provider.id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Provider returned an invalid id_token',
+        ) from exc
+
+
+async def _get_userinfo(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """Identity claims (see ``map_oauth_claims``) from the userinfo endpoint,
+    or from the ID token without one."""
+    details = _oauth_details(provider)
+    if details.userinfo_url:
+        raw_claims = await _fetch_userinfo(provider, access_token)
+    else:
+        id_token = token_data.get('id_token')
+        if not id_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+            )
+        raw_claims = _id_token_claims(provider, str(id_token))
+    return map_oauth_claims(raw_claims, details.attribute_mapping)
 
 
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
@@ -501,8 +559,8 @@ async def oauth_v2_callback(
         user_id = link_user_id
         # Best-effort userinfo for the external subject link.
         try:
-            userinfo = await _fetch_userinfo(provider, access_token)
-            subject = str(userinfo.get('sub') or userinfo.get('id') or user_id)
+            userinfo = await _get_userinfo(provider, token_data, access_token)
+            subject = str(userinfo['sub'] or user_id)
         except HTTPException:
             subject = user_id
         await AuthProviderUserStore().link(
@@ -512,7 +570,7 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _fetch_userinfo(provider, access_token)
+        userinfo = await _get_userinfo(provider, token_data, access_token)
         user_id = await _resolve_or_create_user(provider, userinfo)
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(
@@ -553,7 +611,7 @@ async def oauth_v2_callback(
         is_oauth_v2_login_enabled()
         and isinstance(details, OAuthProviderDetails)
         and (
-            (not provider.is_idp and details.provider_type == ProviderType.GITLAB)
+            details.provider_type == ProviderType.GITLAB
             or details.legacy_keycloak_type == ProviderType.GITLAB
         )
     ):
@@ -650,7 +708,10 @@ async def oauth_v2_link(
             detail='Authentication required to link a provider',
         )
     provider = await _get_provider(provider_id)
-    if provider.is_idp:
+    if provider.is_idp and not (
+        isinstance(provider.details, OAuthProviderDetails)
+        and provider.details.provider_type in GIT_PROVIDER_TYPES
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Cannot link an IDP provider; use login instead',
@@ -753,6 +814,12 @@ class GitProviderStatus(BaseModel):
     color: str
     provider_type: str
     connected: bool
+    # The provider rejected the linked token; only re-linking fixes it.
+    needs_reconnect: bool
+
+
+def _needs_reconnect(token: OAuthToken | None) -> bool:
+    return token is not None and token.invalidated_at is not None
 
 
 @oauth_v2_router.get('/git-providers', response_model=list[GitProviderStatus])
@@ -792,9 +859,69 @@ async def oauth_v2_list_git_providers(
                 color=provider.color,
                 provider_type=provider.details.provider_type.value,
                 connected=token is not None,
+                needs_reconnect=_needs_reconnect(token),
             )
         )
     return result
+
+
+class GitProviderCheckResult(BaseModel):
+    id: int
+    status: GitTokenCheckStatus
+    needs_reconnect: bool
+
+
+@oauth_v2_router.post(
+    '/git-providers/{provider_id}/check', response_model=GitProviderCheckResult
+)
+async def oauth_v2_check_git_provider(
+    provider_id: int,
+    user_id: str = Depends(get_user_id),
+    user_secrets: Secrets | None = Depends(get_secrets),
+) -> GitProviderCheckResult:
+    """Test the signed-in user's linked token against the provider's API.
+
+    One provider call per request; a rejection sets ``needs_reconnect`` until
+    the user re-links. Backs the Integrations page check and its "Test
+    connection" button.
+    """
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+        )
+    provider = await _get_provider(provider_id)
+    details = provider.details
+    if (
+        not isinstance(details, OAuthProviderDetails)
+        or details.provider_type not in GIT_PROVIDER_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Git provider {provider_id} not found',
+        )
+    provider_type = details.provider_type
+    host = None
+    if user_secrets and provider_type in user_secrets.provider_tokens:
+        host = user_secrets.provider_tokens[provider_type].host
+
+    user_uuid = uuid.UUID(user_id)
+    check_status = await check_git_provider_token(
+        user_uuid, provider, provider_type, _idp_token_host(provider_type, host)
+    )
+    if check_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Git provider not connected',
+        )
+    token = await OAuthTokenStore(
+        user_id=user_uuid, oauth_provider_id=provider.id
+    ).get_raw()
+    return GitProviderCheckResult(
+        id=provider.id,
+        status=check_status,
+        needs_reconnect=_needs_reconnect(token),
+    )
 
 
 class PublicIdpProvider(BaseModel):

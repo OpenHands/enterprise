@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,9 @@ from openhands.app_server.settings.llm_profiles import (
     ProfileNotFoundError,
     StrictLLM,
 )
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
+)
 from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
     agent_llm,
@@ -35,7 +38,9 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
 from openhands.sdk.profiles import (
     ProfileReferenced,
+    cascade_rename,
     delete_llm_profile,
+    find_referrers,
     rename_llm_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
@@ -51,6 +56,8 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     OrgLLMProfileMutator,
     load_agent_profiles,
+    load_member_agent_profiles,
+    load_meta_profiles,
 )
 from storage.database import a_session_maker
 from storage.org import Org
@@ -152,8 +159,8 @@ async def _load_profiles_with_live_default(
 def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     """Apply a referenced provider connection's credentials to ``llm``.
 
-    Read-at-use resolution at the single activation choke point, mirroring the
-    SDK's ``LLMProfileStore._resolve_provider_connection``:
+    Read-at-use resolution at the single activation choke point, with the
+    shared rule (``ProviderConnections.apply``, strict):
 
     - no ``provider_connection_id`` -> unchanged (byte-identical old path).
     - connection found -> its ``api_key`` / ``base_url`` win (``base_url`` is
@@ -165,25 +172,13 @@ def _resolve_provider_connection(org: Org, llm: LLM) -> LLM:
     the caller. Rotating a shared key therefore takes effect the next time a
     linked profile is activated — it is not pushed retroactively.
     """
-    connection_id = getattr(llm, 'provider_connection_id', None)
-    if not connection_id:
-        return llm
-
-    connection = _load_connections(org).get(connection_id)
-    if connection is None:
+    try:
+        return _load_connections(org).apply(llm, strict=True)
+    except ProviderConnectionNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Profile references provider connection '{connection_id}', "
-                'which does not exist. Update the profile or recreate the '
-                'connection.'
-            ),
-        )
-    updates: dict[str, Any] = {'base_url': connection.base_url}
-    api_key = connection.api_key_value()
-    if api_key is not None:
-        updates['api_key'] = SecretStr(api_key)
-    return llm.model_copy(update=updates)
+            detail=exc.profile_detail,
+        ) from exc
 
 
 def _load_profiles(org: Org) -> LLMProfiles:
@@ -330,7 +325,20 @@ async def save_profile(
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted one.
             llm = llm.model_copy(update={'api_key': existing.api_key})
-        if getattr(llm, 'provider_connection_id', None):
+        if llm.provider_connection_id:
+            # Catch a typo when the link is set or changed. Keeping a link that
+            # is already stored stays allowed, so a profile whose connection
+            # went missing can still be edited (the UI shows it to unlink).
+            relinked = existing is None or (
+                existing.provider_connection_id != llm.provider_connection_id
+            )
+            if relinked and not _load_connections(org).has(llm.provider_connection_id):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=ProviderConnectionNotFoundError(
+                        llm.provider_connection_id
+                    ).profile_detail,
+                )
             # A linked profile reads its credentials from the connection at
             # activation/load time. Never keep an inline key or base_url
             # underneath the link: a stale key would resurface silently on
@@ -371,9 +379,13 @@ async def delete_profile(
     """Delete an LLM profile.
 
     Blocked with 409 if any of the org's Agent Profiles still reference this LLM
-    profile by ``llm_profile_ref`` (the SDK ``find_referrers`` FK guard) — both
-    collections live on the same org row, so the ``SELECT ... FOR UPDATE`` lock
-    makes the referrer check and the delete atomic.
+    profile by ``llm_profile_ref`` (the SDK ``find_referrers`` FK guard), or if
+    a Model Router names it as classifier or class target — all collections
+    live on the same org row, so the ``SELECT ... FOR UPDATE`` lock makes the
+    referrer checks and the delete atomic. Members' personal Agent Profiles
+    (``org_member.agent_profiles``) are checked the same way under their row
+    locks; the 409 reports only how many members reference it, since an admin
+    cannot see or repoint their profiles.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -385,6 +397,47 @@ async def delete_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile '{name}' not found",
             )
+        members_with_profiles = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        referencing_members = sum(
+            1
+            for member in members_with_profiles
+            if find_referrers(load_member_agent_profiles(member), name)
+        )
+        if referencing_members:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"LLM profile '{name}' is referenced by the personal agent "
+                    f'profiles of {referencing_members} member(s); they must '
+                    'repoint those profiles first.'
+                ),
+            )
+        # Same FK guard for the org's Model Routers (classifier / class
+        # targets name LLM profiles). Only while the feature is on: a hidden
+        # router must not block a visible action.
+        if constants.is_model_router_enabled():
+            router_referrers = load_meta_profiles(org).llm_profile_referrers(name)
+            if router_referrers:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"LLM profile '{name}' is still referenced by Model "
+                        f'Router(s): {", ".join(router_referrers)}'
+                    ),
+                )
         agent_profiles = load_agent_profiles(org)
         try:
             delete_llm_profile(agent_profiles, OrgLLMProfileMutator(profiles), name)
@@ -537,7 +590,8 @@ async def rename_profile(
     The SDK ``rename_llm_profile`` renames the LLM profile and repoints every
     ``agent_profiles.*.llm_profile_ref == name`` to ``new_name`` under the org
     row lock, so a referencing Agent Profile never dangles. Both collections are
-    written back in the same transaction.
+    written back in the same transaction, and every member's personal Agent
+    Profiles (``org_member.agent_profiles``) are repointed the same way.
     """
     async with _org_profiles_transaction(org_id, user_id) as (
         session,
@@ -576,6 +630,46 @@ async def rename_profile(
         after = agent_profiles.model_dump(mode='json', context={'expose_secrets': True})
         if after != before:
             org.agent_profiles = after
+        # Personal Agent Profiles reference org LLM profiles by name too.
+        members = (
+            (
+                await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.agent_profiles.is_not(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for member in members:
+            personal = load_member_agent_profiles(member)
+            personal_before = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            cascade_rename(personal, name, request.new_name)
+            personal_after = personal.model_dump(
+                mode='json', context={'expose_secrets': True}
+            )
+            if personal_after != personal_before:
+                member.agent_profiles = personal_after
+        # Model Routers name LLM profiles too (classifier / class targets);
+        # repoint them under the same lock so no router dangles after a rename.
+        routers = load_meta_profiles(org)
+        routers_changed = False
+        for config in routers.profiles.values():
+            if config.classifier_model == name:
+                config.classifier_model = request.new_name
+                routers_changed = True
+            for item in config.classes:
+                if item.model == name:
+                    item.model = request.new_name
+                    routers_changed = True
+        if routers_changed:
+            org.meta_profiles = routers.model_dump(mode='json')
         await session.execute(
             update(OrgMember)
             .where(

@@ -20,6 +20,11 @@ from integrations.jira_dc.jira_dc_view import (
     JiraDcFactory,
 )
 from integrations.manager import Manager
+from integrations.mentioned_repositories import (
+    create_provider_handler,
+    select_additional_repositories,
+    verify_mentioned_repos,
+)
 from integrations.models import JobContext, Message
 from integrations.utils import (
     HOST,
@@ -207,41 +212,15 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         self, user_auth: UserAuth
     ) -> ProviderHandler | None:
         """Build a ProviderHandler for the user, or None if no provider is linked."""
-        provider_tokens = await user_auth.get_provider_tokens()
-        if provider_tokens is None:
-            return None
-        access_token = await user_auth.get_access_token()
-        user_id = await user_auth.get_user_id()
-        return ProviderHandler(
-            provider_tokens=provider_tokens,
-            external_auth_token=access_token,
-            external_auth_id=user_id,
-        )
+        return await create_provider_handler(user_auth)
 
     async def _verify_mentioned_repos(
         self, provider_handler: ProviderHandler, mentioned_repos: list[str]
-    ) -> list[Repository]:
-        """Resolve each mentioned repo with a targeted lookup.
-
-        Avoids enumerating the user's full repo list, which is capped and misses
-        repos on large Bitbucket DC instances (40k+ repos).
-        """
-        # Dedupe by canonical full_name: two forms of one repo (case/URL variants,
-        # a rename) resolve to the same repo and must count once -- otherwise
-        # is_job_requested sees >1 and asks the user to disambiguate a single repo.
-        verified: dict[str, Repository] = {}
-        for repo_name in mentioned_repos:
-            try:
-                repo = await provider_handler.verify_repo_provider(
-                    repo_name, is_optional=True
-                )
-            except Exception as e:
-                # INFO (not DEBUG) so the reason is visible in support bundles;
-                # e carries the provider error incl. the attempted URL + status.
-                logger.info(f'[Jira DC] Repo verification failed for {repo_name}: {e}')
-                continue
-            verified.setdefault(repo.full_name.lower(), repo)
-        return list(verified.values())
+    ) -> tuple[list[Repository], list[str]]:
+        """Resolve each mentioned repo with a targeted lookup, in mention order."""
+        return await verify_mentioned_repos(
+            provider_handler, mentioned_repos, log_prefix='[Jira DC]'
+        )
 
     async def validate_request(
         self, request: Request
@@ -535,8 +514,22 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             return True
 
         try:
-            target_str = f'{jira_dc_view.job_context.issue_description}\n{jira_dc_view.job_context.user_msg}'
-            mentioned_repos = infer_repo_from_message(target_str)
+            # Mentions in the triggering comment come first: they are the
+            # user's deliberate choice, while the description often links to
+            # Jira, Confluence or upstream issues that also look like a/b.
+            comment_mentions = infer_repo_from_message(
+                jira_dc_view.job_context.user_msg or ''
+            )
+            mentioned_repos = list(
+                dict.fromkeys(
+                    [
+                        *comment_mentions,
+                        *infer_repo_from_message(
+                            jira_dc_view.job_context.issue_description or ''
+                        ),
+                    ]
+                )
+            )
 
             if not mentioned_repos:
                 jira_dc_view.selected_repo = None
@@ -552,11 +545,12 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             provider_handler = await self._create_provider_handler(
                 jira_dc_view.saas_user_auth
             )
-            verified_repos = (
-                await self._verify_mentioned_repos(provider_handler, mentioned_repos)
-                if provider_handler
-                else []
-            )
+            if provider_handler:
+                verified_repos, unverified_repos = await self._verify_mentioned_repos(
+                    provider_handler, mentioned_repos
+                )
+            else:
+                verified_repos, unverified_repos = [], list(mentioned_repos)
 
             # One INFO line that separates a parse miss (inferred=[]) from a
             # lookup miss (inferred set, verified=[]) in support bundles.
@@ -567,18 +561,28 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 [r.full_name for r in verified_repos],
             )
 
-            if len(verified_repos) == 1:
-                jira_dc_view.selected_repo = verified_repos[0].full_name
-                logger.info(
-                    f'[Jira DC] Inferred repository: {verified_repos[0].full_name}'
+            if not verified_repos:
+                await self._send_inaccessible_repos_comment(
+                    jira_dc_view, mentioned_repos
                 )
-                return True
+                return False
 
-            # Unverified or multiple mentioned repositories still require user action.
-            await self._send_repo_selection_comment(
-                jira_dc_view, mentioned_repos, verified_repos
+            # The first verified mention is the primary repository; the rest
+            # are cloned beside it.
+            primary = verified_repos[0].full_name
+            selection = select_additional_repositories(
+                primary, verified_repos, unverified_repos, comment_mentions
             )
-            return False
+            jira_dc_view.selected_repo = primary
+            jira_dc_view.additional_repos = selection.additional
+            jira_dc_view.skipped_repos = selection.skipped
+            jira_dc_view.inaccessible_repos = selection.inaccessible
+            logger.info(
+                '[Jira DC] Inferred repository: %s additional=%s',
+                primary,
+                [r.full_name for r in jira_dc_view.additional_repos],
+            )
+            return True
 
         except Exception:
             logger.exception('[Jira DC] Error in is_job_requested', stack_info=True)
@@ -1025,35 +1029,17 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         except Exception:
             logger.exception('[Jira DC] Failed to send error comment', stack_info=True)
 
-    async def _send_repo_selection_comment(
-        self,
-        jira_dc_view: JiraDcViewInterface,
-        mentioned_repos: list[str] | None = None,
-        matched_repos: list[Repository] | None = None,
+    async def _send_inaccessible_repos_comment(
+        self, jira_dc_view: JiraDcViewInterface, mentioned_repos: list[str]
     ):
-        """Send a comment with repository options for the user to choose."""
+        """Tell the user that none of the mentioned repositories could be accessed."""
         try:
-            mentioned_repos = mentioned_repos or []
-            matched_repo_names = [repo.full_name for repo in matched_repos or []]
-            if not mentioned_repos:
-                comment_msg = (
-                    'Could not determine which repository to use. '
-                    'Please mention the repository (e.g., owner/repo or a '
-                    'repository URL) in the issue description or comment.'
-                )
-            elif len(matched_repo_names) > 1:
-                comment_msg = (
-                    f'Multiple repositories found: {", ".join(matched_repo_names)}. '
-                    'Please specify exactly one repository in the issue description '
-                    'or comment.'
-                )
-            else:
-                comment_msg = (
-                    f'Could not access any of the mentioned repositories: '
-                    f'{", ".join(mentioned_repos)}. '
-                    'Please ensure the repository exists and that the Git account '
-                    'linked to your OpenHands user can access it.'
-                )
+            comment_msg = (
+                f'Could not access any of the mentioned repositories: '
+                f'{", ".join(mentioned_repos)}. No conversation was started. '
+                'Please ensure each repository exists and that the Git account '
+                'linked to your OpenHands user can access it.'
+            )
 
             service_account = resolve_jira_dc_service_account(
                 jira_dc_view.jira_dc_workspace, self.token_manager
@@ -1067,11 +1053,11 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
 
             logger.info(
-                f'[Jira] Sent repository selection comment for issue {jira_dc_view.job_context.issue_key}'
+                f'[Jira DC] Sent inaccessible repositories comment for issue {jira_dc_view.job_context.issue_key}'
             )
 
         except Exception:
             logger.exception(
-                '[Jira] Failed to send repository selection comment',
+                '[Jira DC] Failed to send inaccessible repositories comment',
                 stack_info=True,
             )

@@ -61,6 +61,7 @@ async def search_user_installations(
     """Get user installations (GitHub apps) or equivalent for other providers.
 
     Returns a paginated list of installation IDs or workspace IDs depending on the provider.
+    Providers without installations (e.g. GitLab) return an empty page.
     """
     # Get provider tokens from user context
     provider_tokens = await user_context.get_provider_tokens()
@@ -89,10 +90,9 @@ async def search_user_installations(
     elif provider == ProviderType.AZURE_DEVOPS:
         installations = await client.get_azure_devops_organizations()
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Provider {provider} doesn't support installations",
-        )
+        # GitLab, Forgejo, ... list repositories directly, with no container
+        # level above them, so they have no installations.
+        return InstallationPage(items=[])
 
     items, next_page_id = paginate_results(installations, page_id, limit)
     return InstallationPage(items=items, next_page_id=next_page_id)

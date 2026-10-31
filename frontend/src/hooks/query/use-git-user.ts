@@ -22,14 +22,19 @@ export const useGitUser = () => {
     gcTime: 1000 * 60 * 15, // 15 minutes
   });
 
-  // In saas mode, a 401 means that the integration tokens need to be
-  // refreshed. Since this happens at login, we log out.
-  // In oss mode, skip auto-logout since there's no token refresh mechanism
+  // Legacy saas login brokers the git token via Keycloak, so re-login fixes a
+  // 401. With OAuth v2 the session IdP and git links are independent: re-login
+  // would not refresh the token and would loop. OSS has no refresh mechanism.
+  const isOAuthV2Login = !!config?.feature_flags?.enable_oauth_v2_login;
   React.useEffect(() => {
-    if (user?.error?.response?.status === 401 && config?.app_mode === "saas") {
+    if (
+      user?.error?.response?.status === 401 &&
+      config?.app_mode === "saas" &&
+      !isOAuthV2Login
+    ) {
       logout.mutate();
     }
-  }, [user.status, config?.app_mode]);
+  }, [user.status, config?.app_mode, isOAuthV2Login]);
 
   return user;
 };

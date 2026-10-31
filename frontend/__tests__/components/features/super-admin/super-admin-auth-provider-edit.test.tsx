@@ -4,7 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
-import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
+import type {
+  AuthProvider,
+  OAuthProviderDetails,
+} from "#/api/auth-providers-service/auth-providers.types";
 import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { SuperAdminAuthProviderEdit } from "#/components/features/super-admin/super-admin-auth-provider-edit";
 import {
@@ -13,24 +16,28 @@ import {
   SAML_PROVIDER,
 } from "./auth-provider-fixtures";
 
+const NEW_OAUTH_DETAILS: OAuthProviderDetails = {
+  kind: "OAuthProviderDetails",
+  provider_type: "enterprise_sso",
+  client_id: "PLACEHOLDER",
+  client_secret: null,
+  authorization_url: "https://accounts.google.com/o/oauth2/auth",
+  token_url: "https://oauth2.googleapis.com/token",
+  userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo",
+  scopes: ["openid", "email"],
+  permitted_drift_seconds: 60,
+  legacy_keycloak_type: null,
+  named_secret: null,
+  attribute_mapping: {},
+};
+
 /** A freshly created preset row: placeholder values and no secret yet. */
 const NEW_OAUTH_PROVIDER: AuthProvider = {
   ...GITHUB_PROVIDER,
   id: 5,
   title: "Log in with Google",
   is_idp: true,
-  details: {
-    kind: "OAuthProviderDetails",
-    provider_type: "enterprise_sso",
-    client_id: "PLACEHOLDER",
-    client_secret: null,
-    authorization_url: "https://accounts.google.com/o/oauth2/auth",
-    token_url: "https://oauth2.googleapis.com/token",
-    userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo",
-    scopes: ["openid", "email"],
-    permitted_drift_seconds: 60,
-    legacy_keycloak_type: null,
-  },
+  details: NEW_OAUTH_DETAILS,
 };
 
 function renderEditPage(provider: AuthProvider) {
@@ -280,6 +287,8 @@ describe("Super Admin Auth Provider edit page", () => {
           scopes: ["openid", "email"],
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
+          named_secret: null,
+          attribute_mapping: {},
         },
       }),
     );
@@ -389,6 +398,88 @@ describe("Super Admin Auth Provider edit page", () => {
             provider_type: "enterprise_sso",
             scopes: ["openid"],
             legacy_keycloak_type: "github",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("loads named_secret and sends the edited value", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const namedSecretInput = within(form).getByTestId(
+      "super-admin-auth-provider-named-secret",
+    );
+    expect(namedSecretInput).toHaveValue("GITHUB_TOKEN");
+    await user.clear(namedSecretInput);
+    await user.type(namedSecretInput, "GH_PAT");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 1,
+          details: expect.objectContaining({ named_secret: "GH_PAT" }),
+        }),
+      ),
+    );
+  });
+
+  it("sends named_secret as null when the field is cleared", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(GITHUB_PROVIDER);
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.clear(
+      within(form).getByTestId("super-admin-auth-provider-named-secret"),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ named_secret: null }),
+        }),
+      ),
+    );
+  });
+
+  it("loads the OAuth attribute mapping and sends the edited value", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, attribute_mapping: { sub: "name" } },
+    });
+
+    const mappingInput = within(form).getByTestId(
+      "super-admin-auth-provider-oauth-attribute-mapping",
+    );
+    expect(mappingInput).toHaveValue("sub=name");
+    await user.clear(mappingInput);
+    await user.type(mappingInput, "sub=key, email=emailAddress");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "OAuthProviderDetails",
+            attribute_mapping: { sub: "key", email: "emailAddress" },
           }),
         }),
       ),

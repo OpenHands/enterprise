@@ -10,6 +10,7 @@ from integrations.slack.slack_manager import (
     SLACK_USER_MSG_KEY_PREFIX,
     SlackManager,
 )
+from integrations.slack.slack_types import StartingConvoException
 from integrations.slack.slack_view import SlackNewConversationView
 from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
@@ -1419,3 +1420,94 @@ class TestSlackKeycloakCallback:
         assert link.team_id == 'T1'
         assert link.org_id == user.current_org_id
         assert team.team_id == 'T1'
+
+
+class TestStartJobErrorMessages:
+    """Start failures are relayed to the Slack user instead of a generic error."""
+
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    @patch.object(
+        SlackNewConversationView,
+        'create_or_update_conversation',
+        new_callable=AsyncMock,
+    )
+    async def test_start_job_posts_conversation_start_failure_detail(
+        self,
+        mock_create_or_update_conversation,
+        mock_send_message,
+        slack_manager,
+        slack_new_conversation_view,
+    ):
+        """A StartingConvoException message is posted instead of the generic error."""
+        # Arrange
+        message = (
+            'Failed to start the conversation: '
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
+        mock_create_or_update_conversation.side_effect = StartingConvoException(message)
+
+        # Act
+        await slack_manager.start_job(slack_new_conversation_view)
+
+        # Assert
+        mock_send_message.assert_awaited_once_with(message, slack_new_conversation_view)
+
+
+def _slack_state_jwt_service():
+    from pydantic import SecretStr
+
+    from openhands.app_server.services.jwt_service import JwtService
+    from openhands.app_server.utils.encryption_key import EncryptionKey
+
+    return JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+
+
+def test_slack_oauth_state_round_trip():
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    state = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'team_id': 'T1'},
+        audience=JwtAudience.SLACK_OAUTH_STATE,
+    )
+
+    payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+
+    assert payload['slack_user_id'] == 'U1'
+
+
+def test_slack_oauth_state_rejects_a_token_for_another_audience():
+    import jwt
+
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    session_cookie = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'user_id': 'user-1'}, audience=JwtAudience.SESSION
+    )
+
+    with pytest.raises(jwt.InvalidTokenError):
+        slack_routes.verify_slack_oauth_state(jwt_service, session_cookie)
+
+
+@pytest.mark.parametrize(
+    'claims, accepted',
+    [({'slack_user_id': 'U1', 'team_id': 'T1'}, True), ({'user_id': 'u'}, False)],
+)
+def test_slack_oauth_state_minted_before_audiences(claims, accepted):
+    import jwt
+
+    from server.routes.integration import slack as slack_routes
+    from tests.unit.unscoped_jws import mint_unscoped_jws_token
+
+    jwt_service = _slack_state_jwt_service()
+    state = mint_unscoped_jws_token(jwt_service, claims)
+
+    if accepted:
+        payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+        assert payload['slack_user_id'] == 'U1'
+    else:
+        with pytest.raises(jwt.InvalidTokenError):
+            slack_routes.verify_slack_oauth_state(jwt_service, state)

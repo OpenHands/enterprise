@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -19,9 +20,13 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.auth_error import (
     AuthError,
@@ -49,6 +54,8 @@ from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
@@ -156,6 +163,8 @@ class SaasUserAuth(UserAuth):
     # needed to distinguish "not yet computed" from "computed and None".
     _effective_org_id: UUID | None = None
     _effective_org_id_resolved: bool = False
+    # Cached result of `get_provider_connections()`; org-scoped.
+    _provider_connections: ProviderConnections | None = None
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -192,6 +201,7 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        self._provider_connections = None
         # The v2 access token is org-independent but the memoized token must
         # not survive a re-scope that clears provider_tokens.
         self.access_token = None if self.oauth_v2_cookie else self.access_token
@@ -825,10 +835,10 @@ class SaasUserAuth(UserAuth):
     async def _v2_get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         """Resolve git-provider tokens for an OAuth v2 cookie session.
 
-        Queries ``oauth_tokens`` for this user where the linked provider
-        ``is_idp=False`` and builds ``ProviderToken`` objects via
-        ``OAuthTokenStore.get_valid_access_token`` with a provider-specific
-        refresh callback. The interface to ``ProviderHandler`` / ``GitService``
+        Queries ``oauth_tokens`` for this user's git providers (see
+        ``AuthProviderStore.get_git_providers``) and builds ``ProviderToken``
+        objects via ``OAuthTokenStore.get_valid_access_token`` with a
+        provider-specific refresh callback. The interface to ``ProviderHandler`` / ``GitService``
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
@@ -860,8 +870,6 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
-                # Git providers (is_idp=False) are always OAuth2 -- there is
-                # no password/SAML "git integration".
                 assert isinstance(provider.details, OAuthProviderDetails)
                 try:
                     idp_type = provider.details.provider_type
@@ -949,6 +957,86 @@ class SaasUserAuth(UserAuth):
                 token=SecretStr(token), user_id=None, host=host
             )
         return provider_tokens
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        """Secrets named by ``OAuthProviderDetails.named_secret`` for the
+        providers this user linked. ``None`` unless OAuth v2 login is enabled.
+
+        When several linked rows share a name, the first in
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        """
+        if not is_oauth_v2_login_enabled():
+            return None
+        from storage.auth_provider_details import (
+            GIT_PROVIDER_TYPES,
+            OAuthProviderDetails,
+        )
+        from storage.auth_provider_store import AuthProviderStore
+
+        result = NamedOAuthSecrets()
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return result
+        seen_names: set[str] = set()
+        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+            details = provider.details
+            if not isinstance(details, OAuthProviderDetails):
+                continue
+            if details.provider_type in GIT_PROVIDER_TYPES:
+                result.linked_provider_types.add(details.provider_type)
+            name = details.named_secret
+            if not name or details.legacy_keycloak_type or name in seen_names:
+                continue
+            seen_names.add(name)
+            result.secrets.append(
+                NamedOAuthSecret(
+                    secret_name=name,
+                    oauth_provider_id=provider.id,
+                    description=f'{provider.title} OAuth access token',
+                )
+            )
+        return result
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's access token for ``oauth_provider_id``, refreshed if due.
+
+        ``None`` when the row no longer names a secret or the token is
+        unavailable. A failed refresh keeps the token row, since there may be
+        no user present to re-link.
+        """
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider = await AuthProviderStore().get_by_id(oauth_provider_id)
+        if provider is None:
+            return None
+        details = provider.details
+        if (
+            not isinstance(details, OAuthProviderDetails)
+            or not details.named_secret
+            or details.legacy_keycloak_type
+        ):
+            return None
+        try:
+            return await OAuthTokenStore(
+                user_id=UUID(self.user_id), oauth_provider_id=provider.id
+            ).get_valid_access_token(
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
+                refresh=make_refresh_callback(provider),
+            )
+        except Exception:
+            logger.warning(
+                'named_oauth_secret_unavailable',
+                extra={'user_id': self.user_id, 'oauth_provider_id': provider.id},
+                exc_info=True,
+            )
+            return None
 
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
@@ -1085,6 +1173,30 @@ class SaasUserAuth(UserAuth):
         )
         return openhands_api_key
 
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The provider connections of the effective org, for a member of it.
+
+        Same rule as ``SaasSettingsStore.load``, which supplies the profiles
+        these connections apply to: no member row, no connections. So a super
+        admin acting in an org they did not join gets no connection keys.
+        """
+        if self._provider_connections is not None:
+            return self._provider_connections
+        # Imported locally to avoid a circular import, as above.
+        from storage.agent_profile_resolution import load_provider_connections
+        from storage.org_member_store import OrgMemberStore
+
+        connections = ProviderConnections()
+        org_id = await self.get_effective_org_id()
+        if org_id is not None and await OrgMemberStore.get_org_member(
+            org_id, UUID(self.user_id)
+        ):
+            org = await OrgStore.get_org_by_id(org_id)
+            if org is not None:
+                connections = load_provider_connections(org)
+        self._provider_connections = connections
+        return connections
+
     async def get_org_info(self) -> dict | None:
         """Get organization info for the current user.
 
@@ -1191,6 +1303,69 @@ class SaasUserAuth(UserAuth):
                 # Will raise if rate limit is reached.
                 if rate_limiter is not None:
                     await rate_limiter.hit('auth_uid', user_id)
+        return instance
+
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Authorize each lookup against the persisted launch principal and org.
+
+        Do not use get_user_by_id here: it can provision a missing user. Legacy
+        sandboxes with no trustworthy org binding must be recreated.
+        """
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
+            )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
+        try:
+            user_id = UUID(sandbox.created_by_user_id)
+        except ValueError:
+            deny('invalid_owner')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User, OrgMember, Org)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                deny('unknown_owner')
+            user, member, org = row
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
+        instance = cls(
+            user_id=str(user_id),
+            refresh_token=SecretStr(''),
+            auth_type=AuthType.BEARER,
+        )
+        instance.set_effective_org_id_override(sandbox.credential_org_id)
+        # Validate now, before any credential (including provider tokens) is read.
+        await instance.get_effective_org_id()
         return instance
 
     @classmethod
@@ -1302,6 +1477,41 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         raise CookieError from exc
 
 
+def _is_unscoped_oauth_v2_cookie(payload: dict) -> bool:
+    # Every cookie create_oauth_v2_cookie_payload has ever minted carries both
+    # keys; the other tokens this service used to sign without an audience
+    # (git-token lookups, credential helpers, quota emails) carry neither.
+    return 'accepted_tos' in payload and 'access_token_expires_at' in payload
+
+
+def _is_unscoped_keycloak_auth_cookie(payload: dict) -> bool:
+    return 'access_token' in payload and 'refresh_token' in payload
+
+
+def decode_oauth_v2_cookie(signed_token: str) -> dict:
+    """Verify an ``openhands_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_oauth_v2_cookie,
+    )
+
+
+def decode_keycloak_auth_cookie(signed_token: str) -> dict:
+    """Verify a legacy ``keycloak_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.KEYCLOAK_SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_keycloak_auth_cookie,
+    )
+
+
 async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth:
     """Build a ``SaasUserAuth`` from the small OAuth v2 JWT cookie.
 
@@ -1309,9 +1519,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     Tokens are NOT carried in the cookie; they are resolved lazily from the
     ``oauth_tokens`` table by ``get_access_token`` / ``get_provider_tokens``.
     """
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_oauth_v2_cookie(signed_token)
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
@@ -1368,9 +1576,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     logger.debug('saas_user_auth_from_signed_token')
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_keycloak_auth_cookie(signed_token)
     logger.debug('saas_user_auth_from_signed_token:decoded')
     access_token = decoded['access_token']
     refresh_token = decoded['refresh_token']

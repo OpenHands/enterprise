@@ -62,7 +62,7 @@ from openhands.app_server.event_callback.sql_event_callback_service import (
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
@@ -448,15 +448,33 @@ async def on_conversation_update(
         git_provider=existing.git_provider,
         trigger=trigger,
         pr_number=existing.pr_number,
+        pull_requests=existing.pull_requests,
+        additional_repositories=existing.additional_repositories,
         # Preserve parent/child relationship and other metadata
         parent_conversation_id=existing.parent_conversation_id,
         metrics=conversation_info.stats.get_combined_metrics(),
         # Store merged tags (includes automation context, skills, etc.)
         tags=merged_tags,
     )
-    await app_conversation_info_service.save_app_conversation_info(
-        app_conversation_info
-    )
+    if is_new_conversation:
+        # The stub was read before the conversation's start saved its row; that
+        # save may have happened since. Insert only if the row is still absent so
+        # the stub's defaults never replace the start's title and repositories.
+        is_new_conversation = (
+            await app_conversation_info_service.create_app_conversation_info(
+                app_conversation_info
+            )
+        )
+        if not is_new_conversation:
+            _logger.info(
+                'Conversation %s was saved by its start while the webhook ran; '
+                'keeping that row',
+                conversation_info.id,
+            )
+    else:
+        await app_conversation_info_service.save_app_conversation_info(
+            app_conversation_info
+        )
 
     # Register SetTitleCallbackProcessor for new conversations created via webhook.
     # This enables auto-titling for conversations created directly on the agent-server
@@ -640,24 +658,41 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
     return AuthUserContext(user_auth=user_auth)
 
 
+def _is_unscoped_secret_lookup_token(payload: dict[str, Any]) -> bool:
+    return 'user_id' in payload and (
+        'provider_type' in payload or 'oauth_provider_id' in payload
+    )
+
+
 @router.get('/secrets')
 async def get_secret(
     access_token: str = Depends(APIKeyHeader(name='X-Access-Token', auto_error=False)),
     jwt_service: JwtService = jwt_dependency,
 ) -> Response:
     """Given an access token, retrieve a user secret. The access token
-    is limited by user and provider type, and may include a timeout, limiting
-    the damage in the event that a token is ever leaked"""
+    is limited by user and either an OAuth provider row (``oauth_provider_id``)
+    or a provider type, and may include a timeout, limiting the damage in the
+    event that a token is ever leaked"""
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
-        payload = jwt_service.verify_jws_token(access_token)
+        payload = jwt_service.verify_jws_token(
+            access_token,
+            audience=JwtAudience.SECRET_LOOKUP,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+            accept_unscoped=_is_unscoped_secret_lookup_token,
+        )
         user_id = payload['user_id']
-        provider_type = ProviderType(payload['provider_type'])
-
         user_context = await _resolve_user_context(user_id)
 
-        secret = await user_context.get_latest_token(provider_type)
+        secret: str | SecretStr | None
+        if 'oauth_provider_id' in payload:
+            secret = await user_context.get_named_oauth_secret_value(
+                int(payload['oauth_provider_id'])
+            )
+        else:
+            provider_type = ProviderType(payload['provider_type'])
+            secret = await user_context.get_latest_token(provider_type)
         if secret is None:
             raise HTTPException(404, 'No such provider')
         if isinstance(secret, SecretStr):

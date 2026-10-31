@@ -389,7 +389,8 @@ class TestOnConversationUpdateAutoTitle:
         # Track order of operations
         operation_order = []
 
-        original_save = app_conversation_info_service.save_app_conversation_info
+        # A stub (no row yet) is stored with the insert-only path.
+        original_save = app_conversation_info_service.create_app_conversation_info
 
         async def tracking_save(info):
             operation_order.append('save_conversation')
@@ -417,7 +418,7 @@ class TestOnConversationUpdateAutoTitle:
             ),
             patch.object(
                 app_conversation_info_service,
-                'save_app_conversation_info',
+                'create_app_conversation_info',
                 tracking_save,
             ),
         ):

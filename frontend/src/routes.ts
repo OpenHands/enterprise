@@ -28,6 +28,8 @@ export default [
     route("settings", "routes/settings.tsx", [
       index("routes/llm-settings.tsx"),
       route("agent", "routes/agent-settings.tsx"),
+      route("agents", "routes/agent-profiles-settings.tsx"),
+      route("agent-context", "routes/agent-context-settings.tsx"),
       route("condenser", "routes/condenser-settings.tsx"),
       route("verification", "routes/verification-settings.tsx"),
       route("org-defaults", "routes/org-default-llm-settings.tsx"),
@@ -38,6 +40,10 @@ export default [
       route(
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
+      ),
+      route(
+        "org-defaults/model-router",
+        "routes/org-model-router-settings.tsx",
       ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),

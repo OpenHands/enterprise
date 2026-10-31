@@ -29,6 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -116,7 +117,9 @@ def set_response_cookie(
     from storage.encrypt_utils import get_jwt_service
 
     signed_token = get_jwt_service().create_jws_token(
-        cookie_data, expires_in=timedelta(weeks=1)
+        cookie_data,
+        expires_in=timedelta(weeks=1),
+        audience=JwtAudience.KEYCLOAK_SESSION,
     )
 
     # Set secure cookie with signed token. The value can exceed the
@@ -1302,11 +1305,13 @@ async def accept_tos(request: Request):
                         signup_entry_source=signup_entry_source,
                         campaign=campaign,
                     )
+                    person_properties = {
+                        'signed_up_at': datetime.now(timezone.utc).isoformat()
+                    }
+                    if email:
+                        person_properties['email'] = email
                     analytics.set_person_properties(
-                        ctx=ctx,
-                        properties={
-                            'signed_up_at': datetime.now(timezone.utc).isoformat()
-                        },
+                        ctx=ctx, properties=person_properties
                     )
             except Exception:
                 logger.exception('analytics:user_signed_up:failed', stack_info=True)
