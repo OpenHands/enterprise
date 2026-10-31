@@ -628,15 +628,6 @@ class AppConversationServiceBase(AppConversationService, ABC):
         # load_memory() picks it up on the first send_message/run.
         await self.maybe_inject_memory_context(workspace, project_dir)
 
-        task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
-        yield task
-        await self.load_and_merge_all_skills(
-            sandbox,
-            task.request.selected_repository,
-            project_dir,
-            agent_server_url,
-        )
-
     async def _configure_git_user_settings(
         self,
         workspace: AsyncRemoteWorkspace,

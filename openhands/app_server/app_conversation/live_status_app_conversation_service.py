@@ -864,6 +864,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 },
             )
 
+            # The request builder loads skills with the final marketplace/filter settings.
+            task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
+            yield task
+
             # Build the start request
             start_conversation_request = (
                 await self._build_start_conversation_request_for_user(
