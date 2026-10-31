@@ -4891,6 +4891,71 @@ class TestLiveStatusAppConversationService:
         self.service._build_start_conversation_request_for_user.assert_not_called()
         self.mock_httpx_client.post.assert_not_called()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('selected_repository', [None, 'owner/repo'])
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_loads_skills_once(
+        self,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
+        selected_repository,
+    ):
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        del self.service.run_setup_scripts
+        del self.service._build_start_conversation_request_for_user
+        for name in (
+            '_configure_git_credential_helpers',
+            '_configure_azure_devops_git_credentials',
+            'clone_or_init_git_repo',
+            'maybe_run_setup_script',
+            'maybe_setup_git_hooks',
+            'maybe_inject_memory_context',
+        ):
+            setattr(self.service, name, AsyncMock())
+        self.service._process_pending_messages = AsyncMock()
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._mint_azure_devops_access_token = AsyncMock()
+        self.service._mint_git_credential_access_tokens = AsyncMock()
+        self.service.clone_additional_repositories = AsyncMock(return_value=[])
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('test-key')), {})
+        )
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=[])
+        self.service.load_and_merge_all_skills = AsyncMock(return_value=[])
+        workspace = mock_remote_workspace_class.return_value
+        workspace.working_dir = '/test/workspace'
+        workspace.execute_command = AsyncMock(
+            return_value=SimpleNamespace(exit_code=0, stdout='')
+        )
+        statuses = []
+        async for task in self.service._start_app_conversation(
+            AppConversationStartRequest(
+                selected_repository=selected_repository,
+                git_provider=ProviderType.GITHUB if selected_repository else None,
+                disabled_skills=['disabled-test-skill'],
+            )
+        ):
+            statuses.append(task.status)
+
+        assert statuses[-1] == AppConversationStartTaskStatus.READY, task.detail
+        assert statuses.count(AppConversationStartTaskStatus.SETTING_UP_SKILLS) == 1
+        self.service.load_and_merge_all_skills.assert_awaited_once()
+        assert (
+            self.service.load_and_merge_all_skills.call_args.kwargs[
+                'registered_marketplaces'
+            ]
+            == []
+        )
+        self.mock_httpx_client.post.assert_awaited_once()
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,
