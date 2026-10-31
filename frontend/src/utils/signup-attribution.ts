@@ -66,15 +66,30 @@ export function rememberCloudEntry(
   handoffCampaign?: unknown,
 ): void {
   const params = new URLSearchParams(window.location.search);
+  const redirectPath =
+    params.get("returnTo") ??
+    params.get("redirect") ??
+    params.get("redirect_url");
+  const redirectUrl =
+    redirectPath?.startsWith("/") && !redirectPath.startsWith("//")
+      ? new URL(redirectPath, window.location.origin)
+      : null;
+  const redirectParams =
+    redirectUrl && redirectUrl.origin === window.location.origin
+      ? redirectUrl.searchParams
+      : new URLSearchParams();
   const campaign = {
     ...campaignFrom(handoffCampaign),
+    ...campaignFrom(Object.fromEntries(redirectParams)),
     ...campaignFrom(Object.fromEntries(params)),
   };
   const fromDevice =
     window.location.pathname === "/oauth/device/verify" &&
     params.has("user_code") &&
     params.get("signup_entry_source") === "local_canvas";
-  const querySource = params.get("signup_entry_source");
+  const querySource =
+    params.get("signup_entry_source") ??
+    redirectParams.get("signup_entry_source");
   let source: SignupEntrySource | null = null;
   if (handoffSource === "marketing_website" || handoffSource === "docs") {
     source = handoffSource;
@@ -86,6 +101,12 @@ export function rememberCloudEntry(
     source = "direct_or_unknown";
   }
   if (!source) return;
+  const previous = storedEntry();
+  if (
+    previous?.signup_entry_source === source &&
+    UTM_KEYS.every((key) => previous.campaign[key] === campaign[key])
+  )
+    return;
   try {
     sessionStorage.setItem(
       ENTRY_KEY,
