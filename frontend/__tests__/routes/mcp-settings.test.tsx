@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import McpService from "#/api/mcp-service/mcp-service.api";
+import OptionService from "#/api/option-service/option-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import {
   MOCK_DEFAULT_USER_SETTINGS,
@@ -13,6 +14,7 @@ import MCPSettingsScreen, { clientLoader } from "#/routes/mcp-settings";
 import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Settings } from "#/types/settings";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 function buildSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -64,7 +66,9 @@ function renderMcpSettingsScreen() {
   return render(<MCPSettingsScreen />, {
     wrapper: ({ children }) => (
       <MemoryRouter>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
       </MemoryRouter>
     ),
   });
@@ -158,7 +162,9 @@ describe("MCPSettingsScreen", () => {
           );
         }
 
-        for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+        for (const [key, value] of Object.entries(
+          payload as Record<string, unknown>,
+        )) {
           if (key === "agent_settings_diff") {
             continue;
           }
@@ -225,6 +231,70 @@ describe("MCPSettingsScreen", () => {
     // Assert
     await waitFor(() => expect(steps).toEqual(["add-integration"]));
     window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+  });
+});
+
+describe("MCPSettingsScreen with Agent Canvas", () => {
+  const mockConfig = (enabled: boolean, appMode: "oss" | "saas" = "oss") =>
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: appMode,
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          enable_agent_canvas_mcp: enabled,
+        },
+      }),
+    );
+
+  it("hands MCP server management off to Canvas and keeps the search key", async () => {
+    mockConfig(true);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ search_api_key: "tavily-key", search_api_key_set: true }),
+    );
+    const assign = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({
+      ...window.location,
+      assign,
+    });
+
+    renderMcpSettingsScreen();
+
+    expect(await screen.findByTestId("mcp-canvas-handoff")).toBeInTheDocument();
+    expect(screen.queryByTestId("mcp-server-list")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("SETTINGS$MCP_ADD_SERVER"),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByTestId("mcp-search-settings-section"),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("mcp-open-canvas"));
+    expect(assign).toHaveBeenCalledWith("/canvas/mcp");
+  });
+
+  // OHE runs the app in SaaS mode, where this page never had the search-key
+  // section, so with Canvas managing servers the page holds only this.
+  it("shows only the Canvas MCP servers entry point in SaaS mode (OHE)", async () => {
+    mockConfig(true, "saas");
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    renderMcpSettingsScreen();
+
+    expect(await screen.findByTestId("mcp-canvas-handoff")).toBeInTheDocument();
+    expect(screen.queryByTestId("mcp-server-list")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("mcp-search-settings-section"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the server editor when Canvas does not manage MCP servers", async () => {
+    mockConfig(false);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    renderMcpSettingsScreen();
+
+    expect(await screen.findByTestId("mcp-server-list")).toBeInTheDocument();
+    expect(screen.queryByTestId("mcp-canvas-handoff")).not.toBeInTheDocument();
   });
 });
 
