@@ -364,4 +364,4 @@ make help
 - [/containers/README.md](./containers/README.md): Information about Docker containers and deployment
 - [/tests/unit/README.md](./tests/unit/README.md): Guide to writing and running unit tests
 - [OpenHands/benchmarks](https://github.com/OpenHands/benchmarks): Documentation for the evaluation framework and benchmarks
-- [/skills/README.md](./skills/README.md): Information about the skills architecture and implementation
+- [OpenHands/extensions](https://github.com/OpenHands/extensions): The public skills that conversations load
