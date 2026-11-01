@@ -87,6 +87,10 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   let items = isSaasMode ? [...SAAS_NAV_ITEMS] : [...OSS_NAV_ITEMS];
 
+  if (featureFlags?.agent_canvas_available) {
+    items = items.filter((item) => item.to !== "/settings/mcp");
+  }
+
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
