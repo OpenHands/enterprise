@@ -191,6 +191,12 @@ class ConversationPullRequest(BaseModel):
     git_provider: ProviderType | None = None
 
 
+class ConversationTitleGeneration(OpenHandsModel):
+    status: Literal['pending', 'generated', 'fallback']
+    title: str
+    deadline_at: datetime
+
+
 class AppConversationInfo(BaseModel):
     """Conversation info which does not contain status."""
 
@@ -203,6 +209,7 @@ class AppConversationInfo(BaseModel):
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
     title: str | None = None
+    title_generation: ConversationTitleGeneration | None = None
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     # The repository of each entry in ``pr_number`` when it was recorded.
@@ -405,6 +412,7 @@ class AppConversationStartRequest(OpenHandsModel):
     )
     suggested_task: SuggestedTask | None = None
     title: str | None = None
+    generate_title_on_submit: bool = False
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     parent_conversation_id: OpenHandsUUID | None = None
@@ -570,6 +578,7 @@ class AppConversationStartTask(OpenHandsModel):
     agent_server_url: str | None = Field(
         default=None, description='The agent server url, if READY'
     )
+    title_generation: ConversationTitleGeneration | None = None
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

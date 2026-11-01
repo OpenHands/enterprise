@@ -7,6 +7,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk import ConversationStats
@@ -167,6 +168,12 @@ class AppConversationInfoService(ABC):
             conversation_id: The ID of the conversation to update
             title: The new title
         """
+
+    @abstractmethod
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        """Settle a pending title only if it has not been renamed or deleted."""
 
 
 class AppConversationInfoServiceInjector(
