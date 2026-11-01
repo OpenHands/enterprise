@@ -49,6 +49,12 @@ ENTRYPOINTS = {
 pytestmark = pytest.mark.timeout(60)
 
 
+@pytest.fixture(autouse=True)
+def no_license_key(monkeypatch):
+    """usage_report runs whenever a license key is set, so tests start without one."""
+    monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+
+
 def test_every_job_is_off_unless_enabled(monkeypatch):
     assert from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs.enabled() == []
 
@@ -58,6 +64,25 @@ def test_every_job_is_off_unless_enabled(monkeypatch):
 
     config = from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs
     assert config.enabled() == ['budget_maintenance', 'resend_sync']
+
+
+def test_usage_report_runs_whenever_a_license_key_is_set(monkeypatch):
+    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', 'false')
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
+
+    config = from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs
+    assert config.enabled() == ['usage_report']
+
+    blueprint = scheduled_jobs_blueprint(config)
+    [(task, cron)] = _periodic(blueprint).items()
+    assert (task.name, cron) == ('usage_report', '*/30 * * * *')
+    assert task.lock == task.queueing_lock == f'{NAMESPACE}:usage_report'
+
+
+def test_usage_report_is_off_with_a_blank_license_key(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', '  ')
+
+    assert from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs.enabled() == []
 
 
 def test_only_enabled_jobs_are_scheduled():
@@ -194,6 +219,23 @@ async def _run_job(worker_app: App, conninfo: dict, name: str) -> tuple[str, int
         job_id,
     )
     return status, attempts
+
+
+@pytest.mark.usefixtures('app_db_session')
+async def test_usage_report_runs_its_report_in_the_worker(conninfo, monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
+    ran = []
+
+    async def run():
+        ran.append(True)
+
+    monkeypatch.setattr('server.licensing.usage_report.run', run)
+
+    async with _open_worker_app(conninfo, ScheduledJobsConfig()) as worker_app:
+        status, _ = await _run_job(worker_app, conninfo, 'usage_report')
+
+    assert status == 'succeeded'
+    assert ran
 
 
 @pytest.mark.usefixtures('app_db_session')
