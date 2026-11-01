@@ -130,8 +130,9 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
         instance_id=str(instance_id),
         conversations=conversations or 0,
         users=users or 0,
-        # Automations live in the automation service's own database, which
-        # this install can't read, so Customer Center gets null.
+        # TODO: count automations. They live in the automation service's own
+        # database, and that service has no global count, so this sends null
+        # ("not reported").
         automations=None,
         orgs=orgs or 0,
         sso_enabled=sso,
