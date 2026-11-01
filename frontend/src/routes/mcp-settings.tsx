@@ -354,4 +354,8 @@ function MCPSettingsScreen() {
   );
 }
 
-export default MCPSettingsScreen;
+export default function MCPSettingsRoute() {
+  const { data: config } = useConfig();
+  if (!config || config.feature_flags?.agent_canvas_available) return null;
+  return <MCPSettingsScreen />;
+}

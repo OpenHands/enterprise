@@ -61,6 +61,7 @@ from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
+from server.routes.mcp_servers import router as mcp_servers_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
 from server.routes.oauth_providers_admin import (  # noqa: E402
     oauth_provider_admin_router,
@@ -233,6 +234,7 @@ base_app.include_router(
 base_app.include_router(
     org_provider_connections_router, prefix='/api/organizations'
 )  # Add routes for org LLM provider connections
+base_app.include_router(mcp_servers_router)
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles

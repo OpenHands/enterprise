@@ -87,6 +87,17 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
 
+  if (featureFlags?.agent_canvas_available && pathname === "/settings/mcp") {
+    const destination = new URL("/canvas/mcp", url.origin);
+    const orgId =
+      url.searchParams.get(ORG_QUERY_PARAM) ||
+      getSelectedOrganizationIdFromStore();
+    if (isSaas && orgId) destination.searchParams.set(ORG_QUERY_PARAM, orgId);
+    // A router document redirect ignores the replace header and traps Back.
+    window.location.replace(`${destination.pathname}${destination.search}`);
+    return new Promise<never>(() => {});
+  }
+
   // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
   // switch the current org before any settings guard runs, then strip the
   // param so the next loader pass evaluates the guards against the new org.
