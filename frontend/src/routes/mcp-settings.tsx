@@ -74,6 +74,9 @@ function MCPSettingsScreen() {
   const [serverToDelete, setServerToDelete] = useState<string | null>(null);
 
   const isSaasMode = config?.app_mode === "saas";
+  // Where Agent Canvas is deployed it owns MCP server management; this page
+  // keeps only the settings Canvas has no home for.
+  const mcpServersInCanvas = !!config?.feature_flags?.enable_agent_canvas_mcp;
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -242,24 +245,37 @@ function MCPSettingsScreen() {
             {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
           </p>
         </header>
-        <BrandButton
-          type="button"
-          variant="primary"
-          className="shrink-0 whitespace-nowrap"
-          onClick={() => {
-            resetTest();
-            setView("add");
-          }}
-        >
-          {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
-        </BrandButton>
+        {!mcpServersInCanvas && (
+          <BrandButton
+            type="button"
+            variant="primary"
+            className="shrink-0 whitespace-nowrap"
+            onClick={() => {
+              resetTest();
+              setView("add");
+            }}
+          >
+            {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
+          </BrandButton>
+        )}
       </div>
 
-      <MCPServerList
-        servers={allServers}
-        onEdit={handleEditClick}
-        onDelete={handleDeleteClick}
-      />
+      {mcpServersInCanvas ? (
+        // Canvas's own MCP page, without its chrome (`?embed=1`). Same
+        // origin, so it shares this session.
+        <iframe
+          data-testid="mcp-canvas-frame"
+          src="/canvas/mcp?embed=1"
+          title={t(I18nKey.SETTINGS$MCP_TITLE)}
+          className="h-[calc(100vh-12rem)] min-h-[32rem] w-full rounded-xl border border-[var(--oh-border)] bg-base-secondary"
+        />
+      ) : (
+        <MCPServerList
+          servers={allServers}
+          onEdit={handleEditClick}
+          onDelete={handleDeleteClick}
+        />
+      )}
 
       {!isSaasMode ? (
         <section
