@@ -332,7 +332,7 @@ class TokenManager:
                     f'No tokens for user: {user_id}, identity provider: {idp}'
                 )
             access_token = self.decrypt_text(str(token_info['access_token']))
-            logger.info(f'Got {idp} token: {access_token[0:5]}')
+            logger.info(f'Got {idp} token successfully')
             return access_token
         except httpx.HTTPStatusError as e:
             # Log the full response details including the body
