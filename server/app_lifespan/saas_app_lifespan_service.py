@@ -1,8 +1,9 @@
 """SaaS-specific application lifespan service.
 
 On startup, optionally migrates the database, initializes PostHog analytics and
-prepares the sandbox specs (the Docker backend pulls missing images). On clean
-shutdown, flushes buffered events so none are lost when the server exits
+prepares the sandbox specs (the Docker backend pulls missing images), then
+starts the background license check. On clean shutdown, stops the license
+check and flushes buffered events so none are lost when the server exits
 gracefully.
 """
 
@@ -22,6 +23,7 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+from server.licensing import get_license_service
 from storage.database import sqlstate
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +88,7 @@ class SaasAppLifespanService(AppLifespanService):
         )
         await self._reconcile_org_condenser_defaults()
         await self._prepare_sandbox_specs()
+        get_license_service().start()
         return self
 
     async def _prepare_sandbox_specs(self) -> None:
@@ -201,6 +204,8 @@ class SaasAppLifespanService(AppLifespanService):
             raise
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        await get_license_service().stop()
+
         try:
             svc = get_analytics_service()
             if svc is not None:

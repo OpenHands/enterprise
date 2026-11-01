@@ -63,6 +63,7 @@ from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
+from server.routes.license import license_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
 from server.routes.oauth_providers_admin import (  # noqa: E402
     oauth_provider_admin_router,
@@ -292,6 +293,7 @@ base_app.include_router(
     analytics_events_router
 )  # Add routes for client-initiated analytics events
 base_app.include_router(quota_router)  # Add routes for quota status
+base_app.include_router(license_router)  # License status for the license banner
 base_app.include_router(
     quota_admin_router
 )  # Add admin routes for quota (org-level + increase requests)

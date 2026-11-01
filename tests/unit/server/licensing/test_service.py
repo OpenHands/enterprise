@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import timedelta
+
+import httpx
+import pytest
+from fastapi import FastAPI, HTTPException
+from httpx import ASGITransport, AsyncClient
+
+from server.licensing import service as service_module
+from server.licensing.config import LicenseConfig
+from server.licensing.service import (
+    LicenseService,
+    require_feature,
+    require_license,
+)
+from tests.unit.license_signing import (
+    LICENSE_KEY,
+    NOW,
+    Signer,
+    invalid_payload,
+    valid_payload,
+)
+
+
+class FakeCustomerCenter:
+    """Answers license checks with whatever the test sets in ``response``."""
+
+    def __init__(self):
+        self.response: httpx.Response | Exception = httpx.Response(500)
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
+
+
+class Clock:
+    def __init__(self):
+        self.now = NOW
+
+    def __call__(self):
+        return self.now
+
+
+def _config(**overrides) -> LicenseConfig:
+    values = {
+        'enforcement_enabled': True,
+        'license_key': LICENSE_KEY,
+        'license_server_url': 'https://cc.example',
+        'check_interval_seconds': 1800,
+    }
+    values.update(overrides)
+    return LicenseConfig(**values)
+
+
+@pytest.fixture
+def customer_center():
+    return FakeCustomerCenter()
+
+
+@pytest.fixture
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clock):
+    def make(**overrides) -> LicenseService:
+        return LicenseService(
+            _config(**overrides),
+            trusted_public_keys=signer.trusted_keys,
+            http_client_factory=customer_center.client,
+            clock=clock,
+        )
+
+    return make
+
+
+async def test_disabled_allows_everything_and_never_calls_out(
+    make_service, customer_center
+):
+    service = make_service(enforcement_enabled=False)
+
+    assert (await service.check_now()).state == 'disabled'
+    assert service.is_licensed()
+    assert service.has_feature('sso')
+    assert service.within_limit('users', 1_000_000)
+    assert customer_center.requests == []
+
+
+async def test_missing_key_is_not_licensed(make_service, customer_center):
+    service = make_service(license_key=None)
+
+    assert (await service.check_now()).state == 'missing_key'
+    assert not service.is_licensed()
+    assert not service.has_feature('sso')
+    assert not service.within_limit('users', 1)
+    assert customer_center.requests == []
+
+
+async def test_pending_allows_until_the_first_check(make_service):
+    service = make_service()
+
+    assert service.status().state == 'pending'
+    assert service.is_licensed()
+    assert service.has_feature('sso')
+
+
+async def test_valid_answer_sets_features_and_limits(
+    make_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    service = make_service()
+
+    status = await service.check_now()
+
+    assert status.state == 'valid'
+    assert status.last_checked_at == NOW
+    assert service.is_licensed()
+    assert service.has_feature('sso')
+    assert service.within_limit('users', 10)
+    assert not service.within_limit('users', 11)
+    assert service.within_limit('sandboxes', 1_000_000)  # None is unlimited
+
+    [request] = customer_center.requests
+    assert str(request.url) == 'https://cc.example/api/v1/licenses/validate'
+    assert json.loads(request.content) == {'license_key': LICENSE_KEY}
+
+
+async def test_feature_missing_from_plan(make_service, customer_center, signer):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(valid_payload(features={'sso': False}))
+    )
+    service = make_service()
+    await service.check_now()
+
+    assert service.is_licensed()
+    assert not service.has_feature('sso')
+
+
+async def test_invalid_answer_is_not_licensed(make_service, customer_center, signer):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('trial_expired'))
+    )
+    service = make_service()
+
+    status = await service.check_now()
+
+    assert status.state == 'invalid'
+    assert status.payload is not None
+    assert getattr(status.payload, 'reason') == 'trial_expired'
+    assert not service.is_licensed()
+    assert not service.has_feature('sso')
+    assert not service.within_limit('users', 1)
+
+
+@pytest.mark.parametrize(
+    'response',
+    [
+        httpx.Response(503),
+        httpx.Response(200, text='not json'),
+        httpx.ConnectError('down'),
+    ],
+)
+async def test_failed_check_keeps_the_cached_answer_until_it_expires(
+    make_service, customer_center, signer, clock, response
+):
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    service = make_service()
+    await service.check_now()
+
+    customer_center.response = response
+    clock.now = NOW + timedelta(days=13)
+    status = await service.check_now()
+
+    assert status.state == 'valid'
+    assert status.last_error is not None
+
+    clock.now = NOW + timedelta(days=14)
+    status = service.status()
+    assert status.state == 'unverified'
+    assert not service.is_licensed()
+
+
+async def test_forged_answer_does_not_replace_the_cached_one(
+    make_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('revoked'))
+    )
+    service = make_service()
+    await service.check_now()
+
+    forged = Signer(key_id=signer.key_id).sign(valid_payload())
+    customer_center.response = httpx.Response(200, json=forged)
+    status = await service.check_now()
+
+    assert status.state == 'invalid'
+    assert 'signature' in (status.last_error or '')
+
+
+async def test_first_check_failing_is_unverified(make_service, customer_center):
+    customer_center.response = httpx.ConnectError('down')
+    service = make_service()
+
+    assert (await service.check_now()).state == 'unverified'
+    assert not service.is_licensed()
+
+
+async def test_new_answer_replaces_the_cached_one(
+    make_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    service = make_service()
+    await service.check_now()
+
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('revoked'))
+    )
+
+    assert (await service.check_now()).state == 'invalid'
+
+
+async def test_background_loop_checks_on_start_and_on_each_interval(
+    make_service, customer_center, signer, monkeypatch
+):
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 3:
+            await real_sleep(3600)
+        await real_sleep(0)
+
+    monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
+    service = make_service(check_interval_seconds=120)
+
+    service.start()
+    for _ in range(50):
+        if len(sleeps) >= 3:
+            break
+        await real_sleep(0)
+    await service.stop()
+
+    assert len(customer_center.requests) == 3
+    assert sleeps == [120, 120, 120]
+    assert service.status().state == 'valid'
+
+
+async def test_start_does_nothing_when_disabled(make_service):
+    service = make_service(enforcement_enabled=False)
+    service.start()
+
+    assert service._task is None
+    await service.stop()
+
+
+@pytest.fixture
+def installed_service(make_service, monkeypatch):
+    service = make_service()
+    monkeypatch.setattr(service_module, '_license_service', service)
+    return service
+
+
+async def test_dependencies_reject_when_not_licensed(
+    installed_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('revoked'))
+    )
+    await installed_service.check_now()
+
+    with pytest.raises(HTTPException) as exc:
+        require_license()
+    assert exc.value.status_code == 403
+    with pytest.raises(HTTPException):
+        require_feature('sso')()
+
+
+async def test_dependencies_allow_on_a_router(
+    installed_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    await installed_service.check_now()
+
+    from fastapi import Depends
+
+    app = FastAPI()
+
+    @app.get(
+        '/sso', dependencies=[Depends(require_license), Depends(require_feature('sso'))]
+    )
+    async def sso():
+        return {'ok': True}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://test'
+    ) as client:
+        response = await client.get('/sso')
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize('value', ['true', '1', 'TRUE'])
+def test_config_enables_with_true_or_1(monkeypatch, value):
+    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', value)
+    assert LicenseConfig.from_env().enforcement_enabled
+
+
+def test_config_defaults(monkeypatch):
+    for name in (
+        'LICENSE_ENFORCEMENT_ENABLED',
+        'OPENHANDS_LICENSE_KEY',
+        'LICENSE_SERVER_URL',
+        'LICENSE_CHECK_INTERVAL_SECONDS',
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = LicenseConfig.from_env()
+
+    assert config.enforcement_enabled is False
+    assert config.license_key is None
+    assert config.license_server_url == 'https://customercenter.openhands.dev'
+    assert config.check_interval_seconds == 1800
+
+
+@pytest.mark.parametrize(('raw', 'expected'), [('600', 600), ('5', 60), ('soon', 1800)])
+def test_config_check_interval(monkeypatch, raw, expected):
+    monkeypatch.setenv('LICENSE_CHECK_INTERVAL_SECONDS', raw)
+    assert LicenseConfig.from_env().check_interval_seconds == expected
+
+
+def test_config_trims_the_server_url(monkeypatch):
+    monkeypatch.setenv('LICENSE_SERVER_URL', 'https://cc.example/ ')
+    assert LicenseConfig.from_env().license_server_url == 'https://cc.example'
