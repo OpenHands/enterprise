@@ -1670,19 +1670,31 @@ describe("clientLoader ?org= deep link", () => {
 
 describe("MCP compatibility bookmarks", () => {
   beforeEach(() => mockQueryClient.clear());
-  afterEach(() => vi.restoreAllMocks());
-
-  it.each([undefined, "linked-org"])("replaces the document while carrying the organization (%s)", async (linkedOrg) => {
-    mockQueryClient.setQueryData(["web-client-config"], {
-      app_mode: "saas", feature_flags: { agent_canvas_available: true },
-    });
-    useSelectedOrganizationStore.setState({ organizationId: "selected-org" });
-    const request = new Request(`http://localhost/settings/mcp${linkedOrg ? `?org=${linkedOrg}` : ""}`);
-    // @ts-expect-error - only the request is consumed by this loader
-    const response = await clientLoader({ request });
-    expect(response).toBeInstanceOf(Response);
-    expect((response as Response).headers.get("Location")).toBe(`/canvas/mcp?org=${linkedOrg || "selected-org"}`);
-    expect((response as Response).headers.get("X-Remix-Replace")).toBe("true");
-    expect((response as Response).headers.get("X-Remix-Reload-Document")).toBe("true");
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
+
+  it.each([undefined, "linked-org"])(
+    "replaces the document while carrying the organization (%s)",
+    async (linkedOrg) => {
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: { agent_canvas_available: true },
+      });
+      useSelectedOrganizationStore.setState({ organizationId: "selected-org" });
+      const replaceDocument = vi.fn();
+      vi.stubGlobal("location", { replace: replaceDocument });
+      const request = new Request(
+        `http://localhost/settings/mcp${linkedOrg ? `?org=${linkedOrg}` : ""}`,
+      );
+      // @ts-expect-error - only the request is consumed by this loader
+      void clientLoader({ request });
+      await waitFor(() => {
+        expect(replaceDocument).toHaveBeenCalledWith(
+          `/canvas/mcp?org=${linkedOrg || "selected-org"}`,
+        );
+      });
+    },
+  );
 });

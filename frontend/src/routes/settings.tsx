@@ -97,9 +97,9 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       url.searchParams.get(ORG_QUERY_PARAM) ||
       getSelectedOrganizationIdFromStore();
     if (isSaas && orgId) destination.searchParams.set(ORG_QUERY_PARAM, orgId);
-    return replace(`${destination.pathname}${destination.search}`, {
-      headers: { "X-Remix-Reload-Document": "true" },
-    });
+    // A router document redirect ignores the replace header and traps Back.
+    window.location.replace(`${destination.pathname}${destination.search}`);
+    return new Promise<never>(() => {});
   }
 
   // Honor `?org=<id>` deep links (e.g. agent-canvas "All Cloud Settings"):
