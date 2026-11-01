@@ -1,0 +1,198 @@
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
+
+import pytest
+
+from openhands.agent_server.models import EventSortOrder
+from openhands.app_server.event.event_router import search_events
+from openhands.app_server.event.filesystem_event_service import FilesystemEventService
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.llm import Message, TextContent
+
+
+@pytest.fixture
+def service(tmp_path):
+    return FilesystemEventService(
+        prefix=tmp_path,
+        user_id='test_user',
+        app_conversation_info_service=None,
+        app_conversation_info_load_tasks={},
+    )
+
+
+def message(**kwargs):
+    return MessageEvent(
+        source='user',
+        llm_message=Message(role='user', content=[TextContent(text='Hello')]),
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_raw_history_preserves_full_snapshots_by_default(service):
+    conversation_id = uuid4()
+    snapshot = ConversationStateUpdateEvent(key='full_state', value={'agent': {}})
+    msg = message()
+    for event in [snapshot, msg]:
+        await service.save_event(conversation_id, event)
+
+    result = await search_events(conversation_id.hex, event_service=service)
+
+    assert result.items == [snapshot, msg]
+    assert result.next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_compact_history_preserves_other_state_and_messages(service):
+    conversation_id = uuid4()
+    snapshot = ConversationStateUpdateEvent(key='full_state', value={'agent': {}})
+    retained = [
+        message(),
+        *[
+            ConversationStateUpdateEvent(key=key, value={})
+            for key in ['goal', 'execution_status', 'stats', 'future_state']
+        ],
+    ]
+    for event in [snapshot, *retained]:
+        await service.save_event(conversation_id, event)
+    await service.search_events(conversation_id)
+    raw_count = await service.count_events(conversation_id)
+
+    result = await search_events(
+        conversation_id.hex, exclude_full_state=True, event_service=service
+    )
+
+    assert result.items == retained
+    assert result.next_page_id is None
+    assert await service.count_events(conversation_id) == raw_count
+    exported = [
+        event async for event in service.iter_events_for_export(conversation_id)
+    ]
+    assert exported == [snapshot, *retained]
+
+
+@pytest.mark.asyncio
+async def test_compact_history_fills_pages_without_losing_cursor_or_filters(service):
+    conversation_id = uuid4()
+    first = message(timestamp='2026-01-01T00:00:02')
+    second = message(timestamp='2026-01-01T00:00:04')
+    third = message(timestamp='2026-01-01T00:00:05')
+    events = [
+        ConversationStateUpdateEvent(
+            key='full_state', value={}, timestamp='2026-01-01T00:00:01'
+        ),
+        first,
+        ConversationStateUpdateEvent(
+            key='full_state', value={}, timestamp='2026-01-01T00:00:03'
+        ),
+        second,
+        third,
+        message(timestamp='2026-01-01T00:00:07'),
+    ]
+    for event in events:
+        await service.save_event(conversation_id, event)
+    cutoff = datetime(2026, 1, 1, 0, 0, 6)
+
+    result = await search_events(
+        conversation_id.hex,
+        timestamp__lt=cutoff,
+        limit=2,
+        exclude_full_state=True,
+        event_service=service,
+    )
+
+    assert result.items == [first, second]
+    assert result.next_page_id == '4'
+    following = await search_events(
+        conversation_id.hex,
+        timestamp__lt=cutoff,
+        page_id=result.next_page_id,
+        limit=2,
+        exclude_full_state=True,
+        event_service=service,
+    )
+    assert following.items == [third]
+    assert following.next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_only_history_finishes_with_an_empty_page(service):
+    conversation_id = uuid4()
+    await service.save_event(
+        conversation_id, ConversationStateUpdateEvent(key='full_state', value={})
+    )
+
+    result = await search_events(
+        conversation_id.hex, exclude_full_state=True, event_service=service
+    )
+
+    assert result.items == []
+    assert result.next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_negative_cursor_fails_without_looping(service):
+    conversation_id = uuid4()
+    await service.save_event(conversation_id, message())
+    with pytest.raises(ValueError, match='non-negative'):
+        await search_events(
+            conversation_id.hex,
+            page_id='-100',
+            exclude_full_state=True,
+            event_service=service,
+        )
+
+
+@pytest.mark.asyncio
+async def test_compact_history_propagates_storage_failure():
+    service = AsyncMock()
+    service.search_events.side_effect = RuntimeError('storage unavailable')
+
+    with pytest.raises(RuntimeError, match='storage unavailable'):
+        await search_events(uuid4().hex, exclude_full_state=True, event_service=service)
+
+
+@pytest.mark.asyncio
+async def test_new_events_do_not_shift_a_compact_page_while_it_is_loading(tmp_path):
+    service = FilesystemEventService(
+        prefix=tmp_path,
+        user_id='test_user',
+        app_conversation_info_service=None,
+        app_conversation_info_load_tasks={},
+    )
+    conversation_id = uuid4()
+    older = message(timestamp='2026-01-01T00:00:01Z')
+    newer = message(timestamp='2026-01-01T00:00:02Z')
+    arriving = message(timestamp='2026-01-01T00:00:04Z')
+    snapshot = ConversationStateUpdateEvent(
+        key='full_state', value={}, timestamp='2026-01-01T00:00:03Z'
+    )
+    for event in [older, newer, snapshot]:
+        await service.save_event(conversation_id, event)
+    await service.search_events(conversation_id)
+
+    original_load = service._load_events_from_paths
+    appended = False
+
+    async def load_with_arrival(self, paths):
+        nonlocal appended
+        loaded = await original_load(paths)
+        if not appended:
+            appended = True
+            await service.save_event(conversation_id, arriving)
+        return loaded
+
+    with patch.object(
+        FilesystemEventService, '_load_events_from_paths', load_with_arrival
+    ):
+        result = await search_events(
+            conversation_id.hex,
+            sort_order=EventSortOrder.TIMESTAMP_DESC,
+            limit=2,
+            exclude_full_state=True,
+            event_service=service,
+        )
+
+    assert [event.id for event in result.items] == [newer.id, older.id]
