@@ -75,7 +75,8 @@ class UsageReport(BaseModel):
     instance_id: str = Field(min_length=1, max_length=200)
     conversations: int = Field(ge=0)
     users: int = Field(ge=0)
-    automations: int = Field(ge=0)
+    # None until this install has a source for the count.
+    automations: int | None = Field(ge=0)
     orgs: int = Field(ge=0)
     sso_enabled: bool
     personal_workspaces_enabled: bool
@@ -130,8 +131,8 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
         conversations=conversations or 0,
         users=users or 0,
         # Automations live in the automation service's own database, which
-        # this install can't count yet.
-        automations=0,
+        # this install can't read, so Customer Center gets null.
+        automations=None,
         orgs=orgs or 0,
         sso_enabled=sso,
         personal_workspaces_enabled=await personal_workspaces_enabled(),
