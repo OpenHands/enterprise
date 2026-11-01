@@ -5,6 +5,8 @@
 
 import { SettingsScope } from "#/types/settings";
 
+export const LOGOUT_MUTATION_KEY = ["logout"] as const;
+
 export const QUERY_KEYS = {
   /** Web client configuration from the server */
   WEB_CLIENT_CONFIG: ["web-client-config"] as const,
