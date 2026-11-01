@@ -84,6 +84,9 @@ services:
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+      # With a license key, the worker sends Customer Center a usage report every 30 minutes.
+      OPENHANDS_LICENSE_KEY: ${OPENHANDS_LICENSE_KEY:-}
+      LICENSE_SERVER_URL: ${LICENSE_SERVER_URL:-}
     # The first start pulls the agent server image, which can take many minutes.
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]
