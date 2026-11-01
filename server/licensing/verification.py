@@ -29,8 +29,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
-# Public keys for each Customer Center signing key ID, as PEM (SPKI). Customer
-# Center prints them with `npm run license:public-key`.
+# Public keys for each Customer Center signing key ID, as PEM (SPKI). They ship
+# with OHE, and no setting can add or replace one: anyone who controls the keys
+# OHE trusts can sign their own answers. Customer Center prints them with
+# `npm run license:public-key`.
 TRUSTED_PUBLIC_KEYS: dict[str, str] = {
     'staging-1': (
         '-----BEGIN PUBLIC KEY-----\n'
@@ -110,19 +112,17 @@ def verify_signed_license(
     *,
     license_key: str,
     now: datetime,
-    trusted_public_keys: dict[str, str] | None = None,
 ) -> ValidLicensePayload | InvalidLicensePayload:
     """Return the payload in Customer Center's answer if it can be trusted.
 
     Raises LicenseVerificationError if any check fails.
     """
-    keys = TRUSTED_PUBLIC_KEYS if trusted_public_keys is None else trusted_public_keys
     try:
         envelope = SignedLicense.model_validate(body)
     except ValidationError as e:
         raise LicenseVerificationError('The answer is not a signed license') from e
 
-    pem = keys.get(envelope.key_id)
+    pem = TRUSTED_PUBLIC_KEYS.get(envelope.key_id)
     if pem is None:
         raise LicenseVerificationError(f'Unknown signing key ID {envelope.key_id!r}')
     public_key = load_pem_public_key(pem.encode('ascii'))

@@ -76,7 +76,6 @@ def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clo
     def make(**overrides) -> LicenseService:
         return LicenseService(
             _config(**overrides),
-            trusted_public_keys=signer.trusted_keys,
             http_client_factory=customer_center.client,
             clock=clock,
         )

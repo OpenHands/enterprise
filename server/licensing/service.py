@@ -69,12 +69,10 @@ class LicenseService:
         self,
         config: LicenseConfig,
         *,
-        trusted_public_keys: dict[str, str] | None = None,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
         self.config = config
-        self._trusted_public_keys = trusted_public_keys
         self._http_client_factory = http_client_factory or (
             lambda: httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         )
@@ -168,7 +166,6 @@ class LicenseService:
                 body,
                 license_key=license_key,
                 now=self._clock(),
-                trusted_public_keys=self._trusted_public_keys,
             )
         except (httpx.HTTPError, ValueError, LicenseVerificationError) as e:
             self._last_error = f'{type(e).__name__}: {e}'

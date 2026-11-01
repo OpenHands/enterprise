@@ -4,5 +4,7 @@ from tests.unit.license_signing import Signer
 
 
 @pytest.fixture
-def signer() -> Signer:
-    return Signer()
+def signer(monkeypatch) -> Signer:
+    signer = Signer()
+    signer.trust(monkeypatch)
+    return signer

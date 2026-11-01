@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
+from server.licensing import verification
 from server.licensing.verification import license_key_sha256
 
 LICENSE_KEY = 'ohe_lic_test_key'
@@ -66,9 +67,11 @@ class Signer:
             .decode('ascii')
         )
 
-    @property
-    def trusted_keys(self) -> dict[str, str]:
-        return {self.key_id: self.public_key_pem}
+    def trust(self, monkeypatch) -> None:
+        """Make OHE trust only this signer's key for the rest of the test."""
+        monkeypatch.setattr(
+            verification, 'TRUSTED_PUBLIC_KEYS', {self.key_id: self.public_key_pem}
+        )
 
     def sign(self, payload: dict) -> dict:
         text = json.dumps(payload)

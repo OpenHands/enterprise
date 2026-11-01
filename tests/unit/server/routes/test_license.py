@@ -32,7 +32,6 @@ def _service(signer: Signer, answer: dict | None, **config) -> LicenseService:
     values.update(config)
     return LicenseService(
         LicenseConfig(**values),
-        trusted_public_keys=signer.trusted_keys,
         http_client_factory=lambda: httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ),
@@ -54,8 +53,10 @@ async def _get_status(monkeypatch, service: LicenseService) -> dict:
 
 
 @pytest.fixture
-def signer() -> Signer:
-    return Signer()
+def signer(monkeypatch) -> Signer:
+    signer = Signer()
+    signer.trust(monkeypatch)
+    return signer
 
 
 async def test_status_when_disabled(monkeypatch, signer):
