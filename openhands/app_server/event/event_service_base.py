@@ -322,7 +322,7 @@ class EventServiceBase(EventService, ABC):
             raise ValueError('Event page offset must be non-negative')
         items: list[Event] = []
         while offset < len(entries) and len(items) < limit:
-            batch = entries[offset : offset + limit - len(items)]
+            batch = entries[offset : offset + limit]
             paths = [
                 self._event_id_to_path(conversation_path, entry[0]) for entry in batch
             ]
@@ -339,8 +339,12 @@ class EventServiceBase(EventService, ABC):
                     and event.key == FULL_STATE_KEY
                 )
             }  # type: ignore[union-attr]
-            items.extend(by_id[entry[0]] for entry in batch if entry[0] in by_id)
-            offset += len(batch)
+            for entry in batch:
+                offset += 1
+                if entry[0] in by_id:
+                    items.append(by_id[entry[0]])
+                if len(items) == limit:
+                    break
             if not exclude_full_state:
                 break
 

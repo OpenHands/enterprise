@@ -196,3 +196,36 @@ async def test_new_events_do_not_shift_a_compact_page_while_it_is_loading(tmp_pa
         )
 
     assert [event.id for event in result.items] == [newer.id, older.id]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_runs_use_batched_reads_and_preserve_unconsumed_cursor(service):
+    conversation_id = uuid4()
+    events = [message(), message()]
+    events.extend(
+        ConversationStateUpdateEvent(key='full_state', value={}) for _ in range(7)
+    )
+    events.extend([message(), message()])
+    for event in events:
+        await service.save_event(conversation_id, event)
+    await service.search_events(conversation_id)
+    original_load = service._load_events_from_paths
+    batch_sizes = []
+
+    async def record_batch(self, paths):
+        batch_sizes.append(len(paths))
+        return await original_load(paths)
+
+    with patch.object(FilesystemEventService, '_load_events_from_paths', record_batch):
+        result = await service.search_events(
+            conversation_id, limit=3, exclude_full_state=True
+        )
+
+    assert result.items == [events[0], events[1], events[9]]
+    assert result.next_page_id == '10'
+    assert len(batch_sizes) == 4
+    following = await service.search_events(
+        conversation_id, limit=3, page_id=result.next_page_id, exclude_full_state=True
+    )
+    assert following.items == [events[10]]
+    assert following.next_page_id is None
