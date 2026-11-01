@@ -97,12 +97,12 @@ export function getFirstAvailablePath(
     { path: "/settings/billing", hidden: !!featureFlags?.hide_billing_page },
     { path: "/settings/secrets", hidden: false },
     { path: "/settings/api-keys", hidden: false },
-    { path: "/settings/mcp", hidden: false },
+    { path: "/settings/mcp", hidden: !!featureFlags?.agent_canvas_available },
   ];
 
   const ossFallbackOrder = [
     { path: "/settings", hidden: !!featureFlags?.hide_llm_settings },
-    { path: "/settings/mcp", hidden: false },
+    { path: "/settings/mcp", hidden: !!featureFlags?.agent_canvas_available },
     {
       path: "/settings/integrations",
       hidden: !!featureFlags?.hide_integrations_page,

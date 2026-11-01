@@ -246,6 +246,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
+        agent_canvas_available=_env_flag_enabled('AGENT_CANVAS_AVAILABLE'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
