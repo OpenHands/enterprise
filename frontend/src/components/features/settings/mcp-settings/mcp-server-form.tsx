@@ -31,6 +31,9 @@ interface MCPServerFormProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
   existingServers?: MCPServerConfig[];
+  /** Names the organization's MCP server listings already use (OHE-3091):
+   * a personal server of the same name would hide the organization's. */
+  reservedNames?: string[];
   onSubmit: (server: MCPServerConfig) => void;
   onCancel: () => void;
   onTest?: (server: MCPServerConfig) => void;
@@ -42,6 +45,7 @@ export function MCPServerForm({
   mode,
   server,
   existingServers,
+  reservedNames,
   onSubmit,
   onCancel,
   onTest,
@@ -94,6 +98,9 @@ export function MCPServerForm({
       .filter(Boolean);
     if (existingStdioNames.includes(name)) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_DUPLICATE);
+    }
+    if (reservedNames?.includes(name)) {
+      return t(I18nKey.SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG);
     }
     return null;
   };
