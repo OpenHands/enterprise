@@ -15,20 +15,33 @@ def test_budget_settings_rejects_invalid_reset_day():
         OrgBudgetSettingsUpdate(reset_day=2)
 
 
-def test_budget_settings_accepts_valid_slack_channel():
-    settings = OrgBudgetSettingsUpdate(slack_channel='#usage-monitoring_1')
-    assert settings.slack_channel == '#usage-monitoring_1'
+@pytest.mark.parametrize(
+    ('channel', 'stored'),
+    [
+        ('#usage-monitoring_1', '#usage-monitoring_1'),
+        ('usage-monitoring_1', '#usage-monitoring_1'),
+        ('C08L97A3XN1', 'C08L97A3XN1'),
+        ('#C08L97A3XN1', 'C08L97A3XN1'),
+        ('G0123ABCD', 'G0123ABCD'),
+        (' #alerts ', '#alerts'),
+        ('#' + 'a' * org_models.SLACK_CHANNEL_MAX_LENGTH, '#' + 'a' * 80),
+    ],
+)
+def test_budget_settings_accepts_slack_channel_names_and_ids(channel, stored):
+    settings = OrgBudgetSettingsUpdate(slack_channel=channel)
+    assert settings.slack_channel == stored
 
 
-def test_budget_settings_rejects_invalid_slack_channel():
-    with pytest.raises(
-        ValidationError, match='slack_channel must start with # and contain only'
-    ):
-        OrgBudgetSettingsUpdate(slack_channel='general')
+@pytest.mark.parametrize(
+    'channel', ['#General', 'general alerts', '#-alerts', 'C08l97a3xn1', '#', '']
+)
+def test_budget_settings_rejects_invalid_slack_channel(channel):
+    with pytest.raises(ValidationError, match='slack_channel must be a channel name'):
+        OrgBudgetSettingsUpdate(slack_channel=channel)
 
 
 def test_budget_settings_rejects_overlong_slack_channel():
-    too_long = '#' + ('a' * org_models.SLACK_CHANNEL_MAX_LENGTH)
+    too_long = 'a' * (org_models.SLACK_CHANNEL_MAX_LENGTH + 1)
     with pytest.raises(
         ValidationError, match='slack_channel must be .* characters or fewer'
     ):

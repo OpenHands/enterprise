@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import unquote
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -145,7 +146,12 @@ def get_summary_instruction():
 
 
 def has_exact_mention(text: str, mention: str) -> bool:
-    """Check if the text contains an exact mention (not part of a larger word).
+    """Check if the text contains an exact mention.
+
+    The mention must not be part of a larger word, a scoped package name
+    (@openhands/pkg), a package glob (@openhands/*), a URL-encoded scoped
+    package name (@openhands%2fpkg), a domain (@openhands.com) or a URL
+    query parameter (@openhands%20help).
 
     Args:
         text: The text to check for mentions
@@ -160,21 +166,38 @@ def has_exact_mention(text: str, mention: str) -> bool:
         >>> has_exact_mention("(@openhands)", "@openhands")  # True
         >>> has_exact_mention("user@openhands.com", "@openhands")  # False
         >>> has_exact_mention("Hello @OpenHands!", "@openhands")  # True (case-insensitive)
+        >>> has_exact_mention("Thanks @openhands.", "@openhands")  # True
+        >>> has_exact_mention("*Thanks @openhands.*", "@openhands")  # True
+        >>> has_exact_mention("@openhands/typescript-client", "@openhands")  # False
+        >>> has_exact_mention("see @openhands.com", "@openhands")  # False
+        >>> has_exact_mention('["@openhands/*"]', "@openhands")  # False
+        >>> has_exact_mention("npmjs.org/@openhands%2fpkg", "@openhands")  # False
+        >>> has_exact_mention("?q=@openhands%20help", "@openhands")  # False
     """
     # Convert both text and mention to lowercase for case-insensitive matching
     text_lower = text.lower()
     mention_lower = mention.lower()
 
     pattern = re.escape(mention_lower)
-    # Match mention that is not part of a larger word
-    return bool(re.search(rf'(?:^|[^\w@]){pattern}(?![\w-])', text_lower))
+    # Match mention that is not part of a larger word. A '/' ends the mention
+    # only when no word character, '-' or '*' follows it, so scoped package
+    # names (@openhands/pkg) and package globs (@openhands/*) do not match. A
+    # '.' ends the mention only when no word character or '-' follows it, so
+    # domains (@openhands.com) and @openhands.Please do not match, but a
+    # sentence end (Thanks @openhands.) and a sentence end inside emphasis
+    # (*Thanks @openhands.*) do. A URL-encoded character (@openhands%2fpkg,
+    # @openhands%20help) does not match either.
+    return bool(
+        re.search(rf'(?:^|[^\w@]){pattern}(?![\w-]|/[\w*-]|\.[\w-]|%\w)', text_lower)
+    )
 
 
 def infer_repo_from_message(user_msg: str) -> list[str]:
     """Extract repository names as 'owner/repo' from URLs and direct mentions.
 
     Supports cloud and self-hosted Git providers: GitHub / GitHub Enterprise,
-    GitLab (incl. self-hosted), Bitbucket Cloud, and Bitbucket Data Center.
+    GitLab (incl. self-hosted), Bitbucket Cloud, Bitbucket Data Center and
+    Azure DevOps (URLs only; its full names are 'org/project/repo').
     Bitbucket Data Center URLs use a distinct layout
     (``/projects/<KEY>/repos/<slug>`` and ``/scm/<KEY>/<slug>``) that maps to
     the ``<KEY>/<slug>`` full name; every other provider uses the standard
@@ -183,6 +206,29 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
     only act on inferred names that resolve to a repo the user can access.
     """
     normalized_msg = re.sub(r'\s+', ' ', user_msg.strip())
+
+    # Azure DevOps names a repository 'org/project/repo'. Web and clone URLs:
+    # dev.azure.com/<org>/<project>/_git/<repo> (optionally user@ before the
+    # host), the legacy <org>.visualstudio.com/[DefaultCollection/]<project>/
+    # _git/<repo>, and git@ssh.dev.azure.com:v3/<org>/<project>/<repo>. A
+    # project-less _git URL means the repo is named after its project. Matched
+    # first and blanked out so the generic patterns do not see 'org/project'.
+    azure_segment = r"[^/\s?#'\"<>()\[\]|]+"
+    azure_patterns = [
+        rf'https?://(?:[^/@\s]+@)?dev\.azure\.com/({azure_segment})/'
+        rf'(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'https?://(?:[^/@\s]+@)?([a-zA-Z0-9-]+)\.visualstudio\.com/'
+        rf'(?:DefaultCollection/)?(?:({azure_segment})/)?_git/({azure_segment})',
+        rf'git@ssh\.dev\.azure\.com:v3/({azure_segment})/({azure_segment})/'
+        rf'({azure_segment})',
+    ]
+    azure_matches: list[tuple[int, str]] = []
+    for pattern in azure_patterns:
+        for m in re.finditer(pattern, normalized_msg):
+            org, project, repo = (unquote(g) if g else g for g in m.groups())
+            repo = re.sub(r'\.git$', '', repo.rstrip('.,;:!?'))
+            azure_matches.append((m.start(), f'{org}/{project or repo}/{repo}'))
+        normalized_msg = re.sub(pattern, ' ', normalized_msg)
 
     # Bitbucket Data Center web (browse/PR) URLs: /projects/<KEY>/repos/<slug>
     # and personal /users/<name>/repos/<slug>. Matched before the generic
@@ -225,6 +271,9 @@ def infer_repo_from_message(user_msg: str) -> list[str]:
 
     # Use dict to preserve ordering
     matches: dict[str, bool] = {}
+
+    for _, name in sorted(azure_matches):
+        matches[name] = True
 
     # Bitbucket Data Center URLs first (most specific layout)
     for owner, repo in re.findall(bitbucket_dc_web_pattern, normalized_msg):

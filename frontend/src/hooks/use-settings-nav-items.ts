@@ -10,6 +10,7 @@ import { OrganizationUserRole } from "#/types/org";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
+  isLiteLlmOnlyNavItem,
   isSettingsPageHidden,
 } from "#/utils/settings-utils";
 import { useMe } from "./query/use-me";
@@ -17,6 +18,7 @@ import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
+import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -58,6 +60,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const userRole: OrganizationUserRole = user?.role ?? "member";
   const { hasPermission } = usePermission(userRole);
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+  const { data: isSuperAdmin = false } = useIsSuperAdmin();
 
   // Every role has its own budget; personal workspaces have none.
   const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
@@ -67,8 +70,15 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     hasPermission("view_billing"),
   );
   const featureFlags = config?.feature_flags;
+  const enableIntegratedIdp = !!featureFlags?.enable_integrated_idp;
   const isAdminOrOwner = userRole === "admin" || userRole === "owner";
-  const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
+  // OHE-3456: with the Agent Profiles page on, the agent kind comes from the
+  // active profile rather than the single-agent settings this guard reads
+  // (and the page that edited them is gone), so the ACP guard is off.
+  const agentProfilesEnabled =
+    isSaasMode && !!featureFlags?.enable_agent_profiles_page;
+  const isAcpAgent =
+    !agentProfilesEnabled && settings?.agent_settings?.agent_kind === "acp";
   const acpServerName = isAcpAgent
     ? (config?.acp_providers?.find(
         ({ key }) => key === settings?.agent_settings?.acp_server,
@@ -79,6 +89,17 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
+
+  // OHE-3456: the Agent Profiles page supersedes the single-agent page.
+  if (agentProfilesEnabled) {
+    items = items.filter((item) => item.to !== "/settings/agent");
+  }
+
+  // Budgets/"Your budget" stay reachable (they render a "please enable
+  // LiteLLM" placeholder) but are removed from the nav when disabled.
+  if (featureFlags?.enable_litellm === false) {
+    items = items.filter((item) => !isLiteLlmOnlyNavItem(item.to));
+  }
 
   // The quota page is only useful when a daily limit is configured.
   if (isSaasMode && quota?.daily_limit === null) {
@@ -100,10 +121,17 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/org");
   }
 
+  // Instance-level super admins keep this item even with a Personal
+  // Workspace selected, where it becomes the instance-wide "All Users"
+  // view (see ``ManageOrganizationMembers``) rather than this org's member
+  // list -- but only when ``enable_integrated_idp`` is on, since that view
+  // (and sign-up-link minting generally) is the only thing the bypass is
+  // for. Without the flag, access reverts to the plain permission check.
   if (
-    !hasPermission("invite_user_to_organization") ||
-    !organizationId ||
-    isPersonalOrg
+    !(isSuperAdmin && enableIntegratedIdp) &&
+    (!hasPermission("invite_user_to_organization") ||
+      !organizationId ||
+      isPersonalOrg)
   ) {
     items = items.filter((item) => item.to !== "/settings/org-members");
   }
@@ -120,7 +148,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   }
 
   // Everyone in a team org has their own budget; personal workspaces do not.
-  if (canHaveOwnBudget) {
+  if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
@@ -195,4 +223,38 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   }
 
   return renderedItems;
+}
+
+/** Account-menu destinations that stay out of the settings left rail. */
+export function getSettingsUserMenuItems(
+  items: SettingsNavRenderedItem[],
+): SettingsNavItem[] {
+  return items.flatMap((item) =>
+    item.type === "item" && item.item.menuOnly ? [item.item] : [],
+  );
+}
+
+/** Drop menu-only rows and the headers and dividers they leave empty from the settings sidebar. */
+export function filterSettingsNavForSidebar(
+  items: SettingsNavRenderedItem[],
+): SettingsNavRenderedItem[] {
+  const withoutMenuOnly = items.filter(
+    (item) => item.type !== "item" || !item.item.menuOnly,
+  );
+
+  // A header whose rows were all menu-only has nothing left to label.
+  const withoutEmptyHeaders = withoutMenuOnly.filter(
+    (item, index, list) =>
+      item.type !== "header" || list[index + 1]?.type === "item",
+  );
+
+  return withoutEmptyHeaders.filter((item, index, list) => {
+    if (item.type !== "divider") {
+      return true;
+    }
+    const nextVisible = list
+      .slice(index + 1)
+      .find((entry) => entry.type !== "divider");
+    return nextVisible?.type === "item" || nextVisible?.type === "header";
+  });
 }

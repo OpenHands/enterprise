@@ -19,6 +19,10 @@ from google.cloud.sql.connector import Connector  # noqa: E402
 from sqlalchemy import Engine, create_engine, text  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
+from openhands.db.session_timezone import (  # noqa: E402
+    build_libpq_timezone_args,
+    build_pg8000_timezone_args,
+)
 from openhands.db.ssl import build_db_url_query, build_pg8000_connect_args  # noqa: E402
 from storage.base import Base  # noqa: E402
 
@@ -70,6 +74,7 @@ def migration_engine(database: str = DB_NAME) -> Iterator[Engine]:
                 user=DB_USER,
                 password=DB_PASS.strip(),
                 db=database,
+                **build_pg8000_timezone_args(),
             )
 
         engine = create_engine(
@@ -78,15 +83,15 @@ def migration_engine(database: str = DB_NAME) -> Iterator[Engine]:
     else:
         scheme = f'postgresql+{DB_DRIVER}' if DB_DRIVER else 'postgresql'
         url = f'{scheme}://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{database}'
-        if DB_DRIVER != 'pg8000':
+        if DB_DRIVER == 'pg8000':
+            connect_args = {
+                **build_pg8000_connect_args(DB_SSL_MODE),
+                **build_pg8000_timezone_args(),
+            }
+        else:
             url += build_db_url_query(DB_SSL_MODE)
-        engine = create_engine(
-            url,
-            poolclass=NullPool,
-            connect_args=(
-                build_pg8000_connect_args(DB_SSL_MODE) if DB_DRIVER == 'pg8000' else {}
-            ),
-        )
+            connect_args = build_libpq_timezone_args()
+        engine = create_engine(url, poolclass=NullPool, connect_args=connect_args)
     try:
         yield engine
     finally:
@@ -127,6 +132,10 @@ if config.config_file_name is not None and config.attributes.get(
     'configure_logger', True
 ):
     fileConfig(config.config_file_name)
+    # fileConfig turns off every logger that already exists. Turn the
+    # ``openhands`` logger back on: it logs uncaught exceptions, so without it
+    # a failed migration prints no traceback.
+    logging.getLogger('openhands').disabled = False
 
 # Re-apply SQLAlchemy engine log suppression after fileConfig, which may override
 # our earlier settings from alembic.ini. This ensures DEBUG-level SQL result logging

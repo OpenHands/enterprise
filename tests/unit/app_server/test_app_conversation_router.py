@@ -5,8 +5,6 @@ focusing on UUID string parsing, validation, and error handling.
 """
 
 import json
-import sys
-import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -28,6 +26,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
     AppConversationStartTask,
     AppConversationStartTaskStatus,
+    AppConversationUpdateRequest,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
@@ -35,8 +34,6 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     AgentServerContext,
     _consume_remaining,
     _finalize_sandbox_delete,
-    _release_daily_conversation_quota,
-    _reserve_daily_conversation_quota,
     _resolve_acp_agent_settings,
     _resolve_file_path,
     _stream_app_conversation_start,
@@ -50,8 +47,8 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     read_conversation_file,
     search_app_conversations,
     start_app_conversation,
-    stream_app_conversation_start,
     switch_conversation_profile,
+    update_app_conversation,
 )
 from openhands.app_server.app_conversation.app_conversation_service import (
     ConversationExportAlreadyRunning,
@@ -60,7 +57,11 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.file_store import get_file_store
 from openhands.app_server.integrations.provider import CustomSecret
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -123,35 +124,6 @@ class _AsyncSessionContext:
 
     async def __aexit__(self, *args):
         return None
-
-
-def _quota_modules(reserve_result=True, release_error=None):
-    session = object()
-    reserve = AsyncMock(return_value=reserve_result)
-    release = AsyncMock(side_effect=release_error)
-
-    class DailyConversationQuotaService:
-        def __init__(self, actual_session):
-            assert actual_session is session
-
-        async def reserve(self, user_id, org_id):
-            return await reserve(user_id, org_id)
-
-        async def release(self, user_id):
-            await release(user_id)
-
-    quota_module = types.ModuleType('server.services.daily_conversation_quota_service')
-    quota_module.DailyConversationQuotaService = DailyConversationQuotaService
-    database_module = types.ModuleType('storage.database')
-    database_module.a_session_maker = lambda: _AsyncSessionContext(session)
-    modules = {
-        'server': types.ModuleType('server'),
-        'server.services': types.ModuleType('server.services'),
-        'server.services.daily_conversation_quota_service': quota_module,
-        'storage': types.ModuleType('storage'),
-        'storage.database': database_module,
-    }
-    return modules, reserve, release
 
 
 @pytest.mark.parametrize(
@@ -291,52 +263,11 @@ async def test_codex_preflight_allows_request_scoped_auth(file_secrets_store):
 
 
 @pytest.mark.asyncio
-async def test_reserve_quota_noops_without_user_or_in_oss_mode():
-    assert await _reserve_daily_conversation_quota(None) is False
-    assert await _reserve_daily_conversation_quota('user-id') is False
-
-
-@pytest.mark.asyncio
-async def test_reserve_quota_uses_enterprise_service_in_saas_mode():
-    modules, reserve, _ = _quota_modules(reserve_result=True)
-    org_id = uuid4()
-    with (
-        patch.dict(sys.modules, modules),
-        patch(
-            'openhands.app_server.shared.server_config.app_mode',
-            SimpleNamespace(value='saas'),
-        ),
-    ):
-        result = await _reserve_daily_conversation_quota('user-id', org_id)
-
-    assert result is True
-    reserve.assert_awaited_once_with('user-id', org_id)
-
-
-@pytest.mark.asyncio
-async def test_release_quota_uses_enterprise_service_and_swallows_errors():
-    modules, _, release = _quota_modules()
-    with patch.dict(sys.modules, modules):
-        await _release_daily_conversation_quota('user-id')
-    release.assert_awaited_once_with('user-id')
-
-    modules, _, release = _quota_modules(release_error=RuntimeError('db failed'))
-    with patch.dict(sys.modules, modules):
-        await _release_daily_conversation_quota('user-id')
-    release.assert_awaited_once_with('user-id')
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('status', 'expected_releases'),
-    [
-        (AppConversationStartTaskStatus.READY, 0),
-        (AppConversationStartTaskStatus.ERROR, 1),
-    ],
+    'status',
+    [AppConversationStartTaskStatus.READY, AppConversationStartTaskStatus.ERROR],
 )
-async def test_consume_remaining_handles_terminal_quota_status(
-    status, expected_releases
-):
+async def test_consume_remaining_closes_resources(status):
     task = AppConversationStartTask(
         created_by_user_id='user-id',
         request=AppConversationStartRequest(),
@@ -348,46 +279,40 @@ async def test_consume_remaining_handles_terminal_quota_status(
 
     db_session = AsyncMock()
     httpx_client = AsyncMock()
-    with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-        new_callable=AsyncMock,
-    ) as release:
-        await _consume_remaining(
-            tasks(),
-            db_session,
-            httpx_client,
-            quota_user_id='user-id',
-            quota_reserved=True,
-        )
-
-    assert release.await_count == expected_releases
+    await _consume_remaining(tasks(), db_session, httpx_client)
     db_session.close.assert_awaited_once()
     httpx_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_consume_remaining_releases_quota_on_failure():
+async def test_consume_remaining_closes_resources_on_failure():
     async def failing_tasks():
         raise RuntimeError('stream failed')
         yield  # pragma: no cover
 
     db_session = AsyncMock()
     httpx_client = AsyncMock()
-    with patch(
-        'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-        new_callable=AsyncMock,
-    ) as release:
-        with pytest.raises(RuntimeError, match='stream failed'):
-            await _consume_remaining(
-                failing_tasks(),
-                db_session,
-                httpx_client,
-                quota_user_id='user-id',
-                quota_reserved=True,
-            )
-    release.assert_awaited_once_with('user-id')
+    with pytest.raises(RuntimeError, match='stream failed'):
+        await _consume_remaining(failing_tasks(), db_session, httpx_client)
     db_session.close.assert_awaited_once()
     httpx_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_app_conversation_returns_400_for_an_invalid_repository():
+    service = MagicMock()
+    service.update_app_conversation = AsyncMock(
+        side_effect=ValueError("Invalid repository format: 'repo'.")
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_app_conversation(
+            str(uuid4()),
+            AppConversationUpdateRequest(selected_repository='repo'),
+            app_conversation_service=service,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
 
 class _ServiceContext:
@@ -403,13 +328,10 @@ class _ServiceContext:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ('status', 'expected_releases'),
-    [
-        (AppConversationStartTaskStatus.READY, 0),
-        (AppConversationStartTaskStatus.ERROR, 1),
-    ],
+    'status',
+    [AppConversationStartTaskStatus.READY, AppConversationStartTaskStatus.ERROR],
 )
-async def test_stream_start_handles_terminal_quota_status(status, expected_releases):
+async def test_stream_start_streams_tasks(status):
     request = AppConversationStartRequest()
     task = AppConversationStartTask(
         created_by_user_id='user-id', request=request, status=status
@@ -423,20 +345,9 @@ async def test_stream_start_handles_terminal_quota_status(status, expected_relea
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
-    with (
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
-            return_value=_ServiceContext(service),
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-            new_callable=AsyncMock,
-        ) as release,
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+        return_value=_ServiceContext(service),
     ):
         chunks = [
             chunk
@@ -446,11 +357,10 @@ async def test_stream_start_handles_terminal_quota_status(status, expected_relea
     assert chunks[0] == '[\n'
     assert chunks[-1] == ']'
     assert status.value in ''.join(chunks)
-    assert release.await_count == expected_releases
 
 
 @pytest.mark.asyncio
-async def test_stream_start_releases_quota_on_failure():
+async def test_stream_start_propagates_failure():
     async def start(_request):
         raise RuntimeError('start failed')
         yield  # pragma: no cover
@@ -460,20 +370,9 @@ async def test_stream_start_releases_quota_on_failure():
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
-    with (
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
-            return_value=_ServiceContext(service),
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._release_daily_conversation_quota',
-            new_callable=AsyncMock,
-        ) as release,
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+        return_value=_ServiceContext(service),
     ):
         with pytest.raises(RuntimeError, match='start failed'):
             [
@@ -482,34 +381,6 @@ async def test_stream_start_releases_quota_on_failure():
                     AppConversationStartRequest(), user_context
                 )
             ]
-
-    release.assert_awaited_once_with('user-id')
-
-
-@pytest.mark.asyncio
-async def test_stream_start_endpoint_hands_reservation_to_service():
-    user_context = MagicMock()
-    user_context.get_user_id = AsyncMock(return_value='user-id')
-    user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
-    secrets_store = MagicMock()
-    with (
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._validate_acp_start',
-            new_callable=AsyncMock,
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as reserve,
-    ):
-        response = await stream_app_conversation_start(
-            AppConversationStartRequest(), user_context, secrets_store
-        )
-
-    assert response.media_type == 'application/json'
-    assert user_context._daily_quota_reserved is True
-    reserve.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -537,16 +408,9 @@ async def test_stream_start_serializes_multiple_tasks_with_commas():
     user_context = MagicMock()
     user_context.get_user_id = AsyncMock(return_value='user-id')
     user_context.get_effective_org_id = AsyncMock(return_value=None)
-    with (
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
-            return_value=_ServiceContext(service),
-        ),
-        patch(
-            'openhands.app_server.app_conversation.app_conversation_router._reserve_daily_conversation_quota',
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
+    with patch(
+        'openhands.app_server.app_conversation.app_conversation_router.get_app_conversation_service',
+        return_value=_ServiceContext(service),
     ):
         chunks = [
             chunk
@@ -1152,6 +1016,19 @@ def _make_agent_server_context(
     )
 
 
+def _make_user_context(connections=None) -> MagicMock:
+    """A user context whose org has ``connections`` (none by default)."""
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
+
+    user_context = MagicMock()
+    user_context.get_provider_connections = AsyncMock(
+        return_value=connections or ProviderConnections()
+    )
+    return user_context
+
+
 def _make_httpx_client(post_return=None, post_side_effect=None) -> AsyncMock:
     client = AsyncMock(spec=httpx.AsyncClient)
     if post_side_effect is not None:
@@ -1173,6 +1050,7 @@ class TestSwitchConversationProfile:
                 conversation_id=uuid4(),
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=None,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
                 sandbox_service=MagicMock(),
@@ -1192,6 +1070,7 @@ class TestSwitchConversationProfile:
                 conversation_id=uuid4(),
                 request=SwitchProfileRequest(profile_name='ghost'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=MagicMock(),
                 sandbox_service=MagicMock(),
@@ -1216,6 +1095,7 @@ class TestSwitchConversationProfile:
                     conversation_id=uuid4(),
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1244,6 +1124,7 @@ class TestSwitchConversationProfile:
                     conversation_id=uuid4(),
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1278,6 +1159,7 @@ class TestSwitchConversationProfile:
                     conversation_id=conv_id,
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1307,6 +1189,7 @@ class TestSwitchConversationProfile:
                     conversation_id=conv_id,
                     request=SwitchProfileRequest(profile_name='gpt-5'),
                     user_settings=settings,
+                    user_context=_make_user_context(),
                     app_conversation_service=MagicMock(),
                     app_conversation_info_service=MagicMock(),
                     sandbox_service=MagicMock(),
@@ -1350,6 +1233,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1398,6 +1282,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='managed'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1436,6 +1321,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='managed'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1479,6 +1365,7 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
@@ -1515,12 +1402,113 @@ class TestSwitchConversationProfile:
                 conversation_id=conv_id,
                 request=SwitchProfileRequest(profile_name='gpt-5'),
                 user_settings=settings,
+                user_context=_make_user_context(),
                 app_conversation_service=MagicMock(),
                 app_conversation_info_service=info_service,
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
             )
+
+    async def test_linked_profile_uses_the_connection_key_and_base_url(self):
+        """OHE-3290: a linked profile switches with its connection's key and
+        base_url, not the settings key at the provider's default endpoint."""
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnection,
+            ProviderConnections,
+        )
+
+        conv_id = uuid4()
+        settings = Settings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/active', api_key='managed-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'eval': LLM(
+                        model='litellm_proxy/anthropic/claude-haiku',
+                        provider_connection_id='eval_proxy',
+                    )
+                }
+            ),
+        )
+        connections = ProviderConnections(
+            connections={
+                'eval_proxy': ProviderConnection(
+                    id='eval_proxy',
+                    display_name='Eval proxy',
+                    api_key=SecretStr('sk-eval-proxy'),
+                    base_url='https://llm-proxy.eval.example.test',
+                )
+            }
+        )
+        ctx = _make_agent_server_context(conv_id)
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.raise_for_status = MagicMock()
+        client = _make_httpx_client(post_return=ok_response)
+        info_service = MagicMock()
+        info_service.get_app_conversation_info = AsyncMock(return_value=None)
+        info_service.save_app_conversation_info = AsyncMock()
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await switch_conversation_profile(
+                conversation_id=conv_id,
+                request=SwitchProfileRequest(profile_name='eval'),
+                user_settings=settings,
+                user_context=_make_user_context(connections),
+                app_conversation_service=MagicMock(),
+                app_conversation_info_service=info_service,
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        llm = client.post.await_args.kwargs['json']['llm']
+        assert llm['api_key'] == 'sk-eval-proxy'
+        assert llm['base_url'] == 'https://llm-proxy.eval.example.test'
+        # Sent without the link: the agent server would resolve it again
+        # against its own store, which has no copy of the org's connections.
+        assert llm.get('provider_connection_id') is None
+
+    async def test_returns_422_when_linked_connection_is_missing(self):
+        """A dangling connection is a config problem: 422 with the same message
+        as the org activate route, before any call to the agent server."""
+        settings = Settings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openhands/active', api_key='managed-key')
+            ),
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'eval': LLM(
+                        model='anthropic/claude-haiku',
+                        provider_connection_id='gone',
+                    )
+                }
+            ),
+        )
+        client = _make_httpx_client()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await switch_conversation_profile(
+                conversation_id=uuid4(),
+                request=SwitchProfileRequest(profile_name='eval'),
+                user_settings=settings,
+                user_context=_make_user_context(),
+                app_conversation_service=MagicMock(),
+                app_conversation_info_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "provider connection 'gone'" in exc_info.value.detail
+        client.post.assert_not_awaited()
 
 
 def _make_get_httpx_client(get_return=None, get_side_effect=None) -> AsyncMock:
@@ -2114,7 +2102,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         download_result = self._make_download_result(success=True)
         workspace = AsyncMock()
@@ -2166,7 +2156,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         download_result = self._make_download_result(success=True)
         workspace = AsyncMock()
@@ -2215,7 +2207,9 @@ class TestReadConversationFile:
         sb_service = MagicMock()
         sb_service.get_sandbox = AsyncMock(return_value=sandbox)
         spec_service = MagicMock()
-        spec_service.get_sandbox_spec = AsyncMock(return_value=sandbox_spec)
+        spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=sandbox_spec
+        )
 
         workspace = AsyncMock()
         workspace.file_download = AsyncMock(
@@ -2282,6 +2276,62 @@ class TestReadConversationFile:
             selected_repository='OpenHands/enterprise',
         )
         assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+
+    async def test_reads_from_sandbox_whose_image_is_no_longer_advertised(
+        self, tmp_path
+    ):
+        """A sandbox created before an agent-server image bump has no spec of
+        its own; the read must use the default spec instead of returning ''."""
+        conv_id = uuid4()
+        conv = self._make_conversation(conv_id)
+        sandbox, _ = self._make_sandbox()
+
+        app_service = MagicMock()
+        app_service.get_app_conversation = AsyncMock(return_value=conv)
+        sb_service = MagicMock()
+        sb_service.get_sandbox = AsyncMock(return_value=sandbox)
+        spec_service = PresetSandboxSpecService(
+            specs=[
+                SandboxSpecInfo(
+                    id='ghcr.io/openhands/agent-server:1.57.0-python',
+                    command=None,
+                    working_dir='/workspace/project',
+                )
+            ]
+        )
+
+        download_file = tmp_path / 'PLAN.md'
+        download_file.write_bytes(b'# Plan')
+        named_temp = MagicMock()
+        named_temp.__enter__.return_value.name = str(download_file)
+        named_temp.__exit__.return_value = False
+        workspace = AsyncMock()
+        workspace.file_download = AsyncMock(
+            return_value=self._make_download_result(success=True)
+        )
+
+        with (
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'AsyncRemoteWorkspace',
+                return_value=workspace,
+            ) as workspace_type,
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                'tempfile.NamedTemporaryFile',
+                return_value=named_temp,
+            ),
+        ):
+            result = await read_conversation_file(
+                conversation_id=conv_id,
+                file_path='/workspace/project/PLAN.md',
+                app_conversation_service=app_service,
+                sandbox_service=sb_service,
+                sandbox_spec_service=spec_service,
+            )
+
+        assert result == '# Plan'
+        assert workspace_type.call_args.kwargs['working_dir'] == '/workspace/project'
 
 
 class TestFinalizeSandboxDelete:

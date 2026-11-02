@@ -36,6 +36,10 @@ class Org(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     contact_name: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Instance-admin lifecycle: ``active`` (default) or ``suspended``.
+    # Suspended orgs remain readable by super admins but deny normal
+    # member access via ``require_permission``.
+    status: Mapped[str] = mapped_column(String, nullable=False, default='active')
     remote_runtime_resource_factor: Mapped[int | None] = mapped_column(nullable=True)
     billing_margin: Mapped[float | None] = mapped_column(
         nullable=True, default=DEFAULT_BILLING_MARGIN
@@ -69,10 +73,13 @@ class Org(Base):
     # Set by completed billing sessions or when positive org credits are detected.
     byor_export_enabled: Mapped[bool] = mapped_column(nullable=False, default=False)
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
-    # NULL inherits the deployment-wide daily conversation limit.
-    # Set to -1 to exempt this org from daily conversation limits entirely
+    # NULL inherits the deployment-wide daily sandbox limit.
+    # Set to -1 to exempt this org from daily sandbox limits entirely
     # (for paying SaaS customers). Any other integer is the org-specific limit.
-    daily_conversation_limit: Mapped[int | None] = mapped_column(nullable=True)
+    # Physical column keeps its legacy name (see storage/user.py).
+    daily_sandbox_limit: Mapped[int | None] = mapped_column(
+        'daily_conversation_limit', nullable=True
+    )
     # Encrypted column for LLM profiles (contains API keys)
     llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
@@ -92,6 +99,22 @@ class Org(Base):
     provider_connections: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Org-scoped MCP server listings (OHE-3091). Envelope is
+    # ``{servers: {<name>: {managed_by: 'org' | 'user', server: <MCPServer>}}}``
+    # (see ``storage.org_mcp_servers``). Encrypted because an ``org``-managed
+    # listing carries the admin's shared credential inline. Never merged into
+    # ``agent_settings``: the launch path adds the listings under each member's
+    # own servers (``storage.agent_profile_resolution.launch_mcp_config``).
+    # NULL reads back as no listings.
+    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
+    # Org-scoped Model Routers (SDK meta-profiles). Envelope is
+    # ``{profiles: {<name>: MetaProfile}, active: <name> | null,
+    # run_at_conversation_start: bool}`` (see OrgMetaProfiles). Plain JSON: a
+    # meta-profile holds prompts and the names of saved LLM profiles, never
+    # credentials. NULL reads back as an empty collection.
+    meta_profiles: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Marks the bootstrapped default org on OHE installs; a partial unique
     # index allows at most one default org per install.
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)

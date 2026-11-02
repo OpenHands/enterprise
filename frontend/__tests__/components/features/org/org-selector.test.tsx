@@ -41,6 +41,7 @@ vi.mock("react-i18next", async () => {
           "ORG$SWITCHED_TO_ORGANIZATION": `You have switched to organization: ${params?.name ?? ""}`,
           "ORG$SWITCHED_TO_PERSONAL_WORKSPACE":
             "You have switched to your personal workspace.",
+          "ORG$CREATE_ORGANIZATION": "Create Organization",
         };
         return translations[key] || key;
       },
@@ -317,5 +318,85 @@ describe("OrgSelector", () => {
         "You have switched to your personal workspace.",
       );
     });
+  });
+
+  it("should hide create organization when the user lacks permission", async () => {
+    const user = userEvent.setup();
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_ACME.id,
+    });
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+    vi.spyOn(organizationService, "getMe").mockResolvedValue({
+      org_id: MOCK_TEAM_ORG_ACME.id,
+      user_id: "99",
+      email: "me@acme.org",
+      role: "owner",
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      status: "active",
+      permissions: [],
+    });
+
+    renderOrgSelector();
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveValue("Acme Corp");
+    });
+
+    await user.click(screen.getByTestId("dropdown-trigger"));
+    await screen.findByRole("listbox");
+
+    expect(
+      screen.queryByTestId("org-selector-create"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("should show create organization at the bottom and open the modal", async () => {
+    const user = userEvent.setup();
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_ACME.id,
+    });
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+    vi.spyOn(organizationService, "getMe").mockResolvedValue({
+      org_id: MOCK_TEAM_ORG_ACME.id,
+      user_id: "99",
+      email: "me@acme.org",
+      role: "owner",
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      status: "active",
+      permissions: ["create_organization"],
+    });
+
+    renderOrgSelector();
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveValue("Acme Corp");
+    });
+
+    await user.click(screen.getByTestId("dropdown-trigger"));
+    const listbox = await screen.findByRole("listbox");
+    const createButton = await screen.findByTestId("org-selector-create");
+
+    expect(createButton).toHaveTextContent("Create Organization");
+    expect(
+      listbox.compareDocumentPosition(createButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await user.click(createButton);
+    expect(
+      await screen.findByTestId("create-organization-form"),
+    ).toBeInTheDocument();
   });
 });

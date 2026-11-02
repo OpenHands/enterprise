@@ -7,6 +7,7 @@ from typing import Optional, cast
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import UUID as parse_uuid
 
+import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -16,17 +17,25 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import (
+    KeycloakAuthenticationError,
+    KeycloakConnectionError,
+    KeycloakError,
+)
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.auth_error import TokenRefreshError
+from server.auth.auth_error import AuthError, TokenRefreshError
+from server.auth.authorization import Permission, has_permission
 from server.auth.constants import (
+    ENABLE_SUPER_ADMIN,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL_EXT,
@@ -65,6 +74,8 @@ from server.utils.rate_limit_utils import (
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
+from storage.instance_settings import InstanceSettings
+from storage.role import Role
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -107,7 +118,9 @@ def set_response_cookie(
     from storage.encrypt_utils import get_jwt_service
 
     signed_token = get_jwt_service().create_jws_token(
-        cookie_data, expires_in=timedelta(weeks=1)
+        cookie_data,
+        expires_in=timedelta(weeks=1),
+        audience=JwtAudience.KEYCLOAK_SESSION,
     )
 
     # Set secure cookie with signed token. The value can exceed the
@@ -337,6 +350,12 @@ async def keycloak_callback(
                 logger.warning(
                     f'Failed to clean up orphaned Keycloak user {user_info.sub}: {e}'
                 )
+        # A disabled user lands here from a browser sign-in, so send them to
+        # the login page to read why instead of a raw JSON 401.
+        if authorization.error_detail == 'account_disabled':
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
         # Return unauthorized
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -526,9 +545,70 @@ async def keycloak_callback(
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
     if idp and idp_type != 'saml':
-        await token_manager.store_idp_tokens(
-            ProviderType(idp), user_id, keycloak_access_token
-        )
+        provider = ProviderType(idp)
+        try:
+            existing_tokens_valid = (
+                await token_manager.get_idp_token_by_user_id(user_id, provider)
+                is not None
+            )
+        except (AuthError, httpx.HTTPError, SQLAlchemyError, ValueError):
+            existing_tokens_valid = False
+
+        if existing_tokens_valid:
+            # The provider tokens stored by an earlier login still refresh
+            # against the provider itself (see
+            # ``TokenManager.get_idp_token_by_user_id``), so the user can
+            # work normally. Refresh them from Keycloak's broker copy on a
+            # best-effort basis only.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+        else:
+            # OpenHands cannot function without working git-provider
+            # tokens, and silently completing the login would only defer
+            # the failure to a 401 bounce inside the app when those tokens
+            # are first used. Refuse the session instead: end the
+            # just-established Keycloak session so the next login performs
+            # a fresh provider authentication (which re-mints the stale or
+            # revoked federated grant that makes Keycloak's broker endpoint
+            # answer 502), and send the user back to the login page to
+            # retry.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed_logout',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+                try:
+                    await token_manager.logout(keycloak_refresh_token)
+                except KeycloakError:
+                    logger.exception(
+                        'keycloak_logout_after_idp_token_failure_failed',
+                        extra={'user_id': user_id},
+                        stack_info=True,
+                    )
+                response = RedirectResponse(
+                    f'{web_url}/login?git_provider_login_failed=true',
+                    status_code=302,
+                )
+                delete_chunked_cookie(
+                    response,
+                    'keycloak_auth',
+                    domain=get_cookie_domain(),
+                    samesite=get_cookie_samesite(),
+                )
+                return response
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
@@ -699,7 +779,15 @@ async def keycloak_callback(
         # User has accepted TOS - check if they need onboarding
         # Only redirect to onboarding if user has a valid offline token,
         # otherwise they need to complete the Keycloak offline token flow first
-        if valid_offline_token and await _should_redirect_to_onboarding(user_id, user):
+        if valid_offline_token and await _should_redirect_to_install(user_id):
+            redirect_url = f'{web_url}/install'
+            logger.info(
+                'Redirecting returning first Super Admin to the install wizard',
+                extra={'user_id': user_id},
+            )
+        elif valid_offline_token and await _should_redirect_to_onboarding(
+            user_id, user
+        ):
             # Preserve the user's originally requested destination as
             # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
             # restore it after the user finishes the form.
@@ -786,6 +874,47 @@ async def github_dummy_callback(request: Request):
     """Callback for GitHub that just forwards the user to the app base URL."""
     web_url = get_web_url(request)
     return RedirectResponse(web_url, status_code=302)
+
+
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return an authenticated routing hint, never credentials or authorization.
+
+    Keycloak still verifies account ownership and authorizes the Git connection.
+    Stored account attributes are not session provenance. Only suggest corporate
+    SSO when browser login history is absent; never suggest a Git provider.
+    """
+    user_auth = await get_user_auth(request)
+    if (
+        not isinstance(user_auth, SaasUserAuth)
+        or user_auth.oauth_v2_cookie
+        or user_auth.auth_type != AuthType.COOKIE
+    ):
+        # Native IdP and API-key credentials must not be sent to Keycloak.
+        return KeycloakLinkContext()
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakError as exc:
+        if exc.response_code in (401, 403):
+            raise HTTPException(401, 'Keycloak authentication required') from exc
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    return KeycloakLinkContext(
+        provider=ProviderType.ENTERPRISE_SSO.value
+        if provider == ProviderType.ENTERPRISE_SSO.value
+        else None
+    )
 
 
 @api_router.post('/authenticate')
@@ -981,6 +1110,26 @@ def _build_onboarding_redirect(original_url: str, web_url: str) -> str:
     return f'{onboarding_url}?returnTo={quote(relative, safe="")}'
 
 
+async def _get_setup_state(user_id: str) -> InstanceSettings | None:
+    """Return the first-install state if ``user_id`` is the first Super Admin.
+
+    That user runs the ``/install`` wizard instead of the onboarding survey.
+    """
+    if not ENABLE_SUPER_ADMIN:
+        return None
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    if settings is None or str(settings.setup_user_id) != user_id:
+        return None
+    return settings
+
+
+async def _should_redirect_to_install(user_id: str) -> bool:
+    """Check if the user is the first Super Admin and has not finished the wizard."""
+    settings = await _get_setup_state(user_id)
+    return settings is not None and not settings.wizard_completed
+
+
 async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
     """Check if user should be redirected to onboarding after TOS acceptance.
     Backend always redirects applicable users to /onboarding.
@@ -994,6 +1143,7 @@ async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
     Returns False if:
     - User has onboarding_completed=True (already completed)
     - User has onboarding_completed=None (existing users before this feature)
+    - User is the first Super Admin (the install wizard replaces the survey)
     """
     # Already completed onboarding
     if user.onboarding_completed is True:
@@ -1001,6 +1151,9 @@ async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
 
     # Existing user before this feature (NULL in database)
     if user.onboarding_completed is None:
+        return False
+
+    if await _get_setup_state(user_id) is not None:
         return False
 
     # Cloud SaaS: all users go to onboarding
@@ -1033,6 +1186,12 @@ async def _get_post_auth_redirect(
     Returns:
         The URL to redirect the user to.
     """
+    if await _should_redirect_to_install(user_id):
+        logger.info(
+            'Redirecting first Super Admin to the install wizard',
+            extra={'user_id': user_id},
+        )
+        return f'{web_url}/install'
     if not user:
         user = await UserStore.get_user_by_id(user_id)
     if user and await _should_redirect_to_onboarding(user_id, user):
@@ -1050,17 +1209,31 @@ async def _get_post_auth_redirect(
 @api_router.post('/accept_tos')
 async def accept_tos(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    access_token = await user_auth.get_access_token()
-    refresh_token = user_auth.refresh_token
     user_id = await user_auth.get_user_id()
 
-    if not access_token or not refresh_token or not user_id:
+    # The legacy ``keycloak_auth`` cookie this endpoint re-mints below is
+    # itself a JWS-signed {access_token, refresh_token, accepted_tos}
+    # triple, so rebuilding it needs real values for all three (even though
+    # access/refresh are only ever carried forward unchanged from the
+    # pre-TOS cookie). An oauth_v2/SAML/integrated-IDP session instead
+    # re-mints the small ``openhands_auth`` cookie below, which carries no
+    # tokens at all -- user_id is the only thing that identifies it.
+    access_token: SecretStr | None = None
+    refresh_token: SecretStr | None = None
+    if not user_auth.oauth_v2_cookie:
+        access_token = await user_auth.get_access_token()
+        refresh_token = user_auth.refresh_token
+
+    if not user_id or (
+        not user_auth.oauth_v2_cookie and (not access_token or not refresh_token)
+    ):
         logger.warning(
             'accept_tos: missing authentication state',
             extra={
                 'has_access_token': bool(access_token),
                 'has_refresh_token': bool(refresh_token),
                 'user_id': user_id,
+                'oauth_v2_cookie': user_auth.oauth_v2_cookie,
             },
         )
         return JSONResponse(
@@ -1109,16 +1282,34 @@ async def accept_tos(request: Request):
                     org_id=org_id_str,
                     user=user,
                 )
+                # The super role lives on ``user.role_id``; the first Super
+                # Admin of a self-hosted install is ``instance_settings.setup_user_id``.
+                super_role = (
+                    await session.get(Role, user.role_id)
+                    if user.role_id is not None
+                    else None
+                )
+                is_super_admin = bool(
+                    super_role
+                    and has_permission(
+                        super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+                    )
+                )
+                is_instance_setup_user = await _get_setup_state(user_id) is not None
                 analytics.track_user_signed_up(
                     ctx=ctx,
                     email_domain=email.split('@')[1]
                     if email and '@' in email
                     else None,
+                    is_super_admin=is_super_admin,
+                    is_instance_setup_user=is_instance_setup_user,
                 )
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'signed_up_at': datetime.now(timezone.utc).isoformat()},
-                )
+                person_properties = {
+                    'signed_up_at': datetime.now(timezone.utc).isoformat()
+                }
+                if email:
+                    person_properties['email'] = email
+                analytics.set_person_properties(ctx=ctx, properties=person_properties)
         except Exception:
             logger.exception('analytics:user_signed_up:failed', stack_info=True)
 
@@ -1132,14 +1323,28 @@ async def accept_tos(request: Request):
         status_code=status.HTTP_200_OK, content={'redirect_url': redirect_url}
     )
 
-    set_response_cookie(
-        request=request,
-        response=response,
-        keycloak_access_token=access_token.get_secret_value(),
-        keycloak_refresh_token=refresh_token.get_secret_value(),
-        secure=True if web_url.startswith('https') else False,
-        accepted_tos=True,
-    )
+    if user_auth.oauth_v2_cookie:
+        from server.auth.provider_identity import set_oauth_v2_cookie
+
+        set_oauth_v2_cookie(
+            request=request,
+            response=response,
+            user_id=user_id,
+            access_token_expires_at=user_auth.access_token_expires_at,
+            accepted_tos=True,
+            idp_provider_id=user_auth.idp_provider_id,
+            refresh_token_expires_at=user_auth.idp_refresh_token_expires_at,
+        )
+    else:
+        assert access_token is not None and refresh_token is not None
+        set_response_cookie(
+            request=request,
+            response=response,
+            keycloak_access_token=access_token.get_secret_value(),
+            keycloak_refresh_token=refresh_token.get_secret_value(),
+            secure=True if web_url.startswith('https') else False,
+            accepted_tos=True,
+        )
     return response
 
 

@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from posixpath import dirname
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, ClassVar
 
 import aiohttp
 import base62
@@ -26,12 +26,15 @@ from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 from kubernetes_asyncio.client import ApiException
 from kubernetes_asyncio.config import ConfigException
 from pydantic import Field, SecretStr
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
     K8sAgentSandboxSpecInfo,
+)
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
+    ManagedSandboxServiceInjector,
+    ProviderOutcome,
 )
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -46,7 +49,6 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
@@ -57,14 +59,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     K8S_AGENT_SANDBOX_BACKEND,
     StoredSandbox,
-    get_stored_sandbox,
+    get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.user.user_context import UserContext
 
 _logger = logging.getLogger(__name__)
 
@@ -277,7 +278,7 @@ class AgentSandboxClient:
 
 
 @dataclass
-class K8sAgentSandboxService(SandboxService):
+class K8sAgentSandboxService(ManagedSandboxService):
     """Sandbox service backed by kubernetes-sigs/agent-sandbox warm pools.
 
     The operator creates a SandboxTemplate and a SandboxWarmPool ahead of time.
@@ -298,29 +299,17 @@ class K8sAgentSandboxService(SandboxService):
     links, so the template passes it in as ``OH_VSCODE_BASE_PATH``.
     """
 
+    backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
+
     sandbox_spec_service: SandboxSpecService
-    user_context: UserContext
-    httpx_client: httpx.AsyncClient
-    db_session: AsyncSession
     k8s: AgentSandboxClient
     router_url: str
-    max_num_sandboxes: int
     claim_timeout_seconds: int
     init_timeout_seconds: int
     poll_interval: float
     web_url: str | None = None
     webhook_base_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
-
-    # ------------------------------------------------------------------
-    # Ownership
-    # ------------------------------------------------------------------
-
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
-        """Get a sandbox row, or None when the caller may not see it."""
-        return await get_stored_sandbox(
-            self.db_session, self.user_context, K8S_AGENT_SANDBOX_BACKEND, sandbox_id
-        )
 
     # ------------------------------------------------------------------
     # Info mapping
@@ -405,6 +394,7 @@ class K8sAgentSandboxService(SandboxService):
         return SandboxInfo(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -493,6 +483,7 @@ class K8sAgentSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     # ------------------------------------------------------------------
@@ -500,7 +491,10 @@ class K8sAgentSandboxService(SandboxService):
     # ------------------------------------------------------------------
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Claim a warm sandbox and initialize its agent server.
 
@@ -515,6 +509,7 @@ class K8sAgentSandboxService(SandboxService):
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
         # would reach every user's sandboxes as ADMIN.
         user_id = await require_user_id(self.user_context)
+        credential_org_id = await get_credential_org_id(self.user_context)
         if not self.router_url:
             raise SandboxError(MISSING_ROUTER_URL)
 
@@ -544,20 +539,19 @@ class K8sAgentSandboxService(SandboxService):
         )
 
         session_api_key = base62.encodebytes(os.urandom(32))
-        stored_sandbox = StoredSandbox(
+        stored_sandbox = self._new_stored_sandbox(
             id=claim_name,
-            backend=K8S_AGENT_SANDBOX_BACKEND,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
             session_api_key=SecretStr(session_api_key),
-            created_at=utc_now(),
         )
         try:
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
             await self._initialize_agent_server(
-                sandbox_name, sandbox_spec, session_api_key
+                sandbox_name, sandbox_spec, session_api_key, extra_env=extra_env
             )
         except BaseException:
             # Init is never retried: a pod that took a half-finished init is
@@ -568,6 +562,7 @@ class K8sAgentSandboxService(SandboxService):
         return SandboxInfo(
             id=claim_name,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             status=SandboxStatus.RUNNING,
             session_api_key=session_api_key,
@@ -592,6 +587,7 @@ class K8sAgentSandboxService(SandboxService):
         sandbox_spec: K8sAgentSandboxSpecInfo,
         session_api_key: str,
         allow_initialized: bool = False,
+        extra_env: dict[str, str] | None = None,
     ) -> None:
         """Wait for the dormant agent server and hand it its runtime config.
 
@@ -607,7 +603,7 @@ class K8sAgentSandboxService(SandboxService):
         try:
             response = await self.httpx_client.post(
                 f'{agent_server_url}/api/init',
-                json=self._build_init_request(sandbox_spec, session_api_key),
+                json=self._build_init_request(sandbox_spec, session_api_key, extra_env),
                 headers=headers,
             )
         except httpx.HTTPError as exc:
@@ -660,7 +656,10 @@ class K8sAgentSandboxService(SandboxService):
             await asyncio.sleep(self.poll_interval)
 
     def _build_init_request(
-        self, sandbox_spec: K8sAgentSandboxSpecInfo, session_api_key: str
+        self,
+        sandbox_spec: K8sAgentSandboxSpecInfo,
+        session_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the ``POST /api/init`` body.
 
@@ -668,12 +667,15 @@ class K8sAgentSandboxService(SandboxService):
         accepts.
         """
         # The spec's working dir is the project checkout; its parent is the
-        # workspace root the agent server keeps its own state under, which is
-        # the template's volume.
+        # workspace root, which is the template's volume. The agent server's
+        # own state goes to the template's state volume when the spec names
+        # one, so an agent serving its workspace on the app ports cannot
+        # publish it (OHE-3812); otherwise it stays on the workspace volume.
         working_dir = sandbox_spec.working_dir.rstrip('/')
         workspace_dir = dirname(working_dir)
         if workspace_dir in ('', '/'):
             workspace_dir = working_dir
+        state_dir = (sandbox_spec.state_dir or workspace_dir).rstrip('/')
         body: dict[str, Any] = {
             'session_api_keys': [session_api_key],
             # What the agent server uses when it has no secret key of its own.
@@ -681,8 +683,8 @@ class K8sAgentSandboxService(SandboxService):
             # It lives as long as the session key, so secrets persisted on the
             # volume still decrypt after a resume.
             'secret_key': session_api_key,
-            'conversations_path': f'{workspace_dir}/conversations',
-            'bash_events_dir': f'{workspace_dir}/bash_events',
+            'conversations_path': f'{state_dir}/conversations',
+            'bash_events_dir': f'{state_dir}/bash_events',
             'conversation_worktree_root': f'{workspace_dir}/worktrees',
             # `get_agent_server_env` is resolved here rather than baked into
             # the spec's initial_env, because it can carry LLM_API_KEY and the
@@ -694,7 +696,9 @@ class K8sAgentSandboxService(SandboxService):
                 **get_agent_server_env(),
             },
         }
-
+        body['env'].update(self._lifecycle_env())
+        if extra_env:
+            body['env'].update(extra_env)
         cors_origins = []
         if self.web_url:
             cors_origins.append(self.web_url)
@@ -717,34 +721,32 @@ class K8sAgentSandboxService(SandboxService):
 
         return body
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _resume_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Resume the Sandbox, then repeat the handshake.
 
         The Sandbox gets a new pod on the same volumes, and its agent server
         boots dormant again, so the handshake is repeated with the key already
-        on the row. A sandbox that is not paused is left as it is.
+        on the row.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        claim = await self.k8s.get_claim(sandbox_id)
+        claim = await self.k8s.get_claim(stored_sandbox.id)
         if claim is None:
-            return False
+            return ProviderOutcome.FAILED
         status = _claim_status(claim)
         if status == SandboxStatus.MISSING:
-            return False
+            return ProviderOutcome.FAILED
+        if status == SandboxStatus.RUNNING:
+            return ProviderOutcome.ALREADY_DONE
         if status != SandboxStatus.PAUSED:
-            return True
-
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+            return ProviderOutcome.SKIPPED
 
         sandbox_name = _sandbox_name(claim)
         session_api_key = self._raw_key(stored_sandbox)
         if sandbox_name is None or session_api_key is None:
-            return False
+            return ProviderOutcome.FAILED
         if not await self.k8s.set_operating_mode(sandbox_name, 'Running'):
-            return False
+            return ProviderOutcome.FAILED
         # The claim reports the suspension only once the Sandbox is not ready,
         # so this wait cannot pass on the pod from before the pause.
         await self.k8s.wait_for_sandbox(sandbox_name, self.claim_timeout_seconds)
@@ -754,51 +756,50 @@ class K8sAgentSandboxService(SandboxService):
             session_api_key,
             allow_initialized=True,
         )
-        return True
+        return ProviderOutcome.CHANGED
 
-    async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox by suspending it.
+    async def _pause_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Suspend the Sandbox.
 
         The pod is deleted. The Sandbox, its Service and its volumes stay, so
         the router path and the stored key are the same after a resume.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        claim = await self.k8s.get_claim(sandbox_id)
-        if claim is None or _claim_status(claim) == SandboxStatus.MISSING:
-            return False
+        claim = await self.k8s.get_claim(stored_sandbox.id)
+        status = _claim_status(claim)
+        if claim is None or status == SandboxStatus.MISSING:
+            return ProviderOutcome.FAILED
         sandbox_name = _sandbox_name(claim)
         if sandbox_name is None:
+            if status == SandboxStatus.ERROR:
+                # The claim failed before it got a pod.
+                return ProviderOutcome.SKIPPED
             raise SandboxError(
-                f'Sandbox {sandbox_id} has no pod yet, so there is nothing to pause'
+                f'Sandbox {stored_sandbox.id} has no pod yet, so there is nothing '
+                'to pause'
             )
-        return await self.k8s.set_operating_mode(sandbox_name, 'Suspended')
+        if not await self.k8s.set_operating_mode(sandbox_name, 'Suspended'):
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox and its row.
-
-        Deleting the claim deletes its Sandbox, pod and volumes. Returns False
-        only when there is no such sandbox or the caller may not see it. A
-        failed delete raises ``SandboxDeleteRetryError`` and keeps the row, so
-        a live sandbox is never reported as gone.
-        """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
+    async def _delete_at_provider(self, stored_sandbox: StoredSandbox) -> None:
+        """Delete the claim, which deletes its Sandbox, pod and volumes."""
         try:
-            await self.k8s.delete_claim(sandbox_id)
+            await self.k8s.delete_claim(stored_sandbox.id)
         except SandboxError as exc:
-            _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
+            _logger.exception(
+                f'Error deleting sandbox {stored_sandbox.id}', stack_info=True
+            )
             raise SandboxDeleteRetryError(
-                f'Could not complete delete for sandbox {sandbox_id}: {exc}'
+                f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
             ) from exc
-        await self.db_session.delete(stored_sandbox)
-        return True
 
 
-class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
+class K8sAgentSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for k8s agent-sandbox sandbox services."""
+
+    backend: ClassVar[str] = K8S_AGENT_SANDBOX_BACKEND
 
     namespace: str = Field(
         default_factory=lambda: os.getenv('AGENT_SANDBOX_NAMESPACE', 'default'),
@@ -884,6 +885,7 @@ class K8sAgentSandboxServiceInjector(SandboxServiceInjector):
                     web_url=config.web_url,
                     webhook_base_url=self.webhook_base_url,
                     permitted_cors_origins=config.permitted_cors_origins,
+                    lifecycle=self.lifecycle,
                 )
         finally:
             await k8s.close()

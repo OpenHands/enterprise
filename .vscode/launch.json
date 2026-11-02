@@ -24,7 +24,6 @@
                 "REDIS_PORT": "6379",
                 "OPENHANDS": "${workspaceFolder}",
                 "FRONTEND_DIRECTORY": "${workspaceFolder}/frontend/build",
-                //"WEB_HOST": "localhost:3030",
                 "OPENHANDS_CONFIG_CLS": "server.config.SaaSServerConfig",
                 "OPENHANDS_GITHUB_SERVICE_CLS": "integrations.github.github_service.SaaSGitHubService",
                 "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
@@ -50,6 +49,8 @@
                 "OH_APP_MODE": "saas",
                 "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING": "true",
                 "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_JIRA": "true",
+                "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN": "1",
+                "OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN": "1",
                 "OH_WEB_CLIENT_PROVIDERS_CONFIGURED": "[\"github\",\"gitlab\",\"bitbucket\"]",
                 "OH_WEB_CLIENT_GITHUB_APP_SLUG": "openhands-staging",
                 "OH_APP_CONVERSATION_INFO_KIND": "server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector",
@@ -57,7 +58,9 @@
                 "OH_SANDBOX_SPEC_KIND": "openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service.DynamicRemoteSandboxSpecServiceInjector",
                 "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
                 "USER_PROVISIONING_ENABLED": "1",
-                "OH_SANDBOX_MAX_NUM_SANDBOXES": "5"
+                "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
+                "ENABLE_SUPER_ADMIN": "1",
+                "ENABLE_LEGACY_LITELLM": "0"
             },
             "envFile": "${workspaceFolder}/.env",
             "justMyCode": false,
@@ -127,6 +130,7 @@
                 "DB_PORT": "5432",
                 "DB_NAME": "openhands",
                 "DB_USER": "postgres",
+                "ENABLE_INTEGRATED_IDP": "1",
                 "KEYCLOAK_CLIENT_ID": "allhands",
                 "KEYCLOAK_REALM_NAME": "allhands",
                 "KEYCLOAK_SERVER_URL": "https://auth.staging.all-hands.dev"

@@ -10,7 +10,7 @@ that need a guaranteed non-None value handle that separately, because the
 /api/user/info route should return name=None when no real name is available.
 """
 
-from utils.identity import resolve_display_name
+from utils.identity import display_name_for_user, resolve_display_name
 
 
 class TestResolveDisplayName:
@@ -114,3 +114,35 @@ class TestResolveDisplayName:
             'family_name': 'Doe',
         }
         assert resolve_display_name(user_info) == 'Dr. Jane Doe'
+
+
+class TestDisplayNameForUser:
+    """Test display_name_for_user, which names a stored ``User`` row.
+
+    It backs the super-admin auth-provider "User Links" table, where an
+    admin has to recognize which account a git/SSO identity points at.
+    """
+
+    def test_prefers_git_user_name(self):
+        assert (
+            display_name_for_user('Ada Lovelace', 'ada@example.com') == 'Ada Lovelace'
+        )
+
+    def test_strips_git_user_name(self):
+        assert display_name_for_user('  Ada Lovelace  ', 'ada@example.com') == (
+            'Ada Lovelace'
+        )
+
+    def test_ignores_blank_git_user_name(self):
+        assert display_name_for_user('   ', 'ada@example.com') == 'ada'
+
+    def test_falls_back_to_email_local_part(self):
+        assert display_name_for_user(None, 'ada.lovelace@example.com') == (
+            'ada.lovelace'
+        )
+
+    def test_returns_email_when_it_has_no_local_part(self):
+        assert display_name_for_user(None, 'not-an-email') == 'not-an-email'
+
+    def test_returns_none_without_any_name_or_email(self):
+        assert display_name_for_user(None, None) is None

@@ -27,14 +27,27 @@ async def get_unprocessed_prs() -> list[OpenhandsPR]:
     return unprocessed_prs
 
 
-async def process_pr(pr: OpenhandsPR):
+async def process_pr(pr: OpenhandsPR) -> bool:
     """
     Process a single PR to enrich its data.
+
+    Returns True when this run claimed the PR, False when another run had
+    already processed it or it is out of attempts. Claiming reserves an
+    attempt; an overlapping run can also claim, and the first stats write to
+    commit is the one kept.
     """
 
+    claimed = await store.claim_pr_for_processing(pr.repo_id, pr.pr_number, MAX_RETRIES)
+    if claimed is None:
+        logger.info(
+            f'Skipping PR #{pr.pr_number} from repo {pr.repo_name}: '
+            'already processed or out of attempts'
+        )
+        return False
+
     logger.info(f'Processing PR #{pr.pr_number} from repo {pr.repo_name}')
-    await data_collector.save_full_pr(pr)
-    await store.increment_process_attempts(pr.repo_id, pr.pr_number)
+    await data_collector.save_full_pr(claimed)
+    return True
 
 
 async def main():
@@ -50,10 +63,10 @@ async def main():
     # Process each PR
     for pr in unprocessed_prs:
         try:
-            await process_pr(pr)
-            logger.info(
-                f'Successfully processed PR #{pr.pr_number} from repo {pr.repo_name}'
-            )
+            if await process_pr(pr):
+                logger.info(
+                    f'Successfully processed PR #{pr.pr_number} from repo {pr.repo_name}'
+                )
         except Exception:
             logger.exception(
                 f'Error processing PR #{pr.pr_number} from repo {pr.repo_name}',

@@ -24,6 +24,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.remote_sandbox_service import (
     ALLOW_CORS_ORIGINS_VARIABLE,
     STATUS_MAPPING,
@@ -65,6 +68,7 @@ def mock_sandbox_spec_service():
     )
     mock_service.get_default_sandbox_spec.return_value = mock_spec
     mock_service.get_sandbox_spec.return_value = mock_spec
+    mock_service.resolve_existing_sandbox_spec.return_value = mock_spec
     return mock_service
 
 
@@ -1941,6 +1945,29 @@ class TestRemoteSandboxRunningCleanup:
         assert paused == []
         remote_sandbox_service.pause_sandbox.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_pause_old_sandboxes_never_pauses_the_excluded_sandbox(
+        self, remote_sandbox_service
+    ):
+        """exclude_id is neither counted nor paused, even when it is the oldest."""
+        target = create_stored_sandbox(
+            'target', created_at=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        other = create_stored_sandbox(
+            'other', created_at=datetime(2024, 6, 1, tzinfo=timezone.utc)
+        )
+        remote_sandbox_service._get_user_running_sandboxes = AsyncMock(
+            return_value=[target, other]
+        )
+        remote_sandbox_service.pause_sandbox = AsyncMock(return_value=True)
+
+        paused = await remote_sandbox_service.pause_old_sandboxes(
+            max_num_sandboxes=0, exclude_id='target'
+        )
+
+        assert paused == ['other']
+        remote_sandbox_service.pause_sandbox.assert_called_once_with('other')
+
 
 def _async_cm_factory(value):
     """Return a callable that yields ``value`` as an async context manager.
@@ -2583,7 +2610,7 @@ class TestArchiveConversationWorkspace:
         assert ok is True
         _, kwargs = mock_archive.call_args
         assert kwargs['archive_path'] == '/home/openhands/workspace/conv-1'
-        remote_sandbox_service.sandbox_spec_service.get_sandbox_spec.assert_not_called()
+        remote_sandbox_service.sandbox_spec_service.resolve_existing_sandbox_spec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolve_archive_path_uses_pinned(self, remote_sandbox_service):
@@ -2594,7 +2621,7 @@ class TestArchiveConversationWorkspace:
             stored, 'conv-1', '/home/openhands/workspace/conv-1'
         )
         assert path == '/home/openhands/workspace/conv-1'
-        remote_sandbox_service.sandbox_spec_service.get_sandbox_spec.assert_not_called()
+        remote_sandbox_service.sandbox_spec_service.resolve_existing_sandbox_spec.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_resolve_archive_path_legacy_grouped(self, remote_sandbox_service):
@@ -2622,6 +2649,52 @@ class TestArchiveConversationWorkspace:
             return_value=MagicMock(
                 sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING
             )
+        )
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+        assert path == '/workspace/project'
+
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_unadvertised_image(
+        self, remote_sandbox_service
+    ):
+        """A pre-pinning conversation in a sandbox whose image runtime-api no
+        longer advertises resolves from the default spec's working_dir instead
+        of failing the archive."""
+        stored = create_stored_sandbox(
+            spec_id='ghcr.io/openhands/agent-server:1.50.1-python'
+        )
+        remote_sandbox_service.sandbox_spec_service = PresetSandboxSpecService(
+            specs=[
+                SandboxSpecInfo(
+                    id='ghcr.io/openhands/agent-server:1.57.0-python',
+                    command=None,
+                    working_dir='/workspace/project',
+                )
+            ]
+        )
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(
+                sandbox_grouping_strategy=SandboxGroupingStrategy.GROUP_BY_NEWEST
+            )
+        )
+
+        path = await remote_sandbox_service._resolve_archive_path(
+            stored, 'deadbeef', None
+        )
+
+        assert path == '/workspace/project/deadbeef'
+
+    @pytest.mark.asyncio
+    async def test_resolve_archive_path_legacy_null_strategy(
+        self, remote_sandbox_service
+    ):
+        """A null sandbox_grouping_strategy (no org/user override) falls back to
+        NO_GROUPING, keeping the bare spec working_dir."""
+        stored = create_stored_sandbox()
+        remote_sandbox_service.user_context.get_user_info = AsyncMock(
+            return_value=MagicMock(sandbox_grouping_strategy=None)
         )
         path = await remote_sandbox_service._resolve_archive_path(
             stored, 'deadbeef', None
@@ -3362,3 +3435,24 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
             max_num_sandboxes=7,
         )
         assert injector.max_num_sandboxes == 7
+
+
+@pytest.mark.asyncio
+async def test_start_persists_credential_organization(
+    remote_sandbox_service, async_session_maker
+):
+    org_id = uuid4()
+    service = remote_sandbox_service
+    service.user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+    response = MagicMock()
+    response.json.return_value = create_runtime_data(status='running')
+    service.httpx_client.request.return_value = response
+    service.pause_old_sandboxes = AsyncMock(return_value=[])
+    async with async_session_maker() as session:
+        service.db_session = session
+        sandbox = await service.start_sandbox(sandbox_id='org-binding')
+        await session.commit()
+    async with async_session_maker() as session:
+        stored = await session.get(StoredSandbox, sandbox.id)
+        assert stored.credential_org_id == org_id
+        assert sandbox.credential_org_id == org_id

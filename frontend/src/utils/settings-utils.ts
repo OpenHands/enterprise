@@ -44,6 +44,20 @@ export const ADMIN_ONLY_SETTINGS_PATHS = new Set<string>([
 ]);
 
 /**
+ * The Agent Context page (OHE-3456) is on when its own flag is, or when the
+ * Agent Profiles page is: that page replaces the Agent page which hosted the
+ * memory toggle, so it needs the toggle's new home too.
+ */
+export function isAgentContextPageEnabled(
+  featureFlags: WebClientFeatureFlags | undefined,
+): boolean {
+  return !!(
+    featureFlags?.enable_agent_context_page ||
+    featureFlags?.enable_agent_profiles_page
+  );
+}
+
+/**
  * Checks if a settings page should be hidden based on feature flags.
  * Used by both the route loader and navigation hook to keep logic in sync.
  */
@@ -64,7 +78,32 @@ export function isSettingsPageHidden(
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
     return true;
+  // OHE-3456 pages stay hidden until their flag is turned on.
+  if (
+    !isAgentContextPageEnabled(featureFlags) &&
+    path === "/settings/agent-context"
+  )
+    return true;
+  if (!featureFlags?.enable_agent_profiles_page && path === "/settings/agents")
+    return true;
+  // The org Model Router page (OHE-3508) stays hidden until its flag is on.
+  if (
+    !featureFlags?.enable_model_router &&
+    path === "/settings/org-defaults/model-router"
+  )
+    return true;
   return false;
+}
+
+/**
+ * Budgets and the member-facing "Your budget" page are enforced through the
+ * bundled/external LiteLLM gateway. Unlike ``isSettingsPageHidden`` (which
+ * redirects away from a hidden page), these pages stay reachable and render
+ * a "Please enable LiteLLM to use this feature" placeholder instead -- only
+ * the nav entry is hidden.
+ */
+export function isLiteLlmOnlyNavItem(path: string): boolean {
+  return path === "/settings/budgets" || path === "/settings/your-budget";
 }
 
 /**

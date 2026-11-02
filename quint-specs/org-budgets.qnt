@@ -823,8 +823,24 @@ module org_budgets {
 
   /// _maybe_send_alerts + _send_alerts + _send_slack_alert. Slack needs a channel;
   /// without one the alert is silently dropped for that channel.
-  pure def send_alerts(st: State, sg: Settings, spend: int, cycle_key: int): State = {
-    val due = due_thresholds(sg, st.thresholds, spend, cycle_key)
+  pure def send_alerts(st: State, sg: Settings, spend: int, cycle_key: int): State =
+    apply_alerts(st, sg, due_thresholds(sg, st.thresholds, spend, cycle_key), cycle_key)
+
+  /// The same hand-off, told WHICH thresholds the live spend reached rather than
+  /// deriving them from it. _maybe_send_alerts compares against a spend this
+  /// component reads from LiteLLM and never stores, so a replayed trace has to carry
+  /// it. The once-per-cycle latch stays here, model-owned, so a threshold the code
+  /// re-fires inside one cycle still trips alert_duplicated.
+  pure def reached_thresholds(
+    sg: Settings, ths: int -> Threshold, reached: Set[int], cycle_key: int
+  ): Set[int] =
+    if (not(sg.enabled) or or_zero(sg.monthly_limit) <= 0) Set()
+    else ths.keys().filter(p =>
+      reached.contains(p) and ths.get(p).last_cycle != Some(cycle_key))
+
+  /// The hand-off both callers share: latch every due threshold for this cycle and
+  /// record the channel it went out on.
+  pure def apply_alerts(st: State, sg: Settings, due: Set[int], cycle_key: int): State =
     if (due == Set()) st
     else { ...st,
       thresholds: st.thresholds.keys().mapBy(p =>
@@ -839,7 +855,6 @@ module org_budgets {
         due.exists(p => st.thresholds.get(p).slack and sg.slack_channel != None),
       alert_slack_suppressed: st.alert_slack_suppressed or
         due.exists(p => st.thresholds.get(p).slack and sg.slack_channel == None) }
-  }
 
   // -- the cycle roll ---------------------------------------------------------------
 
@@ -1327,17 +1342,19 @@ module org_budgets {
 
   /// _maybe_send_alerts / _send_alerts / _send_slack_alert (org_budget_service.py:1153)
   /// on the spend the current cycle has accrued.
-  action _maybe_send_alerts: bool = all {
+  action _maybe_send_alerts(reached: Set[int]): bool = all {
     s.settings != None,
     {
       val sg = settings_or_default(s)
       val r = get_financial_snapshot(s, sg, false, false)
       match r.snap {
         | None => s' = note_read(s, r)
-        | Some(snap) =>
-          s' = send_alerts(note_read({ ...s, settings: Some(r.settings) }, r),
-                           r.settings, cycle_spend(r.settings, snap),
-                           dkey(sg.cycle_start_at))
+        | Some(_) =>
+          s' = apply_alerts(note_read({ ...s, settings: Some(r.settings) }, r),
+                            r.settings,
+                            reached_thresholds(r.settings, s.thresholds, reached,
+                                               dkey(sg.cycle_start_at)),
+                            dkey(sg.cycle_start_at))
       }
     },
   }
@@ -1525,7 +1542,10 @@ module org_budgets {
       nondet clear_disabled = BOOLS.oneOf()
       _sync_litellm_budgets(clear_disabled)
     },
-    _maybe_send_alerts,
+    {
+      nondet reached = s.thresholds.keys().powerset().oneOf()
+      _maybe_send_alerts(reached)
+    },
     {
       nondet reset_day = STORED_RESET_DAYS.oneOf()
       OrgBudgetStore_create_settings(reset_day)

@@ -1183,6 +1183,65 @@ async def test_update_all_members_settings_async_with_non_encrypted_fields(
 
 
 @pytest.mark.asyncio
+async def test_update_all_members_settings_async_folds_retired_tool_switches(
+    async_session_maker,
+):
+    """
+    GIVEN: A member whose row a save under SDK 1.56 wrote (schema 9)
+    WHEN: An older client's org-defaults save sends the retired sub-agents switch
+    THEN: Members get it as the task tool set in ``tools``, not as the switch
+    """
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES
+    from server.routes.org_models import OrgMemberSettingsUpdate
+
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        session.add(org)
+        await session.flush()
+
+        role = Role(name='member', rank=2)
+        session.add(role)
+        await session.flush()
+
+        user = User(id=uuid.uuid4(), current_org_id=org.id, email='user@example.com')
+        session.add(user)
+        await session.flush()
+
+        session.add(
+            OrgMember(
+                org_id=org.id,
+                user_id=user.id,
+                role_id=role.id,
+                llm_api_key='test-key',
+                agent_settings_diff={'schema_version': 9, 'agent_kind': 'openhands'},
+                status='active',
+            )
+        )
+        await session.commit()
+        org_id = org.id
+
+    async with async_session_maker() as session:
+        await OrgMemberStore.update_all_members_settings_async(
+            session,
+            org_id,
+            OrgMemberSettingsUpdate(agent_settings_diff={'enable_sub_agents': True}),
+        )
+        await session.commit()
+
+    async with async_session_maker() as session:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(OrgMember).filter(OrgMember.org_id == org_id)
+        )
+        diff = result.scalars().first().agent_settings_diff
+
+    assert not set(RETIRED_TOOL_SWITCHES) & set(diff)
+    assert SUB_AGENT_TOOL_NAME in [tool['name'] for tool in diff['tools']]
+
+
+@pytest.mark.asyncio
 async def test_update_all_members_settings_async_with_empty_settings(
     async_session_maker,
 ):

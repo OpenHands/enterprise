@@ -2,21 +2,26 @@ import asyncio
 import logging
 import os
 import socket
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import AsyncGenerator
+from typing import AsyncGenerator, ClassVar
+from urllib.parse import urlparse
 
 import base62
 import docker
-import httpx
 from docker.errors import APIError, NotFound
 from fastapi import Request
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
+from openhands.app_server.sandbox.managed_sandbox_service import (
+    ManagedSandboxService,
+    ManagedSandboxServiceInjector,
+    ProviderOutcome,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -36,7 +41,6 @@ from openhands.app_server.sandbox.sandbox_service import (
     SESSION_API_KEY_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
-    SandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
@@ -45,20 +49,23 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     StoredSandbox,
-    get_stored_sandbox,
+    get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
+STOP_TIMEOUT_SECONDS = 10
+MAX_PORT_ATTEMPTS = 100
+# The agent server passes this to openvscode-server as --server-base-path.
+VSCODE_BASE_PATH_VARIABLE = 'OH_VSCODE_BASE_PATH'
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These labels tag
 # managed containers so that one with no row can be found.
@@ -75,6 +82,11 @@ def _get_use_host_network_default() -> bool:
     """
     value = os.getenv('AGENT_SERVER_USE_HOST_NETWORK', '')
     return value.lower() in ('true', '1', 'yes')
+
+
+def _get_network_default() -> str | None:
+    """Get the default Docker network for sandbox containers from the environment."""
+    return os.getenv('SANDBOX_DOCKER_NETWORK') or None
 
 
 def _get_kvm_enabled_default() -> bool:
@@ -104,12 +116,14 @@ class ExposedPort(BaseModel):
 
 
 @dataclass
-class DockerSandboxService(SandboxService):
+class DockerSandboxService(ManagedSandboxService):
     """Sandbox service built on docker.
 
     The Docker API does not currently support async operations, so some of these operations will block.
     Given that the docker API is intended for local use on a single machine, this is probably acceptable.
     """
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     sandbox_spec_service: SandboxSpecService
     container_name_prefix: str
@@ -118,23 +132,14 @@ class DockerSandboxService(SandboxService):
     mounts: list[VolumeMount]
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
-    httpx_client: httpx.AsyncClient
-    max_num_sandboxes: int
-    user_context: UserContext
-    db_session: AsyncSession
     web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
     docker_client: docker.DockerClient = field(default_factory=get_docker_client)
     startup_grace_seconds: int = STARTUP_GRACE_SECONDS
     use_host_network: bool = False
+    network: str | None = None
     kvm_enabled: bool = False
-
-    async def _get_stored_sandbox(self, sandbox_id: str) -> StoredSandbox | None:
-        """Get a sandbox row, or None when the caller may not see it."""
-        return await get_stored_sandbox(
-            self.db_session, self.user_context, DOCKER_BACKEND, sandbox_id
-        )
 
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
@@ -166,13 +171,35 @@ class DockerSandboxService(SandboxService):
         except APIError as exc:
             raise SandboxError(f'Could not read container {sandbox_id}: {exc}') from exc
 
-    def _find_unused_port(self) -> int:
-        """Find an unused port on the host machine."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-        return port
+    def _reserved_host_ports(self) -> set[int]:
+        """The host ports that managed containers bind, in any state.
+
+        A stopped container binds its ports again when it starts, but the host
+        sees them as free while it is stopped.
+        """
+        ports: set[int] = set()
+        for container in self._managed_containers_by_name().values():
+            host_config = container.attrs.get('HostConfig') or {}  # type: ignore[attr-defined]
+            for bindings in (host_config.get('PortBindings') or {}).values():
+                for binding in bindings or []:
+                    # Empty when Docker picked the port itself.
+                    if binding.get('HostPort'):
+                        ports.add(int(binding['HostPort']))
+        return ports
+
+    def _find_unused_port(self, reserved: Collection[int] = ()) -> int:
+        """Find a port that is free on the host and not in ``reserved``."""
+        for _ in range(MAX_PORT_ATTEMPTS):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                s.listen(1)
+                port = s.getsockname()[1]
+            if port not in reserved:
+                return port
+        raise SandboxError('Could not find a free host port')
+
+    def _sandbox_url(self, sandbox_id: str, port: int) -> str:
+        return self.container_url_pattern.format(port=port, sandbox_id=sandbox_id)
 
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
@@ -214,6 +241,7 @@ class DockerSandboxService(SandboxService):
             return SandboxInfo(
                 id=stored_sandbox.id,
                 created_by_user_id=stored_sandbox.created_by_user_id,
+                credential_org_id=stored_sandbox.credential_org_id,
                 sandbox_spec_id=stored_sandbox.sandbox_spec_id,
                 status=SandboxStatus.MISSING,
                 session_api_key=None,
@@ -232,65 +260,44 @@ class DockerSandboxService(SandboxService):
             env = self._get_container_env_vars(container)
             session_api_key = env.get(SESSION_API_KEY_VARIABLE)
 
-            # Get the exposed port mappings
-            exposed_urls = []
-
-            # Check if container is using host network mode
+            # Host networking and a user-defined network reach the container
+            # ports directly. The default bridge reaches them through the ports
+            # published on the host.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
-            is_host_network = network_mode == 'host'
-
-            if is_host_network:
-                # Host network mode: container ports are directly accessible on host
-                for exposed_port in self.exposed_ports:
-                    host_port = exposed_port.container_port
-                    url = self.container_url_pattern.format(port=host_port)
-
-                    # VSCode URLs require the api_key and working dir
-                    if exposed_port.name == VSCODE:
-                        url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
-
-                    exposed_urls.append(
-                        ExposedUrl(
-                            name=exposed_port.name,
-                            url=url,
-                            port=exposed_port.container_port,
-                        )
-                    )
+            public_ports: list[tuple[ExposedPort, int]] = []
+            if network_mode == 'host' or (
+                self.network and network_mode == self.network
+            ):
+                public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                # Bridge network mode: use port bindings
-                port_bindings = container.attrs.get('NetworkSettings', {}).get(
-                    'Ports', {}
+                port_bindings = (
+                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
                 )
-                if port_bindings:
-                    for container_port, host_bindings in port_bindings.items():
-                        if host_bindings:
-                            host_port = int(host_bindings[0]['HostPort'])
-                            matching_port = next(
-                                (
-                                    ep
-                                    for ep in self.exposed_ports
-                                    if container_port == f'{ep.container_port}/tcp'
-                                ),
-                                None,
-                            )
-                            if matching_port:
-                                url = self.container_url_pattern.format(port=host_port)
+                for ep in self.exposed_ports:
+                    host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
+                    if host_bindings:
+                        public_ports.append((ep, int(host_bindings[0]['HostPort'])))
 
-                                # VSCode URLs require the api_key and working dir
-                                if matching_port.name == VSCODE:
-                                    url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
+            exposed_urls = []
+            for exposed_port, public_port in public_ports:
+                url = self._sandbox_url(container.name, public_port)
 
-                                exposed_urls.append(
-                                    ExposedUrl(
-                                        name=matching_port.name,
-                                        url=url,
-                                        port=matching_port.container_port,
-                                    )
-                                )
+                # VSCode URLs require the api_key and working dir
+                if exposed_port.name == VSCODE:
+                    url += f'/?tkn={session_api_key}&folder={container.attrs["Config"]["WorkingDir"]}'
+
+                exposed_urls.append(
+                    ExposedUrl(
+                        name=exposed_port.name,
+                        url=url,
+                        port=exposed_port.container_port,
+                    )
+                )
 
         return SandboxInfo(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -420,15 +427,20 @@ class DockerSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
         # would reach every user's sandboxes as ADMIN.
         user_id = await require_user_id(self.user_context)
+        credential_org_id = await get_credential_org_id(self.user_context)
 
         # Warn about port collision risk when using host network mode with multiple sandboxes
         if self.use_host_network and self.max_num_sandboxes > 1:
@@ -460,10 +472,13 @@ class DockerSandboxService(SandboxService):
 
         # Prepare environment variables
         env_vars = sandbox_spec.initial_env.copy()
+        if extra_env:
+            env_vars.update(extra_env)
         env_vars[SESSION_API_KEY_VARIABLE] = session_api_key
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+        env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
@@ -495,20 +510,36 @@ class DockerSandboxService(SandboxService):
                 env_vars[f'OH_ALLOW_CORS_ORIGINS_{idx}'] = origin
 
         # Prepare port mappings and add port environment variables
-        # When using host network, container ports are directly accessible on the host
-        # so we use the container ports directly instead of mapping to random host ports
+        # Host networking and a user-defined network reach the container ports
+        # directly, so nothing is published on the host
         port_mappings: dict[int, int] | None = None
-        if self.use_host_network:
-            # Host network mode: container ports are directly accessible
+        if self.use_host_network or self.network:
             for exposed_port in self.exposed_ports:
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
         else:
             # Bridge network mode: map container ports to random host ports
             port_mappings = {}
+            reserved_ports = self._reserved_host_ports()
             for exposed_port in self.exposed_ports:
-                host_port = self._find_unused_port()
+                host_port = self._find_unused_port(reserved_ports)
                 port_mappings[exposed_port.container_port] = host_port
                 env_vars[exposed_port.name] = str(exposed_port.container_port)
+
+        # When the URL pattern routes by path (a reverse proxy at
+        # /runtime/{sandbox_id}/{port}), VS Code must know its path to build
+        # asset URLs.
+        vscode_port = next((p for p in self.exposed_ports if p.name == VSCODE), None)
+        if vscode_port is not None:
+            public_port = (
+                port_mappings[vscode_port.container_port]
+                if port_mappings is not None
+                else vscode_port.container_port
+            )
+            base_path = urlparse(
+                self._sandbox_url(container_name, public_port)
+            ).path.rstrip('/')
+            if base_path:
+                env_vars[VSCODE_BASE_PATH_VARIABLE] = base_path
 
         # Labels tag the container so it can be found without a row. The row
         # below is the ownership record.
@@ -519,13 +550,12 @@ class DockerSandboxService(SandboxService):
         }
 
         # The id is ours, so the row is written before the container exists.
-        stored_sandbox = StoredSandbox(
+        stored_sandbox = self._new_stored_sandbox(
             id=container_name,
-            backend=DOCKER_BACKEND,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
-            created_at=utc_now(),
         )
         self.db_session.add(stored_sandbox)
         await self.db_session.flush()
@@ -577,6 +607,9 @@ class DockerSandboxService(SandboxService):
                 else None,
                 # Network mode: 'host' for host networking, None for default bridge
                 network_mode=network_mode,
+                # A user-defined network lets the sandbox resolve the other
+                # containers on it by name
+                network=self.network if not self.use_host_network else None,
                 # Device passthrough for KVM hardware virtualization
                 devices=devices,
             )
@@ -586,99 +619,97 @@ class DockerSandboxService(SandboxService):
         except APIError as e:
             raise SandboxError('Failed to start container') from e
 
-    async def resume_sandbox(self, sandbox_id: str) -> bool:
-        """Resume a paused sandbox.
+    async def _resume_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Start or unfreeze the sandbox's container.
 
         The session API key is unchanged. Docker bakes it into the container
         environment at create, so rotating it means replacing the container
         and losing the workspace with it.
         """
-        # Enforce sandbox limits by cleaning up old sandboxes
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
-
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        container = self._get_container(sandbox_id)
+        container = self._get_container(stored_sandbox.id)
         if container is None:
-            return False
-
+            return ProviderOutcome.FAILED
         try:
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
                 container.start()
-            return True
+            else:
+                return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
-            return False
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def pause_sandbox(self, sandbox_id: str) -> bool:
-        """Pause a running sandbox.
+    async def _pause_at_provider(
+        self, stored_sandbox: StoredSandbox
+    ) -> ProviderOutcome:
+        """Stop the sandbox's container.
+
+        Stopping frees the sandbox's memory, where freezing it would not. The
+        container keeps its filesystem, its port bindings and its environment,
+        and ``_resume_at_provider`` starts it again. Processes the agent left
+        running do not survive, just as on the k8s backend, where a pause
+        deletes the pod.
 
         The key hash is kept. The container has the same key after resume, so
         clearing the hash would not revoke anything.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-        container = self._get_container(sandbox_id)
+        container = self._get_container(stored_sandbox.id)
         if container is None:
-            return False
-
+            return ProviderOutcome.FAILED
         try:
-            if container.status == 'running':
-                container.pause()
-            return True
+            if container.status == 'exited':
+                return ProviderOutcome.ALREADY_DONE
+            # A frozen container is one an earlier release paused.
+            if container.status not in ('running', 'paused'):
+                # Starting or dead: there is nothing to pause.
+                return ProviderOutcome.SKIPPED
+            # The agent server gets SIGTERM, then SIGKILL after the timeout.
+            # The wait runs off the event loop.
+            await asyncio.to_thread(container.stop, timeout=STOP_TIMEOUT_SECONDS)
         except (NotFound, APIError):
-            return False
+            return ProviderOutcome.FAILED
+        return ProviderOutcome.CHANGED
 
-    async def delete_sandbox(self, sandbox_id: str) -> bool:
-        """Delete a sandbox and its row.
+    async def _delete_at_provider(self, stored_sandbox: StoredSandbox) -> None:
+        """Stop and remove the sandbox's container.
 
-        A container the daemon has already lost still has its row removed, so
-        the record cannot outlive what it describes.
-
-        Returns False only when there is no such sandbox or the caller may not
-        see it. A daemon failure part way through raises
-        ``SandboxDeleteRetryError`` and keeps the row, so a container that is
-        still running is never reported as gone.
+        A container the daemon has already lost counts as deleted, so the row
+        cannot outlive what it describes.
         """
-        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-        if stored_sandbox is None:
-            return False
-
-        container = self._get_container(sandbox_id)
-        if container is not None:
-            try:
-                # Stop the container if it's running
-                if container.status in ['running', 'paused']:
-                    container.stop(timeout=10)
-
-                # Remove the container
-                container.remove()
-            except NotFound:
-                # Removed under us. The row still needs removing.
-                pass
-            except APIError as exc:
-                _logger.exception(
-                    f'Error deleting container {sandbox_id}', stack_info=True
-                )
-                raise SandboxDeleteRetryError(
-                    f'Could not complete delete for sandbox {sandbox_id}: {exc}'
-                ) from exc
-
-        await self.db_session.delete(stored_sandbox)
-        return True
+        container = self._get_container(stored_sandbox.id)
+        if container is None:
+            return
+        try:
+            if container.status in ['running', 'paused']:
+                container.stop(timeout=STOP_TIMEOUT_SECONDS)
+            container.remove()
+        except NotFound:
+            # Removed under us.
+            pass
+        except APIError as exc:
+            _logger.exception(
+                f'Error deleting container {stored_sandbox.id}', stack_info=True
+            )
+            raise SandboxDeleteRetryError(
+                f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
+            ) from exc
 
 
-class DockerSandboxServiceInjector(SandboxServiceInjector):
+class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
+
+    backend: ClassVar[str] = DOCKER_BACKEND
 
     container_url_pattern: str = Field(
         default='http://localhost:{port}',
         description=(
             'URL pattern for exposed sandbox ports. Use {port} as placeholder. '
             'For remote access, set to your server IP (e.g., http://192.168.1.100:{port}). '
+            '{sandbox_id} is the container name, for a proxy that routes to '
+            'sandboxes on a Docker network. '
             'Configure via OH_SANDBOX_CONTAINER_URL_PATTERN environment variable.'
         ),
     )
@@ -762,6 +793,19 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
             'is problematic. Configure via AGENT_SERVER_USE_HOST_NETWORK environment variable.'
         ),
     )
+    network: str | None = Field(
+        default_factory=_get_network_default,
+        description=(
+            'Docker network to attach agent-server containers to instead of the '
+            'default bridge. Containers on a user-defined network resolve each '
+            'other by name, so sandboxes can reach Docker Compose services by '
+            'their service names. No ports are published: {port} in '
+            'container_url_pattern is the container port, and the pattern must '
+            'include {sandbox_id} for a proxy on the network to route by. Ignored '
+            'with host networking. Configure via SANDBOX_DOCKER_NETWORK '
+            'environment variable.'
+        ),
+    )
     kvm_enabled: bool = Field(
         default_factory=_get_kvm_enabled_default,
         description=(
@@ -772,6 +816,21 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
             'Configure via SANDBOX_KVM_ENABLED environment variable.'
         ),
     )
+
+    @model_validator(mode='after')
+    def _network_urls_name_the_sandbox(self) -> 'DockerSandboxServiceInjector':
+        # On a network every sandbox uses the same container ports, so only
+        # {sandbox_id} tells their URLs apart.
+        if (
+            self.network
+            and not self.use_host_network
+            and '{sandbox_id}' not in self.container_url_pattern
+        ):
+            raise ValueError(
+                'SANDBOX_DOCKER_NETWORK needs a container_url_pattern that '
+                'includes {sandbox_id}'
+            )
+        return self
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
@@ -812,5 +871,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 extra_hosts=self.extra_hosts,
                 startup_grace_seconds=self.startup_grace_seconds,
                 use_host_network=self.use_host_network,
+                network=self.network,
                 kvm_enabled=self.kvm_enabled,
+                lifecycle=self.lifecycle,
             )

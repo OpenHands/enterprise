@@ -13,7 +13,7 @@ from typing import Any, AsyncGenerator
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.sandbox_models import AGENT_SERVER, SandboxInfo
@@ -90,6 +90,50 @@ def _agent_label_expression(llm_model: Any) -> Any:
 
 
 MAX_SANDBOX_STATUS_FILTER_ROWS = 5000
+
+
+def conversation_pr_keys(
+    selected_repository: str | None,
+    git_provider: str | None,
+    pr_numbers: list[int] | None,
+    pull_requests: list[dict] | None,
+) -> list[tuple[str, str, int]]:
+    """(provider, repository, number) of each pull request of a conversation.
+
+    A PR recorded with its repository in ``pull_requests`` uses that repository;
+    the rest of ``pr_numbers`` are the main repository's. The PR tools take the
+    name in any casing, so a PR in the main repository keeps its stored name.
+    """
+    keys: list[tuple[str, str, int]] = []
+    remaining = list(pr_numbers or [])
+    for pr in pull_requests or []:
+        repository = pr.get('repository')
+        provider = pr.get('git_provider')
+        number = pr.get('number')
+        if repository and provider and isinstance(number, int):
+            if (
+                selected_repository
+                and provider == git_provider
+                and repository.lower() == selected_repository.lower()
+            ):
+                repository = selected_repository
+            keys.append((provider, repository, number))
+            if number in remaining:
+                remaining.remove(number)
+    if selected_repository and git_provider:
+        keys.extend((git_provider, selected_repository, n) for n in remaining)
+    return keys
+
+
+def _metadata_pr_keys(
+    metadata: StoredConversationMetadata,
+) -> list[tuple[str, str, int]]:
+    return conversation_pr_keys(
+        metadata.selected_repository,
+        metadata.git_provider,
+        metadata.pr_number,
+        metadata.pull_requests,
+    )
 
 
 class OrgConversationFilterError(ValueError):
@@ -223,12 +267,9 @@ class OrgConversationService:
     ) -> bool | None:
         if not metadata.pr_number:
             return None
-        if not metadata.selected_repository or not metadata.git_provider:
-            return None
 
         statuses: list[bool | None] = []
-        for pr_number in metadata.pr_number or []:
-            key = (metadata.git_provider, metadata.selected_repository, pr_number)
+        for key in _metadata_pr_keys(metadata):
             if key in pr_map:
                 statuses.append(pr_map[key])
 
@@ -402,15 +443,7 @@ class OrgConversationService:
 
         pr_keys: set[tuple[str, str, int]] = set()
         for metadata, _, _ in rows:
-            if (
-                metadata.pr_number
-                and metadata.selected_repository
-                and metadata.git_provider
-            ):
-                for pr_number in metadata.pr_number:
-                    pr_keys.add(
-                        (metadata.git_provider, metadata.selected_repository, pr_number)
-                    )
+            pr_keys.update(_metadata_pr_keys(metadata))
 
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
@@ -1288,6 +1321,7 @@ class OrgConversationService:
         org_id: UUID,
         limit: int = 500,
         offset: int = 0,
+        time_window: str | None = None,
     ) -> OrgUserUsageStats:
         now = datetime.now(UTC)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1299,6 +1333,16 @@ class OrgConversationService:
             StoredConversationMetadata.conversation_version == 'V1',
             StoredConversationMetadataSaas.org_id == org_id,
         ]
+
+        # The conversation count matches list_org_conversations: top-level
+        # conversations only, created within the time window when one is given.
+        # Spend columns keep their own periods (MTD, YTD, lifetime).
+        counted: ColumnElement[bool] = (
+            StoredConversationMetadata.parent_conversation_id.is_(None)
+        )
+        if time_window and time_window in TIME_WINDOW_OPTIONS:
+            cutoff = now - timedelta(days=TIME_WINDOW_OPTIONS[time_window])
+            counted = and_(counted, StoredConversationMetadata.created_at >= cutoff)
 
         cost_events_subquery = (
             select(
@@ -1350,9 +1394,9 @@ class OrgConversationService:
                 User.git_user_name,
                 User.first_login_at,
                 User.last_login_at,
-                func.count(StoredConversationMetadata.conversation_id).label(
-                    'conversation_count'
-                ),
+                func.count(
+                    case((counted, StoredConversationMetadata.conversation_id))
+                ).label('conversation_count'),
                 func.min(StoredConversationMetadata.created_at).label(
                     'first_conversation_at'
                 ),
@@ -1406,17 +1450,32 @@ class OrgConversationService:
             has_more = True
             user_rows = user_rows[:limit]
 
-        settings_result = await self.db_session.execute(
-            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
-        )
-        budget_settings = settings_result.scalar_one_or_none()
+        from storage.lite_llm_manager import is_litellm_enabled
 
-        overrides_result = await self.db_session.execute(
-            select(OrgUserBudgetOverride).where(OrgUserBudgetOverride.org_id == org_id)
-        )
-        override_map = {
-            override.user_id: override for override in overrides_result.scalars().all()
-        }
+        # Budgets are enforced through LiteLLM: with the gateway disabled
+        # deployment-wide, any stored budget row is stale and no longer
+        # enforced, so omit it from usage monitoring rather than implying
+        # enforcement that is not happening. Conversation/usage stats
+        # (spend_mtd/ytd/lifetime, conversation counts, etc.) are OHE's own
+        # tracking and are unaffected.
+        litellm_enabled = await is_litellm_enabled()
+        budget_settings = None
+        override_map: dict[UUID, OrgUserBudgetOverride] = {}
+        if litellm_enabled:
+            settings_result = await self.db_session.execute(
+                select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+            )
+            budget_settings = settings_result.scalar_one_or_none()
+
+            overrides_result = await self.db_session.execute(
+                select(OrgUserBudgetOverride).where(
+                    OrgUserBudgetOverride.org_id == org_id
+                )
+            )
+            override_map = {
+                override.user_id: override
+                for override in overrides_result.scalars().all()
+            }
 
         pr_rows_result = await self.db_session.execute(
             select(
@@ -1424,6 +1483,7 @@ class OrgConversationService:
                 StoredConversationMetadata.selected_repository,
                 StoredConversationMetadata.git_provider,
                 StoredConversationMetadata.pr_number,
+                StoredConversationMetadata.pull_requests,
             )
             .select_from(StoredConversationMetadata)
             .join(
@@ -1439,10 +1499,12 @@ class OrgConversationService:
         user_pr_keys: dict[UUID, set[tuple[str, str, int]]] = {}
         pr_keys: set[tuple[str, str, int]] = set()
         for row in pr_rows:
-            if not row.selected_repository or not row.git_provider or not row.pr_number:
-                continue
-            for pr_number in row.pr_number:
-                key = (row.git_provider, row.selected_repository, pr_number)
+            for key in conversation_pr_keys(
+                row.selected_repository,
+                row.git_provider,
+                row.pr_number,
+                row.pull_requests,
+            ):
                 pr_keys.add(key)
                 user_pr_keys.setdefault(row.user_id, set()).add(key)
 
@@ -1530,16 +1592,7 @@ class OrgConversationService:
 
         metadata, saas_metadata, user = row
 
-        pr_keys: set[tuple[str, str, int]] = set()
-        if (
-            metadata.pr_number
-            and metadata.selected_repository
-            and metadata.git_provider
-        ):
-            for pr_number in metadata.pr_number:
-                pr_keys.add(
-                    (metadata.git_provider, metadata.selected_repository, pr_number)
-                )
+        pr_keys = set(_metadata_pr_keys(metadata))
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
         sandbox_info = None
@@ -1693,20 +1746,43 @@ class OrgConversationService:
 
 
 class OrgConversationServiceInjector(Injector[OrgConversationService]):
-    """Injector that composes db_session and sandbox_service for OrgConversationService."""
+    """Injector that composes db_session and sandbox_service for OrgConversationService.
+
+    The sandbox service runs with the instance-wide ``ADMIN`` user context
+    rather than the caller's. Sandbox lookups are otherwise scoped to rows the
+    caller created, so an org admin saw ``sandbox_status: null`` for other
+    members' conversations and ``stop_conversation`` reported success without
+    stopping anything. This is safe because every route that reaches the
+    sandbox service requires ``VIEW_ORG_CONVERSATIONS`` (admin/owner), the
+    service only passes sandbox ids taken from conversations of the requested
+    org, and responses never expose the sandbox ``session_api_key``. Routes
+    open to members (the my-usage stats) must not start calling
+    ``sandbox_service``.
+    """
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
     ) -> AsyncGenerator[OrgConversationService, None]:
         # Local imports to avoid circular dependencies
         from openhands.app_server.config import get_db_session, get_sandbox_service
+        from openhands.app_server.services.db_session_injector import DB_SESSION_ATTR
+        from openhands.app_server.user.specifiy_user_context import (
+            ADMIN,
+            USER_CONTEXT_ATTR,
+        )
 
         async with get_db_session(state, request) as db_session:
             service = OrgConversationService(db_session=db_session)
 
+            # Share the request's DB session, but look sandboxes up
+            # instance-wide (see the class docstring).
+            sandbox_state = InjectorState()
+            setattr(sandbox_state, USER_CONTEXT_ATTR, ADMIN)
+            setattr(sandbox_state, DB_SESSION_ATTR, db_session)
+
             # Try to inject sandbox service if available
             try:
-                async with get_sandbox_service(state, request) as sandbox_service:
+                async with get_sandbox_service(sandbox_state) as sandbox_service:
                     service.set_sandbox_service(sandbox_service)
                     yield service
                     return

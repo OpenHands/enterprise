@@ -25,7 +25,6 @@ def test_zero_processor_errors_marks_outer_task_completed():
 @pytest.mark.asyncio
 async def test_main_exits_nonzero_after_task_failures():
     with (
-        patch('run_maintenance_tasks.set_stale_task_error'),
         patch(
             'run_maintenance_tasks.run_tasks',
             new=AsyncMock(return_value=1),
@@ -40,7 +39,6 @@ async def test_main_exits_nonzero_after_task_failures():
 @pytest.mark.asyncio
 async def test_main_returns_normally_after_successful_tasks():
     with (
-        patch('run_maintenance_tasks.set_stale_task_error'),
         patch(
             'run_maintenance_tasks.run_tasks',
             new=AsyncMock(return_value=0),

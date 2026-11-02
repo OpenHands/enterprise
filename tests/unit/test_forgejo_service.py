@@ -12,6 +12,7 @@ from openhands.app_server.integrations.service_types import (
     User,
 )
 from openhands.app_server.types import AppMode
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 @pytest.fixture
@@ -271,3 +272,26 @@ async def test_request_reviewers_empty_list(forgejo_service):
     await forgejo_service.request_reviewers('org/project', 5, [])
 
     forgejo_service._make_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_branches_returns_requested_page(forgejo_service):
+    """Search filters all branches, then takes the requested page."""
+    from openhands.app_server.integrations.service_types import Branch
+
+    branches = [
+        Branch(name=f'feat-{i}', commit_sha=f'sha{i}', protected=False)
+        for i in range(1, 6)
+    ] + [Branch(name='main', commit_sha='m', protected=False)]
+    forgejo_service.get_branches = AsyncMock(return_value=branches)
+
+    page2 = await forgejo_service.search_branches(
+        'o/r', 'feat', per_page=2, page_id=encode_page_id(2)
+    )
+    page3 = await forgejo_service.search_branches(
+        'o/r', 'feat', per_page=2, page_id=page2.next_page_id
+    )
+
+    assert [b.name for b in page2.branches] == ['feat-3', 'feat-4']
+    assert [b.name for b in page3.branches] == ['feat-5']
+    assert page3.next_page_id is None

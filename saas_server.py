@@ -27,8 +27,10 @@ from server.auth.constants import (  # noqa: E402
     BITBUCKET_DATA_CENTER_HOST,
     ENABLE_JIRA,
     ENABLE_JIRA_DC,
+    ENABLE_SUPER_ADMIN,
     GITHUB_APP_CLIENT_ID,
     GITLAB_APP_CLIENT_ID,
+    is_oauth_v2_login_enabled,
 )
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
@@ -40,6 +42,7 @@ from server.middleware import (  # noqa: E402
     SetAuthCookieMiddleware,
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
+from server.routes.admin_users import admin_user_router  # noqa: E402
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402
@@ -50,16 +53,31 @@ from server.routes.feature_flags import (  # noqa: E402
     feature_flag_router,
 )
 from server.routes.github_proxy import add_github_proxy_routes  # noqa: E402
+from server.routes.idp import (  # noqa: E402
+    idp_invite_router,
+    idp_password_router,
+    idp_router,
+    idp_status_router,
+)
+from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
+from server.routes.license import license_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
+from server.routes.oauth_providers_admin import (  # noqa: E402
+    oauth_provider_admin_router,
+)
 from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
 )
 from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
+)
+from server.routes.org_mcp_servers import org_mcp_servers_router  # noqa: E402
+from server.routes.org_meta_profiles import (  # noqa: E402
+    router as org_meta_profiles_router,
 )
 from server.routes.org_profiles import router as org_profiles_router  # noqa: E402
 from server.routes.org_provider_connections import (  # noqa: E402
@@ -69,8 +87,13 @@ from server.routes.org_secrets import org_secrets_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
+from server.routes.saml import saml_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
-from server.routes.super_admins import super_admin_router  # noqa: E402
+from server.routes.super_admins import (  # noqa: E402
+    admin_users_router,
+    super_admin_router,
+)
+from server.routes.tool_catalog import router as tool_catalog_router  # noqa: E402
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
     user_provisioning_router,
@@ -115,7 +138,14 @@ base_app.include_router(readiness_router)  # Add routes for readiness checks
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
+base_app.include_router(idp_router)  # Integrated password IDP (self-hosted)
+base_app.include_router(idp_status_router)  # Integrated IDP status endpoint
+base_app.include_router(
+    idp_password_router
+)  # Authenticated self-service set/change password
+base_app.include_router(idp_invite_router)  # Super-admin-issued, expiring sign-up links
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
+base_app.include_router(saml_router)  # SAML SP login/ACS/metadata routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings
 base_app.include_router(
     billing_router
@@ -138,8 +168,12 @@ if GITHUB_APP_CLIENT_ID:
         github_integration_router
     )  # Add additional route for integration webhook events
 
-# Add GitLab integration router only if GITLAB_APP_CLIENT_ID is set
-if GITLAB_APP_CLIENT_ID:
+# With OAuth v2 a super admin adds git providers at runtime (Auth Providers), so
+# their env vars may be unset while the frontend still renders webhook managers.
+OAUTH_V2_LOGIN_ENABLED = is_oauth_v2_login_enabled()
+
+# Add GitLab integration router only if GitLab is configured.
+if GITLAB_APP_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     # Make sure that the callback processor is loaded here so we don't get an error when deserializing
     from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
         GitlabV1CallbackProcessor,
@@ -165,7 +199,7 @@ if BITBUCKET_APP_CLIENT_ID:
     base_app.include_router(bitbucket_integration_router)
 
 # Add Azure DevOps integration router only if Azure DevOps OAuth is configured.
-if AZURE_DEVOPS_CLIENT_ID:
+if AZURE_DEVOPS_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     from integrations.azure_devops.azure_devops_v1_callback_processor import (  # noqa: E402
         AzureDevOpsV1CallbackProcessor,
     )
@@ -182,12 +216,24 @@ base_app.include_router(service_router)  # Add routes for internal service API
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
+base_app.include_router(org_mcp_servers_router)  # Org-scoped MCP server listings
+base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
 )  # Add routes for instance-level super-admin management
+if ENABLE_SUPER_ADMIN:
+    base_app.include_router(
+        instance_admin_router
+    )  # Add routes for Super Admin org/user directory
+base_app.include_router(
+    admin_users_router
+)  # Add routes for the instance-wide user directory (super-admin-only)
 base_app.include_router(
     feature_flag_router
 )  # Add routes for database-driven feature flags
+base_app.include_router(
+    oauth_provider_admin_router
+)  # Add routes for oauth_providers CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -199,11 +245,17 @@ base_app.include_router(
     org_profiles_router, prefix='/api/organizations'
 )  # Add routes for org LLM profiles
 base_app.include_router(
+    org_meta_profiles_router, prefix='/api/organizations'
+)  # Add routes for org Model Routers (meta-profiles)
+base_app.include_router(
     org_provider_connections_router, prefix='/api/organizations'
 )  # Add routes for org LLM provider connections
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
+base_app.include_router(
+    tool_catalog_router
+)  # Add /api/tools/catalog for the agent-profile tool picker
 base_app.include_router(
     verified_models_router
 )  # Add routes for verified models management
@@ -226,6 +278,7 @@ if BITBUCKET_DATA_CENTER_HOST:
 
     base_app.include_router(bitbucket_dc_proxy_router)
 
+if BITBUCKET_DATA_CENTER_HOST or OAUTH_V2_LOGIN_ENABLED:
     # Bitbucket Data Center resolver webhook (PR comment trigger).
     from integrations.bitbucket_data_center.bitbucket_dc_v1_callback_processor import (  # noqa: E402
         BitbucketDCV1CallbackProcessor,
@@ -242,6 +295,7 @@ base_app.include_router(
     analytics_events_router
 )  # Add routes for client-initiated analytics events
 base_app.include_router(quota_router)  # Add routes for quota status
+base_app.include_router(license_router)  # License status for the license banner
 base_app.include_router(
     quota_admin_router
 )  # Add admin routes for quota (org-level + increase requests)

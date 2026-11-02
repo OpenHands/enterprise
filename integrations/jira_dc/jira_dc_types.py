@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from jinja2 import Environment
 
 from integrations.models import JobContext
+from openhands.app_server.integrations.service_types import Repository
 from openhands.app_server.user_auth.user_auth import UserAuth
 from storage.jira_dc_user import JiraDcUser
 from storage.jira_dc_workspace import JiraDcWorkspace
@@ -17,6 +18,11 @@ class JiraDcViewInterface(ABC):
     jira_dc_workspace: JiraDcWorkspace
     selected_repo: str | None
     conversation_id: str
+    # Verified repositories cloned beside selected_repo, mentions that could
+    # not be accessed, and verified mentions beyond the per-conversation limit.
+    additional_repos: list[Repository]
+    inaccessible_repos: list[str]
+    skipped_repos: list[str]
 
     @abstractmethod
     async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:

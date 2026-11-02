@@ -47,7 +47,7 @@ then re-run the command to ensure it passes. Common issues include:
 
 - Prefer specific `git add <filename>` instead of `git add .` to avoid accidentally staging unintended files
 - Be especially careful with `git reset --hard` after staging files, as it will remove accidentally staged files
-- When remote has new changes, use `git fetch upstream && git rebase upstream/<branch>` on the same branch
+- When `origin` has new changes, use `git fetch origin && git rebase origin/<branch>` on the same branch
 
 ## GitHub Actions
 
@@ -108,7 +108,7 @@ Backend:
 - The current V1 application server lives in `openhands/app_server/`. `make start-backend` launches `openhands.server.listen:app`, which includes the V1 routes by default unless `ENABLE_V1=0`. It needs PostgreSQL; `make local-db` provides one.
 - For V1 web-app docs, LLM setup should point users to the Settings UI.
 - Testing:
-  - All tests are in `tests/unit/test_*.py`
+  - Unit tests live in `tests/unit/` (including nested packages such as `tests/unit/app_server/`); integration tests live in `tests/integration/`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
   - Write all tests with pytest
   - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
@@ -127,7 +127,7 @@ Frontend:
 - Building:
   - Build for production: `npm run build`
   - The app ships a second SPA, Agent Canvas (`OpenHands/OpenHands`), at `/canvas`. In cloud this is a separate service behind an ingress rule; locally it is built into this app so `/` → `/canvas` works without ingress. `make build-agent-canvas` (or `npm run build:agent-canvas`) clones the pinned tag, builds it with `VITE_BASE_PATH=/canvas`, and stages it at `frontend/public/canvas`, which `npm run build` copies to `frontend/build/canvas`. The Vite dev server serves it via `frontend/vite-plugin-agent-canvas.ts`, and the backend mounts it at `/canvas` (`openhands/app_server/app.py`, `saas_server.py`) ahead of the `/` catch-all. This is temporary scaffolding: when the OSS frontend is retired, `/canvas` becomes the only surface.
-  - Canvas is deliberately NOT part of `make build`, because `make build` is a required CI step (`.github/workflows/py-tests.yml`) and cloning a second repository there would add a network dependency and a new failure mode to a job that currently works. Use `AGENT_CANVAS=1 make build` when you do want it in the build output. `make run` / `make run-saas` prepare it via `prepare-local-frontend`, and that step is fail-soft: /canvas is scaffolding over a still-working OSS frontend, so a canvas build failure must not block startup.
+  - Canvas is deliberately NOT part of `make build`, because cloning a second repository there would add a network dependency and a new failure mode to the default build. Use `AGENT_CANVAS=1 make build` when you do want it in the build output. `make run` / `make run-saas` prepare it via `prepare-local-frontend`, and that step is fail-soft: /canvas is scaffolding over a still-working OSS frontend, so a canvas build failure must not block startup.
 - Environment Variables:
   - Set in `frontend/.env` or as environment variables
   - Available variables: VITE_BACKEND_HOST, VITE_USE_TLS, VITE_INSECURE_SKIP_VERIFY, VITE_FRONTEND_PORT
@@ -148,7 +148,7 @@ Frontend:
 The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They live at the repository root, next to it:
 - `server/` - the SaaS server: authentication and user management (Keycloak integration), org management, billing (Stripe), routes, services
 - `storage/` - SQLAlchemy models and stores (PostgreSQL in production and in unit tests)
-- `integrations/` - GitHub, GitLab, Bitbucket, Azure DevOps, Jira, Linear and Slack integrations
+- `integrations/` - GitHub, GitLab, Bitbucket, Bitbucket Data Center, Azure DevOps, Jira, Jira Data Center and Slack integrations
 - `sync/` - CronJob entrypoints (`python -m sync.<job>`)
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
 - `migrations/` + `alembic.ini` - Alembic database migrations
@@ -172,7 +172,7 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 **Running Tests:**
 ```bash
 # Full unit test suite (app server + SaaS modules)
-uv run pytest -n auto -s ./tests/unit --cov --cov-branch
+uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
 
 # Test specific modules (faster for development)
 uv run pytest tests/unit/server/routes/
@@ -206,8 +206,9 @@ The SaaS server uses Alembic for PostgreSQL-only database migrations. When makin
 The codebase includes integrations for:
 - **GitHub** - PR management, webhooks, app installations
 - **GitLab** - Similar to GitHub but for GitLab instances
-- **Jira** - Issue tracking and project management
-- **Linear** - Modern issue tracking
+- **Bitbucket** - Cloud and Data Center variants
+- **Azure DevOps** - Repository and PR management
+- **Jira** - Cloud and Data Center variants
 - **Slack** - Team communication and notifications
 
 Each integration follows a consistent pattern with service classes, storage models, and API endpoints.
@@ -258,8 +259,11 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
   ZONE` columns reject tz-aware values, identity sequences start at 1, and UUID columns return `uuid.UUID`
   objects. Create the rows a foreign key needs (`create_org` / `create_user` in `tests/unit/conftest.py`) instead
   of inventing ids
-- Running any test needs a working docker daemon. The root `conftest.py` starts one container per run, shares it
-  across pytest-xdist workers, and removes it when the run ends
+- If tests cannot import `testcontainers`, run `uv sync --all-groups` to install the pinned test dependencies.
+  The test suite requires access to a Docker daemon for its PostgreSQL container (see root `conftest.py` and
+  `tests/postgres_testdb.py`); if the Docker socket is unavailable, configure daemon access for your environment
+  before rerunning the tests. Do not make the Docker socket world-writable. The root `conftest.py` starts one
+  container per test run, shares it across pytest-xdist workers, and removes it when the run ends
 - Do not mock the database in unit tests; use the fixtures. Mock only the services around it (LiteLLM, Keycloak,
   git providers)
 - Do not add SQLite paths to Alembic migrations
@@ -296,8 +300,7 @@ In everyday language a user saying "SaaS" / "in SaaS" / "SaaS-only" / "this is a
 ## Template for Github Pull Request
 
 If you are starting a pull request (PR), please follow the template in `.github/pull_request_template.md`.
-- The PR template now starts with a `HUMAN:` section, the human-tested checkbox, and an `AGENT:` section.
-- `.github/workflows/pr-readiness-confirm.yml` checks non-draft PRs for non-empty text between `HUMAN:` and the human-tested checkbox; if present it adds a 👍 reaction, and if absent it posts a reminder comment.
+- The PR template starts with a `HUMAN:` section, the human-tested checkbox, and an `AGENT:` section.
 
 
 ## Implementation Details
@@ -335,7 +338,7 @@ vi.mock("#/hooks/use-agent-state", () => ({
 Microagents are specialized prompts that enhance OpenHands with domain-specific knowledge and task-specific workflows. They are Markdown files that can include frontmatter for configuration.
 
 #### Types:
-- **Public Skills/Microagents**: Located in `skills/`, available to all users
+- **Public Skills/Microagents**: Loaded from the [OpenHands/extensions](https://github.com/OpenHands/extensions) repository (ref set by `EXTENSIONS_REF`), available to all users
 - **Repository Microagents**: Located in `.openhands/microagents/`, specific to this repository
 
 #### Loading Behavior:

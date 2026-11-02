@@ -35,7 +35,7 @@ from integrations.jira_dc.jira_dc_user_token import (
 from integrations.models import Message, SourceType
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.config import depends_jwt_service
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -240,7 +240,15 @@ async def get_jira_dc_secret_token(
         if not access_token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-        payload = jwt_service.verify_jws_token(access_token)
+        payload = jwt_service.verify_jws_token(
+            access_token,
+            audience=JwtAudience.JIRA_DC_SECRET,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+            accept_unscoped=lambda p: (
+                p.get('integration') == 'jira_dc'
+                and p.get('secret_name') == 'JIRA_DC_TOKEN'
+            ),
+        )
         if (
             payload.get('integration') != 'jira_dc'
             or payload.get('secret_name') != 'JIRA_DC_TOKEN'
@@ -453,20 +461,16 @@ async def _process_jira_dc_event(
             redis_client.setex(key, 120, 1)
 
         if AUTOMATION_EVENT_FORWARDING_ENABLED and payload and workspace:
-            if workspace.org_id:
-                background_tasks.add_task(
-                    automation_event_service.forward_jira_dc_event,
-                    org_id=workspace.org_id,
-                    payload=payload,
-                    workspace_name=workspace.name,
-                    connection_id=workspace.id,
-                    delivery_id=signature,
-                )
-            else:
-                logger.warning(
-                    '[Jira DC] Workspace %s has no org_id; skipping automation forwarding',
-                    workspace.id,
-                )
+            # Also reaches other orgs with Jira DC automations, so a workspace
+            # without an org still forwards.
+            background_tasks.add_task(
+                automation_event_service.forward_jira_dc_event,
+                org_id=workspace.org_id,
+                payload=payload,
+                workspace_name=workspace.name,
+                connection_id=workspace.id,
+                delivery_id=signature,
+            )
 
         # Process the webhook
         message_payload = {'payload': payload}

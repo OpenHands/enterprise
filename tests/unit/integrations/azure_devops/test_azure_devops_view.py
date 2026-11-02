@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -5,12 +6,14 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from integrations.azure_devops.azure_devops_view import (
+    OPENHANDS_COMMENT_MARKER,
     AzureDevOpsFactory,
     AzureDevOpsPRComment,
     AzureDevOpsWorkItemComment,
     _select_project_repo,
     actor_email,
     mark_openhands_comment,
+    mark_openhands_work_item_comment,
 )
 from integrations.models import Message, SourceType
 
@@ -133,6 +136,31 @@ def test_is_work_item_comment_requires_exact_mention():
     )
 
 
+def _azure_stored(html: str) -> str:
+    """A work item comment as Azure stores it: HTML comments removed, attribute quotes dropped."""
+    return re.sub(r'<!--.*?-->', '', html, flags=re.S).replace('="1"', '=1')
+
+
+def test_work_item_replies_stay_marked_after_azure_stores_them():
+    reply = 'Done. Ask @openhands again if needed.'
+    stored = _azure_stored(
+        mark_openhands_work_item_comment(mark_openhands_comment(reply))
+    )
+
+    assert OPENHANDS_COMMENT_MARKER not in stored
+    assert (
+        AzureDevOpsFactory.is_work_item_comment(_make_work_item_message(stored))
+        is False
+    )
+    # The comment marker alone does not survive, so the reply would read as a mention.
+    assert (
+        AzureDevOpsFactory.is_work_item_comment(
+            _make_work_item_message(_azure_stored(mark_openhands_comment(reply)))
+        )
+        is True
+    )
+
+
 @pytest.mark.asyncio
 async def test_factory_creates_pr_comment_view():
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -164,7 +192,7 @@ async def test_factory_work_item_view_derives_real_repo(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -193,7 +221,7 @@ async def test_factory_work_item_view_uses_sole_repo(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -218,7 +246,7 @@ async def test_factory_work_item_view_returns_none_when_ambiguous(monkeypatch):
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -235,7 +263,7 @@ async def test_factory_work_item_view_returns_none_when_no_repos(monkeypatch):
     fake_service.get_project_repositories = AsyncMock(return_value=[])
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -307,7 +335,7 @@ async def test_work_item_load_resolver_context_uses_work_item_not_pr(monkeypatch
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -345,7 +373,7 @@ async def test_pr_comment_load_resolver_context_uses_pr_not_work_item(monkeypatc
     )
     monkeypatch.setattr(
         'integrations.azure_devops.azure_devops_view.AzureDevOpsServiceImpl',
-        lambda external_auth_id: fake_service,
+        lambda **kwargs: fake_service,
     )
 
     view = await AzureDevOpsFactory.create_azure_devops_view_from_payload(
@@ -399,3 +427,28 @@ def test_actor_email_extracts_email_from_unique_name_or_display_name():
         == 'alice@example.com'
     )
     assert actor_email({'displayName': 'Alice Example'}) == ''
+
+
+def test_actor_email_extracts_email_from_identity_string():
+    # Work item service hooks send System.ChangedBy as one "Name <email>" string.
+    identity = 'Alice Example <alice@example.com>'
+    assert (
+        actor_email({'displayName': identity, 'uniqueName': identity})
+        == 'alice@example.com'
+    )
+
+
+def test_actor_email_trusts_only_the_bracketed_account():
+    # The display name is free text and can itself look like an address.
+    identity = 'bob@example.com <alice@example.com>'
+    assert (
+        actor_email({'displayName': identity, 'uniqueName': identity})
+        == 'alice@example.com'
+    )
+
+
+@pytest.mark.parametrize(
+    'address', ["sean.o'brien@contoso.com", 'ops!alice@contoso.com']
+)
+def test_actor_email_keeps_a_bare_unique_name(address):
+    assert actor_email({'uniqueName': address}) == address

@@ -56,6 +56,34 @@ The preferred method of installing OpenHands Enterprise is via our Replicated in
 - Fist, read the [Quick Start guide](https://docs.openhands.dev/enterprise/quick-start) to understand system requirements for OpenHands Enterprise
 - Then, [register for a Trial account](https://install.r9.all-hands.dev/openhands/signup) via the Replicated installer portal.
 
+### Run Locally with Docker Compose
+
+For a local evaluation or development, `docker-compose.yml` starts the whole stack (app, worker, automation service, Agent Canvas, PostgreSQL and a reverse proxy) from the released images. Docker with the Compose plugin is the only requirement.
+
+```bash
+docker compose up -d
+```
+
+Then open <http://localhost:9043/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:9043/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
+
+To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+Or put `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` in `.env` and run `docker compose up -d --build`.
+
+To run other published versions, set any of these (shell or `.env`):
+
+| Variable | Default | Example |
+| --- | --- | --- |
+| `APP_IMAGE` | `ghcr.io/openhands/enterprise-server:<release>` | `ghcr.io/openhands/enterprise-server:main` (latest `main`), `:pr-<n>`, `:sha-<sha>` |
+| `AUTOMATION_IMAGE` | `ghcr.io/openhands/automation:<version>` | `ghcr.io/openhands/automation:main` |
+| `AGENT_CANVAS_IMAGE` | `ghcr.io/openhands/agent-canvas:<version>` | `ghcr.io/openhands/agent-canvas:main` |
+
+For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
+
 ### Learn More
 
 - **Documentation**: [https://docs.openhands.dev/enterprise](https://docs.openhands.dev/enterprise)

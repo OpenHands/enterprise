@@ -9,8 +9,14 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
-import { Settings, MarketplaceRegistration } from "#/types/settings";
+import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
 import { openHands } from "../open-hands-axios";
+import { CustomSecretPage } from "#/api/secrets-service.types";
+import {
+  OrgMcpServerCreate,
+  OrgMcpServerPage,
+  OrgMcpServerUpdate,
+} from "#/api/org-mcp-servers.types";
 
 type OrganizationSettingsResponse = Pick<
   Settings,
@@ -333,17 +339,23 @@ export const organizationService = {
     orgId,
     limit,
     offset,
+    timeWindow,
   }: {
     orgId: string;
     limit?: number;
     offset?: number;
+    /** Limits the conversation count; spend columns keep their own periods. */
+    timeWindow?: string;
   }) => {
-    const params: Record<string, number> = {};
+    const params: Record<string, number | string> = {};
     if (typeof limit === "number") {
       params.limit = limit;
     }
     if (typeof offset === "number") {
       params.offset = offset;
+    }
+    if (timeWindow) {
+      params.time_window = timeWindow;
     }
     const { data } = await openHands.get<OrgUserUsageStats>(
       `/api/organizations/${orgId}/conversations/user-usage`,
@@ -557,6 +569,13 @@ export const organizationService = {
   // Org-shared secrets are usable by all org members but can only be
   // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
   // value is write-once and never read back by anyone.
+  getOrgSecrets: async (orgId: string) => {
+    const { data } = await openHands.get<CustomSecretPage>(
+      `/api/organizations/${orgId}/secrets`,
+    );
+    return data;
+  },
+
   createOrgSecret: async (
     orgId: string,
     payload: { name: string; value: string; description?: string },
@@ -583,6 +602,43 @@ export const organizationService = {
   deleteOrgSecret: async (orgId: string, secretName: string) => {
     const { status } = await openHands.delete(
       `/api/organizations/${orgId}/secrets/${encodeURIComponent(secretName)}`,
+    );
+    return status === 200;
+  },
+
+  // ---- Organization MCP server listings (OHE-3091) ----
+  // Every member reads them (credentials masked) and launches with them;
+  // only admins/owners (MANAGE_ORG_MCP) create, edit or delete them.
+  getOrgMcpServers: async (orgId: string) => {
+    const { data } = await openHands.get<OrgMcpServerPage>(
+      `/api/organizations/${orgId}/mcp-servers`,
+    );
+    return data;
+  },
+
+  createOrgMcpServer: async (orgId: string, payload: OrgMcpServerCreate) => {
+    const { status } = await openHands.post(
+      `/api/organizations/${orgId}/mcp-servers`,
+      payload,
+    );
+    return status === 201;
+  },
+
+  updateOrgMcpServer: async (
+    orgId: string,
+    name: string,
+    payload: OrgMcpServerUpdate,
+  ) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
+      payload,
+    );
+    return status === 200;
+  },
+
+  deleteOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
     );
     return status === 200;
   },
@@ -687,6 +743,8 @@ export interface OrgMyBudget {
   cycle_end_at?: string | null;
   spend_status?: "live" | "stale" | "unavailable" | null;
   spend_observed_at?: string | null;
+  org_monthly_limit?: number | null;
+  org_current_spend?: number | null;
 }
 
 interface OrgBudgetThreshold {
@@ -792,7 +850,7 @@ interface OrgConversationResponse {
   execution_status: string | null;
   selected_repository: string | null;
   selected_branch: string | null;
-  git_provider: string | null;
+  git_provider: Provider | null;
   trigger: string | null;
   pr_number: number[];
   pr_merged: boolean | null;

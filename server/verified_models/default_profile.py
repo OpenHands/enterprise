@@ -31,7 +31,13 @@ def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
         or (
             is_openhands_model(existing.model)
             and (
-                not existing.base_url or is_openhands_proxy_base_url(existing.base_url)
+                not existing.base_url
+                or is_openhands_proxy_base_url(existing.base_url)
+                # The bundled proxy's URL, left behind after LiteLLM was turned off.
+                or (
+                    not constants.ENABLE_LEGACY_LITELLM
+                    and constants.is_in_cluster_url(existing.base_url)
+                )
             )
             and not getattr(existing, 'provider_connection_id', None)
         )
@@ -39,7 +45,10 @@ def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
 
 
 async def get_openhands_default_model_name(db_session: AsyncSession) -> str | None:
-    if _uses_deployment_default():
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    # OpenHands-managed models are served by the LiteLLM gateway.
+    if _uses_deployment_default() or not await is_litellm_enabled():
         return None
     result = await db_session.execute(
         select(StoredVerifiedModel.model_name)

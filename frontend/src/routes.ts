@@ -9,6 +9,11 @@ export default [
   route("login", "routes/login.tsx"),
   route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
+  route("install", "routes/super-admin-install-layout.tsx", [
+    index("routes/super-admin-install-welcome.tsx"),
+    route("company", "routes/super-admin-install-company.tsx"),
+    route("org", "routes/super-admin-install-org.tsx"),
+  ]),
   route("automations/*", "routes/automations-redirect.tsx"),
   route("canvas/*", "routes/cross-app-redirect.tsx", {
     id: "routes/canvas-cross-app-redirect",
@@ -23,6 +28,8 @@ export default [
     route("settings", "routes/settings.tsx", [
       index("routes/llm-settings.tsx"),
       route("agent", "routes/agent-settings.tsx"),
+      route("agents", "routes/agent-profiles-settings.tsx"),
+      route("agent-context", "routes/agent-context-settings.tsx"),
       route("condenser", "routes/condenser-settings.tsx"),
       route("verification", "routes/verification-settings.tsx"),
       route("org-defaults", "routes/org-default-llm-settings.tsx"),
@@ -33,6 +40,10 @@ export default [
       route(
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
+      ),
+      route(
+        "org-defaults/model-router",
+        "routes/org-model-router-settings.tsx",
       ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
@@ -50,6 +61,24 @@ export default [
       route("budgets", "routes/budgets.tsx"),
       route("quota", "routes/quota-settings.tsx"),
       route("your-budget", "routes/your-budget.tsx"),
+    ]),
+    route("super-admin", "routes/super-admin.tsx", [
+      index("routes/super-admin-overview.tsx"),
+      route("setup", "routes/super-admin-setup.tsx"),
+      route("organizations", "routes/super-admin-organizations.tsx"),
+      route("users", "routes/super-admin-users.tsx"),
+      route("admins", "routes/super-admin-admins.tsx"),
+      route("usage", "routes/super-admin-usage.tsx"),
+      route("instance", "routes/super-admin-instance.tsx"),
+      route("auth-providers", "routes/super-admin-auth-providers.tsx"),
+      route(
+        "auth-providers/:providerId",
+        "routes/super-admin-auth-provider-edit.tsx",
+      ),
+      route(
+        "auth-providers/:providerId/users",
+        "routes/super-admin-auth-provider-users.tsx",
+      ),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

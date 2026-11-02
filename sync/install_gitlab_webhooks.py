@@ -1,135 +1,44 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from datetime import timedelta
+from typing import cast
+from uuid import uuid4
 
 from sqlalchemy import text
 
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
-    install_webhook_on_resource,
-    verify_webhook_conditions,
+    install_claimed_webhook,
 )
-from integrations.types import GitLabResourceType
-from integrations.utils import GITLAB_WEBHOOK_URL
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.database import a_session_maker
-from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
-if TYPE_CHECKING:
-    from integrations.gitlab.gitlab_service import SaaSGitLabService
-
 CHUNK_SIZE = 100
+# Twice the job's 300 s deadline, so a claim is only taken over from a run that
+# has been stopped.
+CLAIM_LEASE = timedelta(minutes=10)
 
 
 class VerifyWebhookStatus:
-    async def fetch_rows(self, webhook_store: GitlabWebhookStore):
-        webhooks = await webhook_store.filter_rows(limit=CHUNK_SIZE)
-
-        return webhooks
-
-    def determine_if_rate_limited(
-        self,
-        status: WebhookStatus | None,
-    ) -> None:
-        if status == WebhookStatus.RATE_LIMITED:
-            raise BreakLoopException()
-
-    async def check_if_webhook_already_exists_on_resource(
-        self,
-        gitlab_service: SaaSGitLabService,
-        resource_type: GitLabResourceType,
-        resource_id: str,
-        webhook_store: GitlabWebhookStore,
-        webhook: GitlabWebhook,
-    ):
-        """
-        Check whether webhook already exists on resource
-        """
-        (
-            does_webhook_exist_on_resource,
-            status,
-        ) = await gitlab_service.check_webhook_exists_on_resource(
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_url=GITLAB_WEBHOOK_URL,
-        )
-
-        logger.info(
-            'Does webhook already exist',
-            extra={
-                'does_webhook_exist_on_resource': does_webhook_exist_on_resource,
-                'status': status,
-                'resource_id': resource_id,
-                'resource_type': resource_type,
-            },
-        )
-
-        self.determine_if_rate_limited(status)
-        if does_webhook_exist_on_resource != webhook.webhook_exists:
-            await webhook_store.update_webhook(
-                webhook, {'webhook_exists': does_webhook_exist_on_resource}
-            )
-
-        if does_webhook_exist_on_resource:
-            raise BreakLoopException()
-
-    async def verify_conditions_are_met(
-        self,
-        gitlab_service: SaaSGitLabService,
-        resource_type: GitLabResourceType,
-        resource_id: str,
-        webhook_store: GitlabWebhookStore,
-        webhook: GitlabWebhook,
-    ):
-        # Use the standalone function
-        await verify_webhook_conditions(
-            gitlab_service=gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=webhook_store,
-            webhook=webhook,
-        )
-
-    async def create_new_webhook(
-        self,
-        gitlab_service: SaaSGitLabService,
-        resource_type: GitLabResourceType,
-        resource_id: str,
-        webhook_store: GitlabWebhookStore,
-        webhook: GitlabWebhook,
-    ):
-        """
-        Install webhook on resource
-        """
-        # Use the standalone function
-        await install_webhook_on_resource(
-            gitlab_service=gitlab_service,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            webhook_store=webhook_store,
-            webhook=webhook,
-        )
-
     async def install_webhooks(self):
         """
-        Periodically check the conditions for installing a webhook on resource as valid
-        Rows with valid conditions with contain (webhook_exists=False, status=WebhookStatus.VERIFIED)
+        Claim rows that need a hook installed or reinstalled, and process them.
 
         Conditions we check for
             1. Resource exists
                 - user could have deleted resource
             2. User has admin access to resource
                 - user's permissions to install webhook could have changed
-            3. Webhook exists
+            3. Webhook exists (skipped for a reinstall, which replaces it)
                 - user could have removed webhook from resource
                 - resource was never setup with webhook
 
+        Every write is conditional on this run's claim, so a run that lost its
+        claim to another (after a stall past the lease) changes nothing.
         """
-
-        from integrations.gitlab.gitlab_service import SaaSGitLabService
 
         # Check if the table exists before proceeding
         # This handles cases where the CronJob runs before database migrations complete
@@ -150,20 +59,22 @@ class VerifyWebhookStatus:
             )
             return
 
-        # Get an instance of the webhook store
         webhook_store = await GitlabWebhookStore.get_instance()
-
-        # Load chunks of rows that need processing (webhook_exists == False)
-        webhooks_to_process = await self.fetch_rows(webhook_store)
+        run_id = uuid4()
+        webhooks_to_process = await webhook_store.claim_rows(
+            run_id, CLAIM_LEASE, limit=CHUNK_SIZE
+        )
 
         logger.info(
             'Processing webhook chunks',
-            extra={'webhooks_to_process': webhooks_to_process},
+            extra={
+                'run_id': str(run_id),
+                'webhook_ids': [webhook.id for webhook in webhooks_to_process],
+            },
         )
 
         for webhook in webhooks_to_process:
             try:
-                user_id = webhook.user_id
                 resource_type, resource_id = GitlabWebhookStore.determine_resource_type(
                     webhook
                 )
@@ -172,42 +83,31 @@ class VerifyWebhookStatus:
                 from integrations.gitlab.gitlab_service import SaaSGitLabService
 
                 gitlab_service = cast(
-                    SaaSGitLabService, GitLabServiceImpl(external_auth_id=user_id)
+                    SaaSGitLabService,
+                    GitLabServiceImpl(external_auth_id=webhook.user_id),
                 )
 
-                await self.verify_conditions_are_met(
+                await install_claimed_webhook(
                     gitlab_service=gitlab_service,
                     resource_type=resource_type,
                     resource_id=resource_id,
                     webhook_store=webhook_store,
                     webhook=webhook,
+                    run_id=run_id,
                 )
-
-                # Conditions have been met for installing webhook
-                await self.create_new_webhook(
-                    gitlab_service=gitlab_service,
-                    resource_type=resource_type,
-                    resource_id=resource_id,
-                    webhook_store=webhook_store,
-                    webhook=webhook,
-                )
-
             except BreakLoopException:
-                pass  # Continue processing but still update last_synced
+                pass
             finally:
-                # Always update last_synced after processing (success or failure)
-                # to prevent immediate reprocessing of the same webhook
+                # Release the claim and bump last_synced, success or failure, so
+                # the row goes to the back of the queue. A row deleted above, or
+                # one another run took over, matches nothing.
                 try:
-                    await webhook_store.update_last_synced(webhook)
-                except Exception as e:
+                    await webhook_store.release_claim(webhook.id, run_id)
+                except Exception:
                     logger.warning(
-                        'Failed to update last_synced for webhook',
-                        extra={
-                            'webhook_id': getattr(webhook, 'id', None),
-                            'project_id': getattr(webhook, 'project_id', None),
-                            'group_id': getattr(webhook, 'group_id', None),
-                            'error': str(e),
-                        },
+                        'Failed to release claim for webhook',
+                        extra={'webhook_id': webhook.id},
+                        exc_info=True,
                     )
 
 

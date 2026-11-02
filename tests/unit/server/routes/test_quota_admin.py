@@ -68,7 +68,7 @@ def _fake_org(limit: int | None = None):
     org = MagicMock()
     org.id = ORG_ID
     org.name = 'Acme'
-    org.daily_conversation_limit = limit
+    org.daily_sandbox_limit = limit
     return org
 
 
@@ -95,15 +95,15 @@ async def test_superadmin_can_set_org_limit(mock_app, grant_manage_org_quota):
     org = _fake_org()
     with _patch_session(org):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 25})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 25})
 
     assert resp.status_code == 200
     assert resp.json() == {
         'org_id': str(ORG_ID),
         'org_name': 'Acme',
-        'daily_conversation_limit': 25,
+        'daily_sandbox_limit': 25,
     }
-    assert org.daily_conversation_limit == 25
+    assert org.daily_sandbox_limit == 25
 
 
 @pytest.mark.asyncio
@@ -111,10 +111,10 @@ async def test_superadmin_can_exempt_org(mock_app, grant_manage_org_quota):
     org = _fake_org(limit=10)
     with _patch_session(org):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': -1})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': -1})
 
     assert resp.status_code == 200
-    assert resp.json()['daily_conversation_limit'] == -1
+    assert resp.json()['daily_sandbox_limit'] == -1
 
 
 @pytest.mark.asyncio
@@ -122,17 +122,17 @@ async def test_superadmin_can_clear_override(mock_app, grant_manage_org_quota):
     org = _fake_org(limit=10)
     with _patch_session(org):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': None})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': None})
 
     assert resp.status_code == 200
-    assert resp.json()['daily_conversation_limit'] is None
+    assert resp.json()['daily_sandbox_limit'] is None
 
 
 @pytest.mark.asyncio
 async def test_unknown_org_returns_404(mock_app, grant_manage_org_quota):
     with _patch_session(None):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 404
     assert resp.json()['detail'] == 'Organization not found'
@@ -144,10 +144,10 @@ async def test_org_owner_without_super_role_is_denied(mock_app, deny_manage_org_
     org = _fake_org()
     with _patch_session(org):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 403
-    assert org.daily_conversation_limit is None
+    assert org.daily_sandbox_limit is None
 
 
 @pytest.mark.asyncio
@@ -170,11 +170,11 @@ async def test_org_bound_api_key_cannot_edit_another_org(
         _patch_session(org),
     ):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 403
     assert 'not authorized for this organization' in resp.json()['detail']
-    assert org.daily_conversation_limit is None
+    assert org.daily_sandbox_limit is None
 
 
 @pytest.mark.asyncio
@@ -188,10 +188,10 @@ async def test_org_bound_api_key_can_edit_its_own_org(mock_app, grant_manage_org
         _patch_session(org),
     ):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 200
-    assert org.daily_conversation_limit == 5
+    assert org.daily_sandbox_limit == 5
 
 
 @pytest.mark.asyncio
@@ -201,19 +201,17 @@ async def test_meaningless_limits_are_rejected(mock_app, grant_manage_org_quota,
     org = _fake_org()
     with _patch_session(org):
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': limit})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': limit})
 
     assert resp.status_code == 422
-    assert org.daily_conversation_limit is None
+    assert org.daily_sandbox_limit is None
 
 
 @pytest.mark.asyncio
 async def test_malformed_org_id_is_rejected(mock_app, grant_manage_org_quota):
     """A non-UUID org id is a 422, not an unhandled 500."""
     async with _client(mock_app) as client:
-        resp = await client.put(
-            _url('not-a-uuid'), json={'daily_conversation_limit': 5}
-        )
+        resp = await client.put(_url('not-a-uuid'), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 422
 
@@ -228,12 +226,12 @@ async def test_conflicting_x_org_id_header_is_rejected(
         async with _client(mock_app) as client:
             resp = await client.put(
                 _url(),
-                json={'daily_conversation_limit': 5},
+                json={'daily_sandbox_limit': 5},
                 headers={'X-Org-Id': str(uuid.uuid4())},
             )
 
     assert resp.status_code == 400
-    assert org.daily_conversation_limit is None
+    assert org.daily_sandbox_limit is None
 
 
 @pytest.mark.asyncio
@@ -248,7 +246,7 @@ async def test_successful_change_is_logged_with_the_caller(
     org = _fake_org()
     with _patch_session(org), patch('server.routes.quota.logger') as log:
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': -1})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': -1})
 
     assert resp.status_code == 200
     log.info.assert_called_once()
@@ -257,7 +255,7 @@ async def test_successful_change_is_logged_with_the_caller(
     assert kwargs['extra'] == {
         'caller_user_id': CALLER_USER_ID,
         'org_id': str(ORG_ID),
-        'daily_conversation_limit': -1,
+        'daily_sandbox_limit': -1,
         'exempt': True,
     }
 
@@ -268,7 +266,7 @@ async def test_denied_request_logs_no_change(mock_app, deny_manage_org_quota):
     org = _fake_org()
     with _patch_session(org), patch('server.routes.quota.logger') as log:
         async with _client(mock_app) as client:
-            resp = await client.put(_url(), json={'daily_conversation_limit': 5})
+            resp = await client.put(_url(), json={'daily_sandbox_limit': 5})
 
     assert resp.status_code == 403
     log.info.assert_not_called()

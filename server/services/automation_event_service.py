@@ -24,7 +24,7 @@ import hmac
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -32,6 +32,9 @@ import aiohttp
 import jmespath
 from jmespath import exceptions as jmespath_exceptions
 
+from integrations.azure_devops.azure_devops_payload import (
+    extract_org as extract_azure_devops_org,
+)
 from integrations.resolver_org_router import resolve_org_for_repo
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -47,7 +50,8 @@ from storage.redis import get_redis_client_async
 
 # Cache TTL constants
 ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
-USER_ID_CACHE_TTL_SECONDS = 86400  # 24 hours for user ID mappings (never change)
+# OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
+USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
 DEFAULT_ORG_FALLBACK_CACHE_TTL_SECONDS = 300
 REQUESTED_EVENT_TYPES_CACHE_TTL_SECONDS = int(
@@ -60,6 +64,24 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
+
+
+def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
+    return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+async def invalidate_user_id_cache(
+    provider: ProviderType, provider_user_id: int | str
+) -> None:
+    """Drop the cached provider user → OpenHands user mapping, hit or miss."""
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(_user_id_cache_key(provider, provider_user_id))
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate user ID cache for '
+            f'{provider.value} user {provider_user_id}: {e}'
+        )
 
 
 @dataclass
@@ -86,6 +108,8 @@ class RequestedEventTypesCacheEntry:
     event_detection_rules: list[EventDetectionRule]
     loaded_at: float
     events_seen: int = 0
+    # Orgs with an automation on the source, for sources fanned out to them.
+    org_ids: list[UUID] = field(default_factory=list)
 
 
 class AutomationEventService:
@@ -179,7 +203,7 @@ class AutomationEventService:
 
     async def forward_jira_dc_event(
         self,
-        org_id: UUID,
+        org_id: UUID | None,
         payload: dict[str, Any],
         workspace_name: str,
         connection_id: int | None = None,
@@ -188,10 +212,42 @@ class AutomationEventService:
         """
         Forward a Jira Data Center webhook event to the automation service.
 
-        Jira DC workspaces are configured directly in OpenHands, so the route
-        resolves the OpenHands org from the workspace instead of using the
-        Git-provider owner resolver.
+        A Jira DC event names no Git owner to resolve an org from, and several
+        orgs can share one Jira DC instance. So it goes to the workspace's org
+        and to every org the automation service reports a Jira DC automation
+        for; each org's automations then match the event themselves.
         """
+        metadata = await self._get_requested_event_metadata('jira_dc')
+        if metadata is not None and not self._is_requested_event(
+            'jira_dc', payload, payload.get('webhookEvent'), metadata
+        ):
+            return
+
+        target_org_ids = [org_id] if org_id else []
+        for automation_org_id in metadata.org_ids if metadata else []:
+            if automation_org_id not in target_org_ids:
+                target_org_ids.append(automation_org_id)
+        if not target_org_ids:
+            logger.info(
+                '[AutomationEventService] No org to forward jira_dc event from '
+                f'workspace {workspace_name} to',
+                extra={'delivery_id': delivery_id},
+            )
+            return
+
+        for target_org_id in target_org_ids:
+            await self._forward_jira_dc_event_to_org(
+                target_org_id, payload, workspace_name, connection_id, delivery_id
+            )
+
+    async def _forward_jira_dc_event_to_org(
+        self,
+        org_id: UUID,
+        payload: dict[str, Any],
+        workspace_name: str,
+        connection_id: int | None,
+        delivery_id: str | None,
+    ) -> None:
         try:
             event_payload = {
                 'organization': {
@@ -226,6 +282,12 @@ class AutomationEventService:
         self, provider: ProviderType, payload: dict[str, Any], event_type: str | None
     ) -> bool:
         """Return whether this provider event should be forwarded."""
+        if provider == ProviderType.AZURE_DEVOPS:
+            # The automation service has no Azure DevOps detection rules, so
+            # asking which event types it wants would cost a signed request per
+            # event and then forward anyway.
+            return True
+
         source = provider.value
         metadata = await self._get_requested_event_metadata(source)
         if metadata is None:
@@ -234,7 +296,16 @@ class AutomationEventService:
                 f'event metadata unavailable'
             )
             return True
+        return self._is_requested_event(source, payload, event_type, metadata)
 
+    def _is_requested_event(
+        self,
+        source: str,
+        payload: dict[str, Any],
+        event_type: str | None,
+        metadata: RequestedEventTypesCacheEntry,
+    ) -> bool:
+        """Whether an automation could match this event, by its detected type."""
         detected_event_type = self._detect_source_event_type(source, payload, metadata)
         if detected_event_type is None:
             logger.debug(
@@ -388,6 +459,15 @@ class AutomationEventService:
                     requested_event_types = {
                         item for item in event_types if isinstance(item, str)
                     }
+                    org_ids = []
+                    for item in data.get('org_ids') or []:
+                        try:
+                            org_ids.append(UUID(str(item)))
+                        except ValueError:
+                            logger.warning(
+                                f'[AutomationEventService] Ignoring invalid '
+                                f'{source} org id: {item}'
+                            )
                     logger.info(
                         f'[AutomationEventService] Refreshed event forwarding '
                         f'metadata for {source}: requested_event_types='
@@ -398,6 +478,7 @@ class AutomationEventService:
                         event_types=requested_event_types,
                         event_detection_rules=rules,
                         loaded_at=0,
+                        org_ids=org_ids,
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             logger.warning(
@@ -524,6 +605,10 @@ class AutomationEventService:
             repo = self._extract_bitbucket_data_center_repository(payload)
             project = repo.get('project') or {}
             return project.get('key'), 'Project', None
+        if provider == ProviderType.AZURE_DEVOPS:
+            # Azure DevOps org claims hold the organization name. There is no
+            # user owner to fall back to.
+            return extract_azure_devops_org(payload) or None, 'Organization', None
 
         logger.warning(f'Unsupported provider ({provider.value})')
         return None, None, None
@@ -648,14 +733,14 @@ class AutomationEventService:
         """
         Convert a provider user ID to a Keycloak user ID.
 
-        Uses Redis caching with 24-hour TTL since this mapping never changes.
-        Caches negative results to avoid repeated Keycloak queries.
+        Uses Redis caching with a 24-hour TTL, including negative results to
+        avoid repeated lookups. OAuth v2 link and unlink invalidate the entry.
 
         Args:
             provider: The Git provider type
             provider_user_id: The user ID from the provider
         """
-        cache_key = f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+        cache_key = _user_id_cache_key(provider, provider_user_id)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)

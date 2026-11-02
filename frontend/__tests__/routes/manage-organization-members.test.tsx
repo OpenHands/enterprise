@@ -14,11 +14,14 @@ import {
   resetOrgMockData,
   resetOrgsAndMembersMockData,
   MOCK_TEAM_ORG_ACME,
+  MOCK_PERSONAL_ORG,
   INITIAL_MOCK_ORGS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { adminService } from "#/api/admin-service/admin-service.api";
+import { idpService } from "#/api/idp-service/idp-service.api";
 
 const mockQueryClient = vi.hoisted(() => {
   const { QueryClient } = require("@tanstack/react-query");
@@ -51,6 +54,19 @@ vi.mock("react-i18next", async () => {
 
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
+}));
+
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn().mockResolvedValue(false),
+    getAllUsers: vi.fn().mockResolvedValue({
+      items: [],
+      current_page: 1,
+      per_page: 10,
+    }),
+    getAllUsersCount: vi.fn().mockResolvedValue(0),
+    deleteUser: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 function ManageOrganizationMembersWithPortalRoot() {
@@ -600,6 +616,343 @@ describe("Manage Organization Members Route", () => {
 
     // Verify the specific user email is no longer present
     expect(screen.queryByText("charlie@acme.org")).not.toBeInTheDocument();
+  });
+
+  describe("Super admin behavior", () => {
+    afterEach(() => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+    });
+
+    it("should show a Create Sign-up Link button (not Invite Members) for super admins, and mint a link on submit", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+
+      await setupInviteTest();
+
+      expect(
+        screen.queryByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i }),
+      ).not.toBeInTheDocument();
+      const createLinkButton = await screen.findByRole("button", {
+        name: /ORG\$CREATE_SIGNUP_LINK/i,
+      });
+
+      await userEvent.click(createLinkButton);
+
+      const portalRoot = screen.getByTestId("portal-root");
+      expect(
+        within(portalRoot).getByTestId("mint-signup-link-modal"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("invite-modal")).not.toBeInTheDocument();
+    });
+
+    it("should show the regular Invite Members button for a super admin when enable_integrated_idp is off", async () => {
+      // Default `beforeEach` config has no `enable_integrated_idp` flag --
+      // a super admin should get no new options and fall back to exactly
+      // the pre-existing behavior (the regular invite flow, since this
+      // user still has normal org invite permission).
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      await setupInviteTest();
+
+      await screen.findByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i });
+      expect(
+        screen.queryByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should still show the regular Invite Members button for non-super-admins", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+
+      await setupInviteTest();
+
+      await screen.findByRole("button", { name: /ORG\$INVITE_ORG_MEMBERS/i });
+      expect(
+        screen.queryByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should render the instance-wide all-users view when a super admin has their Personal Workspace selected", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+      vi.mocked(adminService.getAllUsers).mockResolvedValue({
+        items: [
+          { user_id: "u-1", email: "alice@example.com", is_super_admin: true },
+          { user_id: "u-2", email: "bob@example.com", is_super_admin: false },
+        ],
+        current_page: 1,
+        per_page: 10,
+      });
+      vi.mocked(adminService.getAllUsersCount).mockResolvedValue(2);
+
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_PERSONAL_ORG.id,
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      queryClient.setQueryData(["organizations"], {
+        items: INITIAL_MOCK_ORGS,
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+
+      renderManageOrganizationMembers();
+
+      await screen.findByTestId("all-users-settings");
+      expect(
+        screen.queryByTestId("manage-organization-members-settings"),
+      ).not.toBeInTheDocument();
+
+      const items = await screen.findAllByTestId("all-users-item");
+      expect(items).toHaveLength(2);
+      expect(
+        within(items[0]).getByText("alice@example.com"),
+      ).toBeInTheDocument();
+      expect(
+        within(items[0]).getByText(/ORG\$ROLE_SUPERADMIN/i),
+      ).toBeInTheDocument();
+      expect(within(items[1]).getByText("bob@example.com")).toBeInTheDocument();
+
+      await screen.findByRole("button", { name: /ORG\$CREATE_SIGNUP_LINK/i });
+    });
+
+    const bobAdminUserData = {
+      org_id: "2",
+      user_id: "2",
+      email: "bob@acme.org",
+      role: "admin" as const,
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      status: "active" as const,
+    };
+
+    const setupBobAdminViewingAcme = async () => {
+      resetOrgsAndMembersMockData();
+      getMeSpy.mockResolvedValue(bobAdminUserData);
+      // Pre-seed the /me query data directly (as in the "owner role"
+      // permission test above) so the row's permissions are deterministic
+      // regardless of fetch timing left over from a previous test.
+      queryClient.setQueryData(["organizations", "2", "me"], bobAdminUserData);
+
+      renderManageOrganizationMembers();
+      await screen.findByTestId("manage-organization-members-settings");
+      await selectOrganization({ orgIndex: 1 }); // Acme Corp
+      await screen.findAllByTestId("member-item");
+    };
+
+    it("should let a super admin create a password-reset link for an org member when enable_integrated_idp is on, even without role-change permission over them", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
+      getConfigSpy.mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+
+      const createSignupLinkSpy = vi
+        .spyOn(idpService, "createSignupLink")
+        .mockResolvedValue({
+          url: "https://example.com/signup/abc123",
+          role: "member",
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        });
+
+      // Super admin "bob" (admin) viewing Acme Corp -- doesn't have
+      // permission to change the owner's role, but can still mint a
+      // password-reset link for them.
+      await setupBobAdminViewingAcme();
+
+      const ownerMember = await findMemberByEmail("alice@acme.org");
+      const menu = await openRoleDropdown(ownerMember, "owner");
+
+      expect(
+        within(menu).getByTestId("create-password-reset-link-option"),
+      ).toBeInTheDocument();
+      expect(
+        within(menu).queryByTestId("admin-option"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(menu).queryByTestId("remove-option"),
+      ).not.toBeInTheDocument();
+
+      await userEvent.click(
+        within(menu).getByTestId("create-password-reset-link-option"),
+      );
+
+      // No interim "are you sure" step -- the link is minted immediately
+      // and only the result modal is shown.
+      expect(
+        screen.queryByTestId("create-password-reset-link-modal"),
+      ).not.toBeInTheDocument();
+      expect(createSignupLinkSpy).toHaveBeenCalledExactlyOnceWith({
+        email: "alice@acme.org",
+        role: "member",
+      });
+
+      const resultModal = await screen.findByTestId(
+        "password-reset-link-result-modal",
+      );
+      expect(
+        within(resultModal).getByText("alice@acme.org"),
+      ).toBeInTheDocument();
+    });
+
+    it("should not show the password-reset option when enable_integrated_idp is off", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+
+      await setupBobAdminViewingAcme();
+
+      const ownerMember = await findMemberByEmail("alice@acme.org");
+      // With the feature flag off, the super admin has no action available
+      // on a member they can't otherwise change the role of, so the
+      // trigger isn't clickable at all.
+      const roleText = within(ownerMember).getByText(/^owner$/i);
+      await userEvent.click(roleText);
+      expectDropdownNotVisible(ownerMember);
+    });
+
+    it("should not show the password-reset option to a regular org admin, even with enable_integrated_idp on", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(false);
+      const getConfigSpy = vi.spyOn(OptionService, "getConfig");
+      getConfigSpy.mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+
+      await setupBobAdminViewingAcme();
+
+      const memberMember = await findMemberByEmail("charlie@acme.org");
+      const menu = await openRoleDropdown(memberMember, "member");
+
+      expect(
+        within(menu).queryByTestId("create-password-reset-link-option"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should delete a user from the All Users view via the context menu", async () => {
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValue(true);
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_onboarding: false,
+            enable_integrated_idp: true,
+          },
+        }),
+      );
+      vi.mocked(adminService.getAllUsers).mockResolvedValue({
+        items: [
+          { user_id: "u-1", email: "alice@example.com", is_super_admin: true },
+          { user_id: "u-2", email: "bob@example.com", is_super_admin: false },
+        ],
+        current_page: 1,
+        per_page: 10,
+      });
+      vi.mocked(adminService.getAllUsersCount).mockResolvedValue(2);
+
+      useSelectedOrganizationStore.setState({
+        organizationId: MOCK_PERSONAL_ORG.id,
+      });
+      mockQueryClient.setQueryData(["organizations"], {
+        items: [MOCK_PERSONAL_ORG],
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+      queryClient.setQueryData(["organizations"], {
+        items: INITIAL_MOCK_ORGS,
+        currentOrgId: MOCK_PERSONAL_ORG.id,
+      });
+
+      renderManageOrganizationMembers();
+      await screen.findByTestId("all-users-settings");
+
+      const items = await screen.findAllByTestId("all-users-item");
+      const bobItem = items.find((item) =>
+        within(item).queryByText("bob@example.com"),
+      );
+      if (!bobItem) {
+        throw new Error("Could not find bob's row");
+      }
+
+      await userEvent.click(
+        within(bobItem).getByTestId("all-users-item-menu-trigger"),
+      );
+      const menu = await screen.findByTestId("all-users-item-context-menu");
+      await userEvent.click(within(menu).getByTestId("remove-option"));
+
+      const confirmButton = await screen.findByTestId("confirm-button");
+      await userEvent.click(confirmButton);
+
+      await waitFor(() => {
+        expect(adminService.deleteUser).toHaveBeenCalledWith("u-2");
+      });
+    });
   });
 
   describe("Inviting Organization Members", () => {

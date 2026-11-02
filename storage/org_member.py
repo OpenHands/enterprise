@@ -46,6 +46,13 @@ class OrgMember(Base):
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Personal (member-scoped) Agent Profiles: the same ``AgentProfiles``
+    # envelope as ``org.agent_profiles`` (migration 198). Its ``active`` is
+    # unused -- ``active_agent_profile_id`` below is the single launch pointer
+    # and may reference a personal or an org profile id. NULL reads as empty.
+    agent_profiles: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
     # Per-member pointer to the active AgentProfile id — the sole launch
     # authority for Agent Profiles (mirrors the per-member _llm_api_key
     # precedent). NULL falls back to the org default (org.agent_profiles.active)
@@ -83,9 +90,19 @@ class OrgMember(Base):
         return SecretStr(decrypted)
 
     @llm_api_key.setter
-    def llm_api_key(self, value: str | SecretStr):
+    def llm_api_key(self, value: str | SecretStr | None):
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
-        self._llm_api_key = encrypt_value(raw)
+        # ``_llm_api_key`` is NOT NULL, so a caller passing None (e.g. a newly
+        # provisioned member with no LLM key yet -- see ENABLE_LEGACY_LITELLM=false
+        # provisioning) must still get a real ciphertext. Encrypting the raw
+        # ``None`` "succeeds" (JWE happily serializes ``{"v": null}``) but the
+        # decrypted round-trip is a Python ``None`` wrapped in ``SecretStr``,
+        # and ``SecretStr(None)`` blows up on ``bool()``/``len()`` (pydantic
+        # calls ``len(self._secret_value)`` unconditionally) wherever a caller
+        # later treats this as a normal "is a key set" check. Normalize to the
+        # same empty-string sentinel ``has_real_api_key``/``llm_api_key_is_set``
+        # already treat as "no key".
+        self._llm_api_key = encrypt_value(raw or '')
 
     @property
     def llm_api_key_for_byor(self) -> SecretStr | None:

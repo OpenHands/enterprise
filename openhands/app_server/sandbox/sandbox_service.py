@@ -24,8 +24,21 @@ from openhands.sdk.utils.paging import page_iterator
 _logger = logging.getLogger(__name__)
 
 SESSION_API_KEY_VARIABLE = 'OH_SESSION_API_KEYS_0'
+# Remote runtimes assign the session credential inside the sandbox as
+# SESSION_API_KEY and leave OH_SESSION_API_KEYS_0 unset, so the remote refresh
+# header must reference this name instead (enterprise#632).
+REMOTE_SESSION_API_KEY_VARIABLE = 'SESSION_API_KEY'
 WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
 ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
+
+# Conversation-secret key under which the per-conversation Azure DevOps
+# credential-helper exchange JWT is registered, so SecretRegistry masks its value
+# in output. The helper reads the JWT from a per-conversation file (not this env
+# var); this name is only the registry key for masking.
+AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE = 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'
+# Same role for the other git providers' credential-helper JWTs; the provider
+# type value is appended in upper case (``OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITLAB``).
+GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX = 'OH_GIT_CREDENTIAL_ACCESS_TOKEN_'
 
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
 # on a 401 (#5189). These names are the contract consumed by the agent-server's
@@ -37,12 +50,26 @@ LLM_API_KEY_REFRESH_URL_VARIABLE = 'OH_LLM_API_KEY_REFRESH_URL'
 LLM_API_KEY_REFRESH_HEADERS_VARIABLE = 'OH_LLM_API_KEY_REFRESH_HEADERS'
 LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE = 'OH_LLM_API_KEY_REFRESH_BASE_URLS'
 # The refresh endpoint authenticates with this sandbox's session key. Rather than
-# embedding the key, the header references it as ${OH_SESSION_API_KEYS_0}: remote
-# runtimes assign that key inside the sandbox and only return it after start, so
-# the app server cannot know it when it builds the environment. The agent-server
-# expands the reference from the sandbox environment (software-agent-sdk#5222).
+# embedding the key, the header references it by name; the agent-server expands the
+# reference from the sandbox environment at request time (software-agent-sdk#5222),
+# because the runtime assigns the key inside the sandbox and the app server cannot
+# know it when it builds the environment.
+#
+# The variable name differs by runtime type: docker runtimes set
+# OH_SESSION_API_KEYS_0, while remote runtimes set SESSION_API_KEY (and leave
+# OH_SESSION_API_KEYS_0 unset). Referencing the wrong name expands to an empty
+# X-Session-API-Key -> the refresh call is unauthenticated -> 401 -> the original
+# token_not_found_in_db surfaces to the user (enterprise#632).
+#
+# NOTE: whichever value is injected MUST stay byte-identical to the warm-pool
+# header runtime-api claims against (OH_LLM_API_KEY_REFRESH_HEADERS is not in
+# runtime-api's KEYS_TO_CLEAN), or the exact-env claim match fails and every
+# conversation cold-starts.
 LLM_API_KEY_REFRESH_HEADERS_VALUE = json.dumps(
     {'X-Session-API-Key': '${' + SESSION_API_KEY_VARIABLE + '}'}
+)
+LLM_API_KEY_REFRESH_HEADERS_VALUE_REMOTE = json.dumps(
+    {'X-Session-API-Key': '${' + REMOTE_SESSION_API_KEY_VARIABLE + '}'}
 )
 
 # Known start-failure classes we translate into short, user-safe messages. Raw
@@ -222,13 +249,21 @@ class SandboxService(ABC):
 
     @abstractmethod
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
         Return the info on the new sandbox. If no spec is selected, use the default.
         If sandbox_id is provided, it will be used as the sandbox identifier instead
         of generating a random one.
+
+        ``extra_env`` adds caller-supplied environment variables to the sandbox on
+        top of the spec's ``initial_env``. It is for internal callers only (the
+        public start endpoint never passes it); values take precedence over the
+        spec's defaults for the same key.
         """
 
     @abstractmethod
@@ -385,12 +420,16 @@ class SandboxService(ABC):
         """
         return True
 
-    async def pause_old_sandboxes(self, max_num_sandboxes: int) -> list[str]:
+    async def pause_old_sandboxes(
+        self, max_num_sandboxes: int, exclude_id: str | None = None
+    ) -> list[str]:
         """Pause the oldest sandboxes if there are more than max_num_sandboxes running.
         In a multi user environment, this will pause sandboxes only for the current user.
 
         Args:
             max_num_sandboxes: Maximum number of sandboxes to keep running
+            exclude_id: A sandbox that is never counted or paused, such as one
+                being resumed
 
         Returns:
             List of sandbox IDs that were paused
@@ -401,6 +440,8 @@ class SandboxService(ABC):
         # Get all running sandboxes (iterate through all pages)
         running_sandboxes = []
         async for sandbox in page_iterator(self.search_sandboxes, limit=100):
+            if sandbox.id == exclude_id:
+                continue
             if sandbox.status == SandboxStatus.RUNNING:
                 running_sandboxes.append(sandbox)
 

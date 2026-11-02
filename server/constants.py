@@ -1,6 +1,7 @@
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
@@ -33,6 +34,25 @@ BYOR_KEY_ALIAS_PATTERN = os.getenv(
 # the Stripe billing flow but still want to expose the managed LLM key.
 # Accepts both 'true' and '1' (older Helm charts default to '1').
 ENABLE_BYOR_EXPORT = os.getenv('ENABLE_BYOR_EXPORT', 'false').lower() in ('true', '1')
+
+# When true, ``SetAuthCookieMiddleware`` blocks any authenticated request
+# (outside the email/settings/logout/authenticate allow-list) whose user has
+# not verified their email, raising ``EmailNotVerifiedError``. Defaults to
+# false because not every login IDP's userinfo response reliably asserts
+# ``email_verified`` (see ``server.auth.provider_identity.resolve_or_create_user``),
+# which otherwise locks newly created OAuth v2 users out of the app with no
+# clear recovery path. Accepts both 'true' and '1' (older Helm charts default
+# to '1').
+REQUIRE_VERIFIED_EMAILS = os.getenv('REQUIRE_VERIFIED_EMAILS', 'false').lower() in (
+    'true',
+    '1',
+)
+
+# NOTE: the integrated IDP (email+password login without Keycloak,
+# ``server.routes.idp``) is no longer gated by an env var read here.
+# Migration 179 seeds its ``oauth_providers`` row from ``ENABLE_INTEGRATED_IDP``
+# once, at migration time; availability is whether that row exists
+# (``server.routes.idp.is_idp_available``), not a live env var read.
 
 
 # Explicit OH_DEPLOYMENT_MODE wins; _is_all_hands_managed_domain() is the host fallback.
@@ -111,6 +131,13 @@ LITE_LLM_API_URL = os.environ.get(
 )
 LITE_LLM_TEAM_ID = os.environ.get('LITE_LLM_TEAM_ID', None)
 LITE_LLM_API_KEY = os.environ.get('LITE_LLM_API_KEY', None)
+
+# Deployment-wide LiteLLM gateway switch; default true keeps existing installs unchanged.
+ENABLE_LEGACY_LITELLM = os.environ.get('ENABLE_LEGACY_LITELLM', 'true').lower() in (
+    'true',
+    '1',
+)
+
 # Timeout in seconds for BYOR key verification requests to LiteLLM
 BYOR_KEY_VERIFICATION_TIMEOUT = 5.0
 SUBSCRIPTION_PRICE_DATA = {
@@ -191,11 +218,9 @@ def get_default_litellm_model():
 
 
 def should_use_direct_llm_defaults() -> bool:
-    """Whether defaults should point directly at an OpenAI-compatible endpoint."""
-    return (
-        OPENHANDS_LLM_PROVIDER_ROUTE == 'direct'
-        and bool(OPENHANDS_DEFAULT_LLM_MODEL)
-        and bool(OPENHANDS_DEFAULT_LLM_BASE_URL)
+    """Whether defaults should point directly at the provider, bypassing any gateway."""
+    return OPENHANDS_LLM_PROVIDER_ROUTE == 'direct' and bool(
+        OPENHANDS_DEFAULT_LLM_MODEL
     )
 
 
@@ -216,6 +241,21 @@ def to_openhands_model(model: str) -> str:
     return _OPENHANDS_PREFIX + model
 
 
+def is_model_router_enabled() -> bool:
+    """Whether the org Model Router feature is on (OHE-3508).
+
+    Mirrors the web client's ``enable_model_router`` flag so the API, the
+    conversation launch and the settings page switch together.
+    ``OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_MODEL_ROUTER`` wins when set, since the
+    web client then reads it in place of ``ENABLE_MODEL_ROUTER``. Read on each
+    call, not at import, so the server and its tests see the current value.
+    """
+    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_MODEL_ROUTER')
+    if value is None:
+        value = os.getenv('ENABLE_MODEL_ROUTER', 'false')
+    return value.lower() in ('true', '1')
+
+
 def uses_bundled_litellm_proxy() -> bool:
     """Whether managed models are served by a self-hosted bundled LiteLLM proxy.
 
@@ -224,7 +264,8 @@ def uses_bundled_litellm_proxy() -> bool:
     The OpenHands SaaS proxy keeps the SDK's canonicalization instead.
     """
     return (
-        DEPLOYMENT_MODE == 'self_hosted'
+        ENABLE_LEGACY_LITELLM
+        and DEPLOYMENT_MODE == 'self_hosted'
         and not should_use_direct_llm_defaults()
         and bool(LITE_LLM_API_URL)
         and not is_openhands_proxy_base_url(LITE_LLM_API_URL)
@@ -238,6 +279,11 @@ def is_bundled_proxy_base_url(base_url: object) -> bool:
         and base_url.rstrip('/') == LITE_LLM_API_URL.rstrip('/')
         and uses_bundled_litellm_proxy()
     )
+
+
+def is_in_cluster_url(url: str) -> bool:
+    host = urlparse(url).hostname or ''
+    return '.' not in host or host.endswith(('.svc', '.cluster.local'))
 
 
 def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
@@ -260,15 +306,25 @@ def get_default_llm_model() -> str:
     """Return the deployment default LLM model."""
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
+    if not ENABLE_LEGACY_LITELLM:
+        from openhands.sdk.settings import default_agent_settings
+
+        # No gateway and no install default: the user brings their own key.
+        return default_agent_settings().llm.model
     if uses_bundled_litellm_proxy():
         return to_openhands_model(get_default_litellm_model())
     return get_default_litellm_model()
 
 
-def get_default_llm_base_url() -> str:
-    """Return the deployment default LLM base URL."""
-    if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_BASE_URL:
+def get_default_llm_base_url() -> str | None:
+    """Return the deployment default LLM base URL.
+
+    ``None`` lets the SDK use the model provider's own endpoint.
+    """
+    if should_use_direct_llm_defaults():
         return OPENHANDS_DEFAULT_LLM_BASE_URL
+    if not ENABLE_LEGACY_LITELLM:
+        return None
     return LITE_LLM_API_URL
 
 

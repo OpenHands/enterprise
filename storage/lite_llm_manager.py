@@ -14,6 +14,7 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.http_session import httpx_verify_option
 from server.auth.token_manager import TokenManager
 from server.constants import (
+    ENABLE_LEGACY_LITELLM,
     LITE_LLM_API_KEY,
     LITE_LLM_API_URL,
     LITE_LLM_TEAM_ID,
@@ -60,6 +61,11 @@ async def _is_billing_enabled() -> bool:
         return await feature_flag_service.resolve('ENABLE_BILLING')
     except ImportError:
         return ENABLE_BILLING
+
+
+async def is_litellm_enabled() -> bool:
+    """Whether this deployment may contact the LiteLLM gateway (``ENABLE_LEGACY_LITELLM``)."""
+    return ENABLE_LEGACY_LITELLM
 
 
 def _get_default_initial_budget(billing_enabled: bool) -> float | None:
@@ -272,6 +278,19 @@ class LiteLlmManager:
             )
             return oss_settings
 
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: new-user provisioning must
+            # succeed without ever creating a LiteLLM user/team or generating
+            # a gateway key. There is no managed model to fall back to, so
+            # the user is left with no LLM configured -- they must bring
+            # their own provider config (BYOK) in Settings, same as an OSS
+            # install with no ``OPENHANDS_DEFAULT_LLM_*`` env vars set.
+            logger.info(
+                'LiteLlmManager:create_entries:skipped_litellm_disabled',
+                extra={'org_id': org_id, 'user_id': keycloak_user_id},
+            )
+            return oss_settings
+
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             logger.warning('LiteLLM API configuration not found')
             return None
@@ -462,7 +481,11 @@ class LiteLlmManager:
             'LiteLlmManager:migrate_lite_llm_entries:start',
             extra={'org_id': org_id, 'user_id': keycloak_user_id},
         )
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
         local_deploy = os.environ.get('LOCAL_DEPLOYMENT', None)
@@ -662,7 +685,11 @@ class LiteLlmManager:
             'LiteLlmManager:downgrade_entries:start',
             extra={'org_id': org_id, 'user_id': keycloak_user_id},
         )
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
 
@@ -776,7 +803,11 @@ class LiteLlmManager:
         team_id: str,
         max_budget: float,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         async with httpx.AsyncClient(
@@ -807,7 +838,11 @@ class LiteLlmManager:
         being unreachable (or unconfigured in self-hosted installs) must not
         fail an org-version upgrade.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             return False
         try:
             async with httpx.AsyncClient(
@@ -891,7 +926,11 @@ class LiteLlmManager:
             max_budget: The maximum budget for the team. When None, budget
                 enforcement is disabled (unlimited usage).
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
 
@@ -945,7 +984,11 @@ class LiteLlmManager:
 
     @staticmethod
     async def _get_team(client: httpx.AsyncClient, team_id: str) -> dict | None:
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
         """Get a team from litellm with the id matching that given."""
@@ -964,7 +1007,11 @@ class LiteLlmManager:
         clear_budget: bool = False,
         free_models: list[str] | None = None,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         json_data: dict[str, Any] = {
@@ -1013,6 +1060,8 @@ class LiteLlmManager:
         team_id: str,
         blocked: bool,
     ) -> None:
+        if not await is_litellm_enabled():
+            return
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise RuntimeError('LiteLLM API configuration not found')
 
@@ -1028,6 +1077,8 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         team_id: str,
     ) -> None:
+        if not await is_litellm_enabled():
+            return
         if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
             raise RuntimeError('LiteLLM API configuration not found')
 
@@ -1049,7 +1100,11 @@ class LiteLlmManager:
 
         Returns True if the user exists, False otherwise.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             return False
         try:
             response = await client.get(
@@ -1078,7 +1133,11 @@ class LiteLlmManager:
         Returns True if the user was created or already exists and is verified,
         False if creation failed and user does not exist.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return False
         response = await client.post(
@@ -1163,7 +1222,11 @@ class LiteLlmManager:
 
     @staticmethod
     async def _get_user(client: httpx.AsyncClient, user_id: str) -> dict | None:
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
         """Get a user from litellm with the id matching that given."""
@@ -1179,7 +1242,11 @@ class LiteLlmManager:
         keycloak_user_id: str,
         **kwargs,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
 
@@ -1211,7 +1278,11 @@ class LiteLlmManager:
         key: str,
         **kwargs,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
 
@@ -1259,7 +1330,11 @@ class LiteLlmManager:
         Returns:
             A list of key strings belonging to the user
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return []
 
@@ -1321,7 +1396,11 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         keycloak_user_id: str,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         response = await client.post(
@@ -1351,7 +1430,11 @@ class LiteLlmManager:
         client: httpx.AsyncClient,
         team_id: str,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         response = await client.post(
@@ -1397,7 +1480,11 @@ class LiteLlmManager:
             max_budget: The maximum budget for the user in the team. When None,
                 budget enforcement is disabled (unlimited usage).
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
 
@@ -1493,7 +1580,11 @@ class LiteLlmManager:
         keycloak_user_id: str,
         team_id: str,
     ) -> dict | None:
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
         team_response = await LiteLlmManager._get_team(client, team_id)
@@ -1548,7 +1639,11 @@ class LiteLlmManager:
             max_budget: The maximum budget for the user in the team. When None,
                 budget enforcement is disabled (unlimited usage).
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
 
@@ -1589,7 +1684,11 @@ class LiteLlmManager:
         keycloak_user_id: str,
         team_id: str,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         response = await client.post(
@@ -1630,7 +1729,11 @@ class LiteLlmManager:
         key_alias: str | None,
         metadata: dict | None,
     ) -> str:
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             raise ValueError('LiteLLM API configuration not found')
         json_data: dict[str, Any] = {
             'user_id': keycloak_user_id,
@@ -1687,6 +1790,14 @@ class LiteLlmManager:
             True if the key is verified as valid or verification is inconclusive.
             False only when LiteLLM explicitly reports an auth failure.
         """
+        if not await is_litellm_enabled():
+            # LiteLLM is disabled deployment-wide: there is no gateway to
+            # confirm or deny the key against, so treat this the same as an
+            # inconclusive/unreachable check (True) rather than an explicit
+            # auth failure (False). Returning False here would make callers
+            # (e.g. the managed-key write-time verifier) attempt to rotate a
+            # key through a gateway that is not being contacted.
+            return True
         if not (LITE_LLM_API_URL and key):
             return False
 
@@ -1847,7 +1958,11 @@ class LiteLlmManager:
     ) -> dict | None:
         from storage.user_store import UserStore
 
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
         user = await UserStore.get_user_by_id(keycloak_user_id)
@@ -1893,7 +2008,11 @@ class LiteLlmManager:
         Returns None when the LiteLLM request fails so callers can skip
         invalidation on transient errors.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return None
 
@@ -2054,7 +2173,11 @@ class LiteLlmManager:
 
         This is a best-effort operation that logs but does not raise on failure.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         response = await client.post(
@@ -2085,7 +2208,11 @@ class LiteLlmManager:
         key_alias: str,
     ) -> None:
         """Delete a deterministic alias or fail without rotating the DB row."""
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             raise ValueError('LiteLLM API configuration not found')
         response = await client.post(
             f'{LITE_LLM_API_URL}/key/delete',
@@ -2101,7 +2228,11 @@ class LiteLlmManager:
         key_id: str,
         key_alias: str | None = None,
     ):
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return
         response = await client.post(
@@ -2162,7 +2293,11 @@ class LiteLlmManager:
             }
             Returns empty dict if team not found or LiteLLM is not configured.
         """
-        if LITE_LLM_API_KEY is None or LITE_LLM_API_URL is None:
+        if (
+            not await is_litellm_enabled()
+            or LITE_LLM_API_KEY is None
+            or LITE_LLM_API_URL is None
+        ):
             logger.warning('LiteLLM API configuration not found')
             return {}
 
@@ -2319,6 +2454,13 @@ class LiteLlmManager:
     ) -> Callable[..., Awaitable[Any]]:
         @functools.wraps(internal_fn)
         async def wrapper(*args, **kwargs):
+            if not await is_litellm_enabled():
+                # Skip creating a transport entirely when LiteLLM is
+                # disabled deployment-wide -- not just skip the requests.
+                # ``internal_fn`` re-checks the flag itself and returns its
+                # safe fallback before ever touching ``client``, so passing
+                # ``None`` here is safe.
+                return await internal_fn(None, *args, **kwargs)
             headers = {'x-goog-api-key': LITE_LLM_API_KEY} if LITE_LLM_API_KEY else {}
             async with httpx.AsyncClient(
                 headers=headers,

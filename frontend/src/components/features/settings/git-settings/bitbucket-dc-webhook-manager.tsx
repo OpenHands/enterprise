@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade";
 import type { BitbucketDCResource } from "#/api/integration-service/integration-service.types";
 import { useBitbucketDCResources } from "#/hooks/query/use-bitbucket-dc-resources-list";
 import { useReinstallBitbucketDCWebhook } from "#/hooks/mutation/use-reinstall-bitbucket-dc-webhook";
@@ -10,6 +11,7 @@ import { cn } from "#/utils/utils";
 import { Typography } from "#/ui/typography";
 import {
   settingsListContainerClassName,
+  settingsListScrollFadeFromClassName,
   settingsListTableHeadClassName,
   settingsListTableHeaderCellClassName,
 } from "#/utils/settings-list-classes";
@@ -134,107 +136,116 @@ export function BitbucketDCWebhookManager({
         {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
 
-      <div className={settingsListContainerClassName}>
-        <table className="w-full">
-          <thead className={settingsListTableHeadClassName}>
-            <tr>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_REPOSITORY)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_STATUS)}
-              </th>
-              <th className={settingsListTableHeaderCellClassName}>
-                {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_ACTION)}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-700">
-            {resources.map((resource) => {
-              const key = resourceKey(resource);
-              const isInstalling = installingResource === key;
-              const isUninstalling = uninstallingResource === key;
-              const anyMutationPending =
-                installingResource !== null || uninstallingResource !== null;
+      <div
+        className={cn(
+          settingsListContainerClassName,
+          settingsListScrollFadeFromClassName,
+        )}
+      >
+        <HorizontalScrollFade>
+          <table className="w-full">
+            <thead className={settingsListTableHeadClassName}>
+              <tr>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_REPOSITORY)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_STATUS)}
+                </th>
+                <th className={settingsListTableHeaderCellClassName}>
+                  {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_COLUMN_ACTION)}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-700">
+              {resources.map((resource) => {
+                const key = resourceKey(resource);
+                const isInstalling = installingResource === key;
+                const isUninstalling = uninstallingResource === key;
+                const anyMutationPending =
+                  installingResource !== null || uninstallingResource !== null;
 
-              let installLabel: string;
-              if (isInstalling) {
-                installLabel = t(
-                  I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_INSTALLING,
-                );
-              } else if (resource.webhook_enrolled) {
-                installLabel = t(
-                  I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_REINSTALL,
-                );
-              } else {
-                installLabel = t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_INSTALL);
-              }
+                let installLabel: string;
+                if (isInstalling) {
+                  installLabel = t(
+                    I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_INSTALLING,
+                  );
+                } else if (resource.webhook_enrolled) {
+                  installLabel = t(
+                    I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_REINSTALL,
+                  );
+                } else {
+                  installLabel = t(
+                    I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_INSTALL,
+                  );
+                }
 
-              return (
-                <tr
-                  key={key}
-                  className="hover:bg-neutral-800/50 transition-colors align-top"
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex flex-col">
-                      <Typography.Text className="text-sm font-medium text-white">
-                        {resource.name}
-                      </Typography.Text>
-                      <Typography.Text className="text-xs text-gray-400">
-                        {resource.full_name}
-                      </Typography.Text>
-                      {resource.installed_by_user_id && (
-                        <Typography.Text className="text-xs text-gray-500">
-                          {t(
-                            I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_ENROLLED_BY,
-                            {
-                              userId: resource.installed_by_user_id,
-                            },
-                          )}
+                return (
+                  <tr
+                    key={key}
+                    className="hover:bg-neutral-800/50 transition-colors align-top"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col">
+                        <Typography.Text className="text-sm font-medium text-white">
+                          {resource.name}
                         </Typography.Text>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge enrolled={resource.webhook_enrolled} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2">
-                      <BrandButton
-                        type="button"
-                        variant="primary"
-                        onClick={() => handleReinstall(resource)}
-                        isDisabled={anyMutationPending}
-                        className="cursor-pointer"
-                        testId={`bbdc-install-webhook-${key}`}
-                      >
-                        {installLabel}
-                      </BrandButton>
-                      {resource.webhook_enrolled && (
+                        <Typography.Text className="text-xs text-gray-400">
+                          {resource.full_name}
+                        </Typography.Text>
+                        {resource.installed_by_user_id && (
+                          <Typography.Text className="text-xs text-gray-500">
+                            {t(
+                              I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_ENROLLED_BY,
+                              {
+                                userId: resource.installed_by_user_id,
+                              },
+                            )}
+                          </Typography.Text>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge enrolled={resource.webhook_enrolled} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
                         <BrandButton
                           type="button"
-                          variant="secondary"
-                          onClick={() => handleUninstall(resource)}
+                          variant="primary"
+                          onClick={() => handleReinstall(resource)}
                           isDisabled={anyMutationPending}
                           className="cursor-pointer"
-                          testId={`bbdc-uninstall-webhook-${key}`}
+                          testId={`bbdc-install-webhook-${key}`}
                         >
-                          {isUninstalling
-                            ? t(
-                                I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_UNINSTALLING,
-                              )
-                            : t(
-                                I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_UNINSTALL,
-                              )}
+                          {installLabel}
                         </BrandButton>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        {resource.webhook_enrolled && (
+                          <BrandButton
+                            type="button"
+                            variant="secondary"
+                            onClick={() => handleUninstall(resource)}
+                            isDisabled={anyMutationPending}
+                            className="cursor-pointer"
+                            testId={`bbdc-uninstall-webhook-${key}`}
+                          >
+                            {isUninstalling
+                              ? t(
+                                  I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_UNINSTALLING,
+                                )
+                              : t(
+                                  I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_UNINSTALL,
+                                )}
+                          </BrandButton>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </HorizontalScrollFade>
       </div>
     </div>
   );

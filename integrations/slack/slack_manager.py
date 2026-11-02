@@ -606,9 +606,12 @@ class SlackManager(Manager[SlackViewInterface]):
 
     def _generate_login_link_with_state(self, message: Message) -> str:
         """Generate OAuth login link with message state encoded."""
+        from openhands.app_server.services.jwt_service import JwtAudience
         from storage.encrypt_utils import get_jwt_service
 
-        state = get_jwt_service().create_jws_token(message.message)
+        state = get_jwt_service().create_jws_token(
+            message.message, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
         return authorize_url_generator.generate(state)
 
     async def handle_slack_error(self, payload: dict, error: SlackError) -> None:

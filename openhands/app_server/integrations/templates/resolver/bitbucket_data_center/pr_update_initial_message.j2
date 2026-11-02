@@ -8,8 +8,8 @@ A comment on the PR has been addressed to you.
 
 ## Credentials
 The environment variable $BITBUCKET_DATA_CENTER_TOKEN holds your Bitbucket Data Center credential:
-- If its value contains a colon, it is in `username:token` form — use HTTP Basic auth: `curl -u "$BITBUCKET_DATA_CENTER_TOKEN" ...`
-- Otherwise it is an OAuth access token — use a Bearer header: `curl -H "Authorization: Bearer $BITBUCKET_DATA_CENTER_TOKEN" ...`
+- If its value has no colon, or starts with `x-token-auth:`, it is an access or OAuth token — use a Bearer header: `curl -H "Authorization: Bearer ${BITBUCKET_DATA_CENTER_TOKEN#x-token-auth:}" ...`
+- Otherwise it is in `username:token` form — use HTTP Basic auth: `curl -u "$BITBUCKET_DATA_CENTER_TOKEN" ...`
 
 Example endpoint — this PR's diff:
 {{ bitbucket_base_url }}/rest/api/1.0/projects/{{ project_key }}/repos/{{ repo_slug }}/pull-requests/{{ pr_number }}/diff

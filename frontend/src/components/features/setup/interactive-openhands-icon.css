@@ -1,0 +1,142 @@
+/* Ported from agent-orchestrator Electron landing icon treatment. */
+
+.oh-interactive-icon-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 10rem;
+  height: 10rem;
+}
+
+.oh-interactive-icon {
+  --pointer-angle: -35deg;
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  position: relative;
+  z-index: 1;
+  width: 6rem;
+  height: 6rem;
+  border-radius: 24.222222%;
+  transform-style: preserve-3d;
+  transition: transform 180ms ease-out;
+  transform: perspective(700px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
+  background: linear-gradient(hsl(0 0% 100% / 0.16), hsl(0 0% 6% / 0.8));
+  backdrop-filter: saturate(1.4);
+  box-shadow:
+    0 10px 32px hsl(0 0% 0% / 0.35),
+    0 0 0 1px hsl(0 0% 100% / 0.08) inset;
+}
+
+.oh-interactive-icon::before,
+.oh-interactive-icon::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.oh-interactive-icon::before {
+  box-shadow: 0 0 1px 0.8px hsl(0 0% 100% / 0.75) inset;
+  mask: linear-gradient(
+    var(--pointer-angle),
+    #ffffff80,
+    #ffffff20 30% 60%,
+    #fff
+  );
+}
+
+.oh-interactive-icon::after {
+  background: radial-gradient(
+    circle at 50% 35%,
+    hsl(0 0% 100% / 0.25),
+    transparent 55%
+  );
+  mix-blend-mode: screen;
+  opacity: 0.6;
+}
+
+.oh-interactive-icon__svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  transform: translate(-50%, -50%) translateZ(8px);
+}
+
+.oh-interactive-icon:hover {
+  transform: perspective(700px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y))
+    scale(1.03);
+}
+
+.oh-interactive-icon-glow {
+  position: absolute;
+  z-index: 0;
+  width: 9rem;
+  height: 9rem;
+  border-radius: 9999px;
+  pointer-events: none;
+  filter: blur(28px);
+  background: radial-gradient(
+    circle,
+    hsl(0 0% 100% / 0.45) 0%,
+    hsl(0 0% 100% / 0.18) 42%,
+    transparent 74%
+  );
+  animation: oh-icon-glow-orbit 6.5s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes oh-icon-glow-orbit {
+  0% {
+    transform: translate(0, 0) scale(0.95);
+    opacity: 0.7;
+  }
+  25% {
+    transform: translate(12px, -8px) scale(1.1);
+    opacity: 0.92;
+  }
+  50% {
+    transform: translate(0, 12px) scale(1);
+    opacity: 0.78;
+  }
+  75% {
+    transform: translate(-12px, -6px) scale(1.08);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(0, 0) scale(0.95);
+    opacity: 0.7;
+  }
+}
+
+@media (min-width: 640px) {
+  .oh-interactive-icon-stage {
+    width: 11rem;
+    height: 11rem;
+  }
+
+  .oh-interactive-icon {
+    width: 6.5rem;
+    height: 6.5rem;
+  }
+
+  .oh-interactive-icon-glow {
+    width: 10rem;
+    height: 10rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oh-interactive-icon {
+    transition: none;
+  }
+
+  .oh-interactive-icon-glow {
+    animation: none;
+    opacity: 0.75;
+    transform: none;
+  }
+}

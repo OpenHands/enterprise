@@ -61,9 +61,10 @@ export const meta: MetaFunction = () => [
 ];
 
 export default function App() {
-  // Handle invitation token cleanup when invitation flow completes
-  // This runs on all pages to catch redirects from auth callback
-  useInvitation();
+  // Handle invitation token cleanup when invitation flow completes, and tell
+  // the user how it ended. This runs on all pages to catch redirects from the
+  // auth callback.
+  useInvitation({ reportOutcome: true });
 
   return <Outlet />;
 }

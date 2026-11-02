@@ -3,7 +3,8 @@ updates:
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -26,18 +27,19 @@ updates:
         applies-to: "version-updates"
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
-      interval: "daily"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
     groups:
-      docusaurus:
-        patterns:
-          - "*docusaurus*"
       eslint:
         patterns:
           - "*eslint*"
@@ -49,30 +51,9 @@ updates:
         applies-to: "version-updates"
         patterns:
           - "*"
-
-  - package-ecosystem: "npm"
-    directory: "/docs"
-    schedule:
-      interval: "weekly"
-      day: "wednesday"
-    cooldown:
-      default-days: 7
-    open-pull-requests-limit: 5
-    groups:
-      docusaurus:
-        patterns:
-          - "*docusaurus*"
-      eslint:
-        patterns:
-          - "*eslint*"
-      security-all:
-        applies-to: "security-updates"
-        patterns:
-          - "*"
-      version-all:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directories:
@@ -80,7 +61,8 @@ updates:
       - "/.github/actions/docker-image-tags"
       - "/.github/actions/docker-merge-manifest"
     schedule:
-      interval: "weekly"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -89,7 +71,8 @@ updates:
     directories:
       - "containers/*"
     schedule:
-      interval: "weekly"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5

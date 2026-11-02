@@ -17,6 +17,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { isSettingsPageHidden } from "#/utils/settings-utils";
 
 // Mock useBreakpoint hook
 vi.mock("#/hooks/use-breakpoint", () => ({
@@ -212,6 +213,13 @@ describe("UserContextMenu", () => {
       "/settings/condenser",
       "/settings/verification",
     ]);
+    // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
+    // until enable_agent_context_page / enable_agent_profiles_page are on,
+    // and this config leaves both off.
+    const flagGatedPaths = new Set([
+      "/settings/agent-context",
+      "/settings/agents",
+    ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
@@ -220,8 +228,10 @@ describe("UserContextMenu", () => {
         item.to !== "/settings/credits" &&
         item.to !== "/settings/usage-monitoring" &&
         item.to !== "/settings/budgets" &&
+        item.to !== "/settings/integrations-hub" &&
         !item.to.startsWith("/settings/org-defaults") &&
-        !personalLlmPaths.has(item.to),
+        !personalLlmPaths.has(item.to) &&
+        !flagGatedPaths.has(item.to),
     );
 
     await waitFor(() => {
@@ -232,34 +242,36 @@ describe("UserContextMenu", () => {
   });
 
   it("should render navigation items from SAAS_NAV_ITEMS when user role is admin (except organization-members/org)", async () => {
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({
-        app_mode: "saas",
-        feature_flags: {
-          enable_billing: true,
-          hide_llm_settings: false,
-          enable_jira: false,
-          enable_jira_dc: false,
-          enable_linear: false,
-          hide_users_page: false,
-          hide_billing_page: false,
-          hide_integrations_page: false,
+    const config = createMockWebClientConfig({
+      app_mode: "saas",
+      feature_flags: {
+        enable_billing: true,
+        hide_llm_settings: false,
+        enable_jira: false,
+        enable_jira_dc: false,
+        enable_linear: false,
+        hide_users_page: false,
+        hide_billing_page: false,
+        hide_integrations_page: false,
         enable_onboarding: false,
-        },
-      }),
-    );
+      },
+    });
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
 
     seedActiveUser({ role: "admin" });
 
     renderUserContextMenu({ type: "admin", onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    // Wait for config to load and verify that navigation items are rendered (except organization-members/org which are filtered out)
+    // Wait for config to load and verify that navigation items are rendered
+    // (except organization-members/org which are filtered out, and pages a
+    // feature flag hides, which the menu drops the same way the nav does).
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
         item.to !== "/settings/org-members" &&
         item.to !== "/settings/org" &&
         item.to !== "/settings/credits" &&
-        true,
+        item.to !== "/settings/integrations-hub" &&
+        !isSettingsPageHidden(item.to, config.feature_flags),
     );
 
     await waitFor(() => {
@@ -890,6 +902,73 @@ describe("UserContextMenu", () => {
     expect(onOpenCreateOrganizationModalMock).toHaveBeenCalledOnce();
     expect(onOpenPreviewModalMock).not.toHaveBeenCalled();
     expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("links Super Admin as its own destination for instance admins", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        app_mode: "saas",
+        feature_flags: {
+          enable_billing: false,
+          hide_llm_settings: false,
+          enable_jira: false,
+          enable_jira_dc: false,
+          enable_linear: false,
+          hide_users_page: false,
+          hide_billing_page: false,
+          hide_integrations_page: false,
+          enable_onboarding: false,
+          enable_super_admin: true,
+        },
+      }),
+    );
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_TEAM_ORG_ACME],
+      currentOrgId: MOCK_TEAM_ORG_ACME.id,
+    });
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_ACME.id,
+    });
+    seedActiveUser({
+      role: "admin",
+      org_id: MOCK_TEAM_ORG_ACME.id,
+      permissions: ["manage_super_admins", "create_organization"],
+    });
+
+    renderUserContextMenu({
+      type: "admin",
+      onClose: vi.fn(),
+      onOpenInviteModal: vi.fn(),
+    });
+
+    const superAdmin = await screen.findByRole("link", {
+      name: "SUPER_ADMIN$TITLE",
+    });
+    expect(superAdmin).toHaveAttribute("href", "/super-admin");
+  });
+
+  it("hides Super Admin for users without instance permissions", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    seedActiveUser({
+      role: "admin",
+      permissions: [],
+    });
+
+    renderUserContextMenu({
+      type: "admin",
+      onClose: vi.fn(),
+      onOpenInviteModal: vi.fn(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("ACCOUNT_SETTINGS$LOGOUT")).toBeInTheDocument();
+    });
+
+    expect(
+      screen.queryByRole("link", { name: "SUPER_ADMIN$TITLE" }),
+    ).not.toBeInTheDocument();
   });
 
   test("the user can change orgs", async () => {

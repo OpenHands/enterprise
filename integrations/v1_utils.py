@@ -7,7 +7,7 @@ from pydantic import SecretStr
 from integrations.utils import CONVERSATION_URL
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.saas_user_auth import SaasUserAuth
+from server.auth.saas_user_auth import SaasUserAuth, _require_active_user
 from server.auth.token_manager import TokenManager
 
 
@@ -132,6 +132,7 @@ async def handle_callback_error(
 async def get_saas_user_auth(
     keycloak_user_id: str, token_manager: TokenManager
 ) -> UserAuth:
+    await _require_active_user(keycloak_user_id)
     offline_token = await token_manager.load_offline_token(keycloak_user_id)
     if offline_token is None:
         logger.info('no_offline_token_found')

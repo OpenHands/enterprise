@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useConfig } from "#/hooks/query/use-config";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
@@ -12,6 +13,12 @@ import { I18nKey } from "#/i18n/declaration";
 
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 import { MCPServerModal } from "#/components/features/settings/mcp-settings/mcp-server-modal";
+import { OrgMcpServerList } from "#/components/features/settings/mcp-settings/org-mcp-server-list";
+import {
+  OrgMcpConnectModal,
+  OrgMcpServerModal,
+} from "#/components/features/settings/mcp-settings/org-mcp-server-modals";
+import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { KeyStatusIcon } from "#/components/features/settings/key-status-icon";
 import { SettingsInput } from "#/components/features/settings/settings-input";
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
@@ -26,6 +33,19 @@ import { parseMcpConfig } from "#/utils/mcp-config";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
+import { MCPTestResponse } from "#/api/mcp-service/mcp-service.types";
+import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
+import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
+import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import {
+  useCreateOrgMcpServer,
+  useDeleteOrgMcpServer,
+  useTestOrgMcpServer,
+  useUpdateOrgMcpServer,
+} from "#/hooks/mutation/use-org-mcp-server-mutations";
+import { OrgMcpServerView, toOrgMcpServerView } from "#/utils/org-mcp-servers";
 
 export const clientLoader = createPermissionGuard("manage_mcp");
 export const handle = { hideTitle: true };
@@ -42,6 +62,47 @@ interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+}
+
+/** The inline message a connection test leaves in the form, if any. */
+function describeTestResult(
+  t: TFunction,
+  testResult: MCPTestResponse | undefined,
+  testError: unknown,
+): { ok: boolean; text: string } | null {
+  if (testError) {
+    return {
+      ok: false,
+      text:
+        retrieveAxiosErrorMessage(testError as AxiosError) ||
+        t(I18nKey.ERROR$GENERIC),
+    };
+  }
+  if (!testResult) return null;
+  if (testResult.ok) {
+    return {
+      ok: true,
+      text: t(I18nKey.SETTINGS$MCP_TEST_SUCCESS, {
+        count: testResult.tools.length,
+      }),
+    };
+  }
+  switch (testResult.error_kind) {
+    case "timeout":
+      return { ok: false, text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_TIMEOUT) };
+    case "connection":
+      return {
+        ok: false,
+        text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_CONNECTION),
+      };
+    default:
+      return {
+        ok: false,
+        text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_UNKNOWN, {
+          error: testResult.error,
+        }),
+      };
+  }
 }
 
 function MCPSettingsScreen() {
@@ -73,6 +134,63 @@ function MCPSettingsScreen() {
   const [serverToDelete, setServerToDelete] = useState<string | null>(null);
 
   const isSaasMode = config?.app_mode === "saas";
+
+  // Organization MCP server listings (OHE-3091), behind a flag until bug
+  // bash is complete. Admins manage them; every member launches with them
+  // and connects the user-managed ones with a personal secret.
+  const orgMcpEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  const { data: me } = useMe();
+  const { hasPermission } = usePermission(me?.role ?? "member");
+  const canManageOrgMcp = orgMcpEnabled && hasPermission("manage_org_mcp");
+  const orgMcpServersQuery = useOrgMcpServers();
+  const orgListings = useMemo(
+    () => orgMcpServersQuery.data.map(toOrgMcpServerView),
+    [orgMcpServersQuery.data],
+  );
+  const hasUserManagedListings = orgListings.some(
+    (listing) => listing.managedBy === "user",
+  );
+  // "Connected" means the member already holds the secrets a user-managed
+  // listing references, so page through every secret the member can use.
+  const secretsQuery = useSearchSecrets({
+    pageSize: 100,
+    enabled: orgMcpEnabled && hasUserManagedListings,
+  });
+  const {
+    hasNextPage: hasMoreSecrets,
+    isFetchingNextPage: isFetchingMoreSecrets,
+    isError: isSecretsError,
+    fetchNextPage: fetchMoreSecrets,
+  } = secretsQuery;
+  useEffect(() => {
+    if (hasMoreSecrets && !isFetchingMoreSecrets && !isSecretsError) {
+      fetchMoreSecrets();
+    }
+  }, [hasMoreSecrets, isFetchingMoreSecrets, isSecretsError, fetchMoreSecrets]);
+  const availableSecretNames = useMemo(
+    () => new Set(secretsQuery.data.map((secret) => secret.name)),
+    [secretsQuery.data],
+  );
+  const { mutate: createOrgMcpServer, isPending: isCreatingOrgServer } =
+    useCreateOrgMcpServer();
+  const { mutate: updateOrgMcpServer, isPending: isUpdatingOrgServer } =
+    useUpdateOrgMcpServer();
+  const { mutate: deleteOrgMcpServer } = useDeleteOrgMcpServer();
+  const {
+    mutate: testOrgMcpServer,
+    isPending: isTestingOrgServer,
+    data: orgTestResult,
+    error: orgTestError,
+    reset: resetOrgTest,
+  } = useTestOrgMcpServer();
+  const [orgView, setOrgView] = useState<"list" | "add" | "edit">("list");
+  const [editingListing, setEditingListing] = useState<OrgMcpServerView | null>(
+    null,
+  );
+  const [connectingListing, setConnectingListing] =
+    useState<OrgMcpServerView | null>(null);
+  const [listingToDelete, setListingToDelete] =
+    useState<OrgMcpServerView | null>(null);
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -109,41 +227,14 @@ function MCPSettingsScreen() {
     setSearchApiKeyDirty(false);
   }, [settings?.search_api_key]);
 
-  const testMessage = useMemo(() => {
-    if (testError) {
-      return {
-        ok: false,
-        text:
-          retrieveAxiosErrorMessage(testError as AxiosError) ||
-          t(I18nKey.ERROR$GENERIC),
-      };
-    }
-    if (!testResult) return null;
-    if (testResult.ok) {
-      return {
-        ok: true,
-        text: t(I18nKey.SETTINGS$MCP_TEST_SUCCESS, {
-          count: testResult.tools.length,
-        }),
-      };
-    }
-    switch (testResult.error_kind) {
-      case "timeout":
-        return { ok: false, text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_TIMEOUT) };
-      case "connection":
-        return {
-          ok: false,
-          text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_CONNECTION),
-        };
-      default:
-        return {
-          ok: false,
-          text: t(I18nKey.SETTINGS$MCP_TEST_ERROR_UNKNOWN, {
-            error: testResult.error,
-          }),
-        };
-    }
-  }, [testError, testResult, t]);
+  const testMessage = useMemo(
+    () => describeTestResult(t, testResult, testError),
+    [testError, testResult, t],
+  );
+  const orgTestMessage = useMemo(
+    () => describeTestResult(t, orgTestResult, orgTestError),
+    [orgTestError, orgTestResult, t],
+  );
 
   const closeServerModal = () => {
     resetTest();
@@ -160,7 +251,10 @@ function MCPSettingsScreen() {
 
   const handleAddServer = (serverConfig: MCPServerConfig) => {
     addMcpServer(serverConfig, {
-      onSuccess: closeServerModal,
+      onSuccess: () => {
+        notifySuperAdminSetupStep("add-integration");
+        closeServerModal();
+      },
     });
   };
 
@@ -222,9 +316,59 @@ function MCPSettingsScreen() {
     );
   };
 
+  const showOrgError = (error: unknown) => {
+    const message = retrieveAxiosErrorMessage(error as AxiosError);
+    displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
+  };
+
+  const closeOrgServerModal = () => {
+    resetOrgTest();
+    setEditingListing(null);
+    setOrgView("list");
+  };
+
+  const handleTestOrgServer = (payload: OrgMcpServerCreate) => {
+    testOrgMcpServer({ name: payload.name, server: payload.server });
+  };
+
+  const handleAddOrgServer = (payload: OrgMcpServerCreate) => {
+    createOrgMcpServer(payload, {
+      onSuccess: closeOrgServerModal,
+      onError: showOrgError,
+    });
+  };
+
+  const handleEditOrgServer = (payload: OrgMcpServerCreate) => {
+    if (!editingListing) return;
+    updateOrgMcpServer(
+      {
+        name: editingListing.name,
+        payload: { managed_by: payload.managed_by, server: payload.server },
+      },
+      { onSuccess: closeOrgServerModal, onError: showOrgError },
+    );
+  };
+
+  const handleEditListingClick = (listing: OrgMcpServerView) => {
+    resetOrgTest();
+    setEditingListing(listing);
+    setOrgView("edit");
+  };
+
+  const handleConfirmDeleteListing = () => {
+    if (!listingToDelete) return;
+    deleteOrgMcpServer(listingToDelete.name, {
+      onSettled: () => setListingToDelete(null),
+      onError: showOrgError,
+    });
+  };
+
   if (isLoading || !settings) {
     return null;
   }
+
+  const showOrgSection =
+    orgMcpEnabled && (canManageOrgMcp || orgListings.length > 0);
 
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
@@ -256,6 +400,50 @@ function MCPSettingsScreen() {
         onEdit={handleEditClick}
         onDelete={handleDeleteClick}
       />
+
+      {showOrgSection ? (
+        <section
+          data-testid="org-mcp-servers-section"
+          className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <header className="min-w-0 space-y-1">
+              <Typography.H2>
+                {t(I18nKey.SETTINGS$MCP_ORG_SECTION_TITLE)}
+              </Typography.H2>
+              <p className="text-sm leading-5 text-muted">
+                {t(
+                  canManageOrgMcp
+                    ? I18nKey.SETTINGS$MCP_ORG_SECTION_DESCRIPTION_ADMIN
+                    : I18nKey.SETTINGS$MCP_ORG_SECTION_DESCRIPTION_MEMBER,
+                )}
+              </p>
+            </header>
+            {canManageOrgMcp ? (
+              <BrandButton
+                testId="add-org-mcp-server-button"
+                type="button"
+                variant="primary"
+                className="shrink-0 whitespace-nowrap"
+                onClick={() => {
+                  resetOrgTest();
+                  setOrgView("add");
+                }}
+              >
+                {t(I18nKey.SETTINGS$MCP_ORG_ADD_SERVER)}
+              </BrandButton>
+            ) : null}
+          </div>
+          <OrgMcpServerList
+            listings={orgListings}
+            availableSecretNames={availableSecretNames}
+            canManage={canManageOrgMcp}
+            onEdit={handleEditListingClick}
+            onDelete={setListingToDelete}
+            onConnect={setConnectingListing}
+          />
+        </section>
+      ) : null}
 
       {!isSaasMode ? (
         <section
@@ -318,6 +506,11 @@ function MCPSettingsScreen() {
         <MCPServerModal
           mode="add"
           existingServers={allServers}
+          reservedNames={
+            orgMcpEnabled
+              ? orgListings.map((listing) => listing.name)
+              : undefined
+          }
           onSubmit={handleAddServer}
           onClose={closeServerModal}
           onTest={handleTestServer}
@@ -331,6 +524,11 @@ function MCPSettingsScreen() {
           mode="edit"
           server={editingServer}
           existingServers={allServers}
+          reservedNames={
+            orgMcpEnabled
+              ? orgListings.map((listing) => listing.name)
+              : undefined
+          }
           onSubmit={handleEditServer}
           onClose={closeServerModal}
           onTest={handleTestServer}
@@ -344,6 +542,50 @@ function MCPSettingsScreen() {
           text={t(I18nKey.SETTINGS$MCP_CONFIRM_DELETE)}
           onCancel={handleCancelDelete}
           onConfirm={handleConfirmDelete}
+        />
+      )}
+
+      {orgView === "add" && (
+        <OrgMcpServerModal
+          mode="add"
+          existingNames={orgListings.map((listing) => listing.name)}
+          onSubmit={handleAddOrgServer}
+          onClose={closeOrgServerModal}
+          onTest={handleTestOrgServer}
+          isTestPending={isTestingOrgServer}
+          isSaving={isCreatingOrgServer}
+          testMessage={orgTestMessage}
+        />
+      )}
+
+      {orgView === "edit" && editingListing && (
+        <OrgMcpServerModal
+          mode="edit"
+          listing={editingListing}
+          existingNames={orgListings
+            .map((listing) => listing.name)
+            .filter((name) => name !== editingListing.name)}
+          onSubmit={handleEditOrgServer}
+          onClose={closeOrgServerModal}
+          onTest={handleTestOrgServer}
+          isTestPending={isTestingOrgServer}
+          isSaving={isUpdatingOrgServer}
+          testMessage={orgTestMessage}
+        />
+      )}
+
+      {connectingListing && (
+        <OrgMcpConnectModal
+          listing={connectingListing}
+          onClose={() => setConnectingListing(null)}
+        />
+      )}
+
+      {listingToDelete && (
+        <ConfirmationModal
+          text={t(I18nKey.SETTINGS$MCP_ORG_CONFIRM_DELETE)}
+          onCancel={() => setListingToDelete(null)}
+          onConfirm={handleConfirmDeleteListing}
         />
       )}
     </div>

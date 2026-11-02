@@ -2,14 +2,18 @@
 Store class for managing organization-member relationships.
 """
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    agent_llm,
+    fold_retired_tool_switches_into_json,
+)
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
@@ -22,6 +26,9 @@ from storage.org_member import OrgMember
 from storage.user import User
 from storage.user_settings import UserSettings
 from utils.sql import escape_ilike
+
+if TYPE_CHECKING:
+    from storage.org import Org
 
 _MISSING = object()
 
@@ -166,10 +173,53 @@ class OrgMemberStore:
             return True
 
     @staticmethod
+    async def set_all_membership_statuses(
+        user_id: UUID,
+        status: str,
+        org_ids: list[UUID] | None = None,
+    ) -> int:
+        """Set ``status`` on memberships for ``user_id``.
+
+        ``org_ids`` limits the update to those organizations. When it is
+        omitted, every membership for the user is updated.
+
+        Returns the number of membership rows updated.
+        """
+        if status not in ('active', 'inactive', 'invited'):
+            raise ValueError(f'Invalid membership status: {status!r}')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember).filter(OrgMember.user_id == user_id)
+            )
+            members = list(result.scalars().all())
+            if org_ids is not None:
+                allowed = set(org_ids)
+                members = [member for member in members if member.org_id in allowed]
+            for member in members:
+                member.status = status
+            await session.commit()
+            return len(members)
+
+    @staticmethod
+    async def list_memberships_with_orgs(
+        user_id: UUID,
+    ) -> list[tuple[OrgMember, 'Org']]:
+        """Return ``(OrgMember, Org)`` pairs for a user."""
+        from storage.org import Org
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(OrgMember, Org)
+                .join(Org, Org.id == OrgMember.org_id)
+                .filter(OrgMember.user_id == user_id)
+            )
+            return list(result.all())
+
+    @staticmethod
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
         """Return kwargs for OrgMember construction (keys match column names)."""
         return {
-            'llm_api_key': settings.agent_settings.llm.api_key,
+            'llm_api_key': getattr(agent_llm(settings.agent_settings), 'api_key', None),
             'agent_settings_diff': {},
             'mcp_config': serialize_mcp_config(settings.agent_settings.mcp_config),
             'conversation_settings_diff': {},
@@ -293,7 +343,11 @@ class OrgMemberStore:
         agent_settings_diff = values.pop('agent_settings_diff', None)
         conversation_settings_diff = values.pop('conversation_settings_diff', None)
         if agent_settings_diff is not None:
-            agent_settings_diff = dict(agent_settings_diff)
+            # Older clients may still send the SDK's retired tool switches; the
+            # org row gets them folded into ``tools``, and so do member rows.
+            agent_settings_diff = fold_retired_tool_switches_into_json(
+                agent_settings_diff
+            )
             for key in MEMBER_PRIVATE_AGENT_KEYS:
                 agent_settings_diff.pop(key, None)
 

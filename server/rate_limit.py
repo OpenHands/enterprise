@@ -19,6 +19,7 @@ from starlette.applications import Request, Response, Starlette
 from starlette.exceptions import HTTPException
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.utils.rate_limit_utils import RATE_LIMITING_ENABLED
 from storage.redis import get_redis_authed_url
 
 
@@ -104,9 +105,12 @@ def create_redis_rate_limiter(windows: str) -> RateLimiter | None:
     Create a RateLimiter with the Redis backend and "Fixed Window" strategy.
     windows arg example: "10/second; 100/minute"
 
-    An empty windows value disables rate limiting.
+    An empty windows value disables rate limiting, as does setting
+    RATE_LIMITING_ENABLED=false (see server.utils.rate_limit_utils) -- the
+    latter is for deployments with no Redis at all, e.g. the Docker Compose
+    evaluation stack.
     """
-    if windows == '':
+    if windows == '' or not RATE_LIMITING_ENABLED:
         return None
 
     backend = limits.aio.storage.RedisStorage(f'async+{get_redis_authed_url()}')
