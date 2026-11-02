@@ -1590,3 +1590,15 @@ class TestGetProviderDefaultHosts:
             result = _get_provider_default_hosts()
 
         assert 'bitbucket_data_center' not in result
+
+
+@pytest.mark.parametrize(
+    'value, expected', [('true', True), ('1', True), ('false', False)]
+)
+def test_canvas_availability_from_deployment(monkeypatch, value, expected):
+    from openhands.app_server.web_client.default_web_client_config_injector import (
+        _get_feature_flags,
+    )
+
+    monkeypatch.setenv('AGENT_CANVAS_AVAILABLE', value)
+    assert _get_feature_flags().agent_canvas_available is expected

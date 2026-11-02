@@ -116,6 +116,13 @@ const mockConfigWithFeatureFlags = (
 };
 
 describe("useSettingsNavItems", () => {
+  it.each([true, false])("offers the legacy MCP editor only without Canvas (available=%s)", async (available) => {
+    mockConfigWithFeatureFlags("saas", { agent_canvas_available: available });
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+    await waitFor(() => expect(getNavItems(result.current).length).toBeGreaterThan(0));
+    await waitFor(() => expect(!!findItemByPath(result.current, "/settings/mcp")).toBe(!available));
+  });
+
   beforeEach(() => {
     queryClient.clear();
     vi.restoreAllMocks();
