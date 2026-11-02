@@ -499,6 +499,52 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_super_admin is True
 
+    def test_enable_org_mcp_servers_false_by_default(self):
+        """Without ENABLE_ORG_MCP_SERVERS the org MCP servers UI stays hidden."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is False
+
+    def test_enable_org_mcp_servers_true_when_env_var_true(self):
+        """ENABLE_ORG_MCP_SERVERS=true shows the org MCP servers UI."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_ORG_MCP_SERVERS': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is True
+
+    def test_enable_org_mcp_servers_true_when_env_var_one(self):
+        """ENABLE_ORG_MCP_SERVERS=1 also enables the flag."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_ORG_MCP_SERVERS': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is True
+
+    def test_enable_org_mcp_servers_true_from_structured_env(self):
+        """OHE sets web-client flags in the structured form; that enables it too."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_ORG_MCP_SERVERS': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_org_mcp_servers is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""

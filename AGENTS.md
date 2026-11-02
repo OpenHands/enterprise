@@ -338,7 +338,7 @@ vi.mock("#/hooks/use-agent-state", () => ({
 Microagents are specialized prompts that enhance OpenHands with domain-specific knowledge and task-specific workflows. They are Markdown files that can include frontmatter for configuration.
 
 #### Types:
-- **Public Skills/Microagents**: Located in `skills/`, available to all users
+- **Public Skills/Microagents**: Loaded from the [OpenHands/extensions](https://github.com/OpenHands/extensions) repository (ref set by `EXTENSIONS_REF`), available to all users
 - **Repository Microagents**: Located in `.openhands/microagents/`, specific to this repository
 
 #### Loading Behavior:

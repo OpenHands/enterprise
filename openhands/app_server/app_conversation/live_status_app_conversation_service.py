@@ -23,6 +23,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     TextContent,
 )
+from openhands.agent_server.utils import utc_now
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
@@ -48,6 +49,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskStatus,
     AppConversationUpdateRequest,
+    ConversationTitleGeneration,
     ConversationTrigger,
     PluginSpec,
     SandboxGroupingStrategy,
@@ -88,6 +90,10 @@ from openhands.app_server.app_conversation.skill_loader import (
 )
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
+)
+from openhands.app_server.app_conversation.start_title import (
+    generate_start_title,
+    pending_start_title,
 )
 from openhands.app_server.config import (
     AppServerConfig,
@@ -134,10 +140,16 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
-from openhands.app_server.settings.llm_profiles import resolve_profile_llm
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.settings.llm_profiles import (
+    detach_provider_connection,
+    resolve_profile_llm,
+)
 from openhands.app_server.settings.marketplace_composition import (
     resolve_registered_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
@@ -475,6 +487,22 @@ def _compose_system_message_suffix(
     return '\n\n'.join(parts) if parts else None
 
 
+def _profile_runtime_requirement(
+    agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+) -> str | None:
+    """What this launch needs from an openhands-sdk >=1.54.0 runtime, or None.
+
+    An older agent-server rejects the ACP ``agent_settings`` transport and
+    silently drops a profile persona; it honors everything else the launch
+    request carries.
+    """
+    if isinstance(agent_settings, ACPAgentSettings):
+        return 'an ACP agent'
+    if agent_settings.persona is not None:
+        return 'an Agent Profile persona'
+    return None
+
+
 @dataclass
 class LiveStatusAppConversationService(AppConversationServiceBase):
     """AppConversationService which combines live status info from the sandbox with stored data."""
@@ -738,15 +766,20 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             # Resolve the profile as switch_profile does, and copy rather than
             # mutate: the user context may cache the resolved settings.
-            agent_settings = agent_settings.model_copy(
-                update={
-                    'llm': resolve_profile_llm(
-                        profile_llm,
-                        managed_proxy_url=LITE_LLM_API_URL,
-                        fallback_api_key=agent_settings.llm.api_key,
-                    )
-                }
-            )
+            try:
+                profile_llm = resolve_profile_llm(
+                    profile_llm,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                    fallback_api_key=agent_settings.llm.api_key,
+                    connections=await self.user_context.get_provider_connections(),
+                    strict=True,
+                )
+            except ProviderConnectionNotFoundError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=exc.profile_detail,
+                ) from exc
+            agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
             user = user.model_copy(update={'agent_settings': agent_settings})
 
         # Org Model Router "Run on first message": the launch carries the
@@ -760,12 +793,32 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         ):
             await self._maybe_append_route_at_start_instruction(request)
 
+        message = (
+            ' '.join(
+                content.text
+                for content in request.initial_message.content
+                if isinstance(content, TextContent)
+            ).strip()
+            if request.initial_message
+            else ''
+        )
+        generation = (
+            pending_start_title(message)
+            if request.generate_title_on_submit and not request.title and message
+            else None
+        )
         task = AppConversationStartTask(
             created_by_user_id=user_id,
             request=request,
+            title_generation=generation,
         )
         yield task
 
+        title_job = (
+            asyncio.create_task(self._generate_start_title(task, message, user))
+            if generation
+            else None
+        )
         try:
             async for updated_task in self._wait_for_sandbox_start(task):
                 yield updated_task
@@ -777,7 +830,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
             browser_available = await self._ensure_profile_runtime(
-                agent_server_url, sandbox.session_api_key
+                agent_server_url, sandbox.session_api_key, agent_settings
             )
 
             # Get the working dir
@@ -837,6 +890,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 },
             )
 
+            # The request builder loads skills with the final marketplace/filter settings.
+            task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
+            yield task
+
             # Build the start request
             start_conversation_request = (
                 await self._build_start_conversation_request_for_user(
@@ -885,6 +942,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             body_json = start_conversation_request.model_dump(
                 mode='json', context={'expose_secrets': True}
             )
+            if task.title_generation is not None:
+                body_json['autotitle'] = False
+                body_json['title'] = task.title_generation.title
+            elif request.title:
+                body_json['autotitle'] = False
+                body_json['title'] = request.title
             # Keep the agent-server ``user_id`` aligned with app-server and
             # frontend PostHog identity. The agent-server uses it both for
             # product analytics distinct_id and Laminar trace_user_id; user
@@ -967,7 +1030,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             app_conversation_info = AppConversationInfo(
                 id=info.id,
-                title=request.title or f'Conversation {info.id.hex[:5]}',
+                title=request.title
+                or (
+                    task.title_generation.title
+                    if task.title_generation
+                    else f'Conversation {info.id.hex[:5]}'
+                ),
+                title_generation=task.title_generation,
                 sandbox_id=sandbox.id,
                 created_by_user_id=user_id,
                 llm_model=llm_model,
@@ -987,11 +1056,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
 
             # Setup default processors
-            processors = request.processors or []
+            processors = [
+                processor
+                for processor in (request.processors or [])
+                if task.title_generation is None
+                or not isinstance(processor, SetTitleCallbackProcessor)
+            ]
 
             # Auto-title unless the caller supplied a title: the generated
             # title must not replace the one the caller chose.
-            if not request.title:
+            if not request.title and task.title_generation is None:
                 has_set_title_processor = any(
                     isinstance(processor, SetTitleCallbackProcessor)
                     for processor in processors
@@ -1025,6 +1099,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Update the start task
             task.status = AppConversationStartTaskStatus.READY
             task.app_conversation_id = info.id
+            if task.title_generation and task.title_generation.status != 'pending':
+                try:
+                    await self.app_conversation_info_service.complete_title_generation(
+                        info.id, task.title_generation
+                    )
+                except Exception:
+                    _logger.exception('Failed to settle conversation title at startup')
             yield task
 
             # Process any pending messages queued while waiting for conversation
@@ -1043,6 +1124,109 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 redact_api_key_literals(_exception_detail(exc))
             )
             yield task
+        finally:
+            if title_job is not None:
+                if task.status == AppConversationStartTaskStatus.ERROR:
+                    title_job.cancel()
+                await asyncio.gather(title_job, return_exceptions=True)
+                if task.status == AppConversationStartTaskStatus.READY:
+                    await self._sync_start_title(task)
+
+    async def _sync_start_title(self, task: AppConversationStartTask) -> None:
+        if not task.app_conversation_id:
+            return
+        try:
+            async with asyncio.timeout(3):
+                info = (
+                    await self.app_conversation_info_service.get_app_conversation_info(
+                        task.app_conversation_id
+                    )
+                )
+                if info and info.title:
+                    await self.update_agent_server_conversation_title(
+                        info.id.hex, info.title, info
+                    )
+        except Exception:
+            _logger.info(
+                'Runtime title sync unavailable; app title remains authoritative'
+            )
+
+    async def _start_title_llm(
+        self, user: UserInfo, request: AppConversationStartRequest
+    ) -> LLM | None:
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        try:
+            agent_llm = (
+                self._configure_llm(user, request.llm_model)
+                if isinstance(user.agent_settings, OpenHandsAgentSettings)
+                else None
+            )
+            name = _resolve_title_llm_profile(
+                user, agent_llm.model if agent_llm else None
+            )
+            llm = user.llm_profiles.require(name) if name else agent_llm
+            if llm is None or llm.usage_id == 'acp-managed':
+                return None
+            resolved = resolve_profile_llm(
+                llm,
+                managed_proxy_url=LITE_LLM_API_URL,
+                fallback_api_key=agent_llm.api_key if agent_llm else None,
+                connections=await self.user_context.get_provider_connections(),
+                strict=True,
+            )
+            resolved = await self._maybe_refresh_managed_llm_key(user, resolved)
+            return detach_provider_connection(resolved).model_copy(
+                update={'usage_id': 'title', 'stream': False}
+            )
+        except Exception:
+            _logger.info(
+                'Startup title model unavailable; using first-message fallback'
+            )
+            return None
+
+    async def _generate_start_title(
+        self, task: AppConversationStartTask, message: str, user: UserInfo
+    ) -> None:
+        assert task.title_generation is not None
+        pending = task.title_generation
+        try:
+            remaining = max(0, (pending.deadline_at - utc_now()).total_seconds())
+            async with asyncio.timeout(remaining):
+                llm = await self._start_title_llm(user, task.request)
+                generation = await generate_start_title(pending, message, llm)
+        except Exception:
+            generation = pending.model_copy(update={'status': 'fallback'})
+        task.title_generation = generation
+        try:
+            await self._persist_start_title(task, generation)
+        except Exception:
+            _logger.exception('Failed to persist startup title')
+
+    async def _persist_start_title(
+        self, task: AppConversationStartTask, generation: ConversationTitleGeneration
+    ) -> None:
+        from openhands.app_server.config import (
+            get_app_conversation_info_service,
+            get_app_conversation_start_task_service,
+        )
+        from openhands.app_server.user.specifiy_user_context import (
+            ADMIN,
+            USER_CONTEXT_ATTR,
+        )
+
+        # This worker needs its own session while sandbox startup uses the request's.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, ADMIN)
+        async with get_app_conversation_start_task_service(state) as tasks:
+            await tasks.update_title_generation(task.id, generation)
+        if task.app_conversation_id:
+            state = InjectorState()
+            setattr(state, USER_CONTEXT_ATTR, ADMIN)
+            async with get_app_conversation_info_service(state) as conversations:
+                await conversations.complete_title_generation(
+                    task.app_conversation_id, generation
+                )
 
     async def _build_app_conversations(
         self, app_conversation_infos: Sequence[AppConversationInfo | None]
@@ -1480,6 +1664,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     'provider_type': ProviderType.AZURE_DEVOPS.value,
                 },
                 expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
             )
         except Exception as exc:
             _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
@@ -1501,6 +1686,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """
         if not self.web_url:
             return
+        # The helper exchanges each JWT at the webhook secrets endpoint; when
+        # the sandbox cannot call back, nothing is minted and the clones keep
+        # their authenticated URL (``_clone_repository``).
+        if not self._secret_lookup_url():
+            return
         try:
             provider_handler = await self.user_context.get_provider_handler()
             user_id = await self.user_context.get_user_id()
@@ -1513,6 +1703,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 tokens[provider.value] = self.jwt_service.create_jws_token(
                     payload={'user_id': user_id, 'provider_type': provider.value},
                     expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                    audience=JwtAudience.SECRET_LOOKUP,
                 )
             task._git_credential_access_tokens = tokens
         except Exception as exc:
@@ -1579,6 +1770,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     user, settings_llm
                 )
             fallback_api_key = getattr(settings_llm, 'api_key', None)
+            connections = await self.user_context.get_provider_connections()
         except Exception:
             _logger.exception(
                 'Failed to load profiles for sandbox %s',
@@ -1600,7 +1792,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     profile_llm,
                     managed_proxy_url=LITE_LLM_API_URL,
                     fallback_api_key=fallback_api_key,
+                    connections=connections,
                 )
+                resolved = detach_provider_connection(resolved)
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
                     json={
@@ -1703,8 +1897,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
         return agent_server_url
 
-    async def _ensure_profile_runtime(self, url: str, api_key: str | None) -> bool:
-        """Require a compatible runtime and return its browser availability."""
+    async def _ensure_profile_runtime(
+        self,
+        url: str,
+        api_key: str | None,
+        agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
+    ) -> bool:
+        """Return the runtime's browser availability; reject what it cannot run.
+
+        A sandbox on openhands-sdk <1.54.0 (one created before an image bump)
+        still runs an ordinary launch, so that proceeds with a warning rather
+        than stranding the sandbox. Only launches that need the newer runtime
+        (see ``_profile_runtime_requirement``) fail fast.
+        """
         response = await self.httpx_client.get(
             f'{url}/server_info',
             headers={'X-Session-API-Key': api_key} if api_key else {},
@@ -1720,9 +1925,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except InvalidVersion:
             compatible = False
         if not compatible:
-            raise SandboxError(
-                'This sandbox requires openhands-sdk >=1.54.0 for Agent Profiles. '
-                'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+            requirement = _profile_runtime_requirement(agent_settings)
+            if requirement:
+                raise SandboxError(
+                    f'This sandbox requires openhands-sdk >=1.54.0 to launch {requirement}. '
+                    'Upgrade its image and start a new sandbox; existing conversations remain readable.'
+                )
+            _logger.warning(
+                'Sandbox %s reports openhands-sdk %s (<1.54.0); launching without '
+                'Agent Profile runtime support',
+                url,
+                reported,
             )
 
         return BROWSER_TOOL_NAME in info.get('usable_tools', [])
@@ -1969,7 +2182,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         self, lookup_url: str, payload: dict[str, Any], description: str
     ) -> LookupSecret:
         access_token = self.jwt_service.create_jws_token(
-            payload=payload, expires_in=self.access_token_hard_timeout
+            payload=payload,
+            expires_in=self.access_token_hard_timeout,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
         return LookupSecret(
             url=lookup_url,
@@ -2433,6 +2648,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             },
         )
         llm = await self._maybe_refresh_managed_llm_key(user, llm)
+        # Detach after the refresh: it reads the link to treat a linked LLM as
+        # BYOK. The connection's key and base_url are already applied, by
+        # settings load or by the ``llm_profile`` resolution.
+        llm = detach_provider_connection(llm)
 
         mcp_servers: dict[str, MCPServer] = {}
 
@@ -3661,6 +3880,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     merged_tags[key] = tag_value
             info.tags = merged_tags
 
+        if 'title' in request.model_fields_set:
+            info.title_generation = None
         info = await self.app_conversation_info_service.save_app_conversation_info(info)
         conversations = await self._build_app_conversations([info])
         return conversations[0]

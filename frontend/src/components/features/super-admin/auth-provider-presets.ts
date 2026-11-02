@@ -42,6 +42,7 @@ function oauthDetails(
     | "permitted_drift_seconds"
     | "legacy_keycloak_type"
     | "named_secret"
+    | "attribute_mapping"
   >,
 ): OAuthProviderDetails {
   return {
@@ -50,6 +51,7 @@ function oauthDetails(
     permitted_drift_seconds: 60,
     legacy_keycloak_type: null,
     named_secret: defaultNamedSecret(details.provider_type),
+    attribute_mapping: {},
     ...details,
   };
 }

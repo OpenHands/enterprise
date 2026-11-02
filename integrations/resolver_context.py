@@ -8,6 +8,7 @@ from openhands.app_server.integrations.provider import (
     ProviderHandler,
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -133,6 +134,16 @@ class ResolverUserContext(UserContext):
         return await cast(
             Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
         )(oauth_provider_id)
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        get_provider_connections = getattr(
+            self.saas_user_auth, 'get_provider_connections', None
+        )
+        if get_provider_connections is None:
+            return ProviderConnections()
+        return await cast(
+            Callable[[], Awaitable[ProviderConnections]], get_provider_connections
+        )()
 
     async def get_mcp_api_key(self) -> str | None:
         return await self.saas_user_auth.get_mcp_api_key()

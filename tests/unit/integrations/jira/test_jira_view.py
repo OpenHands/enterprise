@@ -303,7 +303,9 @@ class TestJiraFactoryRepositoryMentions:
     ):
         """Create a view; mentions whose lowercase name is in accessible verify."""
 
-        async def verify(name):
+        async def verify(name, is_optional=False):
+            # Mentions are optional lookups: a miss must not log an error.
+            assert is_optional
             if name.lower() in accessible:
                 return accessible[name.lower()]
             raise Exception(f'not found: {name}')
@@ -527,7 +529,9 @@ class TestJiraFactory:
             assert isinstance(view, JiraNewConversationView)
             assert view.selected_repo == 'test/repo1'
             assert view.git_provider == ProviderType.GITHUB
-            mock_handler.verify_repo_provider.assert_called_once_with('test/repo1')
+            mock_handler.verify_repo_provider.assert_called_once_with(
+                'test/repo1', is_optional=True
+            )
 
     @pytest.mark.asyncio
     @patch('integrations.jira.jira_view.JiraFactory._create_provider_handler')

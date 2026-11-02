@@ -135,6 +135,7 @@ export type SkillInfo = {
   type: string;
   source: string;
   triggers?: string[];
+  description?: string | null;
 };
 
 // A plugin advertised by a marketplace manifest. The UI operates at the plugin

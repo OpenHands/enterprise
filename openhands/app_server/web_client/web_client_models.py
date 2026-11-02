@@ -87,6 +87,13 @@ class WebClientFeatureFlags(BaseModel):
     # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
     # its org-scope constraints are not gated.
     enable_org_agent_profiles: bool = False
+    # Org-scoped MCP servers (OHE-3091): when true, Settings > MCP shows the
+    # organization's MCP server listings (admins manage them, members connect
+    # to them) and both Agent Profile editors list them. Set from
+    # ENABLE_ORG_MCP_SERVERS (or the OH_WEB_CLIENT_FEATURE_FLAGS_* form).
+    # Default False so every existing install keeps today's settings UI.
+    # UI-level only -- the org MCP servers API is not gated.
+    enable_org_mcp_servers: bool = False
     # Org Model Router (OHE-3508): when true, the settings shell shows the
     # org "Model Router" page and the server serves
     # /api/organizations/{org_id}/meta-profiles and applies the active router

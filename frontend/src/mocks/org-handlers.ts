@@ -8,10 +8,103 @@ import {
 } from "#/types/org";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 import {
+  OrgMcpServerCreate,
+  OrgMcpServerItem,
+  OrgMcpServerUpdate,
+} from "#/api/org-mcp-servers.types";
+import {
   findMockAdminUser,
   onMockAdminMembershipAdded,
   registerMockAdminOrg,
 } from "./super-admin-handlers";
+
+const MOCK_SECRET_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}/g;
+const MOCK_REDACTED_SECRET = "**********";
+
+/** The organization's MCP server listings, keyed by name (OHE-3091). */
+const mockOrgMcpServers = new Map<string, OrgMcpServerCreate>([
+  [
+    "datadog-shared",
+    {
+      name: "datadog-shared",
+      managed_by: "org",
+      server: {
+        url: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp",
+        transport: "http",
+        auth: { strategy: "bearer", value: "dd-service-account-key" },
+      },
+    },
+  ],
+  [
+    "bifrost-internal",
+    {
+      name: "bifrost-internal",
+      managed_by: "user",
+      server: {
+        url: "https://bifrost.acme.com/mcp",
+        transport: "http",
+        // eslint-disable-next-line no-template-curly-in-string
+        auth: { strategy: "bearer", value: "${BIFROST_TOKEN}" },
+      },
+    },
+  ],
+]);
+
+function maskMockMcpSecrets(value: unknown): unknown {
+  if (typeof value === "string") return MOCK_REDACTED_SECRET;
+  if (Array.isArray(value)) return value.map(maskMockMcpSecrets);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        key === "strategy" ? item : maskMockMcpSecrets(item),
+      ]),
+    );
+  }
+  return value;
+}
+
+/** What the backend returns: every credential field masked, references listed. */
+function redactedOrgMcpServer(entry: OrgMcpServerCreate): OrgMcpServerItem {
+  const { auth, headers, ...rest } = entry.server as Record<string, unknown>;
+  const secretNames = new Set<string>();
+  for (const match of JSON.stringify(entry.server).matchAll(
+    MOCK_SECRET_REFERENCE,
+  )) {
+    if (match[2] === undefined) secretNames.add(match[1]);
+  }
+  return {
+    name: entry.name,
+    managed_by: entry.managed_by,
+    server: {
+      ...rest,
+      ...(auth !== undefined && { auth: maskMockMcpSecrets(auth) }),
+      ...(headers !== undefined && { headers: maskMockMcpSecrets(headers) }),
+    },
+    secret_names: [...secretNames].sort(),
+  };
+}
+
+/** A masked credential sent back on save keeps the stored one. */
+function restoreMockMcpSecrets(
+  submitted: Record<string, unknown>,
+  stored: Record<string, unknown>,
+): Record<string, unknown> {
+  const restore = (value: unknown, previous: unknown): unknown => {
+    if (value === MOCK_REDACTED_SECRET) return previous ?? value;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const previousRecord = (previous ?? {}) as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+          key,
+          restore(item, previousRecord[key]),
+        ]),
+      );
+    }
+    return value;
+  };
+  return restore(submitted, stored) as Record<string, unknown>;
+}
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -1800,4 +1893,49 @@ export const ORG_HANDLERS = [
       run_at_conversation_start: false,
     }),
   ),
+
+  // Organization MCP server listings (OHE-3091). Shown on /settings/mcp when
+  // VITE_MOCK_ORG_MCP_SERVERS=true; credentials come back masked, as the
+  // backend returns them, with the referenced secret names listed separately.
+  http.get("/api/organizations/:orgId/mcp-servers", () =>
+    HttpResponse.json({
+      items: [...mockOrgMcpServers.values()].map(redactedOrgMcpServer),
+    }),
+  ),
+  http.post("/api/organizations/:orgId/mcp-servers", async ({ request }) => {
+    const body = (await request.json()) as OrgMcpServerCreate;
+    if (mockOrgMcpServers.has(body.name)) {
+      return HttpResponse.json(
+        { detail: `Organization MCP server '${body.name}' already exists` },
+        { status: 409 },
+      );
+    }
+    mockOrgMcpServers.set(body.name, body);
+    return HttpResponse.json({ message: "created" }, { status: 201 });
+  }),
+  http.put(
+    "/api/organizations/:orgId/mcp-servers/:name",
+    async ({ params, request }) => {
+      const name = String(params.name);
+      const current = mockOrgMcpServers.get(name);
+      if (!current) {
+        return HttpResponse.json({ detail: "not found" }, { status: 404 });
+      }
+      const body = (await request.json()) as OrgMcpServerUpdate;
+      mockOrgMcpServers.set(name, {
+        name,
+        managed_by: body.managed_by ?? current.managed_by,
+        server: body.server
+          ? restoreMockMcpSecrets(body.server, current.server)
+          : current.server,
+      });
+      return HttpResponse.json({ message: "updated" });
+    },
+  ),
+  http.delete("/api/organizations/:orgId/mcp-servers/:name", ({ params }) => {
+    if (!mockOrgMcpServers.delete(String(params.name))) {
+      return HttpResponse.json({ detail: "not found" }, { status: 404 });
+    }
+    return HttpResponse.json({ message: "deleted" });
+  }),
 ];

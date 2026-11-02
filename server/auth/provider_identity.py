@@ -97,15 +97,46 @@ def is_true_claim(value: object) -> bool:
     return value is True
 
 
+# Claims each identity field is read from when ``attribute_mapping`` doesn't
+# name one. GitHub-style APIs send a numeric ``id`` rather than an OIDC ``sub``.
+_DEFAULT_OAUTH_CLAIMS: dict[str, tuple[str, ...]] = {
+    'sub': ('sub', 'id', 'user_id'),
+    'email': ('email',),
+    'email_verified': ('email_verified',),
+}
+
+
+def map_oauth_claims(userinfo: dict, attribute_mapping: dict[str, str]) -> dict:
+    """Reduce an OAuth userinfo / ID-token payload to the OIDC-shaped
+    ``sub`` / ``email`` / ``email_verified`` dict ``resolve_or_create_user``
+    takes.
+
+    A field named in ``attribute_mapping`` is read from that claim only -- a
+    configured claim that is missing yields ``None`` rather than falling back
+    to the defaults, so a misconfigured provider can't silently link users by
+    some other identifier.
+    """
+    claims = {}
+    for field, defaults in _DEFAULT_OAUTH_CLAIMS.items():
+        mapped = attribute_mapping.get(field)
+        names = (mapped,) if mapped else defaults
+        claims[field] = next(
+            (userinfo[name] for name in names if userinfo.get(name) is not None),
+            None,
+        )
+    return claims
+
+
 async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     """Resolve the internal user for a provider's asserted identity.
 
     ``userinfo`` is shaped like an OIDC userinfo response (``sub`` /
-    ``email`` / ``email_verified``) -- SAML callers (``server.routes.saml``)
-    build one of these from the assertion (``NameID`` -> ``sub``, the mapped
-    attribute -> ``email``) rather than getting a second, SAML-specific
-    version of this function, since the resolution logic itself doesn't
-    care which protocol produced the identity.
+    ``email`` / ``email_verified``) -- OAuth callers build it with
+    :func:`map_oauth_claims`, and SAML callers (``server.routes.saml``)
+    build one from the assertion (``NameID`` or the mapped attribute ->
+    ``sub``, the mapped attribute -> ``email``) rather than getting a second,
+    SAML-specific version of this function, since the resolution logic
+    itself doesn't care which protocol produced the identity.
 
     Looks up ``auth_provider_users`` by ``external_subject_id``. If found,
     returns the linked user id. Otherwise creates the user and links it.
@@ -135,7 +166,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     email-match lookups above always run regardless of this flag, since they
     resolve to an *existing* user rather than registering one.
     """
-    subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
+    subject = userinfo.get('sub')
     if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -259,6 +290,7 @@ __all__ = [
     'require_enabled_provider',
     'encrypt_state',
     'decrypt_state',
+    'map_oauth_claims',
     'resolve_or_create_user',
     'set_oauth_v2_cookie',
 ]

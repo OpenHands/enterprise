@@ -8,6 +8,7 @@ from openhands.app_server.integrations.provider import ProviderHandler, Provider
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
     ProviderType,
+    Repository,
     UnknownException,
     User,
 )
@@ -69,3 +70,17 @@ async def test_get_user_still_tries_next_provider_after_failure(monkeypatch):
     assert await handler.get_user() == gitlab_user
     services[ProviderType.GITHUB].get_user.assert_awaited_once()
     services[ProviderType.GITLAB].get_user.assert_awaited_once()
+
+
+def test_deduplicate_repositories_drops_repeated_full_names():
+    handler = _handler_with_tokens(ProviderType.GITHUB)
+    repos = [
+        Repository(
+            id=str(i), full_name=name, git_provider=ProviderType.GITHUB, is_public=True
+        )
+        for i, name in enumerate(['acme/web', 'acme/api', 'acme/web'])
+    ]
+    assert [r.full_name for r in handler._deduplicate_repositories(repos)] == [
+        'acme/web',
+        'acme/api',
+    ]

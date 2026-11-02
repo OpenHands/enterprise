@@ -21,6 +21,13 @@ from integrations.jira.jira_types import (
 from integrations.jira.jira_v1_callback_processor import (
     JiraV1CallbackProcessor,
 )
+from integrations.mentioned_repositories import (
+    MentionedRepositories,
+    create_provider_handler,
+    join_names,
+    select_additional_repositories,
+    verify_mentioned_repos,
+)
 from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
 from integrations.utils import (
@@ -29,7 +36,6 @@ from integrations.utils import (
 )
 from openhands.agent_server.models import SendMessageRequest
 from openhands.app_server.app_conversation.additional_repositories import (
-    MAX_ADDITIONAL_REPOSITORIES,
     AdditionalRepositoryRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -334,33 +340,17 @@ class JiraNewConversationView(JiraViewInterface):
         if self.selected_repo:
             prefix = f"I'm on it in {self.selected_repo}"
             if self.additional_repos:
-                prefix += f', together with {_join([r.full_name for r in self.additional_repos])}'
+                prefix += f', together with {join_names([r.full_name for r in self.additional_repos])}'
             prefix += '!'
         else:
             prefix = "I'm on it!"
         message = f'{prefix} {self.payload.display_name} can [track my progress here|{conversation_link}].'
         if self.selected_repo is None:
             message += '\n\nNote: This conversation started without a repository.'
-        if self.inaccessible_repos:
-            message += (
-                f'\n\nCould not access: {", ".join(self.inaccessible_repos)}. '
-                'Please ensure each repository exists and that the Git account '
-                'linked to your OpenHands user can access it.'
-            )
-        if self.skipped_repos:
-            message += (
-                f'\n\nNot included (a conversation can have at most '
-                f'{MAX_ADDITIONAL_REPOSITORIES + 1} repositories): '
-                f'{", ".join(self.skipped_repos)}.'
-            )
+        message += MentionedRepositories(
+            inaccessible=self.inaccessible_repos, skipped=self.skipped_repos
+        ).notes()
         return message
-
-
-def _join(names: list[str]) -> str:
-    """'a', 'a and b', 'a, b and c'."""
-    if len(names) < 2:
-        return ''.join(names)
-    return f'{", ".join(names[:-1])} and {names[-1]}'
 
 
 class JiraFactory:
@@ -378,18 +368,7 @@ class JiraFactory:
     @staticmethod
     async def _create_provider_handler(user_auth: UserAuth) -> ProviderHandler | None:
         """Create a ProviderHandler for the user."""
-        provider_tokens = await user_auth.get_provider_tokens()
-        if provider_tokens is None:
-            return None
-
-        access_token = await user_auth.get_access_token()
-        user_id = await user_auth.get_user_id()
-
-        return ProviderHandler(
-            provider_tokens=provider_tokens,
-            external_auth_token=access_token,
-            external_auth_id=user_id,
-        )
+        return await create_provider_handler(user_auth)
 
     @staticmethod
     def _extract_potential_repos(
@@ -423,40 +402,12 @@ class JiraFactory:
 
     @staticmethod
     async def _verify_repos(
-        issue_key: str,
-        potential_repos: list[str],
-        provider_handler: ProviderHandler,
+        potential_repos: list[str], provider_handler: ProviderHandler
     ) -> tuple[list[Repository], list[str]]:
-        """Verify which repos the user has access to.
-
-        Returns the verified repos in mention order and the mentions that could
-        not be resolved.
-        """
-        # Dedupe by canonical full_name: two forms of one repo (case/URL
-        # variants, a rename) must not be cloned twice.
-        verified: dict[str, Repository] = {}
-        unverified: list[str] = []
-
-        for repo_name in potential_repos:
-            try:
-                repository = await provider_handler.verify_repo_provider(repo_name)
-                verified.setdefault(repository.full_name.lower(), repository)
-                logger.debug(
-                    '[Jira] Repository verification succeeded',
-                    extra={'issue_key': issue_key, 'repository': repository.full_name},
-                )
-            except Exception as e:
-                unverified.append(repo_name)
-                logger.debug(
-                    '[Jira] Repository verification failed',
-                    extra={
-                        'issue_key': issue_key,
-                        'repo_name': repo_name,
-                        'error': str(e),
-                    },
-                )
-
-        return list(verified.values()), unverified
+        """Resolve each mentioned repo with a targeted lookup, in mention order."""
+        return await verify_mentioned_repos(
+            provider_handler, potential_repos, log_prefix='[Jira]'
+        )
 
     @staticmethod
     async def _select_repositories(
@@ -491,7 +442,7 @@ class JiraFactory:
             )
 
         verified_repos, unverified_repos = await JiraFactory._verify_repos(
-            payload.issue_key, potential_repos, provider_handler
+            potential_repos, provider_handler
         )
         if not verified_repos:
             raise RepositorySelectionError(
@@ -501,14 +452,15 @@ class JiraFactory:
                 'linked to your OpenHands user can access it.'
             )
 
-        primary, *additional = verified_repos
+        primary = verified_repos[0]
+        selection = select_additional_repositories(
+            primary.full_name, verified_repos, unverified_repos, comment_mentions
+        )
         view.selected_repo = primary.full_name
         view.git_provider = primary.git_provider
-        view.additional_repos = additional[:MAX_ADDITIONAL_REPOSITORIES]
-        view.skipped_repos = [
-            r.full_name for r in additional[MAX_ADDITIONAL_REPOSITORIES:]
-        ]
-        view.inaccessible_repos = [m for m in unverified_repos if m in comment_mentions]
+        view.additional_repos = selection.additional
+        view.skipped_repos = selection.skipped
+        view.inaccessible_repos = selection.inaccessible
         logger.info(
             '[Jira] Verified repository access',
             extra={
