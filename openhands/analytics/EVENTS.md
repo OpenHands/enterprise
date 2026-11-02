@@ -46,7 +46,7 @@ Every event also carries: `app_mode` (saas/oss), `deployment_kind` (remote for C
 
 **Note:** Backend events fire in SaaS only. The `AnalyticsService` is never initialized in OSS — `get_analytics_service()` returns `None` and all call sites are guarded.
 
-**Self-hosted Enterprise (OHE):** the service is initialized with an empty key (capture disabled) unless `ENABLE_POSTHOG_ANALYTICS=true` is set alongside `POSTHOG_CLIENT_KEY`. `LICENSE_KEY_CONFIGURED=true` sets the `license_key_configured` property; it defaults to false because no license concept exists in the app yet (OHE-3657). Event #19 uses the `ohe_`-prefixed snake_case name the product owner asked for.
+**Self-hosted Enterprise (OHE):** the service is initialized with an empty key (capture disabled) unless `ENABLE_POSTHOG_ANALYTICS=true` is set alongside `POSTHOG_CLIENT_KEY`. `LICENSE_KEY_CONFIGURED=true` sets the `license_key_configured` property; it defaults to false because no license concept exists in the app yet (OHE-3657). On self-hosted Enterprise, event #1 is sent as `ohe_user_signed_up`, and event #19 only fires there. Both use the `ohe_`-prefixed snake_case names the product owner asked for.
 
 ---
 

@@ -31,6 +31,7 @@ from openhands.analytics.analytics_constants import (
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
     OHE_INSTANCE_SETUP_COMPLETED,
+    OHE_USER_SIGNED_UP,
     ONBOARDING_COMPLETED,
     PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
@@ -195,13 +196,17 @@ class AnalyticsService:
     ) -> None:
         """Track 'user signed up' event.
 
-        Fired when a new user completes registration. ``is_super_admin`` marks
-        an instance Super Admin and ``is_instance_setup_user`` the first Super
-        Admin of a self-hosted install (the one who runs the install wizard).
+        Fired when a new user completes registration. Self-hosted Enterprise
+        sends it as 'ohe_user_signed_up'. ``is_super_admin`` marks an instance
+        Super Admin and ``is_instance_setup_user`` the first Super Admin of a
+        self-hosted install (the one who runs the install wizard).
         """
+        is_self_hosted = (
+            self._app_mode == AppMode.SAAS and self._deployment_kind == 'local'
+        )
         self.capture(
             ctx=ctx,
-            event=USER_SIGNED_UP,
+            event=OHE_USER_SIGNED_UP if is_self_hosted else USER_SIGNED_UP,
             properties={
                 'email_domain': email_domain,
                 'invitation_source': invitation_source,

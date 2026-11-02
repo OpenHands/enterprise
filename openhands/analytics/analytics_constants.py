@@ -36,3 +36,5 @@ JIRA_INTEGRATION_ENABLED = 'jira integration enabled'
 # OHE first-install onboarding (OHE-3657). The product owner asked for
 # ``ohe_``-prefixed snake_case names for these events.
 OHE_INSTANCE_SETUP_COMPLETED = 'ohe_instance_setup_completed'
+# Self-hosted installs send USER_SIGNED_UP under this name.
+OHE_USER_SIGNED_UP = 'ohe_user_signed_up'
