@@ -382,7 +382,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         """Save conversation info and create/update SAAS metadata with user_id and org_id."""
         if isinstance(self.user_context, SandboxUserContext):
@@ -417,7 +417,7 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
                 raise AuthError()
 
         # Save the base conversation metadata
-        await super().save_app_conversation_info(info)
+        await super().save_app_conversation_info(info, preserve_title=preserve_title)
         await self._save_saas_metadata(info)
         return info
 

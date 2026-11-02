@@ -23,7 +23,7 @@ from typing import AsyncGenerator, cast
 from uuid import UUID
 
 from fastapi import Request
-from sqlalchemy import Enum, String, func, select
+from sqlalchemy import JSON, Enum, String, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -35,6 +35,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTaskPage,
     AppConversationStartTaskSortOrder,
     AppConversationStartTaskStatus,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
@@ -63,6 +64,7 @@ class StoredAppConversationStartTask(Base):
     app_conversation_id: Mapped[UUID | None] = mapped_column(nullable=True)
     sandbox_id: Mapped[str | None] = mapped_column(String, nullable=True)
     agent_server_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     request: Mapped[AppConversationStartRequest] = mapped_column(
         create_json_type_decorator(AppConversationStartRequest)
     )
@@ -246,17 +248,43 @@ class SQLAppConversationStartTaskService(AppConversationStartTaskService):
     async def save_app_conversation_start_task(
         self, task: AppConversationStartTask
     ) -> AppConversationStartTask:
+        existing = await self.session.get(StoredAppConversationStartTask, task.id)
         if self.user_id:
-            query = select(StoredAppConversationStartTask).where(
-                StoredAppConversationStartTask.id == task.id
-            )
-            result = await self.session.execute(query)
-            existing = result.scalar_one_or_none()
             assert existing is None or existing.created_by_user_id == self.user_id
         task.updated_at = utc_now()
-        await self.session.merge(StoredAppConversationStartTask(**task.model_dump()))
+        values = task.model_dump()
+        values['title_generation'] = (
+            task.title_generation.model_dump(mode='json')
+            if task.title_generation
+            else None
+        )
+        if existing is not None:
+            # The title worker owns this field after the initial insert.
+            values.pop('title_generation')
+        await self.session.merge(StoredAppConversationStartTask(**values))
         await self.session.commit()
         return task
+
+    async def update_title_generation(
+        self, task_id: UUID, generation: ConversationTitleGeneration
+    ) -> None:
+        query = update(StoredAppConversationStartTask).where(
+            StoredAppConversationStartTask.id == task_id,
+            StoredAppConversationStartTask.deleted_at.is_(None),
+            StoredAppConversationStartTask.title_generation['status'].as_string()
+            == 'pending',
+        )
+        if self.user_id:
+            query = query.where(
+                StoredAppConversationStartTask.created_by_user_id == self.user_id
+            )
+        await self.session.execute(
+            query.values(
+                title_generation=generation.model_dump(mode='json'),
+                updated_at=utc_now(),
+            )
+        )
+        await self.session.commit()
 
     async def delete_app_conversation_start_tasks(self, conversation_id: UUID) -> bool:
         """Soft-delete all start tasks associated with a conversation.

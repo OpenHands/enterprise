@@ -15,13 +15,13 @@ from integrations.jira_dc.jira_dc_types import (
     StartingConvoException,
 )
 from integrations.jira_dc.jira_dc_v1_callback_processor import JiraDcV1CallbackProcessor
+from integrations.mentioned_repositories import MentionedRepositories, join_names
 from integrations.models import JobContext
 from integrations.resolver_context import ResolverUserContext
 from integrations.resolver_org_router import resolve_org_for_repo
 from integrations.utils import CONVERSATION_URL
 from openhands.agent_server.models import SendMessageRequest
 from openhands.app_server.app_conversation.additional_repositories import (
-    MAX_ADDITIONAL_REPOSITORIES,
     AdditionalRepositoryRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -228,33 +228,17 @@ class JiraDcNewConversationView(JiraDcViewInterface):
         if self.selected_repo:
             prefix = f"I'm on it in {self.selected_repo}"
             if self.additional_repos:
-                prefix += f', together with {_join([r.full_name for r in self.additional_repos])}'
+                prefix += f', together with {join_names([r.full_name for r in self.additional_repos])}'
             prefix += '!'
         else:
             prefix = "I'm on it!"
         message = f'{prefix} {self.job_context.display_name} can [track my progress here|{conversation_link}].'
         if self.selected_repo is None:
             message += '\n\nNote: This conversation started without a repository.'
-        if self.inaccessible_repos:
-            message += (
-                f'\n\nCould not access: {", ".join(self.inaccessible_repos)}. '
-                'Please ensure each repository exists and that the Git account '
-                'linked to your OpenHands user can access it.'
-            )
-        if self.skipped_repos:
-            message += (
-                f'\n\nNot included (a conversation can have at most '
-                f'{MAX_ADDITIONAL_REPOSITORIES + 1} repositories): '
-                f'{", ".join(self.skipped_repos)}.'
-            )
+        message += MentionedRepositories(
+            inaccessible=self.inaccessible_repos, skipped=self.skipped_repos
+        ).notes()
         return message
-
-
-def _join(names: list[str]) -> str:
-    """'a', 'a and b', 'a, b and c'."""
-    if len(names) < 2:
-        return ''.join(names)
-    return f'{", ".join(names[:-1])} and {names[-1]}'
 
 
 @dataclass

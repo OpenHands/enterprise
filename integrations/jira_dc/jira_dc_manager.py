@@ -20,6 +20,11 @@ from integrations.jira_dc.jira_dc_view import (
     JiraDcFactory,
 )
 from integrations.manager import Manager
+from integrations.mentioned_repositories import (
+    create_provider_handler,
+    select_additional_repositories,
+    verify_mentioned_repos,
+)
 from integrations.models import JobContext, Message
 from integrations.utils import (
     HOST,
@@ -33,9 +38,6 @@ from integrations.utils import (
     has_exact_mention,
     infer_repo_from_message,
     markdown_to_jira_markup,
-)
-from openhands.app_server.app_conversation.additional_repositories import (
-    MAX_ADDITIONAL_REPOSITORIES,
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import Comment, Repository
@@ -210,44 +212,15 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         self, user_auth: UserAuth
     ) -> ProviderHandler | None:
         """Build a ProviderHandler for the user, or None if no provider is linked."""
-        provider_tokens = await user_auth.get_provider_tokens()
-        if provider_tokens is None:
-            return None
-        access_token = await user_auth.get_access_token()
-        user_id = await user_auth.get_user_id()
-        return ProviderHandler(
-            provider_tokens=provider_tokens,
-            external_auth_token=access_token,
-            external_auth_id=user_id,
-        )
+        return await create_provider_handler(user_auth)
 
     async def _verify_mentioned_repos(
         self, provider_handler: ProviderHandler, mentioned_repos: list[str]
     ) -> tuple[list[Repository], list[str]]:
-        """Resolve each mentioned repo with a targeted lookup.
-
-        Returns the verified repos in mention order and the mentions that could
-        not be resolved. Avoids enumerating the user's full repo list, which is
-        capped and misses repos on large Bitbucket DC instances (40k+ repos).
-        """
-        # Dedupe by canonical full_name: two forms of one repo (case/URL variants,
-        # a rename) resolve to the same repo and must count once -- otherwise
-        # is_job_requested would clone the same repo twice.
-        verified: dict[str, Repository] = {}
-        unverified: list[str] = []
-        for repo_name in mentioned_repos:
-            try:
-                repo = await provider_handler.verify_repo_provider(
-                    repo_name, is_optional=True
-                )
-            except Exception as e:
-                # INFO (not DEBUG) so the reason is visible in support bundles;
-                # e carries the provider error incl. the attempted URL + status.
-                logger.info(f'[Jira DC] Repo verification failed for {repo_name}: {e}')
-                unverified.append(repo_name)
-                continue
-            verified.setdefault(repo.full_name.lower(), repo)
-        return list(verified.values()), unverified
+        """Resolve each mentioned repo with a targeted lookup, in mention order."""
+        return await verify_mentioned_repos(
+            provider_handler, mentioned_repos, log_prefix='[Jira DC]'
+        )
 
     async def validate_request(
         self, request: Request
@@ -595,21 +568,18 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 return False
 
             # The first verified mention is the primary repository; the rest
-            # are cloned beside it. Only mentions from the comment that could
-            # not be accessed are reported: unverified text from the
-            # description is usually not a repository at all.
-            primary, *additional = verified_repos
-            jira_dc_view.selected_repo = primary.full_name
-            jira_dc_view.additional_repos = additional[:MAX_ADDITIONAL_REPOSITORIES]
-            jira_dc_view.skipped_repos = [
-                r.full_name for r in additional[MAX_ADDITIONAL_REPOSITORIES:]
-            ]
-            jira_dc_view.inaccessible_repos = [
-                m for m in unverified_repos if m in comment_mentions
-            ]
+            # are cloned beside it.
+            primary = verified_repos[0].full_name
+            selection = select_additional_repositories(
+                primary, verified_repos, unverified_repos, comment_mentions
+            )
+            jira_dc_view.selected_repo = primary
+            jira_dc_view.additional_repos = selection.additional
+            jira_dc_view.skipped_repos = selection.skipped
+            jira_dc_view.inaccessible_repos = selection.inaccessible
             logger.info(
                 '[Jira DC] Inferred repository: %s additional=%s',
-                primary.full_name,
+                primary,
                 [r.full_name for r in jira_dc_view.additional_repos],
             )
             return True

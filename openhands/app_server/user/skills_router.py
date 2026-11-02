@@ -199,6 +199,7 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
             # Determine type from frontmatter
             skill_type = fm.get('type', 'knowledge')
             triggers = fm.get('triggers') or None
+            description = fm.get('description')
 
             skills.append(
                 SkillInfo(
@@ -206,6 +207,7 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
                     type=skill_type,
                     source=source,
                     triggers=triggers,
+                    description=str(description) if description else None,
                 )
             )
         except Exception as e:
@@ -332,7 +334,7 @@ def _plain_repo_skills(repo_dir: Path, marketplace_name: str) -> list[SkillInfo]
             try:
                 # Conversations skip a skill the SDK can't load, such as one with
                 # invalid frontmatter or an invalid .mcp.json, so the preview does too.
-                name = Skill.load(skill_md, strict=False).name
+                loaded = Skill.load(skill_md, strict=False)
             except Exception as e:
                 logger.warning(f'Skipping skill {skill_md}: {e}')
                 continue
@@ -341,14 +343,15 @@ def _plain_repo_skills(repo_dir: Path, marketplace_name: str) -> list[SkillInfo]
             fm = fm if isinstance(fm, dict) else {}
             triggers = fm.get('triggers')
             skills.setdefault(
-                name,
+                loaded.name,
                 SkillInfo(
-                    name=name,
+                    name=loaded.name,
                     type=str(fm.get('type', 'knowledge')),
                     source=f'marketplace:{marketplace_name}',
                     triggers=[str(t) for t in triggers]
                     if isinstance(triggers, list)
                     else None,
+                    description=loaded.description,
                 ),
             )
     return list(skills.values())
@@ -698,6 +701,7 @@ async def get_marketplace_skills(
                             type='knowledge',
                             source=f'marketplace:{marketplace.name}',
                             triggers=None,
+                            description=skill_entry.description,
                         )
                     )
                     skill_names.append(skill_entry.name)

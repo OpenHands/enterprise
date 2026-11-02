@@ -7,6 +7,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskPage,
     AppConversationStartTaskSortOrder,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -58,6 +59,12 @@ class AppConversationStartTaskService(ABC):
 
         Return the stored task
         """
+
+    @abstractmethod
+    async def update_title_generation(
+        self, task_id: UUID, generation: ConversationTitleGeneration
+    ) -> None:
+        """Settle the title without rewriting sandbox startup state."""
 
     @abstractmethod
     async def delete_app_conversation_start_tasks(self, conversation_id: UUID) -> bool:

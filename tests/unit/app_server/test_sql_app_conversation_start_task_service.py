@@ -891,3 +891,21 @@ class TestSQLAppConversationStartTaskService:
             future_cutoff, batch_size=100
         )
         assert deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_updates_do_not_undo_completed_title(service, sample_task):
+    from openhands.app_server.app_conversation.start_title import pending_start_title
+
+    sample_task.title_generation = pending_start_title('Fix checkout')
+    await service.save_app_conversation_start_task(sample_task)
+    generated = sample_task.title_generation.model_copy(
+        update={'status': 'generated', 'title': 'Checkout repair'}
+    )
+    await service.update_title_generation(sample_task.id, generated)
+    sample_task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
+    await service.save_app_conversation_start_task(sample_task)
+    saved = await service.get_app_conversation_start_task(sample_task.id)
+    assert saved.status == AppConversationStartTaskStatus.STARTING_CONVERSATION
+    assert saved.title_generation.title == 'Checkout repair'
+    assert saved.title_generation.status == 'generated'

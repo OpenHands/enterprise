@@ -473,7 +473,7 @@ async def on_conversation_update(
             )
     else:
         await app_conversation_info_service.save_app_conversation_info(
-            app_conversation_info
+            app_conversation_info, preserve_title=True
         )
 
     # Register SetTitleCallbackProcessor for new conversations created via webhook.
