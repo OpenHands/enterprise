@@ -79,7 +79,11 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
-from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthStateResponse
+from openhands.sdk.mcp.config import (
+    MCPOAuthAuthCredential,
+    MCPOAuthState,
+    MCPOAuthStateResponse,
+)
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
@@ -726,7 +730,9 @@ async def on_mcp_oauth_state_update(
     server posts the refreshed state here (``MCPSettingsOAuthTokenStore``);
     it replaces ``auth.state`` on the owner's ``oauth2`` server with the same
     URL. Settings resolve like the other webhook lookups, through the owner's
-    current organization.
+    current organization. When no personal server matches, the MCP listings of
+    the sandbox's organization at that URL take the state instead (OHE-3091):
+    an org-managed listing itself, a user-managed one on the owner's row.
     """
     settings_store = await shared.SettingsStoreImpl.get_instance(
         sandbox_record.created_by_user_id
@@ -746,10 +752,19 @@ async def on_mcp_oauth_state_update(
         and isinstance(server.auth, MCPOAuthAuthCredential)
     ]
     if not matches:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            detail='No OAuth MCP server matches server_url',
+        org_matches = await _write_back_org_mcp_oauth_state(
+            sandbox_record, server_url, update.oauth_state
         )
+        if not org_matches:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail='No OAuth MCP server matches server_url',
+            )
+        _logger.info(
+            'mcp_oauth:state_written_back',
+            extra={'sandbox_id': sandbox_record.id, 'org_servers': org_matches},
+        )
+        return Success()
     # A full map without ``null`` entries replaces the stored catalog wholesale
     # (``Settings.update``), so every server is resent with only the matching
     # ones' ``auth.state`` swapped for the refreshed state.
@@ -764,6 +779,34 @@ async def on_mcp_oauth_state_update(
         extra={'sandbox_id': sandbox_record.id, 'servers': matches},
     )
     return Success()
+
+
+async def _write_back_org_mcp_oauth_state(
+    sandbox_record: SandboxRecord,
+    server_url: str,
+    oauth_state: MCPOAuthStateResponse,
+) -> list[str]:
+    """Store refreshed OAuth state on the organization MCP listings at the URL.
+
+    The org is the one the sandbox launched under, falling back to its owner's
+    current one for sandboxes that predate that binding. Returns the names of
+    the listings written. Lazy import: the org store binds the hosted database.
+    """
+    from storage.org_mcp_servers_store import OrgMcpServersStore
+    from storage.user_store import UserStore
+
+    if not sandbox_record.created_by_user_id:
+        return []
+    user = await UserStore.get_user_by_id(sandbox_record.created_by_user_id)
+    if user is None:
+        return []
+    state = MCPOAuthState.model_validate(
+        oauth_state.model_dump(mode='json', exclude_none=True)
+    )
+    org_id = sandbox_record.credential_org_id or user.current_org_id
+    return await OrgMcpServersStore(org_id).write_back_oauth_state(
+        user.id, server_url, state
+    )
 
 
 async def _run_callbacks_in_bg_and_close(
