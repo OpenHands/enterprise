@@ -19,6 +19,7 @@ import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema"
 import { useConfig } from "#/hooks/query/use-config";
 import { useOrgSecrets, useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSkills } from "#/hooks/query/use-skills";
@@ -189,8 +190,11 @@ export function AgentProfilesView() {
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
   // Organization MCP server listings (OHE-3091): a personal profile may pick
   // them next to the member's own servers, an org profile the organization-
-  // managed ones. The query stays idle while the flag is off.
-  const orgMcpEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  // managed ones. The query stays idle while the flag is off, and a personal
+  // workspace has no organization listings (OHE-3864).
+  const { isTeamOrg } = useOrgTypeAndAccess();
+  const orgMcpEnabled =
+    !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
   const orgMcpServersQuery = useOrgMcpServers();
   const orgMcpListings = useMemo(
     () => orgMcpServersQuery.data.map(toOrgMcpServerView),

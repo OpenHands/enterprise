@@ -39,6 +39,7 @@ import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import {
   useCreateOrgMcpServer,
   useDeleteOrgMcpServer,
@@ -137,8 +138,11 @@ function MCPSettingsScreen() {
 
   // Organization MCP server listings (OHE-3091), behind a flag until bug
   // bash is complete. Admins manage them; every member launches with them
-  // and connects the user-managed ones with a personal secret.
-  const orgMcpEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  // and connects the user-managed ones with a personal secret. A personal
+  // workspace has no organization to share them with (OHE-3864).
+  const { isTeamOrg } = useOrgTypeAndAccess();
+  const orgMcpEnabled =
+    !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
   const { data: me } = useMe();
   const { hasPermission } = usePermission(me?.role ?? "member");
   const canManageOrgMcp = orgMcpEnabled && hasPermission("manage_org_mcp");
