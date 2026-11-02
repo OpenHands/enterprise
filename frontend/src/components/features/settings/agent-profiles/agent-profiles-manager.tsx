@@ -23,6 +23,9 @@ interface AgentProfilesManagerProps {
   isAddOrgDisabled?: boolean;
   /** True when the viewer may add, edit and delete the organization's profiles. */
   canManageOrg?: boolean;
+  /** ``feature_flags.enable_org_mcp_servers``: org profiles may name
+   * organization-managed MCP servers, so the admin copy says so (OHE-3091). */
+  orgMcpServersEnabled?: boolean;
 }
 
 /**
@@ -38,6 +41,7 @@ export function AgentProfilesManager({
   isAddDisabled = false,
   isAddOrgDisabled = isAddDisabled,
   canManageOrg = false,
+  orgMcpServersEnabled = false,
 }: AgentProfilesManagerProps) {
   const { t } = useTranslation();
   const { data, isLoading, error } = useAgentProfiles();
@@ -55,6 +59,14 @@ export function AgentProfilesManager({
     (profile) => profile.scope !== "personal",
   );
   const activeId = data?.active_agent_profile_id ?? null;
+
+  let orgSectionDescriptionKey =
+    I18nKey.SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION;
+  if (canManageOrg) {
+    orgSectionDescriptionKey = orgMcpServersEnabled
+      ? I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION_WITH_MCP
+      : I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION;
+  }
 
   const handleActivate = async (profile: AgentProfileSummary) => {
     if (!profile.id) return;
@@ -117,11 +129,7 @@ export function AgentProfilesManager({
                   {t(I18nKey.SETTINGS$ORG_AGENT_PROFILES_TITLE)}
                 </h2>
                 <p className="text-sm leading-5 text-muted">
-                  {t(
-                    canManageOrg
-                      ? I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION
-                      : I18nKey.SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION,
-                  )}
+                  {t(orgSectionDescriptionKey)}
                 </p>
               </header>
               {canManageOrg ? (
