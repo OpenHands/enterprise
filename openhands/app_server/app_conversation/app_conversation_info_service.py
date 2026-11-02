@@ -100,10 +100,11 @@ class AppConversationInfoService(ABC):
 
     @abstractmethod
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         """Store the sandboxed conversation info object given.
 
+        ``preserve_title`` leaves an existing title and generation state untouched.
         Return the stored info
         """
 

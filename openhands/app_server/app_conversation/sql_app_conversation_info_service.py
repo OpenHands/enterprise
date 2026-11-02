@@ -472,7 +472,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         # Preserve the original creation time on update.
         #
@@ -504,6 +504,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             created_at, deleted_at = existing
 
         stored = self._stored_metadata(info, created_at, deleted_at)
+        if preserve_title and existing is not None:
+            # Webhooks must not overwrite a title settled after their initial read.
+            del stored.title
+            del stored.title_generation
         await self.db_session.merge(stored)
         await self.db_session.commit()
         return info

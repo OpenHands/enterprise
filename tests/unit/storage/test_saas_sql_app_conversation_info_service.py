@@ -185,6 +185,34 @@ def saas_service_user2(mock_db_session, user2_context):
 class TestSaasSQLAppConversationInfoService:
     """Test suite for SaasSQLAppConversationInfoService."""
 
+    @pytest.mark.asyncio
+    async def test_webhook_save_preserves_title_generation(
+        self, async_session_with_users, sample_conversation_info
+    ):
+        from openhands.app_server.app_conversation.start_title import (
+            pending_start_title,
+        )
+
+        service = SaasSQLAppConversationInfoService(
+            db_session=async_session_with_users,
+            user_context=SpecifyUserContext(user_id=str(USER1_ID)),
+        )
+        pending = pending_start_title('Fix checkout')
+        sample_conversation_info.title = pending.title
+        sample_conversation_info.title_generation = pending
+        await service.save_app_conversation_info(sample_conversation_info)
+        webhook_info = sample_conversation_info.model_copy(
+            update={'title_generation': None, 'llm_model': 'updated-model'}
+        )
+
+        await service.save_app_conversation_info(webhook_info, preserve_title=True)
+
+        saved = await service.get_app_conversation_info(sample_conversation_info.id)
+        assert saved.title_generation == pending
+        assert saved.title == pending.title
+        assert saved.llm_model == 'updated-model'
+        assert saved.created_by_user_id == str(USER1_ID)
+
     def test_service_initialization(
         self,
         saas_service_user1: SaasSQLAppConversationInfoService,
