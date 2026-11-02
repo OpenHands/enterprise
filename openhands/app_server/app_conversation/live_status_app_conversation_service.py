@@ -119,6 +119,9 @@ from openhands.app_server.integrations.provider import (
     ProviderType,
 )
 from openhands.app_server.integrations.service_types import SuggestedTask
+from openhands.app_server.mcp.mcp_secret_references import (
+    mcp_server_secret_references,
+)
 from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
 )
@@ -2584,14 +2587,60 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             headers=headers,
         )
 
+    @staticmethod
+    def _drop_unconnected_org_mcp_servers(
+        user_mcp: dict[str, MCPServer],
+        user: UserInfo,
+        secrets: Mapping[str, Any] | None,
+    ) -> dict[str, MCPServer]:
+        """Leave out the org listings this member has not connected to (OHE-3091).
+
+        A ``user``-managed organization listing references the member's
+        personal secret with ``${NAME}``. The sandbox keeps a reference no
+        secret satisfies literally, so the server would fail to authenticate;
+        while a required reference is missing from the conversation's final
+        ``secrets`` the listing is skipped with a warning. ``None`` secrets
+        means unknown and skips the check.
+        """
+        unconnected = getattr(user, 'org_user_managed_mcp_server_names', None)
+        if not unconnected or secrets is None:
+            return user_mcp
+        available = set(secrets)
+        skipped: set[str] = set()
+        for name in unconnected:
+            server = user_mcp.get(name)
+            if server is None:
+                continue
+            missing = mcp_server_secret_references(server).required - available
+            if missing:
+                skipped.add(name)
+                _logger.warning(
+                    'org_mcp_server:skipped_unconnected',
+                    extra={
+                        'user_id': getattr(user, 'id', None),
+                        'server_name': name,
+                        'secret_names': sorted(missing),
+                    },
+                )
+        if not skipped:
+            return user_mcp
+        return {
+            name: server for name, server in user_mcp.items() if name not in skipped
+        }
+
     def _merge_custom_mcp_config(
-        self, mcp_servers: dict[str, MCPServer], user: UserInfo
+        self,
+        mcp_servers: dict[str, MCPServer],
+        user: UserInfo,
+        secrets: Mapping[str, Any] | None = None,
     ) -> None:
         """Merge custom MCP configuration from user settings.
 
         Args:
             mcp_servers: Dictionary to add servers to
             user: User information containing custom MCP config
+            secrets: The conversation's final secrets, used to leave out the
+                organization listings this member has not connected to
 
         Handles both OpenHands and ACP agent settings: a resolved ACP profile's
         ref-filtered ``mcp_config`` rides on ``ACPAgentSettings.mcp_config`` and
@@ -2603,6 +2652,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return
 
         try:
+            user_mcp = self._drop_unconnected_org_mcp_servers(user_mcp, user, secrets)
             count = len(user_mcp)
             _logger.info(
                 f'Loading custom MCP config from user settings: {count} servers'
@@ -2620,7 +2670,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
 
     async def _configure_llm_and_mcp(
-        self, user: UserInfo, llm_model: str | None, conversation_id: UUID
+        self,
+        user: UserInfo,
+        llm_model: str | None,
+        conversation_id: UUID,
+        secrets: Mapping[str, Any] | None = None,
     ) -> tuple[LLM, dict[str, MCPServer]]:
         """Configure LLM and MCP (Model Context Protocol) settings.
 
@@ -2628,6 +2682,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user: User information containing LLM preferences
             llm_model: Optional specific model to use, falls back to user default
             conversation_id: Conversation ID forwarded to the OpenHands MCP server
+            secrets: The conversation's final secrets (see
+                ``_merge_custom_mcp_config``)
 
         Returns:
             Tuple of (configured LLM instance, MCP config dict in the flat
@@ -2659,7 +2715,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         await self._add_system_mcp_servers(mcp_servers, conversation_id)
 
         # Merge custom servers from user settings
-        self._merge_custom_mcp_config(mcp_servers, user)
+        self._merge_custom_mcp_config(mcp_servers, user, secrets)
 
         return llm, mcp_servers
 
@@ -3134,7 +3190,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- LLM + MCP -----------------------------------------------------
         llm, mcp_config = await self._configure_llm_and_mcp(
-            user, llm_model, conversation_id
+            user, llm_model, conversation_id, secrets=secrets
         )
 
         # --- system_message_suffix (planning-agent prefix) ------------------
@@ -3542,7 +3598,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # server (Tavily proxy) is runtime-internal and unreachable by an external
         # ACP CLI, so it is intentionally not injected here.
         acp_mcp_servers: dict[str, MCPServer] = {}
-        self._merge_custom_mcp_config(acp_mcp_servers, user)
+        self._merge_custom_mcp_config(acp_mcp_servers, user, secrets)
         if acp_mcp_servers:
             settings_update['mcp_config'] = acp_mcp_servers
         context_updates: dict[str, Any] = {}
