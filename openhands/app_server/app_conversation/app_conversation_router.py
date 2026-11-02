@@ -1849,7 +1849,7 @@ async def get_conversation_skills(
     This endpoint returns all skills that are loaded for the v1 conversation.
     Skills are loaded from multiple sources:
     - Sandbox skills (exposed URLs)
-    - Global skills (OpenHands/skills/)
+    - Public skills (OpenHands/extensions repository)
     - User skills (~/.openhands/skills/)
     - Organization skills (org/.openhands repository)
     - Repository skills (repo .agents/skills/, .openhands/microagents/, and legacy .openhands/skills/)

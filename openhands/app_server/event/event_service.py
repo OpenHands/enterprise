@@ -32,6 +32,7 @@ class EventService(ABC):
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
         page_id: str | None = None,
         limit: int = 100,
+        exclude_full_state: bool = False,
     ) -> EventPage:
         """Search events matching the given filters."""
 

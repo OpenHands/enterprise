@@ -7,6 +7,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk import ConversationStats
@@ -99,10 +100,11 @@ class AppConversationInfoService(ABC):
 
     @abstractmethod
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         """Store the sandboxed conversation info object given.
 
+        ``preserve_title`` leaves an existing title and generation state untouched.
         Return the stored info
         """
 
@@ -167,6 +169,12 @@ class AppConversationInfoService(ABC):
             conversation_id: The ID of the conversation to update
             title: The new title
         """
+
+    @abstractmethod
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        """Settle a pending title only if it has not been renamed or deleted."""
 
 
 class AppConversationInfoServiceInjector(

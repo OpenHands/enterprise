@@ -35,6 +35,10 @@ _TRANSIENT_SQLSTATES = {
 _TRANSIENT_SQLSTATE_PREFIXES = ('08',)  # connection exception class
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, 'false').lower() in ('true', '1')
+
+
 class TransientReconciliationError(Exception):
     """Retryable org defaults reconciliation failure."""
 
@@ -69,12 +73,12 @@ class SaasAppLifespanService(AppLifespanService):
         if os.getenv('RUN_MIGRATIONS_ON_STARTUP', 'false').lower() in ('true', '1'):
             await self._run_migrations()
 
-        # OHE must not initialize telemetry when a legacy key is configured.
-        api_key = (
-            ''
-            if DEPLOYMENT_MODE == 'self_hosted'
-            else os.environ.get('POSTHOG_CLIENT_KEY', '')
+        # OHE must not initialize telemetry when only a legacy key is
+        # configured; an operator turns it on with ENABLE_POSTHOG_ANALYTICS.
+        analytics_enabled = DEPLOYMENT_MODE != 'self_hosted' or _env_flag(
+            'ENABLE_POSTHOG_ANALYTICS'
         )
+        api_key = os.environ.get('POSTHOG_CLIENT_KEY', '') if analytics_enabled else ''
         host = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 
         init_analytics_service(
@@ -83,6 +87,7 @@ class SaasAppLifespanService(AppLifespanService):
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
             deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
+            license_key_configured=_env_flag('LICENSE_KEY_CONFIGURED'),
         )
         await self._reconcile_org_condenser_defaults()
         await self._prepare_sandbox_specs()

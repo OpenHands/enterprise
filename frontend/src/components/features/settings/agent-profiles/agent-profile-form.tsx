@@ -56,7 +56,11 @@ interface AgentProfileFormProps {
   toolsLoading?: boolean;
   /** True when the tool catalog could not be loaded. */
   toolsLoadFailed?: boolean;
-  /** The member's configured MCP servers (user-scoped). */
+  /**
+   * The MCP servers the profile may pick: the member's own plus the
+   * organization's listings for a personal profile, the organization-managed
+   * listings for an org profile (OHE-3091).
+   */
   mcpServers: ProfileScopeItem[];
   /** The member's saved secrets (user-scoped). */
   secrets: ProfileScopeItem[];
@@ -67,11 +71,14 @@ interface AgentProfileFormProps {
   /** Credentials for the selected ACP preset; saved as global secrets. */
   credentialForm: AcpCredentialForm;
   /**
-   * The collection being edited. An org profile is OpenHands-only, has no
-   * MCP servers and always names its secrets, so the agent-kind selector, the
-   * MCP section and the secrets mode switch are left out (OHE-3088).
+   * The collection being edited. An org profile is OpenHands-only and always
+   * names its secrets, so the agent-kind selector and the secrets mode switch
+   * are left out (OHE-3088); its MCP section lists the organization-managed
+   * servers only once ``orgMcpServersEnabled`` is on.
    */
   profileScope?: AgentProfileScope;
+  /** ``feature_flags.enable_org_mcp_servers``: shows the org profile's MCP section. */
+  orgMcpServersEnabled?: boolean;
 }
 
 function toggleName(list: string[], name: string, checked: boolean): string[] {
@@ -104,6 +111,7 @@ export function AgentProfileForm({
   skillsLoadFailed = false,
   credentialForm,
   profileScope = "personal",
+  orgMcpServersEnabled = false,
 }: AgentProfileFormProps) {
   const { t } = useTranslation();
   const isAcp = state.agentKind === "acp";
@@ -132,13 +140,19 @@ export function AgentProfileForm({
   ];
   const knownMcp = new Set(mcpServers.map(({ name }) => name));
   const danglingMcpRefs =
-    state.mcpMode === "custom"
+    isOrg || state.mcpMode === "custom"
       ? state.mcpSelected.filter((name) => !knownMcp.has(name))
       : [];
   const mcpCatalog: ProfileScopeItem[] = [
     ...mcpServers,
     ...danglingMcpRefs.map((name) => ({ name, description: null })),
   ];
+  let mcpHintKey = I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL_HINT;
+  if (isOrg) {
+    mcpHintKey = I18nKey.SETTINGS$AGENT_PROFILE_ORG_MCP_HINT;
+  } else if (state.mcpMode === "custom") {
+    mcpHintKey = I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT;
+  }
   const knownSecrets = new Set(secrets.map(({ name }) => name));
   // An org profile always names its secrets; a personal one only when narrowed.
   const hasSecretList = isOrg || state.secretsMode === "custom";
@@ -549,51 +563,57 @@ export function AgentProfileForm({
         </>
       )}
 
-      {/* MCP servers (both kinds): all configured, or an explicit subset.
-          Not for org profiles: MCP servers are per member, so an org profile
+      {/* MCP servers: a personal profile uses all configured servers (the
+          member's own and the organization's listings) or an explicit subset;
+          an org profile names the organization-managed listings it uses, and
+          only once org MCP listings are on (OHE-3091) -- before that it
           launches with none. */}
-      {!isOrg && (
+      {(!isOrg || orgMcpServersEnabled) && (
         <div className="flex flex-col gap-2.5">
           <Typography.Text className="text-sm">
             {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP)}
           </Typography.Text>
-          <SettingsDropdownInput
-            testId="agent-profile-mcp-mode"
-            name="agent-profile-mcp-mode"
-            items={[
-              {
-                key: "standard",
-                label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL),
-              },
-              {
-                key: "custom",
-                label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE),
-              },
-            ]}
-            selectedKey={state.mcpMode}
-            isDisabled={isDisabled}
-            onSelectionChange={(key) => {
-              if (!key) return;
-              const mcpMode = key as ProfileScopeMode;
-              const patch: Partial<AgentProfileFormState> = { mcpMode };
-              // Seed a first switch to "choose" with every configured server,
-              // so narrowing starts from what the agent had.
-              if (mcpMode === "custom" && state.mcpSelected.length === 0) {
-                patch.mcpSelected = mcpServers.map(({ name }) => name);
-              }
-              onChange(patch);
-            }}
-          />
+          {!isOrg ? (
+            <SettingsDropdownInput
+              testId="agent-profile-mcp-mode"
+              name="agent-profile-mcp-mode"
+              items={[
+                {
+                  key: "standard",
+                  label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL),
+                },
+                {
+                  key: "custom",
+                  label: t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE),
+                },
+              ]}
+              selectedKey={state.mcpMode}
+              isDisabled={isDisabled}
+              onSelectionChange={(key) => {
+                if (!key) return;
+                const mcpMode = key as ProfileScopeMode;
+                const patch: Partial<AgentProfileFormState> = { mcpMode };
+                // Seed a first switch to "choose" with every configured server,
+                // so narrowing starts from what the agent had.
+                if (mcpMode === "custom" && state.mcpSelected.length === 0) {
+                  patch.mcpSelected = mcpServers.map(({ name }) => name);
+                }
+                onChange(patch);
+              }}
+            />
+          ) : null}
           {mcpCatalog.length > 0 ? (
             <ProfileScopeList
               testId="agent-profile-mcp"
               items={mcpCatalog}
               selected={
-                state.mcpMode === "custom"
+                isOrg || state.mcpMode === "custom"
                   ? state.mcpSelected
                   : mcpCatalog.map(({ name }) => name)
               }
-              isDisabled={isDisabled || state.mcpMode === "standard"}
+              isDisabled={
+                isDisabled || (!isOrg && state.mcpMode === "standard")
+              }
               onToggle={(name, checked) =>
                 onChange({
                   mcpSelected: toggleName(state.mcpSelected, name, checked),
@@ -601,8 +621,15 @@ export function AgentProfileForm({
               }
             />
           ) : (
-            <Typography.Text className="text-xs text-tertiary-alt">
-              {t(I18nKey.SETTINGS$AGENT_PROFILE_MCP_NONE)}
+            <Typography.Text
+              testId="agent-profile-mcp-none"
+              className="text-xs text-tertiary-alt"
+            >
+              {t(
+                isOrg
+                  ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_MCP_NONE
+                  : I18nKey.SETTINGS$AGENT_PROFILE_MCP_NONE,
+              )}
             </Typography.Text>
           )}
           {danglingMcpRefs.length > 0 ? (
@@ -615,12 +642,11 @@ export function AgentProfileForm({
               })}
             </Typography.Text>
           ) : null}
-          <Typography.Text className="text-xs text-tertiary-alt">
-            {t(
-              state.mcpMode === "custom"
-                ? I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT
-                : I18nKey.SETTINGS$AGENT_PROFILE_MCP_ALL_HINT,
-            )}
+          <Typography.Text
+            testId="agent-profile-mcp-hint"
+            className="text-xs text-tertiary-alt"
+          >
+            {t(mcpHintKey)}
           </Typography.Text>
         </div>
       )}

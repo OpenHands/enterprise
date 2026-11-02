@@ -56,6 +56,35 @@ describe("MCPServerForm validation", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a name the organization already provides an MCP server under", () => {
+    const onSubmit = vi.fn();
+
+    render(
+      <MCPServerForm
+        mode="add"
+        server={{ id: "tmp", type: "stdio" }}
+        existingServers={[]}
+        reservedNames={["bifrost-internal"]}
+        onSubmit={onSubmit}
+        onCancel={noop}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("name-input"), {
+      target: { value: "bifrost-internal" },
+    });
+    fireEvent.change(screen.getByTestId("command-input"), {
+      target: { value: "npx" },
+    });
+    fireEvent.click(screen.getByTestId("submit-button"));
+
+    // A personal server of that name would hide the organization's.
+    expect(
+      screen.getByText("SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG"),
+    ).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("rejects duplicate URLs across sse/shttp types", () => {
     const onSubmit = vi.fn();
 
