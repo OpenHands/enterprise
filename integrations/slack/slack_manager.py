@@ -9,6 +9,11 @@ from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import select
 
 from integrations.manager import Manager
+from integrations.mentioned_repositories import (
+    create_provider_handler,
+    select_additional_repositories,
+    verify_mentioned_repos,
+)
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
 from integrations.slack.slack_types import (
@@ -696,9 +701,12 @@ class SlackManager(Manager[SlackViewInterface]):
 
     def _generate_login_link_with_state(self, message: Message) -> str:
         """Generate OAuth login link with message state encoded."""
+        from openhands.app_server.services.jwt_service import JwtAudience
         from storage.encrypt_utils import get_jwt_service
 
-        state = get_jwt_service().create_jws_token(message.message)
+        state = get_jwt_service().create_jws_token(
+            message.message, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
         return authorize_url_generator.generate(state)
 
     async def handle_slack_error(self, payload: dict, error: SlackError) -> None:
@@ -784,57 +792,32 @@ class SlackManager(Manager[SlackViewInterface]):
                 thread_ts=slack_view.message_ts,
             )
 
-    async def _create_provider_handler(
-        self, user_auth: UserAuth
-    ) -> ProviderHandler | None:
-        provider_tokens = await user_auth.get_provider_tokens()
-        if not provider_tokens:
-            return None
-        return ProviderHandler(
-            provider_tokens=provider_tokens,
-            external_auth_token=await user_auth.get_access_token(),
-            external_auth_id=await user_auth.get_user_id(),
-        )
-
     async def _verify_repos(
         self, user_auth: UserAuth, repo_names: list[str]
     ) -> tuple[list[Repository], list[str]]:
-        """Resolve each repository name with a targeted lookup.
-
-        Returns the verified repos in the given order and the names that could
-        not be resolved.
-        """
-        provider_handler = await self._create_provider_handler(user_auth)
+        """Resolve each repository name; unresolved names are returned too."""
+        provider_handler = await create_provider_handler(user_auth)
         if provider_handler is None:
             return [], list(repo_names)
-
-        # Dedupe by canonical full_name: two forms of one repo (case/URL
-        # variants, a rename) must not be cloned twice.
-        verified: dict[str, Repository] = {}
-        unverified: list[str] = []
-        for repo_name in repo_names:
-            try:
-                repo = await provider_handler.verify_repo_provider(
-                    repo_name, is_optional=True
-                )
-            except Exception as e:
-                logger.info(f'[Slack] Repo verification failed for {repo_name}: {e}')
-                unverified.append(repo_name)
-                continue
-            verified.setdefault(repo.full_name.lower(), repo)
-        return list(verified.values()), unverified
+        return await verify_mentioned_repos(
+            provider_handler, repo_names, log_prefix='[Slack]'
+        )
 
     @staticmethod
-    def _set_additional_repos(
+    def _set_repos(
         slack_view: SlackNewConversationView,
-        additional: list[Repository],
+        primary: str,
+        verified: list[Repository],
         unverified: list[str],
     ) -> None:
-        slack_view.additional_repos = additional[:MAX_ADDITIONAL_REPOSITORIES]
-        slack_view.skipped_repos = [
-            r.full_name for r in additional[MAX_ADDITIONAL_REPOSITORIES:]
-        ]
-        slack_view.inaccessible_repos = unverified
+        # Everything in a Slack message was typed by the user, so every
+        # unverified name is worth reporting.
+        selection = select_additional_repositories(
+            primary, verified, unverified, reportable=unverified
+        )
+        slack_view.additional_repos = selection.additional
+        slack_view.skipped_repos = selection.skipped
+        slack_view.inaccessible_repos = selection.inaccessible
 
     async def _try_verify_inferred_repos(
         self, slack_view: SlackNewConversationView
@@ -868,21 +851,25 @@ class SlackManager(Manager[SlackViewInterface]):
             slack_view.inaccessible_repos = unverified_repos
             return False
 
-        primary, *additional = verified_repos
-        slack_view.selected_repo = primary.full_name
-        self._set_additional_repos(slack_view, additional, unverified_repos)
+        slack_view.selected_repo = verified_repos[0].full_name
+        self._set_repos(
+            slack_view, slack_view.selected_repo, verified_repos, unverified_repos
+        )
         return True
 
     async def _verify_form_additional_repos(
         self, slack_view: SlackNewConversationFromRepoFormView
     ) -> None:
         """Resolve the repositories picked after the first one in the form."""
-        primary = (slack_view.selected_repo or '').lower()
         verified_repos, unverified_repos = await self._verify_repos(
             slack_view.saas_user_auth, slack_view.requested_additional_repos
         )
-        additional = [r for r in verified_repos if r.full_name.lower() != primary]
-        self._set_additional_repos(slack_view, additional, unverified_repos)
+        self._set_repos(
+            slack_view,
+            slack_view.selected_repo or '',
+            verified_repos,
+            unverified_repos,
+        )
 
     async def _show_repo_selection_form(
         self, slack_view: SlackNewConversationView
@@ -1008,16 +995,16 @@ def _mentions_in_text_order(user_msg: str) -> list[str]:
 
     infer_repo_from_message returns URL matches before bare owner/repo
     mentions; the primary must be the first repository the user named, not an
-    upstream link further down.
+    upstream link further down. A URL's inferred name is often not in its text
+    (Azure DevOps ``_git`` and Bitbucket DC ``/repos/`` URLs), so each
+    whitespace-separated word is inferred on its own to find its position.
     """
     text = SLACK_LINK_PATTERN.sub(' ', user_msg)
-    lowered = text.lower()
-
-    def position(mention: str) -> int:
-        index = lowered.find(mention.lower())
-        if index < 0:
-            # Bitbucket DC browse URLs (/projects/KEY/repos/slug) infer KEY/slug.
-            index = lowered.find(f'/repos/{mention.rsplit("/", 1)[-1].lower()}')
-        return index if index >= 0 else len(lowered)
-
-    return sorted(infer_repo_from_message(text), key=position)
+    mentions = infer_repo_from_message(text)
+    in_order = [
+        name
+        for word in text.split()
+        for name in infer_repo_from_message(word)
+        if name in mentions
+    ]
+    return list(dict.fromkeys([*in_order, *mentions]))

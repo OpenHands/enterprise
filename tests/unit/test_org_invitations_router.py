@@ -1,5 +1,6 @@
 """Tests for organization invitations API router."""
 
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -60,6 +61,100 @@ class TestAcceptInvitationGetEndpoint:
         assert response.status_code == 302
         location = response.headers.get('location', '')
         assert '/?invitation_token=inv-test-token-123' in location
+
+    @staticmethod
+    def _invitation(status='pending', expired=False):
+        return MagicMock(
+            status=status,
+            email='invitee@example.com',
+            expires_at=datetime.utcnow()
+            + (timedelta(days=-1) if expired else timedelta(days=1)),
+        )
+
+    @staticmethod
+    def _patch_lookup(**kwargs):
+        return patch(
+            'server.routes.org_invitations.OrgInvitationStore.get_invitation_by_token',
+            new_callable=AsyncMock,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _patch_signup_url(**kwargs):
+        return patch(
+            'server.routes.org_invitations.signup_link_url_for_invitation',
+            new_callable=AsyncMock,
+            **kwargs,
+        )
+
+    def test_get_accept_sends_new_user_to_idp_set_password_form(self, client):
+        """A pending invitation for an email with no account yet, where
+        sign-in runs through the integrated password IDP, goes to that IDP's
+        set-password form instead of a login page the invitee cannot pass."""
+        signup_url = 'https://host/oauth/idp/invite?token=signed'
+        with (
+            self._patch_lookup(return_value=self._invitation()),
+            self._patch_signup_url(return_value=signup_url) as mock_signup_url,
+        ):
+            response = client.get(
+                '/api/organizations/members/invite/accept?token=inv-test-token-123',
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert response.headers['location'] == signup_url
+        assert mock_signup_url.call_args.args[1:] == (
+            'invitee@example.com',
+            'inv-test-token-123',
+        )
+
+    def test_get_accept_keeps_home_redirect_when_idp_onboarding_does_not_apply(
+        self, client
+    ):
+        """No IDP onboarding URL (integrated IDP off, or the invitee already
+        has an account): the frontend acceptance flow applies as before."""
+        with (
+            self._patch_lookup(return_value=self._invitation()),
+            self._patch_signup_url(return_value=None),
+        ):
+            response = client.get(
+                '/api/organizations/members/invite/accept?token=inv-test-token-123',
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert '/?invitation_token=inv-test-token-123' in response.headers['location']
+
+    @pytest.mark.parametrize(
+        'invitation',
+        [None, _invitation.__func__('revoked'), _invitation.__func__(expired=True)],
+        ids=['unknown', 'revoked', 'expired'],
+    )
+    def test_get_accept_keeps_home_redirect_for_non_pending_invitation(
+        self, client, invitation
+    ):
+        with (
+            self._patch_lookup(return_value=invitation),
+            self._patch_signup_url() as mock_signup_url,
+        ):
+            response = client.get(
+                '/api/organizations/members/invite/accept?token=inv-test-token-123',
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert '/?invitation_token=inv-test-token-123' in response.headers['location']
+        mock_signup_url.assert_not_awaited()
+
+    def test_get_accept_keeps_home_redirect_when_detour_lookup_fails(self, client):
+        with self._patch_lookup(side_effect=RuntimeError('database unavailable')):
+            response = client.get(
+                '/api/organizations/members/invite/accept?token=inv-test-token-123',
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert '/?invitation_token=inv-test-token-123' in response.headers['location']
 
 
 class TestAcceptInvitationPostEndpoint:

@@ -251,10 +251,13 @@ class TestGetEffectiveOrgId:
         user_auth._role = 'member'
         user_auth._permissions = ['read']
         user_auth._org_info_loaded = True
+        user_auth._provider_connections = object()
 
         user_auth.set_effective_org_id_override(org_id)
 
         assert user_auth.effective_org_id_override == org_id
+        # Another org's connection keys must not reach the re-scoped launch.
+        assert user_auth._provider_connections is None
         assert user_auth._effective_org_id is None
         assert user_auth._effective_org_id_resolved is False
         assert user_auth.settings_store is None

@@ -57,6 +57,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfoPage,
     AppConversationSortOrder,
     ConversationPullRequest,
+    ConversationTitleGeneration,
     ConversationTrigger,
 )
 from openhands.app_server.integrations.provider import ProviderType
@@ -148,6 +149,7 @@ class StoredConversationMetadata(Base):
         String, nullable=True
     )  # The git provider (GitHub, GitLab, etc.)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -470,7 +472,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         # Preserve the original creation time on update.
         #
@@ -502,6 +504,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             created_at, deleted_at = existing
 
         stored = self._stored_metadata(info, created_at, deleted_at)
+        if preserve_title and existing is not None:
+            # Webhooks must not overwrite a title settled after their initial read.
+            del stored.title
+            del stored.title_generation
         await self.db_session.merge(stored)
         await self.db_session.commit()
         return info
@@ -536,6 +542,11 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             selected_branch=info.selected_branch,
             git_provider=info.git_provider.value if info.git_provider else None,
             title=info.title,
+            title_generation=(
+                info.title_generation.model_dump(mode='json')
+                if info.title_generation
+                else None
+            ),
             last_updated_at=info.updated_at,
             created_at=created_at,
             trigger=info.trigger.value if info.trigger else None,
@@ -868,6 +879,32 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         stored.title = title
         await self.db_session.commit()
 
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        from sqlalchemy import update
+
+        accessible = (await self._secure_select()).with_only_columns(
+            StoredConversationMetadata.conversation_id
+        )
+        result = await self.db_session.execute(
+            update(StoredConversationMetadata)
+            .where(
+                StoredConversationMetadata.conversation_id == str(conversation_id),
+                StoredConversationMetadata.conversation_id.in_(accessible),
+                StoredConversationMetadata.title_generation['status'].as_string()
+                == 'pending',
+            )
+            .values(
+                title=generation.title,
+                title_generation=generation.model_dump(mode='json'),
+                last_updated_at=utc_now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await self.db_session.commit()
+        return bool(cast(CursorResult, result).rowcount)
+
     async def _secure_select(self):
         query = select(StoredConversationMetadata).where(
             StoredConversationMetadata.conversation_version == 'V1',
@@ -918,6 +955,11 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 ProviderType(stored.git_provider) if stored.git_provider else None
             ),
             title=stored.title,
+            title_generation=(
+                ConversationTitleGeneration.model_validate(stored.title_generation)
+                if stored.title_generation
+                else None
+            ),
             trigger=ConversationTrigger(stored.trigger) if stored.trigger else None,
             pr_number=stored.pr_number or [],
             pull_requests=[

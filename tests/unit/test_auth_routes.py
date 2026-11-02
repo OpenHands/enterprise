@@ -11,6 +11,7 @@ from keycloak.exceptions import KeycloakConnectionError
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
@@ -96,7 +97,9 @@ def test_set_response_cookie(mock_response, mock_request):
         assert kwargs['domain'] == 'example.com'
 
         # Verify the JWT token contains the correct data
-        token_data = jwt_svc.verify_jws_token(kwargs['value'])
+        token_data = jwt_svc.verify_jws_token(
+            kwargs['value'], audience=JwtAudience.KEYCLOAK_SESSION
+        )
         assert token_data['access_token'] == 'test_access_token'
         assert token_data['refresh_token'] == 'test_refresh_token'
         assert token_data['accepted_tos'] is True

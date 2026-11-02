@@ -259,6 +259,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
         enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
         enable_org_agent_profiles=_env_flag_enabled('ENABLE_ORG_AGENT_PROFILES'),
+        enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
         enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
     )
 

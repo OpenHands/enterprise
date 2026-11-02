@@ -547,3 +547,16 @@
   background: radial-gradient(85.36% 123.38% at 50% 0%, rgba(255, 255, 255, 0.14) 0%, rgba(0, 0, 0, 0) 100%), #000000;
   box-shadow: 0px 4px 6px -4px rgba(0, 0, 0, 0.1), 0px 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
+
+/* Same as the agent-canvas sidebar: dragged width, never more than 40% of the
+   window so the main view stays usable. */
+@utility sidebar-expanded-width {
+  width: min(var(--sidebar-width), 40vw);
+  min-width: min(var(--sidebar-width), 40vw);
+}
+
+/* Same as the agent-canvas sidebar: text one step larger than the default small sizes. */
+@utility sidebar-text-scale {
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+}

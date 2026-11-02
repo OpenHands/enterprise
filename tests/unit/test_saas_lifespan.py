@@ -400,6 +400,59 @@ async def test_aenter_disables_analytics_when_self_hosted():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
+async def test_aenter_enables_self_hosted_analytics_when_opted_in():
+    """A self-hosted install sends analytics only once the operator opts in."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+        ) as mock_init,
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.DEPLOYMENT_MODE',
+            'self_hosted',
+        ),
+        patch.dict(
+            'os.environ',
+            {
+                'POSTHOG_CLIENT_KEY': 'configured-posthog-key',
+                'ENABLE_POSTHOG_ANALYTICS': 'true',
+            },
+        ),
+    ):
+        await SaasAppLifespanService().__aenter__()
+
+    assert mock_init.call_args.kwargs['api_key'] == 'configured-posthog-key'
+    assert mock_init.call_args.kwargs['deployment_kind'] == 'local'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
+@pytest.mark.parametrize(
+    ('flag', 'expected'),
+    [(None, False), ('true', True)],
+    ids=['unset', 'configured'],
+)
+async def test_aenter_reports_whether_a_license_key_is_configured(
+    monkeypatch, flag, expected
+):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    if flag is None:
+        monkeypatch.delenv('LICENSE_KEY_CONFIGURED', raising=False)
+    else:
+        monkeypatch.setenv('LICENSE_KEY_CONFIGURED', flag)
+
+    with patch(
+        'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+    ) as mock_init:
+        await SaasAppLifespanService().__aenter__()
+
+    assert mock_init.call_args.kwargs['license_key_configured'] is expected
+
+
+@pytest.mark.asyncio
 async def test_transient_failure_is_retried_once_then_succeeds(monkeypatch):
     from server.app_lifespan.saas_app_lifespan_service import (
         SaasAppLifespanService,

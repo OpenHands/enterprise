@@ -102,7 +102,7 @@ def make_view(slack_user, user_auth):
 
 @pytest.fixture
 def provider_handler():
-    with patch('integrations.slack.slack_manager.ProviderHandler') as cls:
+    with patch('integrations.mentioned_repositories.ProviderHandler') as cls:
         handler = MagicMock()
         cls.return_value = handler
         yield handler
@@ -212,6 +212,35 @@ class TestMentionedRepositories:
 
         assert view.selected_repo == 'ENG/api'
         assert [r.full_name for r in view.additional_repos] == ['ENG/web']
+
+    @pytest.mark.parametrize(
+        'url',
+        [
+            'https://dev.azure.com/acme/web/_git/frontend',
+            'https://acme.visualstudio.com/web/_git/frontend',
+            '<https://dev.azure.com/acme/web/_git/frontend|frontend>',
+        ],
+    )
+    @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
+    async def test_azure_devops_url_keeps_its_position(
+        self, mock_send_message, url, slack_manager, make_view, provider_handler, redis
+    ):
+        provider_handler.verify_repo_provider = AsyncMock(
+            side_effect=_verifier(
+                {
+                    'acme/web/frontend': _repo(
+                        'acme/web/frontend', ProviderType.AZURE_DEVOPS
+                    ),
+                    'acme/backend': _repo('acme/backend'),
+                }
+            )
+        )
+        view = make_view(f'<@U1> work in {url} and acme/backend please')
+
+        assert await slack_manager.is_job_requested(MagicMock(), view) is True
+
+        assert view.selected_repo == 'acme/web/frontend'
+        assert [r.full_name for r in view.additional_repos] == ['acme/backend']
 
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
     async def test_slack_permalink_is_not_a_repository(
