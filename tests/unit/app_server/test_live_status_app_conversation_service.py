@@ -4958,6 +4958,98 @@ class TestLiveStatusAppConversationService:
         )
         self.mock_httpx_client.post.assert_awaited_once()
 
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_early_title_finishes_while_sandbox_is_still_starting(
+        self, info_class, workspace_class
+    ):
+        self._arrange_start_app_conversation(uuid4(), info_class, workspace_class)
+        self.service._start_title_llm = AsyncMock(return_value=None)
+        self.service._persist_start_title = AsyncMock()
+        self.service._sync_start_title = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        self.mock_app_conversation_info_service.complete_title_generation = AsyncMock()
+        original_wait = self.service._wait_for_sandbox_start
+
+        async def wait_for_sandbox(task):
+            for _ in range(10):
+                if task.title_generation.status != 'pending':
+                    break
+                await asyncio.sleep(0)
+            assert task.title_generation.status == 'fallback'
+            assert task.app_conversation_id is None
+            self.service._persist_start_title.assert_awaited_once()
+            async for result in original_wait(task):
+                yield result
+
+        self.service._wait_for_sandbox_start = wait_for_sandbox
+        request = AppConversationStartRequest(
+            generate_title_on_submit=True,
+            initial_message=SendMessageRequest(
+                content=[TextContent(text='Fix checkout')]
+            ),
+        )
+        tasks = [task async for task in self.service._start_app_conversation(request)]
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posted = self.mock_httpx_client.post.call_args.kwargs['json']
+        assert posted['autotitle'] is False
+        assert posted['title'] == 'Fix checkout'
+        saved = self.mock_app_conversation_info_service.save_app_conversation_info.call_args.args[
+            0
+        ]
+        assert saved.title == 'Fix checkout'
+        assert not any(
+            isinstance(call.args[0].processor, SetTitleCallbackProcessor)
+            for call in self.mock_event_callback_service.save_event_callback.call_args_list
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_slow_title_does_not_delay_ready(self, info_class, workspace_class):
+        self._arrange_start_app_conversation(uuid4(), info_class, workspace_class)
+        self.service._start_title_llm = AsyncMock(return_value=None)
+        self.service._persist_start_title = AsyncMock()
+        self.service._sync_start_title = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        self.mock_app_conversation_info_service.complete_title_generation = AsyncMock()
+        release = asyncio.Event()
+
+        async def generate(pending, message, llm):
+            await release.wait()
+            return pending.model_copy(
+                update={'status': 'generated', 'title': 'Checkout repair'}
+            )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.generate_start_title',
+            side_effect=generate,
+        ):
+            start = self.service._start_app_conversation(
+                AppConversationStartRequest(
+                    generate_title_on_submit=True,
+                    initial_message=SendMessageRequest(
+                        content=[TextContent(text='Fix checkout')]
+                    ),
+                )
+            )
+            async with asyncio.timeout(2):
+                async for task in start:
+                    if task.status == AppConversationStartTaskStatus.READY:
+                        assert task.title_generation.status == 'pending'
+                        release.set()
+            self.service._persist_start_title.assert_awaited_once()
+            assert task.title_generation.title == 'Checkout repair'
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,
