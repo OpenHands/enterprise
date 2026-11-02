@@ -15,8 +15,8 @@ member's own servers.
 
 Data migration: no backfill. Existing rows read back as ``NULL`` (no listings).
 
-Revision ID: 207
-Revises: 206
+Revision ID: 208
+Revises: 207
 Create Date: 2026-10-31
 """
 
@@ -25,8 +25,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '207'
-down_revision: str | None = '206'
+revision: str = '208'
+down_revision: str | None = '207'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
