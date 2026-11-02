@@ -441,6 +441,125 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     ).not.toBeInTheDocument();
   });
 
+  describe("user-managed OAuth listings", () => {
+    const OAUTH_LISTING: OrgMcpServerItem = {
+      name: "issue-tracker",
+      managed_by: "user",
+      server: {
+        url: "https://issues.example/mcp",
+        transport: "http",
+        auth: {
+          strategy: "oauth2",
+          authentication: {
+            type: "oauth",
+            client_id: "client-1",
+            client_secret: REDACTED_MCP_SECRET,
+          },
+        },
+      },
+      secret_names: [],
+      connected: false,
+    };
+
+    function arrangeFlow(popup: unknown = { close: vi.fn(), location: {} }) {
+      vi.spyOn(window, "open").mockReturnValue(popup as never);
+      const startOAuth = vi.spyOn(McpService, "startOAuth").mockResolvedValue({
+        ok: true,
+        job_id: "job-1",
+        authorization_url: "https://auth.example/authorize",
+      });
+      vi.spyOn(McpService, "getOAuthStatus").mockResolvedValue({
+        ok: true,
+        status: "succeeded",
+        job_id: "job-1",
+      });
+      return { startOAuth };
+    }
+
+    it("connects a member with their own account and the masked config", async () => {
+      const { getOrgMcpServers } = arrangeOrgMcp({
+        role: "member",
+        listings: [OAUTH_LISTING],
+      });
+      const { startOAuth } = arrangeFlow();
+      const connect = vi
+        .spyOn(organizationService, "connectOrgMcpServer")
+        .mockImplementation(async () => {
+          getOrgMcpServers.mockResolvedValue({
+            items: [{ ...OAUTH_LISTING, connected: true }],
+          });
+          return true;
+        });
+
+      renderMcpSettingsScreen();
+      expect(
+        await screen.findByTestId("org-mcp-server-status"),
+      ).toHaveTextContent("SETTINGS$MCP_ORG_OAUTH_NEEDS_CONNECTION");
+      await userEvent.click(
+        screen.getByTestId("connect-org-mcp-server-button"),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("org-mcp-server-status")).toHaveTextContent(
+          "SETTINGS$MCP_ORG_CONNECTED",
+        ),
+      );
+      // The backend restores the client secret from the listing.
+      expect(startOAuth).toHaveBeenCalledWith({
+        name: "issue-tracker",
+        server: OAUTH_LISTING.server,
+        timeout: 120,
+      });
+      // The tokens stay on the job: only its id travels.
+      expect(connect).toHaveBeenCalledWith("1", "issue-tracker", "job-1");
+      expect(
+        screen.queryByTestId("connect-org-mcp-server-modal"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("connect-org-mcp-server-button"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("explains a blocked sign-in window and stores nothing", async () => {
+      arrangeOrgMcp({ role: "member", listings: [OAUTH_LISTING] });
+      vi.spyOn(window, "open").mockReturnValue(null);
+      const connect = vi.spyOn(organizationService, "connectOrgMcpServer");
+
+      renderMcpSettingsScreen();
+      await userEvent.click(
+        await screen.findByTestId("connect-org-mcp-server-button"),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("connect-org-mcp-server-button"),
+        ).toBeEnabled(),
+      );
+      expect(connect).not.toHaveBeenCalled();
+    });
+
+    it("lets a connected member disconnect", async () => {
+      const { getOrgMcpServers } = arrangeOrgMcp({
+        role: "member",
+        listings: [{ ...OAUTH_LISTING, connected: true }],
+      });
+      const disconnect = vi
+        .spyOn(organizationService, "disconnectOrgMcpServer")
+        .mockImplementation(async () => {
+          getOrgMcpServers.mockResolvedValue({ items: [OAUTH_LISTING] });
+          return true;
+        });
+
+      renderMcpSettingsScreen();
+      await userEvent.click(
+        await screen.findByTestId("disconnect-org-mcp-server-button"),
+      );
+
+      await screen.findByTestId("connect-org-mcp-server-button");
+      expect(disconnect).toHaveBeenCalledWith("1", "issue-tracker");
+    });
+  });
+
   it("hides the organization section from members when it is empty", async () => {
     arrangeOrgMcp({ role: "member", listings: [] });
 
