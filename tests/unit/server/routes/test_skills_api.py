@@ -1031,52 +1031,33 @@ class TestMarketplaceSkillsPlainRepository:
 class TestSkillDescriptions:
     """Skill descriptions are returned so the settings page can show them."""
 
-    @pytest.mark.asyncio
-    async def test_search_returns_frontmatter_description(self, test_client, tmp_path):
+    def test_search_returns_user_skill_frontmatter_description(
+        self, test_client, tmp_path
+    ):
         # Arrange
-        global_dir = tmp_path / 'global'
-        _write_skill_file(global_dir, 'described', description='Does a thing')
-        _write_skill_file(global_dir, 'undescribed')
+        user_dir = tmp_path / 'user'
+        _write_skill_file(user_dir, 'described', description='Does a thing')
+        _write_skill_file(user_dir, 'undescribed')
 
         # Act
-        with (
-            patch(
-                'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
-            ),
-            patch(
-                'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
-                tmp_path / 'nonexistent',
-            ),
-        ):
-            response = test_client.get('/api/v1/skills/search')
+        data = _search(test_client, user_dir)
 
         # Assert
-        assert response.status_code == 200
-        descriptions = {s['name']: s['description'] for s in response.json()['items']}
+        descriptions = {s['name']: s['description'] for s in data['items']}
         assert descriptions == {'described': 'Does a thing', 'undescribed': None}
 
-    @pytest.mark.asyncio
-    async def test_search_keeps_skill_with_non_string_description(
+    def test_search_keeps_user_skill_with_non_string_description(
         self, test_client, tmp_path
     ):
         # Arrange: YAML parses an unquoted number as an int, not a string.
-        global_dir = tmp_path / 'global'
-        _write_skill_file(global_dir, 'numeric', description='42')
+        user_dir = tmp_path / 'user'
+        _write_skill_file(user_dir, 'numeric', description='42')
 
         # Act
-        with (
-            patch(
-                'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
-            ),
-            patch(
-                'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
-                tmp_path / 'nonexistent',
-            ),
-        ):
-            response = test_client.get('/api/v1/skills/search')
+        data = _search(test_client, user_dir)
 
         # Assert
-        assert [(s['name'], s['description']) for s in response.json()['items']] == [
+        assert [(s['name'], s['description']) for s in data['items']] == [
             ('numeric', '42')
         ]
 
@@ -1088,7 +1069,7 @@ class TestSkillDescriptions:
         _write_skill_dir(repo_dir / 'skills' / 'wave', 'wave')
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert [(s.name, s.description) for s in result.skills] == [
@@ -1124,7 +1105,7 @@ class TestSkillDescriptions:
         (repo_dir / '.plugin' / 'marketplace.json').write_text(json.dumps(manifest))
 
         # Act
-        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+        result = await _preview_marketplace(repo_dir)
 
         # Assert
         assert [(s.name, s.description) for s in result.skills] == [
