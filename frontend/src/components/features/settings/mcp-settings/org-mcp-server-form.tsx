@@ -15,6 +15,7 @@ import {
   SECRET_NAME_PATTERN,
   buildOrgMcpServerPayload,
 } from "#/utils/org-mcp-servers";
+import { McpOAuthFlowResult } from "#/utils/mcp-oauth-flow";
 import { SettingsInput } from "../settings-input";
 import { SettingsDropdownInput } from "../settings-dropdown-input";
 import { BrandButton } from "../brand-button";
@@ -24,6 +25,10 @@ import type { TestMessage } from "./mcp-server-form";
 /** The system OpenHands MCP server is injected under this name at launch. */
 const RESERVED_NAMES = ["default"];
 
+function FieldHelp({ children }: { children: React.ReactNode }) {
+  return <p className="text-xs text-tertiary-alt">{children}</p>;
+}
+
 interface OrgMcpServerFormProps {
   mode: "add" | "edit";
   listing?: OrgMcpServerView;
@@ -32,6 +37,8 @@ interface OrgMcpServerFormProps {
   onSubmit: (payload: OrgMcpServerCreate) => void;
   onCancel: () => void;
   onTest?: (payload: OrgMcpServerCreate) => void;
+  /** Run the OAuth consent flow; must open its window synchronously. */
+  onAuthorize?: (payload: OrgMcpServerCreate) => Promise<McpOAuthFlowResult>;
   isTestPending?: boolean;
   isSaving?: boolean;
   testMessage?: TestMessage | null;
@@ -44,7 +51,9 @@ interface OrgMcpServerFormProps {
  * organization-managed listing stores the admin's token (masked after save,
  * kept when left blank while editing, required again after a URL change);
  * a user-managed listing stores the name of the personal secret each member
- * creates to connect.
+ * creates to connect. With OAuth, the admin authorizes an organization-managed
+ * listing here before saving it, and each member authorizes a user-managed one
+ * from the list.
  */
 export function OrgMcpServerForm({
   mode,
@@ -53,6 +62,7 @@ export function OrgMcpServerForm({
   onSubmit,
   onCancel,
   onTest,
+  onAuthorize,
   isTestPending = false,
   isSaving = false,
   testMessage = null,
@@ -77,6 +87,19 @@ export function OrgMcpServerForm({
     listing?.secretNames[0] ?? "",
   );
   const [token, setToken] = React.useState("");
+  const [oauthClientId, setOAuthClientId] = React.useState(
+    listing?.oauth?.clientId ?? "",
+  );
+  const [oauthClientSecret, setOAuthClientSecret] = React.useState("");
+  const [oauthScopes, setOAuthScopes] = React.useState(
+    listing?.oauth?.scopes ?? "",
+  );
+  // The finished consent flow, and the settings it was run with.
+  const [oauthAuthorization, setOAuthAuthorization] = React.useState<{
+    jobId: string;
+    settings: string;
+  } | null>(null);
+  const [isAuthorizing, setIsAuthorizing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   // An organization-managed credential comes back masked; leaving the token
@@ -89,6 +112,30 @@ export function OrgMcpServerForm({
   const urlChanged = url.trim() !== (listing?.url ?? "");
   const keepStoredCredential =
     hasStoredCredential && managedBy === "org" && !urlChanged && !token;
+
+  // Same rule for an OAuth client secret. Tokens are tied to the URL and client
+  // they were issued for, so changing either needs a new authorization.
+  const hasStoredOAuthClientSecret =
+    mode === "edit" && listing?.oauth?.clientSecret === REDACTED_MCP_SECRET;
+  const keepStoredOAuthClientSecret =
+    hasStoredOAuthClientSecret && !urlChanged && !oauthClientSecret;
+  const oauthSettings = JSON.stringify([
+    type,
+    url.trim(),
+    oauthClientId.trim(),
+    oauthClientSecret,
+    oauthScopes.trim(),
+  ]);
+  const oauthJobId =
+    oauthAuthorization?.settings === oauthSettings
+      ? oauthAuthorization.jobId
+      : undefined;
+  const keepsStoredOAuthTokens =
+    listing?.managedBy === "org" &&
+    !!listing.oauth?.authorized &&
+    !urlChanged &&
+    oauthClientId.trim() === (listing.oauth.clientId ?? "");
+  const isOAuthAuthorized = !!oauthJobId || keepsStoredOAuthTokens;
 
   const validateUrl = (value: string): string | null => {
     if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_URL_REQUIRED);
@@ -141,6 +188,14 @@ export function OrgMcpServerForm({
       if (timeoutError) return timeoutError;
     }
     if (auth === "none") return null;
+    if (auth === "oauth") {
+      if (hasStoredOAuthClientSecret && urlChanged && !oauthClientSecret) {
+        return t(
+          I18nKey.SETTINGS$MCP_ORG_ERROR_OAUTH_CLIENT_SECRET_REQUIRED_AFTER_URL_CHANGE,
+        );
+      }
+      return null;
+    }
     if (auth === "header" && !headerName.trim()) {
       return t(I18nKey.SETTINGS$MCP_ORG_ERROR_HEADER_NAME_REQUIRED);
     }
@@ -177,6 +232,11 @@ export function OrgMcpServerForm({
       secretName: secretName.trim(),
       token,
       keepStoredCredential,
+      oauthClientId: oauthClientId.trim(),
+      oauthClientSecret,
+      keepStoredOAuthClientSecret,
+      oauthScopes: oauthScopes.trim(),
+      oauthJobId,
     };
     return buildOrgMcpServerPayload(values);
   };
@@ -191,9 +251,33 @@ export function OrgMcpServerForm({
     action(buildPayload());
   };
 
+  const handleAuthorize = () => {
+    runValidated(async (payload) => {
+      if (!onAuthorize) return;
+      const settings = oauthSettings;
+      setIsAuthorizing(true);
+      try {
+        const result = await onAuthorize(payload);
+        if (result.ok) {
+          setOAuthAuthorization({ jobId: result.jobId, settings });
+        }
+      } finally {
+        setIsAuthorizing(false);
+      }
+    });
+  };
+
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    runValidated(onSubmit);
+    runValidated((payload) => {
+      if (auth === "oauth" && managedBy === "org" && !isOAuthAuthorized) {
+        setError(
+          t(I18nKey.SETTINGS$MCP_ORG_ERROR_OAUTH_AUTHORIZATION_REQUIRED),
+        );
+        return;
+      }
+      onSubmit(payload);
+    });
   };
 
   const credentialLabel =
@@ -246,7 +330,7 @@ export function OrgMcpServerForm({
         value={name}
         onChange={setName}
         isReadOnly={mode === "edit"}
-        placeholder="bifrost-internal"
+        placeholder="my-mcp-server"
       />
 
       <SettingsInput
@@ -304,6 +388,7 @@ export function OrgMcpServerForm({
           { key: "none", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_NONE) },
           { key: "bearer", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_BEARER) },
           { key: "header", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_HEADER) },
+          { key: "oauth", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_OAUTH) },
         ]}
         selectedKey={auth}
         onSelectionChange={(key) => {
@@ -330,7 +415,86 @@ export function OrgMcpServerForm({
         />
       )}
 
-      {auth !== "none" && managedBy === "user" && (
+      {auth === "oauth" && (
+        <>
+          <SettingsInput
+            testId="org-oauth-client-id-input"
+            name="org-oauth-client-id"
+            type="text"
+            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_ID)}
+            className="w-full"
+            showOptionalTag
+            value={oauthClientId}
+            onChange={setOAuthClientId}
+            description={
+              <FieldHelp>
+                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_HELP)}
+              </FieldHelp>
+            }
+          />
+          <SettingsInput
+            testId="org-oauth-client-secret-input"
+            name="org-oauth-client-secret"
+            type="password"
+            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_SECRET)}
+            className="w-full"
+            showOptionalTag
+            value={oauthClientSecret}
+            onChange={setOAuthClientSecret}
+            placeholder={
+              keepStoredOAuthClientSecret ? REDACTED_MCP_SECRET : undefined
+            }
+          />
+          <SettingsInput
+            testId="org-oauth-scopes-input"
+            name="org-oauth-scopes"
+            type="text"
+            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES)}
+            className="w-full"
+            showOptionalTag
+            value={oauthScopes}
+            onChange={setOAuthScopes}
+            placeholder="read write"
+            description={
+              <FieldHelp>
+                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES_HELP)}
+              </FieldHelp>
+            }
+          />
+          {managedBy === "user" ? (
+            <FieldHelp>{t(I18nKey.SETTINGS$MCP_ORG_OAUTH_USER_HELP)}</FieldHelp>
+          ) : (
+            <div className="flex items-center gap-3">
+              <BrandButton
+                testId="org-oauth-authorize-button"
+                type="button"
+                variant="secondary"
+                onClick={handleAuthorize}
+                isDisabled={isAuthorizing}
+                className="shrink-0"
+              >
+                {isAuthorizing
+                  ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZING)
+                  : t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZE)}
+              </BrandButton>
+              {isOAuthAuthorized ? (
+                <span
+                  data-testid="org-oauth-authorized"
+                  className="text-xs text-success"
+                >
+                  {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZED)}
+                </span>
+              ) : (
+                <FieldHelp>
+                  {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_ORG_HELP)}
+                </FieldHelp>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {(auth === "bearer" || auth === "header") && managedBy === "user" && (
         <SettingsInput
           testId="org-secret-name-input"
           name="org-secret-name"
@@ -340,12 +504,16 @@ export function OrgMcpServerForm({
           required
           value={secretName}
           onChange={setSecretName}
-          placeholder="BIFROST_TOKEN"
-          description={t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+          placeholder="MY_MCP_TOKEN"
+          description={
+            <FieldHelp>
+              {t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+            </FieldHelp>
+          }
         />
       )}
 
-      {auth !== "none" && managedBy === "org" && (
+      {(auth === "bearer" || auth === "header") && managedBy === "org" && (
         <SettingsInput
           testId="org-token-input"
           name="org-token"
@@ -360,7 +528,9 @@ export function OrgMcpServerForm({
               ? REDACTED_MCP_SECRET
               : t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)
           }
-          description={t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+          description={
+            <FieldHelp>{t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}</FieldHelp>
+          }
         />
       )}
 
@@ -385,7 +555,7 @@ export function OrgMcpServerForm({
         >
           {t(I18nKey.BUTTON$CANCEL)}
         </BrandButton>
-        {onTest && (
+        {onTest && auth !== "oauth" && (
           <BrandButton
             testId="org-mcp-test-connection"
             type="button"
@@ -402,7 +572,7 @@ export function OrgMcpServerForm({
           testId="org-submit-button"
           type="submit"
           variant="primary"
-          isDisabled={isTestPending || isSaving}
+          isDisabled={isTestPending || isSaving || isAuthorizing}
         >
           {mode === "add"
             ? t(I18nKey.SETTINGS$MCP_ORG_ADD_SERVER)

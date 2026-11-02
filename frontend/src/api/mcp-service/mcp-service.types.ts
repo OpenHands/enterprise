@@ -30,3 +30,26 @@ export interface MCPTestFailure {
 }
 
 export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
+
+/** `POST /api/v1/mcp/oauth/start`: opens a consent flow for a remote server. */
+export interface MCPOAuthStartResponse {
+  ok: boolean;
+  job_id?: string | null;
+  authorization_url?: string | null;
+  error?: string | null;
+  error_kind?: MCPTestFailureKind | null;
+}
+
+/**
+ * `GET /api/v1/mcp/oauth/status/{job_id}`. An organization listing's tokens
+ * stay server-side: the org routes take them from the job by its id.
+ */
+export interface MCPOAuthStatusResponse {
+  ok: boolean;
+  status: "pending" | "authorizing" | "succeeded" | "failed";
+  job_id: string;
+  authorization_url?: string | null;
+  callback_ready?: boolean;
+  error?: string | null;
+  error_kind?: MCPTestFailureKind | null;
+}

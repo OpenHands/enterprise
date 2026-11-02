@@ -36,18 +36,44 @@ const mockOrgMcpServers = new Map<string, OrgMcpServerCreate>([
     },
   ],
   [
-    "bifrost-internal",
+    "internal-tools",
     {
-      name: "bifrost-internal",
+      name: "internal-tools",
       managed_by: "user",
       server: {
-        url: "https://bifrost.acme.com/mcp",
+        url: "https://tools.example.com/mcp",
         transport: "http",
         // eslint-disable-next-line no-template-curly-in-string
-        auth: { strategy: "bearer", value: "${BIFROST_TOKEN}" },
+        auth: { strategy: "bearer", value: "${INTERNAL_TOOLS_TOKEN}" },
       },
     },
   ],
+  [
+    "issue-tracker",
+    {
+      name: "issue-tracker",
+      managed_by: "user",
+      server: {
+        url: "https://issues.example.com/mcp",
+        transport: "http",
+        auth: {
+          strategy: "oauth2",
+          authentication: { type: "oauth", client_id: "openhands" },
+        },
+      },
+    },
+  ],
+]);
+
+/** User-managed OAuth listings the mock member has authorized. */
+const mockOrgMcpConnections = new Set<string>();
+
+/** What the backend leaves readable in a credential. */
+const MOCK_NON_SECRET_AUTH_KEYS = new Set([
+  "strategy",
+  "type",
+  "client_id",
+  "scopes",
 ]);
 
 function maskMockMcpSecrets(value: unknown): unknown {
@@ -57,11 +83,24 @@ function maskMockMcpSecrets(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, item]) => [
         key,
-        key === "strategy" ? item : maskMockMcpSecrets(item),
+        MOCK_NON_SECRET_AUTH_KEYS.has(key) ? item : maskMockMcpSecrets(item),
       ]),
     );
   }
   return value;
+}
+
+/** A finished consent flow's tokens, as the backend takes them from the job. */
+function withMockOAuthTokens(
+  server: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...server,
+    auth: {
+      ...(server.auth as Record<string, unknown>),
+      state: { tokens: { access_token: "mock-oauth-access-token" } },
+    },
+  };
 }
 
 /** What the backend returns: every credential field masked, references listed. */
@@ -82,6 +121,10 @@ function redactedOrgMcpServer(entry: OrgMcpServerCreate): OrgMcpServerItem {
       ...(headers !== undefined && { headers: maskMockMcpSecrets(headers) }),
     },
     secret_names: [...secretNames].sort(),
+    ...(entry.managed_by === "user" &&
+      (auth as { strategy?: string } | undefined)?.strategy === "oauth2" && {
+        connected: mockOrgMcpConnections.has(entry.name),
+      }),
   };
 }
 
@@ -1910,7 +1953,11 @@ export const ORG_HANDLERS = [
         { status: 409 },
       );
     }
-    mockOrgMcpServers.set(body.name, body);
+    const { oauth_job_id: oauthJobId, ...listing } = body;
+    mockOrgMcpServers.set(body.name, {
+      ...listing,
+      server: oauthJobId ? withMockOAuthTokens(body.server) : body.server,
+    });
     return HttpResponse.json({ message: "created" }, { status: 201 });
   }),
   http.put(
@@ -1922,15 +1969,45 @@ export const ORG_HANDLERS = [
         return HttpResponse.json({ detail: "not found" }, { status: 404 });
       }
       const body = (await request.json()) as OrgMcpServerUpdate;
+      const server = body.server
+        ? restoreMockMcpSecrets(body.server, current.server)
+        : current.server;
       mockOrgMcpServers.set(name, {
         name,
         managed_by: body.managed_by ?? current.managed_by,
-        server: body.server
-          ? restoreMockMcpSecrets(body.server, current.server)
-          : current.server,
+        server: body.oauth_job_id ? withMockOAuthTokens(server) : server,
       });
       return HttpResponse.json({ message: "updated" });
     },
+  ),
+  http.put(
+    "/api/organizations/:orgId/mcp-servers/:name/connection",
+    ({ params }) => {
+      mockOrgMcpConnections.add(String(params.name));
+      return HttpResponse.json({ message: "connected" });
+    },
+  ),
+  http.delete(
+    "/api/organizations/:orgId/mcp-servers/:name/connection",
+    ({ params }) => {
+      mockOrgMcpConnections.delete(String(params.name));
+      return HttpResponse.json({ message: "disconnected" });
+    },
+  ),
+  // The OAuth flow finishes as soon as it is polled: there is no provider.
+  http.post("/api/v1/mcp/oauth/start", () =>
+    HttpResponse.json({
+      ok: true,
+      job_id: "mock-oauth-job",
+      authorization_url: "about:blank#mock-oauth-consent",
+    }),
+  ),
+  http.get("/api/v1/mcp/oauth/status/:jobId", ({ params }) =>
+    HttpResponse.json({
+      ok: true,
+      status: "succeeded",
+      job_id: String(params.jobId),
+    }),
   ),
   http.delete("/api/organizations/:orgId/mcp-servers/:name", ({ params }) => {
     if (!mockOrgMcpServers.delete(String(params.name))) {
