@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -229,3 +229,81 @@ async def test_snapshot_runs_use_batched_reads_and_preserve_unconsumed_cursor(se
     )
     assert following.items == [events[10]]
     assert following.next_page_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('excluded', ['snapshot', 'missing'])
+async def test_compact_refill_limits_extra_storage_reads(
+    service, monkeypatch, excluded
+):
+    monkeypatch.setenv('EVENT_SERVICE_LOAD_EVENT_CONCURRENCY', '4')
+    conversation_id = uuid4()
+    events = [message() for _ in range(40)]
+    if excluded == 'snapshot':
+        events[18:20] = [
+            ConversationStateUpdateEvent(key='full_state', value={}) for _ in range(2)
+        ]
+    events = [
+        event.model_copy(
+            update={
+                'timestamp': (datetime(2026, 1, 1) + timedelta(seconds=i)).isoformat()
+            }
+        )
+        for i, event in enumerate(events)
+    ]
+    for event in events:
+        await service.save_event(conversation_id, event)
+    await service.search_events(conversation_id)
+    if excluded == 'missing':
+        directory = await service.get_conversation_path(conversation_id)
+        for event in events[18:20]:
+            service._event_id_to_path(directory, event.id.replace('-', '')).unlink()
+
+    with patch.object(service, '_load_event', wraps=service._load_event) as load:
+        page = await service.search_events(
+            conversation_id, limit=20, exclude_full_state=True
+        )
+
+    expected = events[:18] + events[20:]
+    assert page.items == expected[:20]
+    assert page.next_page_id == '22'
+    assert load.call_count <= 24
+    following = await service.search_events(
+        conversation_id, limit=20, page_id=page.next_page_id, exclude_full_state=True
+    )
+    assert following.items == expected[20:]
+    assert following.next_page_id is None
+
+
+@pytest.mark.asyncio
+async def test_compact_refill_keeps_snapshot_runs_batched(service, monkeypatch):
+    monkeypatch.setenv('EVENT_SERVICE_LOAD_EVENT_CONCURRENCY', '4')
+    conversation_id = uuid4()
+    messages = [message() for _ in range(20)]
+    events = [
+        *messages[:19],
+        *[ConversationStateUpdateEvent(key='full_state', value={}) for _ in range(21)],
+        messages[-1],
+    ]
+    events = [
+        event.model_copy(
+            update={
+                'timestamp': (datetime(2026, 1, 1) + timedelta(seconds=i)).isoformat()
+            }
+        )
+        for i, event in enumerate(events)
+    ]
+    for event in events:
+        await service.save_event(conversation_id, event)
+    await service.search_events(conversation_id)
+
+    with patch.object(
+        service, '_load_events_from_paths', wraps=service._load_events_from_paths
+    ) as load:
+        page = await service.search_events(
+            conversation_id, limit=20, exclude_full_state=True
+        )
+
+    assert page.items == events[:19] + events[-1:]
+    assert page.next_page_id is None
+    assert load.call_count <= 7

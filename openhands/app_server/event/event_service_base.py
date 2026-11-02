@@ -321,8 +321,11 @@ class EventServiceBase(EventService, ABC):
         if offset < 0:
             raise ValueError('Event page offset must be non-negative')
         items: list[Event] = []
+        load_concurrency = _event_load_concurrency()
         while offset < len(entries) and len(items) < limit:
-            batch = entries[offset : offset + limit]
+            # Keep storage reads concurrent when snapshots leave only a few slots.
+            batch_size = min(limit, max(limit - len(items), load_concurrency))
+            batch = entries[offset : offset + batch_size]
             paths = [
                 self._event_id_to_path(conversation_path, entry[0]) for entry in batch
             ]
