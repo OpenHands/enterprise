@@ -351,9 +351,9 @@ describe("Super Admin Instance page", () => {
       ).not.toBeChecked();
     });
 
-    it("sends PATCH for the flag and refetches the config", async () => {
+    it("sends PATCH for the flag and shows the saved value", async () => {
       // Arrange
-      const getConfig = mockServiceAccountsConfig(true, false);
+      mockServiceAccountsConfig(true);
       const patchBodies: unknown[] = [];
       const postSpy = vi.fn();
       server.use(
@@ -388,23 +388,13 @@ describe("Super Admin Instance page", () => {
         ]),
       );
       expect(postSpy).not.toHaveBeenCalled();
-      await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(toggle).not.toBeChecked());
     });
 
-    it("shows the saved value and stays disabled until the config refetch returns", async () => {
-      // Arrange — the refetch after the save is held until we release it.
-      const first = createMockWebClientConfig();
-      first.feature_flags.enable_service_accounts = true;
-      let releaseRefetch: (value: typeof first) => void = () => {};
-      vi.spyOn(OptionService, "getConfig")
-        .mockResolvedValueOnce(first)
-        .mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              releaseRefetch = resolve;
-            }),
-        );
+    it("keeps the saved value when a later config read is stale", async () => {
+      // Arrange — another server process still caches the old flag value, so
+      // a config read after the save would return it.
+      const getConfig = mockServiceAccountsConfig(true, true);
       server.use(
         http.patch(`${FLAG_URL}/:key`, ({ params }) =>
           HttpResponse.json({
@@ -423,14 +413,11 @@ describe("Super Admin Instance page", () => {
       // Act
       await user.click(toggle);
 
-      // Assert — saved value shown, no second click while the refetch runs.
-      await waitFor(() => expect(toggle).not.toBeChecked());
-      expect(toggle).toBeDisabled();
-      const refetched = createMockWebClientConfig();
-      refetched.feature_flags.enable_service_accounts = false;
-      releaseRefetch(refetched);
+      // Assert — the PATCH response is the saved value; no config read
+      // overwrites it.
       await waitFor(() => expect(toggle).toBeEnabled());
       expect(toggle).not.toBeChecked();
+      expect(getConfig).toHaveBeenCalledTimes(1);
     });
 
     it("creates the flag with POST when PATCH answers 404", async () => {

@@ -232,8 +232,9 @@ export const useSetServiceAccountsEnabled = () => {
         throw error;
       }
     },
-    // Show the saved value at once, and keep the mutation pending (the switch
-    // disabled) until the refetched config arrives.
+    // Write the saved value into the config. Do not refetch: each server
+    // process caches flags for a few seconds, so a read served by another
+    // process could still return the old value.
     onSuccess: (flag) => {
       queryClient.setQueryData<WebClientConfig>(
         QUERY_KEYS.WEB_CLIENT_CONFIG,
@@ -246,9 +247,6 @@ export const useSetServiceAccountsEnabled = () => {
             },
           },
       );
-      return queryClient.invalidateQueries({
-        queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
-      });
     },
     onError: (error) => {
       displayErrorToast(
