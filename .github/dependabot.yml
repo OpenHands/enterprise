@@ -3,7 +3,8 @@ updates:
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -33,7 +34,8 @@ updates:
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
-      interval: "daily"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -59,7 +61,8 @@ updates:
       - "/.github/actions/docker-image-tags"
       - "/.github/actions/docker-merge-manifest"
     schedule:
-      interval: "weekly"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
@@ -68,7 +71,8 @@ updates:
     directories:
       - "containers/*"
     schedule:
-      interval: "weekly"
+      interval: cron
+      cronjob: 0 * * * *
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5

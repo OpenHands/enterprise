@@ -105,6 +105,7 @@ def _write_skill_file(
     name: str,
     skill_type: str = 'knowledge',
     triggers: list[str] | None = None,
+    description: str | None = None,
 ) -> None:
     """Write a mock skill markdown file with frontmatter."""
     dir_path.mkdir(parents=True, exist_ok=True)
@@ -113,6 +114,8 @@ def _write_skill_file(
         f'name: {name}',
         f'type: {skill_type}',
     ]
+    if description:
+        lines.append(f'description: {description}')
     if triggers:
         lines.append('triggers:')
         for t in triggers:
@@ -779,10 +782,13 @@ class TestMarketplaceSkillsCloneFailures:
 # Tests for marketplace-skills endpoint built-in skill name conflicts
 
 
-def _write_skill_dir(skill_dir: Path, name: str) -> None:
+def _write_skill_dir(skill_dir: Path, name: str, description: str = '') -> None:
     """Write a skill directory whose SKILL.md declares the given name."""
     skill_dir.mkdir(parents=True)
-    (skill_dir / 'SKILL.md').write_text(f'---\nname: {name}\n---\n{name} content')
+    frontmatter = f'name: {name}\n'
+    if description:
+        frontmatter += f'description: {description}\n'
+    (skill_dir / 'SKILL.md').write_text(f'---\n{frontmatter}---\n{name} content')
 
 
 def _write_marketplace_manifest(repo_dir: Path, layout: str, source: str) -> None:
@@ -1015,6 +1021,113 @@ class TestMarketplaceSkillsPlainRepository:
 # Tests for the marketplace-check endpoint (checked before saving)
 
 _ROUTER = 'openhands.app_server.user.skills_router'
+
+
+class TestSkillDescriptions:
+    """Skill descriptions are returned so the settings page can show them."""
+
+    @pytest.mark.asyncio
+    async def test_search_returns_frontmatter_description(self, test_client, tmp_path):
+        # Arrange
+        global_dir = tmp_path / 'global'
+        _write_skill_file(global_dir, 'described', description='Does a thing')
+        _write_skill_file(global_dir, 'undescribed')
+
+        # Act
+        with (
+            patch(
+                'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
+            ),
+            patch(
+                'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
+                tmp_path / 'nonexistent',
+            ),
+        ):
+            response = test_client.get('/api/v1/skills/search')
+
+        # Assert
+        assert response.status_code == 200
+        descriptions = {s['name']: s['description'] for s in response.json()['items']}
+        assert descriptions == {'described': 'Does a thing', 'undescribed': None}
+
+    @pytest.mark.asyncio
+    async def test_search_keeps_skill_with_non_string_description(
+        self, test_client, tmp_path
+    ):
+        # Arrange: YAML parses an unquoted number as an int, not a string.
+        global_dir = tmp_path / 'global'
+        _write_skill_file(global_dir, 'numeric', description='42')
+
+        # Act
+        with (
+            patch(
+                'openhands.app_server.user.skills_router.GLOBAL_SKILLS_DIR', global_dir
+            ),
+            patch(
+                'openhands.app_server.user.skills_router.USER_SKILLS_DIR',
+                tmp_path / 'nonexistent',
+            ),
+        ):
+            response = test_client.get('/api/v1/skills/search')
+
+        # Assert
+        assert [(s['name'], s['description']) for s in response.json()['items']] == [
+            ('numeric', '42')
+        ]
+
+    @pytest.mark.asyncio
+    async def test_plain_repository_skill_description(self, tmp_path):
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'greet', 'greet', 'Greets people')
+        _write_skill_dir(repo_dir / 'skills' / 'wave', 'wave')
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert [(s.name, s.description) for s in result.skills] == [
+            ('greet', 'Greets people'),
+            ('wave', None),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_manifest_skill_and_plugin_descriptions(self, tmp_path):
+        # Arrange
+        repo_dir = tmp_path / 'repo'
+        _write_skill_dir(repo_dir / 'skills' / 'custom', 'custom')
+        _write_skill_dir(repo_dir / 'plugins' / 'tools' / 'skills' / 'x', 'x')
+        manifest = {
+            'name': 'acme',
+            'owner': {'name': 'Acme'},
+            'plugins': [
+                {
+                    'name': 'tools',
+                    'source': './plugins/tools',
+                    'description': 'A plugin',
+                }
+            ],
+            'skills': [
+                {
+                    'name': 'custom',
+                    'source': './skills/custom',
+                    'description': 'A skill',
+                }
+            ],
+        }
+        (repo_dir / '.plugin').mkdir()
+        (repo_dir / '.plugin' / 'marketplace.json').write_text(json.dumps(manifest))
+
+        # Act
+        result = await _preview_marketplace(repo_dir, tmp_path / 'global')
+
+        # Assert
+        assert [(s.name, s.description) for s in result.skills] == [
+            ('custom', 'A skill')
+        ]
+        assert [(p.name, p.description) for p in result.plugins] == [
+            ('tools', 'A plugin')
+        ]
 
 
 def _preview(

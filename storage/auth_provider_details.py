@@ -215,6 +215,11 @@ class OAuthProviderDetails(AuthProviderDetails):
     # name; a user linked to more than one gets a single secret, see
     # ``SaasUserAuth.get_named_oauth_secrets``.
     named_secret: str | None = None
+    # Identity field (``sub`` / ``email`` / ``email_verified``) -> the
+    # userinfo / ID-token claim the provider sends it as, for providers that
+    # aren't OIDC-shaped (e.g. Jira Data Center's ``key`` / ``emailAddress``).
+    # See ``server.auth.provider_identity.map_oauth_claims``.
+    attribute_mapping: dict[str, str] = Field(default_factory=dict)
 
     @field_validator('legacy_keycloak_type')
     @classmethod

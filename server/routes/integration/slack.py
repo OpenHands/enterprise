@@ -29,7 +29,7 @@ from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
     ProviderType,
 )
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth import get_user_id
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
@@ -79,6 +79,15 @@ slack_team_store = SlackTeamStore.get_instance()
 jwt_service_dependency = depends_jwt_service()
 
 
+def verify_slack_oauth_state(jwt_service: JwtService, state: str) -> dict:
+    return jwt_service.verify_jws_token(
+        state,
+        audience=JwtAudience.SLACK_OAUTH_STATE,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=lambda payload: 'slack_user_id' in payload,
+    )
+
+
 @slack_router.get('/install')
 async def install(state: str = ''):
     """Forward into Slack OAuth."""
@@ -126,12 +135,14 @@ async def install_callback(
         # Create a state variable for keycloak oauth
         payload = {}
         if state:
-            payload = jwt_service.verify_jws_token(state)
+            payload = verify_slack_oauth_state(jwt_service, state)
         payload['slack_user_id'] = authed_user.get('id')
         payload['bot_access_token'] = bot_access_token
         payload['team_id'] = team_id
 
-        state = jwt_service.create_jws_token(payload)
+        state = jwt_service.create_jws_token(
+            payload, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
 
         # Redirect into keycloak
         scope = quote('openid email profile offline_access')
@@ -178,7 +189,7 @@ async def keycloak_callback(
             status_code=400,
         )
 
-    payload: dict[str, str] = jwt_service.verify_jws_token(state)
+    payload: dict[str, str] = verify_slack_oauth_state(jwt_service, state)
     slack_user_id = payload['slack_user_id']
     bot_access_token: str | None = payload['bot_access_token']
     team_id = payload['team_id']

@@ -305,13 +305,24 @@ async def saml_acs(request: Request, provider_id: int):
         )
 
     name_id = auth.get_nameid()
-    if not name_id:
+    attributes = auth.get_attributes()
+    if details.attribute_mapping.get('sub'):
+        subject = _extract_mapped_attribute(
+            attributes, details.attribute_mapping, 'sub'
+        )
+        if not subject:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='SAML assertion is missing the attribute mapped to sub',
+            )
+    elif name_id:
+        subject = name_id
+    else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='SAML assertion has no NameID',
         )
 
-    attributes = auth.get_attributes()
     email = _extract_mapped_attribute(
         attributes, details.attribute_mapping, 'email'
     ) or (
@@ -321,7 +332,7 @@ async def saml_acs(request: Request, provider_id: int):
         else None
     )
     userinfo = {
-        'sub': name_id,
+        'sub': subject,
         'email': email,
         # The IDP is the source of truth: SAML has no equivalent of OAuth's
         # email_verified=false -- if it asserts an email at all (a mapped
