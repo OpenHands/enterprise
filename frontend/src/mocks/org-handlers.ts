@@ -169,6 +169,7 @@ const MOCK_ADMIN_PERMISSIONS = [
   "provision_user",
   "view_org_conversations",
   "manage_service_accounts",
+  "manage_org_mcp",
 ];
 export const MOCK_ROLE_PERMISSIONS: Record<OrganizationUserRole, string[]> = {
   member: MOCK_MEMBER_PERMISSIONS,
