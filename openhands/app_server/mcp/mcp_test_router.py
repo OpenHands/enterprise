@@ -51,6 +51,7 @@ development against MCP servers on localhost.
 """
 
 import asyncio
+import inspect
 import ipaddress
 import json
 import os
@@ -347,6 +348,60 @@ def _restore_redacted_server(
     return restored[body.name]
 
 
+def _has_personal_server(body: MCPTestRequestBody, settings: Settings | None) -> bool:
+    existing = settings.agent_settings.mcp_config if settings else None
+    return bool(body.name) and existing is not None and body.name in existing
+
+
+async def _org_managed_server(
+    name: str | None, user_context: UserContext
+) -> MCPServer | None:
+    """The caller's org's ``org``-managed MCP listing ``name``, if any (OHE-3091)."""
+    if not name:
+        return None
+    get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
+    if get_effective_org_id is None:
+        return None
+    pending = get_effective_org_id()
+    org_id = await pending if inspect.isawaitable(pending) else None
+    if org_id is None:
+        return None
+    # Lazy: the org store binds the database engine, which OSS mode never has.
+    from storage.org_mcp_servers_store import (
+        OrgMcpServersOrgMissingError,
+        OrgMcpServersStore,
+    )
+
+    try:
+        entry = await OrgMcpServersStore(org_id).get(name)
+    except OrgMcpServersOrgMissingError:
+        return None
+    if entry is None or entry.managed_by != 'org':
+        return None
+    return entry.server
+
+
+async def _restore_redacted_server_for_user(
+    body: MCPTestRequestBody, settings: Settings | None, user_context: UserContext
+) -> dict[str, Any]:
+    """``_restore_redacted_server``, with the org's own listing as a fallback source.
+
+    An admin editing an organization-managed listing (OHE-3091) tests it with
+    its stored credential redacted; that listing lives on the org, not in the
+    caller's personal settings, so it is the restore source when the personal
+    map has no server of that name.
+    """
+    if _has_personal_server(body, settings):
+        return _restore_redacted_server(body, settings)
+    org_server = await _org_managed_server(body.name, user_context)
+    if org_server is None:
+        return _restore_redacted_server(body, settings)
+    restored = _preserve_redacted_mcp_secrets(
+        {body.name: body.server}, {body.name: org_server}
+    )
+    return restored[body.name]
+
+
 async def prepare_probe_request(
     body: MCPTestRequestBody, settings: Settings | None
 ) -> MCPTestRequest:
@@ -416,7 +471,8 @@ async def test_mcp_server(
 ) -> MCPTestResponse:
     """Probe a single remote MCP server config and report whether it works."""
     expansion = await _expand_secret_references(
-        _restore_redacted_server(body, settings), user_context
+        await _restore_redacted_server_for_user(body, settings, user_context),
+        user_context,
     )
     if expansion.missing:
         return MCPTestFailure(
