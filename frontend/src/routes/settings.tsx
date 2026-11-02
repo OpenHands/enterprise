@@ -34,6 +34,7 @@ import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useConfig } from "#/hooks/query/use-config";
 import { useMe } from "#/hooks/query/use-me";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
+import { LicenseBanner } from "#/components/features/settings/license-banner";
 
 const SAAS_ONLY_PATHS = [
   "/settings/agents",
@@ -323,32 +324,38 @@ function SettingsScreen() {
   const shouldHideTitle = routeHandle?.hideTitle === true;
 
   return (
-    <main data-testid="settings-screen" className="min-h-0 h-full">
-      <SettingsLayout
-        navigationItems={navItems}
-        topBanner={
-          shouldShowOrgWideBadge ? (
-            <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
-          ) : undefined
-        }
-      >
-        <div className="flex flex-col gap-6 pb-8">
-          {!shouldHideTitle && (
-            <header className="space-y-1">
-              <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
-              {currentSectionSubtitle ? (
-                <p
-                  data-testid="settings-page-subtitle"
-                  className="text-sm leading-5 text-muted"
-                >
-                  {t(currentSectionSubtitle)}
-                </p>
-              ) : null}
-            </header>
-          )}
-          <Outlet />
-        </div>
-      </SettingsLayout>
+    <main
+      data-testid="settings-screen"
+      className="flex min-h-0 h-full flex-col"
+    >
+      <LicenseBanner />
+      <div className="min-h-0 flex-1">
+        <SettingsLayout
+          navigationItems={navItems}
+          topBanner={
+            shouldShowOrgWideBadge ? (
+              <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
+            ) : undefined
+          }
+        >
+          <div className="flex flex-col gap-6 pb-8">
+            {!shouldHideTitle && (
+              <header className="space-y-1">
+                <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
+                {currentSectionSubtitle ? (
+                  <p
+                    data-testid="settings-page-subtitle"
+                    className="text-sm leading-5 text-muted"
+                  >
+                    {t(currentSectionSubtitle)}
+                  </p>
+                ) : null}
+              </header>
+            )}
+            <Outlet />
+          </div>
+        </SettingsLayout>
+      </div>
     </main>
   );
 }
