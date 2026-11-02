@@ -74,6 +74,7 @@ from server.routes.org_invitations import (  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     invitation_router,
 )
+from server.routes.org_mcp_servers import org_mcp_servers_router  # noqa: E402
 from server.routes.org_meta_profiles import (  # noqa: E402
     router as org_meta_profiles_router,
 )
@@ -214,6 +215,7 @@ base_app.include_router(service_router)  # Add routes for internal service API
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
+base_app.include_router(org_mcp_servers_router)  # Org-scoped MCP server listings
 base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
