@@ -18,6 +18,7 @@ from storage.auth_tokens import AuthTokens
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.device_code import DeviceCode
 from storage.instance_settings import InstanceSettings
+from storage.instance_settings_store import InstanceSettingsStore
 from storage.org import Org
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
@@ -332,6 +333,34 @@ async def test_create_user_records_the_first_user_as_the_setup_user(
         settings = await session.get(InstanceSettings, 1)
     assert settings is not None
     assert str(settings.setup_user_id) == first_user_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_the_setup_user_when_the_instance_id_came_first(
+    async_session_maker,
+):
+    """A usage report before the first sign-in creates the row; the wizard still works."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    with patch('storage.instance_settings_store.a_session_maker', async_session_maker):
+        instance_id = await InstanceSettingsStore.get_or_create_instance_id()
+    first_user_id = str(uuid.uuid4())
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', True),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None
+    assert str(settings.setup_user_id) == first_user_id
+    assert settings.instance_id == instance_id
 
 
 @pytest.mark.asyncio
