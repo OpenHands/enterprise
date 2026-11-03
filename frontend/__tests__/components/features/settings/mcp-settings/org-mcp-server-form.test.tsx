@@ -56,6 +56,26 @@ describe("OrgMcpServerForm", () => {
     expect(screen.queryByTestId("org-token-input")).not.toBeInTheDocument();
   });
 
+  it("asks for the authentication method before the credential source and the personal secret name", () => {
+    render(<OrgMcpServerForm mode="add" onSubmit={noop} onCancel={noop} />);
+
+    const fieldOrder = Array.from(
+      screen
+        .getByTestId("add-org-mcp-server-form")
+        .querySelectorAll("input[data-testid]"),
+    ).map((input) => input.getAttribute("data-testid"));
+
+    expect(fieldOrder).toEqual([
+      "org-server-type-dropdown",
+      "org-name-input",
+      "org-url-input",
+      "org-timeout-input",
+      "org-auth-dropdown",
+      "org-managed-by-dropdown",
+      "org-secret-name-input",
+    ]);
+  });
+
   it("rejects a missing or invalid personal secret name", () => {
     const onSubmit = vi.fn();
     render(<OrgMcpServerForm mode="add" onSubmit={onSubmit} onCancel={noop} />);

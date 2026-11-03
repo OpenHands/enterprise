@@ -281,25 +281,6 @@ export function OrgMcpServerForm({
       )}
 
       <SettingsDropdownInput
-        testId="org-managed-by-dropdown"
-        name="org-managed-by"
-        label={t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY)}
-        items={[
-          { key: "user", label: t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY_USER) },
-          { key: "org", label: t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY_ORG) },
-        ]}
-        selectedKey={managedBy}
-        onSelectionChange={(key) => {
-          if (key) setManagedBy(key as OrgMcpManagedBy);
-        }}
-        onInputChange={() => {}}
-        isClearable={false}
-        allowsCustomValue={false}
-        required
-        wrapperClassName="w-full"
-      />
-
-      <SettingsDropdownInput
         testId="org-auth-dropdown"
         name="org-auth"
         label={t(I18nKey.SETTINGS$MCP_ORG_AUTH)}
@@ -332,6 +313,25 @@ export function OrgMcpServerForm({
           placeholder="X-API-Key"
         />
       )}
+
+      <SettingsDropdownInput
+        testId="org-managed-by-dropdown"
+        name="org-managed-by"
+        label={t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY)}
+        items={[
+          { key: "user", label: t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY_USER) },
+          { key: "org", label: t(I18nKey.SETTINGS$MCP_ORG_MANAGED_BY_ORG) },
+        ]}
+        selectedKey={managedBy}
+        onSelectionChange={(key) => {
+          if (key) setManagedBy(key as OrgMcpManagedBy);
+        }}
+        onInputChange={() => {}}
+        isClearable={false}
+        allowsCustomValue={false}
+        required
+        wrapperClassName="w-full"
+      />
 
       {auth !== "none" && managedBy === "user" && (
         <SettingsInput
