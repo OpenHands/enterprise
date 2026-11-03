@@ -371,13 +371,24 @@ function MCPSettingsScreen() {
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
+        {/* Next to the organization's servers, this list is the member's own (OHE-3868). */}
         <header className="min-w-0 space-y-1">
-          <Typography.H2>{t(I18nKey.SETTINGS$MCP_TITLE)}</Typography.H2>
+          <Typography.H2>
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_TITLE
+                : I18nKey.SETTINGS$MCP_TITLE,
+            )}
+          </Typography.H2>
           <p
             data-testid="settings-page-subtitle"
             className="text-sm leading-5 text-muted"
           >
-            {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION
+                : I18nKey.SETTINGS$MCP_DESCRIPTION,
+            )}
           </p>
         </header>
         <BrandButton
