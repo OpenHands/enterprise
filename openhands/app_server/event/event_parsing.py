@@ -3,15 +3,58 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
-from pydantic import ConfigDict, ValidationError, model_serializer
+from pydantic import (
+    ConfigDict,
+    OnErrorOmit,
+    TypeAdapter,
+    ValidationError,
+    model_serializer,
+    with_config,
+)
+from typing_extensions import NotRequired, TypedDict
 
 from openhands.sdk import Action, Event, Observation
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 
 _logger = logging.getLogger(__name__)
 _VALID_EVENT_SOURCES = frozenset({'agent', 'user', 'environment', 'hook'})
 _UNKNOWN_EVENT_KIND = 'UnknownEvent'
+
+
+@with_config(ConfigDict(extra='forbid'))
+class _FullStateEnvelope(TypedDict):
+    kind: Literal['ConversationStateUpdateEvent']
+    key: Literal['full_state']
+    id: NotRequired[Any]
+    timestamp: NotRequired[Any]
+    source: NotRequired[Any]
+    parent_id: NotRequired[Any]
+    # Reject/omit non-null values in the JSON parser without building their trees.
+    value: NotRequired[OnErrorOmit[None]]
+
+
+_FULL_STATE_ENVELOPE = TypeAdapter(_FullStateEnvelope)
+
+
+def parse_compact_event_json(json_data: str | bytes) -> Event | None:
+    try:
+        envelope = _FULL_STATE_ENVELOPE.validate_json(json_data)
+        event = Event.model_validate(envelope)
+    except (TypeError, ValueError):
+        pass
+    else:
+        if (
+            isinstance(event, ConversationStateUpdateEvent)
+            and event.key == FULL_STATE_KEY
+        ):
+            return None
+    # Unknown fields or invalid metadata retain the original payload and fallback.
+    return parse_event_json(json_data)
 
 
 def _unparsed_json_schema(
