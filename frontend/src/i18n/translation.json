@@ -36685,6 +36685,23 @@
     "uk": "Bitbucket",
     "ca": "Bitbucket"
   },
+  "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER": {
+    "en": "Bitbucket Data Center",
+    "ja": "Bitbucket Data Center",
+    "zh-CN": "Bitbucket Data Center",
+    "zh-TW": "Bitbucket Data Center",
+    "ko-KR": "Bitbucket Data Center",
+    "no": "Bitbucket Data Center",
+    "it": "Bitbucket Data Center",
+    "pt": "Bitbucket Data Center",
+    "es": "Bitbucket Data Center",
+    "ar": "Bitbucket Data Center",
+    "fr": "Bitbucket Data Center",
+    "tr": "Bitbucket Data Center",
+    "de": "Bitbucket Data Center",
+    "uk": "Bitbucket Data Center",
+    "ca": "Bitbucket Data Center"
+  },
   "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS": {
     "en": "Azure DevOps",
     "ja": "Azure DevOps",

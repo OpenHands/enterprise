@@ -315,6 +315,9 @@ describe("clientLoader permission checks", () => {
 });
 
 describe("MCPSettingsScreen organization MCP servers", () => {
+  // A team org of the mock user: org "1" is their Personal Workspace, which
+  // has no organization listings.
+  const TEAM_ORG_ID = "2";
   const ORG_LISTINGS: OrgMcpServerItem[] = [
     {
       name: "datadog-shared",
@@ -364,7 +367,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       emptyPersonalSettings(),
     );
     vi.spyOn(organizationService, "getMe").mockResolvedValue({
-      org_id: "1",
+      org_id: TEAM_ORG_ID,
       user_id: "me",
       email: "me@acme.org",
       role,
@@ -398,7 +401,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     );
     const getOrgMcpServers = vi.spyOn(organizationService, "getOrgMcpServers");
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
 
     await screen.findByText("SETTINGS$MCP_NO_SERVERS");
     expect(
@@ -410,7 +413,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
   it("shows members the organization's listings in two groups with their status", async () => {
     arrangeOrgMcp({ role: "member" });
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
 
     const section = await screen.findByTestId("org-mcp-servers-section");
     expect(
@@ -446,7 +449,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
   it("hides the organization section from members when it is empty", async () => {
     arrangeOrgMcp({ role: "member", listings: [] });
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
 
     await screen.findByText("SETTINGS$MCP_NO_SERVERS");
     await waitFor(() =>
@@ -460,7 +463,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
   it("connects a user-managed listing by saving the personal secret it names", async () => {
     const { createSecret } = arrangeOrgMcp({ role: "member" });
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
     await userEvent.click(
       await screen.findByTestId("connect-org-mcp-server-button"),
     );
@@ -495,7 +498,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       .spyOn(organizationService, "createOrgMcpServer")
       .mockResolvedValue(true);
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
     const section = await screen.findByTestId("org-mcp-servers-section");
     expect(
       within(section).getByText("SETTINGS$MCP_ORG_NONE"),
@@ -518,7 +521,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     await userEvent.click(within(modal).getByTestId("org-submit-button"));
 
     await waitFor(() =>
-      expect(createOrgMcpServer).toHaveBeenCalledWith("1", {
+      expect(createOrgMcpServer).toHaveBeenCalledWith(TEAM_ORG_ID, {
         name: "bifrost",
         managed_by: "user",
         server: {
@@ -541,7 +544,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       .spyOn(organizationService, "deleteOrgMcpServer")
       .mockResolvedValue(true);
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
     const orgGroup = await screen.findByTestId("org-mcp-server-group-org");
     await userEvent.click(
       within(orgGroup).getByTestId("delete-org-mcp-server-button"),
@@ -552,7 +555,10 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     await userEvent.click(screen.getByTestId("confirm-button"));
 
     await waitFor(() =>
-      expect(deleteOrgMcpServer).toHaveBeenCalledWith("1", "datadog-shared"),
+      expect(deleteOrgMcpServer).toHaveBeenCalledWith(
+        TEAM_ORG_ID,
+        "datadog-shared",
+      ),
     );
   });
 
@@ -562,7 +568,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       .spyOn(SettingsService, "saveSettings")
       .mockResolvedValue(true);
 
-    renderMcpSettingsScreen();
+    renderMcpSettingsScreen(TEAM_ORG_ID);
     await screen.findByTestId("org-mcp-servers-section");
     await userEvent.click(
       screen.getByRole("button", { name: "SETTINGS$MCP_ADD_SERVER" }),

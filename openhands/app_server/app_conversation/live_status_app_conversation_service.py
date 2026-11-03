@@ -2596,20 +2596,38 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Leave out the org listings this member has not connected to (OHE-3091).
 
         A ``user``-managed organization listing references the member's
-        personal secret with ``${NAME}``. The sandbox keeps a reference no
-        secret satisfies literally, so the server would fail to authenticate;
-        while a required reference is missing from the conversation's final
-        ``secrets`` the listing is skipped with a warning. ``None`` secrets
-        means unknown and skips the check.
+        personal secret with ``${NAME}``, or authenticates with OAuth under
+        the member's own account. The sandbox keeps a reference no secret
+        satisfies literally, and cannot run a browser consent flow, so either
+        way the server would fail to authenticate: while a required reference
+        is missing from the conversation's final ``secrets``, or an OAuth
+        listing carries no tokens for this member, the listing is skipped with
+        a warning. ``None`` secrets means unknown and skips the reference
+        check only.
         """
         unconnected = getattr(user, 'org_user_managed_mcp_server_names', None)
-        if not unconnected or secrets is None:
+        if not unconnected:
             return user_mcp
-        available = set(secrets)
+        available = set(secrets) if secrets is not None else None
         skipped: set[str] = set()
         for name in unconnected:
             server = user_mcp.get(name)
             if server is None:
+                continue
+            oauth = server.oauth_auth
+            if oauth is not None:
+                tokens = oauth.state.tokens if oauth.state is not None else None
+                if tokens is None or tokens.access_token is None:
+                    skipped.add(name)
+                    _logger.warning(
+                        'org_mcp_server:skipped_unauthorized',
+                        extra={
+                            'user_id': getattr(user, 'id', None),
+                            'server_name': name,
+                        },
+                    )
+                continue
+            if available is None:
                 continue
             missing = mcp_server_secret_references(server).required - available
             if missing:
