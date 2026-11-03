@@ -8,6 +8,7 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { useActivateAgentProfile } from "#/hooks/mutation/use-activate-agent-profile";
 import { useDeactivateAgentProfile } from "#/hooks/mutation/use-deactivate-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { I18nKey } from "#/i18n/declaration";
 import { extractErrorMessage } from "#/utils/extract-error-message";
 import { mutateWithToast } from "#/utils/mutate-with-toast";
@@ -33,7 +34,9 @@ interface AgentProfilesManagerProps {
  * member's own profiles first, then the organization's shared ones in a
  * section of their own. For most members the org section is read-only (they
  * can set one as their default) and hidden when the org has none; an admin
- * with ``canManageOrg`` sees it always, with Add, Edit and Delete.
+ * with ``canManageOrg`` sees it always, with Add, Edit and Delete. A personal
+ * workspace has no organization to share with, so it shows a single list
+ * (OHE-3864).
  */
 export function AgentProfilesManager({
   onAddProfile,
@@ -50,14 +53,18 @@ export function AgentProfilesManager({
   const [profileToDelete, setProfileToDelete] =
     useState<AgentProfileSummary | null>(null);
 
+  const { isTeamOrg } = useOrgTypeAndAccess();
   const profiles = data?.profiles ?? [];
-  const personalProfiles = profiles.filter(
-    (profile) => profile.scope === "personal",
-  );
+  // In a personal workspace the profiles stored on its org collection (Canvas
+  // saves there, as it sends no scope) are the user's own: list them all here.
+  const personalProfiles = isTeamOrg
+    ? profiles.filter((profile) => profile.scope === "personal")
+    : profiles;
   // A summary without a scope (an older backend) is an org profile.
-  const orgProfiles = profiles.filter(
-    (profile) => profile.scope !== "personal",
-  );
+  const orgProfiles = isTeamOrg
+    ? profiles.filter((profile) => profile.scope !== "personal")
+    : [];
+  const showOrgSection = isTeamOrg && (orgProfiles.length > 0 || canManageOrg);
   const activeId = data?.active_agent_profile_id ?? null;
 
   let orgSectionDescriptionKey =
@@ -115,10 +122,11 @@ export function AgentProfilesManager({
             onEdit={onEditProfile}
             onDelete={setProfileToDelete}
             isActivating={isActivating}
+            canManageOrg={canManageOrg}
           />
         </div>
 
-        {!isLoading && !error && (orgProfiles.length > 0 || canManageOrg) && (
+        {!isLoading && !error && showOrgSection && (
           <section
             data-testid="org-agent-profiles-section"
             className="flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"

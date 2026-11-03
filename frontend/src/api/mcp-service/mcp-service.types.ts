@@ -1,6 +1,8 @@
 // mcp-service.types.ts
 // Types for the /api/v1/mcp endpoints.
 
+import type { MCPJsonValue } from "#/types/settings";
+
 /**
  * Body for `POST /api/v1/mcp/test` (mirrors the backend `MCPTestRequestBody`).
  * `server` is a single entry in the SDK `mcp_config` map shape (as produced by
@@ -37,12 +39,14 @@ export interface MCPOAuthStartResponse {
   job_id?: string | null;
   authorization_url?: string | null;
   error?: string | null;
-  error_kind?: MCPTestFailureKind | null;
+  error_kind?: string | null;
 }
 
 /**
- * `GET /api/v1/mcp/oauth/status/{job_id}`. An organization listing's tokens
- * stay server-side: the org routes take them from the job by its id.
+ * `GET /api/v1/mcp/oauth/status/{job_id}`. On success `oauth_state` carries
+ * the tokens to store in a member's own server's `auth.state`. A job started
+ * for an organization listing omits them: the org routes take them from the
+ * job by its id.
  */
 export interface MCPOAuthStatusResponse {
   ok: boolean;
@@ -50,6 +54,8 @@ export interface MCPOAuthStatusResponse {
   job_id: string;
   authorization_url?: string | null;
   callback_ready?: boolean;
+  tools?: string[] | null;
+  oauth_state?: Record<string, MCPJsonValue> | null;
   error?: string | null;
-  error_kind?: MCPTestFailureKind | null;
+  error_kind?: string | null;
 }

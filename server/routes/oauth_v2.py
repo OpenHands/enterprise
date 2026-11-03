@@ -35,7 +35,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import jwt
@@ -98,6 +98,8 @@ from storage.user_store import UserStore
 
 # HTTP timeout for external OAuth/token endpoint calls.
 OAUTH_HTTP_TIMEOUT = 15.0
+
+BITBUCKET_DC_REST_API = '/rest/api/1.0'
 
 # Binds a link flow's state to the browser that started it.
 LINK_NONCE_COOKIE = 'openhands_oauth_link_nonce'
@@ -286,21 +288,150 @@ async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
     async with httpx.AsyncClient(
         verify=httpx_verify_option(), timeout=OAUTH_HTTP_TIMEOUT
     ) as client:
-        response = await client.get(
-            details.userinfo_url,
-            headers={'Authorization': f'Bearer {access_token}'},
+        if details.provider_type == ProviderType.BITBUCKET_DATA_CENTER:
+            return await _fetch_bitbucket_dc_userinfo(
+                client, provider, details.userinfo_url, access_token
+            )
+        if details.provider_type == ProviderType.BITBUCKET:
+            return await _fetch_bitbucket_userinfo(
+                client, provider, details.userinfo_url, access_token
+            )
+        response = await _userinfo_get(
+            client, provider, details.userinfo_url, access_token
         )
-        if response.status_code >= 400:
-            logger.warning(
-                'oauth_v2 userinfo failed provider=%s status=%s',
-                provider.id,
-                response.status_code,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail='Userinfo lookup failed at the provider',
-            )
         return response.json()
+
+
+async def _userinfo_get(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    url: str,
+    access_token: str,
+    params: dict | None = None,
+) -> httpx.Response:
+    response = await client.get(
+        url,
+        params=params,
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json',
+        },
+    )
+    if response.status_code >= 400:
+        logger.warning(
+            'oauth_v2 userinfo failed provider=%s url=%s status=%s',
+            provider.id,
+            url,
+            response.status_code,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Userinfo lookup failed at the provider',
+        )
+    return response
+
+
+async def _fetch_bitbucket_userinfo(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    userinfo_url: str,
+    access_token: str,
+) -> dict:
+    """Bitbucket Cloud's ``/2.0/user`` has neither an ``id``/``sub`` nor the
+    email; the email comes from the sibling ``/2.0/user/emails``."""
+    user = (await _userinfo_get(client, provider, userinfo_url, access_token)).json()
+    emails_response = await _userinfo_get(
+        client, provider, f'{userinfo_url.rstrip("/")}/emails', access_token
+    )
+    email = next(
+        (
+            entry.get('email')
+            for entry in emails_response.json().get('values', [])
+            if entry.get('is_primary') and entry.get('is_confirmed')
+        ),
+        None,
+    )
+    return {
+        **user,
+        'sub': user.get('account_id'),
+        'email': email,
+        'email_verified': email is not None,
+    }
+
+
+async def _fetch_bitbucket_dc_userinfo(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    userinfo_url: str,
+    access_token: str,
+) -> dict:
+    """Bitbucket Data Center has no "current user" resource and issues no
+    id_token. The token's user is named only by the ``X-AUSERNAME`` /
+    ``X-AUSERID`` headers of an authenticated response, and the profile must
+    be searched for under ``/users``. ``userinfo_url`` only locates the REST
+    API, so rows seeded with the nonexistent ``/users/current`` still work.
+    """
+    server_url, found, _ = userinfo_url.partition(BITBUCKET_DC_REST_API)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f'Provider {provider.id} userinfo_url must be under '
+                f'{BITBUCKET_DC_REST_API}'
+            ),
+        )
+    api_url = server_url + BITBUCKET_DC_REST_API
+
+    response = await _userinfo_get(
+        client, provider, f'{api_url}/application-properties', access_token
+    )
+    # URL-encoded for usernames such as ``first.last@example.com``.
+    username = unquote(response.headers.get('X-AUSERNAME', ''))
+    user_id = response.headers.get('X-AUSERID')
+    if not username:
+        logger.warning(
+            'oauth_v2 bitbucket_dc userinfo: no X-AUSERNAME provider=%s', provider.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Userinfo lookup failed at the provider',
+        )
+
+    # ``filter`` is a substring match on username, display name and email, so
+    # the token's user must be picked out exactly -- by id when the server
+    # sent one.
+    params: dict = {'filter': username, 'limit': 100}
+    while True:
+        page = (
+            await _userinfo_get(
+                client, provider, f'{api_url}/users', access_token, params
+            )
+        ).json()
+        for user in page.get('values', []):
+            if (
+                str(user.get('id')) == user_id
+                if user_id
+                else str(user.get('name', '')).casefold() == username.casefold()
+            ):
+                return {
+                    **user,
+                    'sub': str(user['id']),
+                    'email': user.get('emailAddress'),
+                }
+        next_start = page.get('nextPageStart')
+        if page.get('isLastPage', True) or next_start is None:
+            break
+        params = {**params, 'start': next_start}
+
+    logger.warning(
+        'oauth_v2 bitbucket_dc userinfo: user not found provider=%s username=%s',
+        provider.id,
+        username,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail='Userinfo lookup failed at the provider',
+    )
 
 
 def _epoch_to_datetime(expires_at: int | str | None) -> datetime | None:
