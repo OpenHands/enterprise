@@ -31,6 +31,7 @@ from openhands.app_server.mcp.mcp_secret_references import (
 from openhands.app_server.settings.settings_models import (
     _preserve_redacted_mcp_secrets,
 )
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.models import EditResponse
 from openhands.sdk.mcp.config import MCPOAuthState, MCPServer, dump_mcp_config
 from server.auth.authorization import Permission, require_permission
@@ -417,6 +418,7 @@ async def delete_org_mcp_server(
 @org_mcp_servers_router.put(
     '/{org_id}/mcp-servers/{name}/connection',
     response_model=EditResponse,
+    dependencies=[Depends(reject_service_account)],
 )
 async def connect_org_mcp_server(
     org_id: UUID,
@@ -463,6 +465,7 @@ async def connect_org_mcp_server(
 @org_mcp_servers_router.delete(
     '/{org_id}/mcp-servers/{name}/connection',
     response_model=EditResponse,
+    dependencies=[Depends(reject_service_account)],
 )
 async def disconnect_org_mcp_server(
     org_id: UUID,
