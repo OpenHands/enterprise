@@ -12,7 +12,7 @@ import { MarketplaceModal } from "#/components/features/settings/marketplace-mod
 import { DeleteConfirmationModal } from "#/components/features/settings/delete-confirmation-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useSkills } from "#/hooks/query/use-skills";
-import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useOrganizationAppSettings } from "#/hooks/query/use-organization-app-settings";
 import { useOrganization } from "#/hooks/query/use-organization";
 import { useMarketplaceMutations } from "#/hooks/mutation/use-marketplace-mutations";
@@ -32,15 +32,15 @@ function SkillsSettingsScreen() {
   const { t } = useTranslation();
 
   // Query data
-  const { data: user } = useMe();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: skills, isLoading: skillsLoading } = useSkills();
   const { data: orgAppSettings } = useOrganizationAppSettings();
   const { data: currentOrganization } = useOrganization();
 
-  // Permissions
-  const userRole = user?.role ?? "member";
-  const isAdminOrOwner = userRole === "admin" || userRole === "owner";
+  // Permissions: org-scoped marketplaces need the permission the backend
+  // enforces on their save (edit_org_settings).
+  const { hasPermission } = usePermission();
+  const isAdminOrOwner = hasPermission("edit_org_settings");
 
   // Active scope derived from current organization
   const activeScope = useMemo((): "org" | "personal" => {
