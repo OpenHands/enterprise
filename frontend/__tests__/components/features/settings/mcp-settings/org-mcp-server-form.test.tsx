@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { OrgMcpServerForm } from "#/components/features/settings/mcp-settings/org-mcp-server-form";
 import {
@@ -15,6 +16,7 @@ vi.mock("react-i18next", () => ({
 
 const BIFROST_URL = "https://bifrost.example/mcp";
 const DATADOG_URL = "https://dd.example/mcp";
+const OAUTH_URL = "https://issues.example/mcp";
 const noop = () => {};
 
 function fill(testId: string, value: string) {
@@ -30,6 +32,28 @@ function storedOrgListing(): OrgMcpServerView {
     auth: "bearer",
     credential: REDACTED_MCP_SECRET,
     secretNames: [],
+    server: {},
+  };
+}
+
+function oauthListing(
+  overrides: Partial<OrgMcpServerView> = {},
+): OrgMcpServerView {
+  return {
+    name: "issue-tracker",
+    managedBy: "org",
+    type: "shttp",
+    url: OAUTH_URL,
+    auth: "oauth",
+    secretNames: [],
+    oauth: {
+      clientId: "client-1",
+      clientSecret: REDACTED_MCP_SECRET,
+      scopes: "read write",
+      authorized: true,
+    },
+    server: {},
+    ...overrides,
   };
 }
 
@@ -161,6 +185,7 @@ describe("OrgMcpServerForm", () => {
           auth: "bearer",
           credential: REDACTED_MCP_SECRET,
           secretNames: ["BIFROST_TOKEN"],
+          server: {},
         }}
         onSubmit={noop}
         onCancel={noop}
@@ -171,6 +196,219 @@ describe("OrgMcpServerForm", () => {
       "BIFROST_TOKEN",
     );
     expect(screen.queryByTestId("org-timeout-input")).not.toBeInTheDocument();
+  });
+
+  describe("OAuth", () => {
+    it("offers OAuth when adding a listing and lets each member authorize it", async () => {
+      const onSubmit = vi.fn();
+      const onTest = vi.fn();
+      render(
+        <OrgMcpServerForm
+          mode="add"
+          onSubmit={onSubmit}
+          onCancel={noop}
+          onTest={onTest}
+        />,
+      );
+      fill("org-name-input", "issue-tracker");
+      fill("org-url-input", OAUTH_URL);
+
+      await userEvent.click(screen.getByTestId("org-auth-dropdown"));
+      await userEvent.click(
+        await screen.findByRole("option", {
+          name: "SETTINGS$MCP_ORG_AUTH_OAUTH",
+        }),
+      );
+
+      // User-managed: nothing to authorize here, and no secret name to ask for.
+      expect(
+        screen.getByText("SETTINGS$MCP_ORG_OAUTH_USER_HELP"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("org-oauth-authorize-button"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("org-secret-name-input"),
+      ).not.toBeInTheDocument();
+      // The backend cannot test an OAuth server without a consent flow.
+      expect(
+        screen.queryByTestId("org-mcp-test-connection"),
+      ).not.toBeInTheDocument();
+
+      fill("org-oauth-client-id-input", "client-1");
+      fill("org-oauth-client-secret-input", "client-secret");
+      fill("org-oauth-scopes-input", "read  write");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+
+      expect(onSubmit).toHaveBeenCalledWith({
+        name: "issue-tracker",
+        managed_by: "user",
+        server: {
+          url: OAUTH_URL,
+          transport: "http",
+          auth: {
+            strategy: "oauth2",
+            authentication: {
+              type: "oauth",
+              client_id: "client-1",
+              client_secret: "client-secret",
+              scopes: ["read", "write"],
+            },
+          },
+        },
+      });
+    });
+
+    it("needs the admin's authorization before saving an organization-managed listing", async () => {
+      const onSubmit = vi.fn();
+      const onAuthorize = vi
+        .fn()
+        .mockResolvedValue({ ok: true, jobId: "job-1" });
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={oauthListing({
+            oauth: { authorized: false },
+          })}
+          onSubmit={onSubmit}
+          onCancel={noop}
+          onAuthorize={onAuthorize}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ORG_ERROR_OAUTH_AUTHORIZATION_REQUIRED",
+      );
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId("org-oauth-authorize-button"));
+      await screen.findByTestId("org-oauth-authorized");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+
+      // The tokens stay on the job: only its id travels.
+      expect(onSubmit).toHaveBeenCalledWith({
+        name: "issue-tracker",
+        managed_by: "org",
+        server: {
+          url: OAUTH_URL,
+          transport: "http",
+          auth: { strategy: "oauth2", authentication: { type: "oauth" } },
+        },
+        oauth_job_id: "job-1",
+      });
+    });
+
+    it("keeps the authorization form open when the consent flow fails", async () => {
+      const onAuthorize = vi
+        .fn()
+        .mockResolvedValue({ ok: false, reason: "not_completed" });
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={oauthListing({ oauth: { authorized: false } })}
+          onSubmit={noop}
+          onCancel={noop}
+          onAuthorize={onAuthorize}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("org-oauth-authorize-button"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("org-oauth-authorize-button")).toBeEnabled(),
+      );
+      expect(
+        screen.queryByTestId("org-oauth-authorized"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("discards an authorization when the settings it ran with change", async () => {
+      const onSubmit = vi.fn();
+      const onAuthorize = vi
+        .fn()
+        .mockResolvedValue({ ok: true, jobId: "job-1" });
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={oauthListing({ oauth: { authorized: false } })}
+          onSubmit={onSubmit}
+          onCancel={noop}
+          onAuthorize={onAuthorize}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("org-oauth-authorize-button"));
+      await screen.findByTestId("org-oauth-authorized");
+
+      fill("org-oauth-scopes-input", "admin");
+
+      expect(
+        screen.queryByTestId("org-oauth-authorized"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("keeps stored tokens and client secret on an unchanged edit", () => {
+      const onSubmit = vi.fn();
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={oauthListing()}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+      expect(screen.getByTestId("org-oauth-authorized")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+
+      expect(onSubmit).toHaveBeenCalledWith({
+        name: "issue-tracker",
+        managed_by: "org",
+        server: {
+          url: OAUTH_URL,
+          transport: "http",
+          auth: {
+            strategy: "oauth2",
+            authentication: {
+              type: "oauth",
+              client_id: "client-1",
+              client_secret: REDACTED_MCP_SECRET,
+              scopes: ["read", "write"],
+            },
+          },
+        },
+      });
+    });
+
+    it("asks for the client secret and a new authorization after a URL change", () => {
+      const onSubmit = vi.fn();
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={oauthListing()}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+
+      fill("org-url-input", "https://elsewhere.example/mcp");
+      expect(
+        screen.queryByTestId("org-oauth-authorized"),
+      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ORG_ERROR_OAUTH_CLIENT_SECRET_REQUIRED_AFTER_URL_CHANGE",
+      );
+
+      fill("org-oauth-client-secret-input", "client-secret");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ORG_ERROR_OAUTH_AUTHORIZATION_REQUIRED",
+      );
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
   });
 
   it("requests a connection test with the form's current values", () => {

@@ -10,7 +10,7 @@ import { parseMcpConfig } from "#/utils/mcp-config";
 export const REDACTED_MCP_SECRET = "**********";
 
 export type OrgMcpServerType = "sse" | "shttp";
-export type OrgMcpAuthKind = "none" | "bearer" | "header";
+export type OrgMcpAuthKind = "none" | "bearer" | "header" | "oauth";
 
 /** A listing as the Settings > MCP page shows and edits it. */
 export interface OrgMcpServerView {
@@ -27,6 +27,18 @@ export interface OrgMcpServerView {
   credential?: string;
   /** Personal secrets a user-managed listing needs before it works. */
   secretNames: string[];
+  /** `auth === "oauth"`: the client settings and whether the listing holds
+   * tokens of its own. The secret comes back masked. */
+  oauth?: {
+    clientId?: string;
+    clientSecret?: string;
+    scopes?: string;
+    authorized: boolean;
+  };
+  /** A user-managed OAuth listing: whether this member has authorized it. */
+  connected?: boolean;
+  /** The masked config, sent back as is to authorize the listing. */
+  server: Record<string, unknown>;
 }
 
 /** The form's values; `buildOrgMcpServerPayload` turns them into a request. */
@@ -44,6 +56,15 @@ export interface OrgMcpServerFormValues {
    * stored one (`keepStoredCredential`). */
   token?: string;
   keepStoredCredential?: boolean;
+  /** `auth === "oauth"`; all optional: a server may register clients itself. */
+  oauthClientId?: string;
+  oauthClientSecret?: string;
+  /** Empty while editing keeps the stored secret. */
+  keepStoredOAuthClientSecret?: boolean;
+  /** Space-separated. */
+  oauthScopes?: string;
+  /** The finished OAuth job holding an organization-managed listing's tokens. */
+  oauthJobId?: string;
 }
 
 /** Same rule as secret names: a shell-style identifier. */
@@ -57,6 +78,23 @@ function firstHeader(
   return entries.length > 0 ? entries[0] : undefined;
 }
 
+function oauthView(auth: {
+  authentication?: Record<string, unknown> | null;
+  state?: Record<string, unknown> | null;
+}): NonNullable<OrgMcpServerView["oauth"]> {
+  const { client_id: clientId, client_secret: clientSecret } =
+    auth.authentication ?? {};
+  const { scopes } = auth.authentication ?? {};
+  const tokens = auth.state?.tokens as Record<string, unknown> | undefined;
+  return {
+    ...(typeof clientId === "string" && { clientId }),
+    ...(typeof clientSecret === "string" && { clientSecret }),
+    ...(typeof scopes === "string" && { scopes }),
+    ...(Array.isArray(scopes) && { scopes: scopes.join(" ") }),
+    authorized: !!tokens?.access_token,
+  };
+}
+
 export function toOrgMcpServerView(item: OrgMcpServerItem): OrgMcpServerView {
   const parsed = parseMcpConfig({ [item.name]: item.server });
   const sse = parsed.sse_servers[0];
@@ -68,8 +106,12 @@ export function toOrgMcpServerView(item: OrgMcpServerItem): OrgMcpServerView {
   let auth: OrgMcpAuthKind = "none";
   let headerName: string | undefined;
   let credential: string | undefined;
+  let oauth: OrgMcpServerView["oauth"];
   const strategy = server?.auth?.strategy;
-  if (
+  if (server?.auth?.strategy === "oauth2") {
+    auth = "oauth";
+    oauth = oauthView(server.auth);
+  } else if (
     server?.auth &&
     (strategy === "bearer" || strategy === "api_key") &&
     "value" in server.auth
@@ -108,6 +150,9 @@ export function toOrgMcpServerView(item: OrgMcpServerItem): OrgMcpServerView {
     ...(headerName !== undefined && { headerName }),
     ...(credential !== undefined && { credential }),
     secretNames: item.secret_names ?? [],
+    ...(oauth && { oauth }),
+    ...(typeof item.connected === "boolean" && { connected: item.connected }),
+    server: item.server,
   };
 }
 
@@ -126,7 +171,21 @@ export function buildOrgMcpServerPayload(
   if (values.type === "shttp" && values.timeout !== undefined) {
     server.timeout = values.timeout;
   }
-  if (values.auth !== "none") {
+  if (values.auth === "oauth") {
+    const clientSecret = values.keepStoredOAuthClientSecret
+      ? REDACTED_MCP_SECRET
+      : values.oauthClientSecret;
+    const scopes = values.oauthScopes?.split(/[\s,]+/).filter(Boolean) ?? [];
+    server.auth = {
+      strategy: "oauth2",
+      authentication: {
+        type: "oauth",
+        ...(values.oauthClientId && { client_id: values.oauthClientId }),
+        ...(clientSecret && { client_secret: clientSecret }),
+        ...(scopes.length > 0 && { scopes }),
+      },
+    };
+  } else if (values.auth !== "none") {
     let credential: string;
     if (values.managedBy === "user") {
       credential = secretReference(values.secretName ?? "");
@@ -143,16 +202,25 @@ export function buildOrgMcpServerPayload(
             headers: { [values.headerName ?? ""]: credential },
           };
   }
-  return { name: values.name, managed_by: values.managedBy, server };
+  return {
+    name: values.name,
+    managed_by: values.managedBy,
+    server,
+    ...(values.auth === "oauth" &&
+      values.managedBy === "org" &&
+      values.oauthJobId && { oauth_job_id: values.oauthJobId }),
+  };
 }
 
-/** Whether the member holds every personal secret the listing references. */
+/**
+ * Whether the member can use the listing: it is organization-managed, they
+ * authorized it (OAuth), or they hold every personal secret it references.
+ */
 export function isOrgMcpServerConnected(
   view: OrgMcpServerView,
   personalSecretNames: ReadonlySet<string>,
 ): boolean {
-  return (
-    view.managedBy === "org" ||
-    view.secretNames.every((name) => personalSecretNames.has(name))
-  );
+  if (view.managedBy === "org") return true;
+  if (view.auth === "oauth") return view.connected === true;
+  return view.secretNames.every((name) => personalSecretNames.has(name));
 }
