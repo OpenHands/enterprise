@@ -89,6 +89,9 @@ export function OrgMcpServerForm({
   const urlChanged = url.trim() !== (listing?.url ?? "");
   const keepStoredCredential =
     hasStoredCredential && managedBy === "org" && !urlChanged && !token;
+  // A user-managed credential is each member's own secret: testing would use
+  // the admin's secret of that name, if any, not the members' (OHE-3871).
+  const canTestConnection = !(managedBy === "user" && auth !== "none");
 
   const validateUrl = (value: string): string | null => {
     if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_URL_REQUIRED);
@@ -372,7 +375,7 @@ export function OrgMcpServerForm({
         />
       )}
 
-      {testMessage && (
+      {testMessage && canTestConnection && (
         <p
           data-testid="org-mcp-test-message"
           className={cn(
@@ -393,7 +396,7 @@ export function OrgMcpServerForm({
         >
           {t(I18nKey.BUTTON$CANCEL)}
         </BrandButton>
-        {onTest && (
+        {onTest && canTestConnection && (
           <BrandButton
             testId="org-mcp-test-connection"
             type="button"
