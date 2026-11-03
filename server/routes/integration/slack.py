@@ -380,16 +380,18 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     event = payload['event']
     user_msg = event['text']
     assert event['type'] == 'app_mention'
-    client_msg_id = event['client_msg_id']
     message_ts = event['ts']
     thread_ts = event.get('thread_ts')
     channel_id = event['channel']
     slack_user_id = event['user']
     team_id = payload['team_id']
+    # Only messages typed in a Slack client carry client_msg_id; mentions posted
+    # by workflows or other apps don't, so fall back to the message itself.
+    dedupe_id = event.get('client_msg_id') or f'{channel_id}:{message_ts}'
 
     # Sometimes slack sends duplicates, so we need to make sure this is not a duplicate.
     redis = get_redis_client_async()
-    key = f'slack_msg:{client_msg_id}'
+    key = f'slack_msg:{dedupe_id}'
     created = await redis.set(key, 1, nx=True, ex=60)
     if not created:
         logger.info('slack_is_duplicate')
