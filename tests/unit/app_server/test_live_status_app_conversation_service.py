@@ -6326,6 +6326,52 @@ class TestLiveStatusAppConversationService:
 
         assert set(servers) == {'bifrost', 'datadog'}
 
+    def _user_with_oauth_org_listings(self):
+        """Two user-managed OAuth listings: one this member authorized (tokens
+        injected at load), one they did not."""
+
+        def oauth(state=None):
+            auth = {
+                'strategy': 'oauth2',
+                'authentication': {'type': 'oauth', 'client_id': 'cid'},
+            }
+            if state is not None:
+                auth['state'] = state
+            return auth
+
+        self.mock_user.agent_settings = Settings(
+            agent_settings={
+                'llm': {'model': 'gpt-4'},
+                'mcp_config': {
+                    'jira': {
+                        'url': 'https://jira.example/mcp',
+                        'transport': 'http',
+                        'auth': oauth({'tokens': {'access_token': 'member-token'}}),
+                    },
+                    'confluence': {
+                        'url': 'https://confluence.example/mcp',
+                        'transport': 'http',
+                        'auth': oauth(),
+                    },
+                },
+            }
+        ).agent_settings
+        self.mock_user.org_user_managed_mcp_server_names = ['jira', 'confluence']
+
+    def test_merge_custom_mcp_config_skips_an_unauthorized_oauth_org_listing(self):
+        """OHE-3091: a sandbox cannot run the consent flow, so a user-managed
+        OAuth listing this member never authorized is left out, with or
+        without the conversation's secrets being known."""
+        self._user_with_oauth_org_listings()
+        with_secrets: dict = {}
+        without_secrets: dict = {}
+
+        self.service._merge_custom_mcp_config(with_secrets, self.mock_user, {})
+        self.service._merge_custom_mcp_config(without_secrets, self.mock_user)
+
+        assert set(with_secrets) == {'jira'}
+        assert set(without_secrets) == {'jira'}
+
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_forwards_secrets_to_the_merge(self):
         self._user_with_org_listings()
