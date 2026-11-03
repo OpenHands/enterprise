@@ -43,11 +43,18 @@ import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import {
+  useConnectOrgMcpServer,
   useCreateOrgMcpServer,
   useDeleteOrgMcpServer,
+  useDisconnectOrgMcpServer,
   useTestOrgMcpServer,
   useUpdateOrgMcpServer,
 } from "#/hooks/mutation/use-org-mcp-server-mutations";
+import {
+  McpOAuthFlowFailure,
+  McpOAuthFlowResult,
+  runMcpOAuthFlow,
+} from "#/utils/mcp-oauth-flow";
 import { OrgMcpServerView, toOrgMcpServerView } from "#/utils/org-mcp-servers";
 
 export const clientLoader = createPermissionGuard("manage_mcp");
@@ -181,6 +188,11 @@ function MCPSettingsScreen() {
   const { mutate: updateOrgMcpServer, isPending: isUpdatingOrgServer } =
     useUpdateOrgMcpServer();
   const { mutate: deleteOrgMcpServer } = useDeleteOrgMcpServer();
+  const { mutateAsync: connectOrgMcpServer } = useConnectOrgMcpServer();
+  const { mutate: disconnectOrgMcpServer } = useDisconnectOrgMcpServer();
+  const [connectingOAuthName, setConnectingOAuthName] = useState<string | null>(
+    null,
+  );
   const {
     mutate: testOrgMcpServer,
     isPending: isTestingOrgServer,
@@ -355,10 +367,68 @@ function MCPSettingsScreen() {
     updateOrgMcpServer(
       {
         name: editingListing.name,
-        payload: { managed_by: payload.managed_by, server: payload.server },
+        payload: {
+          managed_by: payload.managed_by,
+          server: payload.server,
+          ...(payload.oauth_job_id && { oauth_job_id: payload.oauth_job_id }),
+        },
       },
       { onSuccess: closeOrgServerModal, onError: showOrgError },
     );
+  };
+
+  const showOAuthFlowError = (result: McpOAuthFlowFailure) => {
+    if (result.reason === "popup_blocked") {
+      displayErrorToast(t(I18nKey.SETTINGS$MCP_ORG_OAUTH_POPUP_BLOCKED));
+    } else if (result.reason === "not_completed") {
+      displayErrorToast(t(I18nKey.SETTINGS$MCP_ORG_OAUTH_NOT_COMPLETED));
+    } else {
+      displayErrorToast(result.error || t(I18nKey.ERROR$GENERIC));
+    }
+  };
+
+  const handleAuthorizeOrgServer = async (
+    payload: OrgMcpServerCreate,
+  ): Promise<McpOAuthFlowResult> => {
+    try {
+      const result = await runMcpOAuthFlow({
+        name: payload.name,
+        server: payload.server,
+      });
+      if (!result.ok) showOAuthFlowError(result);
+      return result;
+    } catch (error) {
+      showOrgError(error);
+      return { ok: false, reason: "failed" };
+    }
+  };
+
+  // A user-managed listing connects with the member's own account (OAuth, right
+  // here, so the window opens inside the click) or their own personal secret.
+  const handleConnectListing = async (listing: OrgMcpServerView) => {
+    if (listing.auth !== "oauth") {
+      setConnectingListing(listing);
+      return;
+    }
+    setConnectingOAuthName(listing.name);
+    try {
+      const result = await handleAuthorizeOrgServer({
+        name: listing.name,
+        managed_by: listing.managedBy,
+        server: listing.server,
+      });
+      if (result.ok) {
+        await connectOrgMcpServer({ name: listing.name, jobId: result.jobId });
+      }
+    } catch (error) {
+      showOrgError(error);
+    } finally {
+      setConnectingOAuthName(null);
+    }
+  };
+
+  const handleDisconnectListing = (listing: OrgMcpServerView) => {
+    disconnectOrgMcpServer(listing.name, { onError: showOrgError });
   };
 
   const handleEditListingClick = (listing: OrgMcpServerView) => {
@@ -461,9 +531,11 @@ function MCPSettingsScreen() {
             listings={orgListings}
             availableSecretNames={availableSecretNames}
             canManage={canManageOrgMcp}
+            connectingName={connectingOAuthName}
             onEdit={handleEditListingClick}
             onDelete={setListingToDelete}
-            onConnect={setConnectingListing}
+            onConnect={handleConnectListing}
+            onDisconnect={handleDisconnectListing}
           />
         </section>
       ) : null}
@@ -587,6 +659,7 @@ function MCPSettingsScreen() {
           onSubmit={handleAddOrgServer}
           onClose={closeOrgServerModal}
           onTest={handleTestOrgServer}
+          onAuthorize={handleAuthorizeOrgServer}
           isTestPending={isTestingOrgServer}
           isSaving={isCreatingOrgServer}
           testMessage={orgTestMessage}
@@ -603,6 +676,7 @@ function MCPSettingsScreen() {
           onSubmit={handleEditOrgServer}
           onClose={closeOrgServerModal}
           onTest={handleTestOrgServer}
+          onAuthorize={handleAuthorizeOrgServer}
           isTestPending={isTestingOrgServer}
           isSaving={isUpdatingOrgServer}
           testMessage={orgTestMessage}

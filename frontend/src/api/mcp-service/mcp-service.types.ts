@@ -44,7 +44,9 @@ export interface MCPOAuthStartResponse {
 
 /**
  * `GET /api/v1/mcp/oauth/status/{job_id}`. On success `oauth_state` carries
- * the tokens to store in the server's `auth.state`.
+ * the tokens to store in a member's own server's `auth.state`. A job started
+ * for an organization listing omits them: the org routes take them from the
+ * job by its id.
  */
 export interface MCPOAuthStatusResponse {
   ok: boolean;
