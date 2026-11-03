@@ -178,8 +178,9 @@ class TestJiraNewConversationView:
 
         response = new_conversation_view.get_response_msg()
 
-        assert 'Note: This conversation started without a repository.' in response
         assert response.startswith("I'm on it!")
+        assert 'without a repository' not in response
+        assert '\n' not in response
 
     def test_get_response_msg_names_every_repository(self, new_conversation_view):
         new_conversation_view.additional_repos = [
