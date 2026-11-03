@@ -1,10 +1,13 @@
 """Quota cleanup must never use ADMIN's visibility as an ownership boundary."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from pythonjsonlogger.json import JsonFormatter
 
 from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
@@ -126,14 +129,15 @@ def paused_runtime_ids(requests):
 @pytest.mark.parametrize('caller', [ADMIN, SpecifyUserContext('owner')])
 @pytest.mark.parametrize('concurrent_resume', [False, True])
 async def test_resume_only_pauses_the_owners_oldest_sandbox(
-    quota_service, caller, concurrent_resume
+    quota_service, caller, concurrent_resume, caplog
 ):
     service, runtimes, requests = quota_service
     await seed(service, runtimes)
     service.user_context = caller
     runtimes['target']['concurrent_resume'] = concurrent_resume
 
-    assert await service.resume_sandbox('target')
+    with caplog.at_level(logging.INFO):
+        assert await service.resume_sandbox('target')
 
     assert paused_runtime_ids(requests) == ['rt-owner-old']
     for sandbox_id in (
@@ -147,6 +151,65 @@ async def test_resume_only_pauses_the_owners_oldest_sandbox(
         assert row.session_api_key_hash == hash_session_api_key('original-key')
     target = await service.db_session.get(StoredSandbox, 'target')
     assert target.session_api_key_hash == hash_session_api_key('rotated-key')
+
+    records = [
+        r for r in caplog.records if getattr(r, 'event', None) == 'sandbox_quota_pause'
+    ]
+    assert [r.outcome for r in records] == ['selected', 'pause_requested']
+    for record in records:
+        payload = json.loads(JsonFormatter().format(record))
+        assert payload['owner_user_id'] == 'owner'
+        assert payload['sandbox_id'] == 'owner-old'
+        assert payload['sandbox_created_at'] == '2026-01-01T00:02:00+00:00'
+        assert payload['reason'] == 'quota_limit'
+        assert payload['selection_policy'] == 'oldest_created'
+        assert payload['configured_limit'] == 2
+        assert payload['target_remaining_count'] == 1
+        assert payload['eligible_running_count'] == 2
+        assert payload['excluded_sandbox_id'] == 'target'
+        assert 'original-key' not in json.dumps(payload)
+        assert 'rotated-key' not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('first_result', [False, RuntimeError('sensitive-key')])
+async def test_quota_pause_logs_failure_and_continues(
+    quota_service, caplog, first_result
+):
+    service, runtimes, _ = quota_service
+    await seed(service, runtimes)
+
+    with (
+        patch.object(
+            RemoteSandboxService,
+            'pause_sandbox',
+            new_callable=AsyncMock,
+            side_effect=[first_result, True],
+        ) as pause,
+        caplog.at_level(logging.INFO),
+    ):
+        assert await service.pause_old_sandboxes(0, owner_user_id='owner') == [
+            'owner-new'
+        ]
+
+    assert [call.args[0] for call in pause.await_args_list] == [
+        'owner-old',
+        'owner-new',
+    ]
+    records = [
+        r for r in caplog.records if getattr(r, 'event', None) == 'sandbox_quota_pause'
+    ]
+    failure = records[1]
+    assert [r.outcome for r in records] == [
+        'selected',
+        'error' if isinstance(first_result, Exception) else 'not_paused',
+        'selected',
+        'pause_requested',
+    ]
+    assert failure.levelno == logging.WARNING
+    assert failure.sandbox_id == 'owner-old'
+    if isinstance(first_result, Exception):
+        assert failure.error_type == 'RuntimeError'
+    assert 'sensitive-key' not in JsonFormatter().format(failure)
 
 
 async def test_resume_under_owner_limit_does_not_pause_other_users(quota_service):
