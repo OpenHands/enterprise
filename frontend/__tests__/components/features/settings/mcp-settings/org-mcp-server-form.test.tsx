@@ -177,32 +177,79 @@ describe("OrgMcpServerForm", () => {
     const onTest = vi.fn();
     render(
       <OrgMcpServerForm
-        mode="add"
+        mode="edit"
+        listing={storedOrgListing()}
         onSubmit={noop}
         onCancel={noop}
         onTest={onTest}
         testMessage={{ ok: true, text: "SETTINGS$MCP_TEST_SUCCESS" }}
       />,
     );
-    fill("org-name-input", "bifrost");
-    fill("org-url-input", BIFROST_URL);
     fill("org-timeout-input", "120");
-    fill("org-secret-name-input", "BIFROST_TOKEN");
+    fill("org-token-input", "rotated-key");
 
     fireEvent.click(screen.getByTestId("org-mcp-test-connection"));
 
     expect(onTest).toHaveBeenCalledWith({
-      name: "bifrost",
-      managed_by: "user",
+      name: "datadog-shared",
+      managed_by: "org",
       server: {
-        url: BIFROST_URL,
+        url: DATADOG_URL,
         transport: "http",
         timeout: 120,
-        auth: { strategy: "bearer", value: secretReference("BIFROST_TOKEN") },
+        auth: { strategy: "bearer", value: "rotated-key" },
       },
     });
     expect(screen.getByTestId("org-mcp-test-message")).toHaveTextContent(
       "SETTINGS$MCP_TEST_SUCCESS",
     );
+  });
+
+  it("offers no connection test for a user-managed listing that uses each member's credential", () => {
+    // The form opens as a user-managed bearer listing.
+    render(
+      <OrgMcpServerForm
+        mode="add"
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={vi.fn()}
+        testMessage={{ ok: true, text: "SETTINGS$MCP_TEST_SUCCESS" }}
+      />,
+    );
+
+    expect(
+      screen.queryByTestId("org-mcp-test-connection"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("org-mcp-test-message"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the connection test for a user-managed listing without a credential", () => {
+    const onTest = vi.fn();
+    render(
+      <OrgMcpServerForm
+        mode="edit"
+        listing={{
+          name: "docs-search",
+          managedBy: "user",
+          type: "shttp",
+          url: BIFROST_URL,
+          auth: "none",
+          secretNames: [],
+        }}
+        onSubmit={noop}
+        onCancel={noop}
+        onTest={onTest}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("org-mcp-test-connection"));
+
+    expect(onTest).toHaveBeenCalledWith({
+      name: "docs-search",
+      managed_by: "user",
+      server: { url: BIFROST_URL, transport: "http" },
+    });
   });
 });
