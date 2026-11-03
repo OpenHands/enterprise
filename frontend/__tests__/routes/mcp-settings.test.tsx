@@ -594,4 +594,35 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     ).toBeInTheDocument();
     expect(saveSettings).not.toHaveBeenCalled();
   });
+
+  it("titles the member's own servers as personal next to the organization's", async () => {
+    arrangeOrgMcp({ role: "member" });
+
+    // Org "2" is a team org of the mock user; "1" is their Personal Workspace.
+    renderMcpSettingsScreen("2");
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "SETTINGS$MCP_PERSONAL_SECTION_TITLE",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("settings-page-subtitle")).toHaveTextContent(
+      "SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION",
+    );
+  });
+
+  it("keeps the Model Context Protocol heading when organization servers are off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      emptyPersonalSettings(),
+    );
+
+    renderMcpSettingsScreen();
+
+    expect(
+      await screen.findByRole("heading", { name: "SETTINGS$MCP_TITLE" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("settings-page-subtitle")).toHaveTextContent(
+      "SETTINGS$MCP_DESCRIPTION",
+    );
+  });
 });
