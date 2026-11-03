@@ -20,6 +20,7 @@ import LlmSettingsScreen, { clientLoader } from "#/routes/llm-settings";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Organization, OrganizationMember } from "#/types/org";
 import { Settings, SettingsValue } from "#/types/settings";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // ProfilesService is mocked because the LLM screen's auto-profile flow
 // calls save + activate after every successful settings save. The default
@@ -149,6 +150,7 @@ function buildOrganizationMember(
     max_iterations: 20,
     llm_model: "",
     llm_base_url: "",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "owner"],
     ...overrides,
   };
 }

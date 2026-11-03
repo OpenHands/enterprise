@@ -10,7 +10,7 @@ from storage.base import Base
 
 
 class InstanceSettings(Base):
-    """The company name and logo shown across the instance, and first-install state.
+    """Instance-wide state: company name and logo, first-install state, instance ID.
 
     This table holds at most one row (enforced by a database constraint).
     """
@@ -43,6 +43,10 @@ class InstanceSettings(Base):
     signup_link_minted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Identifies this install in the usage reports it sends Customer Center.
+    # Set the first time a report needs it and never changed afterward. See
+    # ``storage.instance_settings_store``.
+    instance_id: Mapped[UUID | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

@@ -22,18 +22,23 @@ interface OrgMcpServerListItemProps {
   listing: OrgMcpServerView;
   isConnected: boolean;
   canManage: boolean;
+  /** This row's OAuth flow is running or being saved. */
+  isConnecting: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onConnect: () => void;
+  onDisconnect: () => void;
 }
 
 function OrgMcpServerListItem({
   listing,
   isConnected,
   canManage,
+  isConnecting,
   onEdit,
   onDelete,
   onConnect,
+  onDisconnect,
 }: OrgMcpServerListItemProps) {
   const { t } = useTranslation();
   const displayName = mcpServerDisplayName(listing.name);
@@ -42,6 +47,12 @@ function OrgMcpServerListItem({
       ? t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE)
       : t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP);
   const isUserManaged = listing.managedBy === "user";
+  const isOAuth = listing.auth === "oauth";
+  const needsConnectionMessage = isOAuth
+    ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_NEEDS_CONNECTION)
+    : t(I18nKey.SETTINGS$MCP_ORG_NEEDS_CONNECTION, {
+        names: listing.secretNames.join(", "),
+      });
 
   return (
     <div
@@ -92,9 +103,7 @@ function OrgMcpServerListItem({
             >
               {isConnected
                 ? t(I18nKey.SETTINGS$MCP_ORG_CONNECTED)
-                : t(I18nKey.SETTINGS$MCP_ORG_NEEDS_CONNECTION, {
-                    names: listing.secretNames.join(", "),
-                  })}
+                : needsConnectionMessage}
             </Text>
           ) : null}
         </div>
@@ -106,9 +115,23 @@ function OrgMcpServerListItem({
             type="button"
             variant="primary"
             onClick={onConnect}
+            isDisabled={isConnecting}
             className={settingsListRowActionButtonClassName}
           >
-            {t(I18nKey.SETTINGS$MCP_ORG_CONNECT)}
+            {isConnecting
+              ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZING)
+              : t(I18nKey.SETTINGS$MCP_ORG_CONNECT)}
+          </BrandButton>
+        ) : null}
+        {isUserManaged && isOAuth && isConnected ? (
+          <BrandButton
+            testId="disconnect-org-mcp-server-button"
+            type="button"
+            variant="secondary"
+            onClick={onDisconnect}
+            className={settingsListRowActionButtonClassName}
+          >
+            {t(I18nKey.SETTINGS$MCP_ORG_DISCONNECT)}
           </BrandButton>
         ) : null}
         {canManage ? (
@@ -146,23 +169,28 @@ interface OrgMcpServerListProps {
   /** Names of the secrets this member can use; decides "connected". */
   availableSecretNames: ReadonlySet<string>;
   canManage: boolean;
+  /** The listing whose OAuth flow is running, if any. */
+  connectingName?: string | null;
   onEdit: (listing: OrgMcpServerView) => void;
   onDelete: (listing: OrgMcpServerView) => void;
   onConnect: (listing: OrgMcpServerView) => void;
+  onDisconnect: (listing: OrgMcpServerView) => void;
 }
 
 /**
  * The organization's MCP server listings in two groups: the ones the
  * organization connects for everyone, and the ones each member connects
- * with their own secret (OHE-3091).
+ * with their own secret or account (OHE-3091).
  */
 export function OrgMcpServerList({
   listings,
   availableSecretNames,
   canManage,
+  connectingName = null,
   onEdit,
   onDelete,
   onConnect,
+  onDisconnect,
 }: OrgMcpServerListProps) {
   const { t } = useTranslation();
   const groups = [
@@ -211,9 +239,11 @@ export function OrgMcpServerList({
                 availableSecretNames,
               )}
               canManage={canManage}
+              isConnecting={connectingName === listing.name}
               onEdit={() => onEdit(listing)}
               onDelete={() => onDelete(listing)}
               onConnect={() => onConnect(listing)}
+              onDisconnect={() => onDisconnect(listing)}
             />
           ))}
         </div>
