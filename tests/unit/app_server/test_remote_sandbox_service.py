@@ -674,7 +674,9 @@ class TestSandboxLifecycle:
 
         # Verify
         assert result is True
-        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(
+            9, exclude_id='test-sandbox-123', owner_user_id='test-user-123'
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/resume',
@@ -778,7 +780,7 @@ class TestSandboxLifecycle:
             order.append('get_runtime')
             return create_runtime_data(status='paused')
 
-        async def pause_old_sandboxes(max_num_sandboxes):
+        async def pause_old_sandboxes(max_num_sandboxes, **kwargs):
             order.append('pause_old_sandboxes')
             return []
 
