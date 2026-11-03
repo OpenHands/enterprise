@@ -16,6 +16,7 @@ export type AuthProviderPresetKey =
   | "github"
   | "gitlab"
   | "bitbucket"
+  | "bitbucket_data_center"
   | "azure_devops"
   | "saml"
   | "password";
@@ -170,6 +171,26 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         token_url: "https://bitbucket.org/site/oauth2/access_token",
         userinfo_url: "https://api.bitbucket.org/2.0/user",
         scopes: ["repository", "account"],
+      }),
+    },
+  },
+  {
+    key: "bitbucket_data_center",
+    label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER,
+    params: {
+      ...LOGIN_DEFAULTS,
+      title: "Log in with Bitbucket Data Center",
+      icon: whiteIcon(bitbucketLogo),
+      color: "#0052CC",
+      details: oauthDetails({
+        provider_type: "bitbucket_data_center",
+        authorization_url:
+          "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/authorize",
+        token_url: "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/token",
+        // Data Center has no "current user" resource; login only uses this
+        // to locate the REST API (see `_fetch_bitbucket_dc_userinfo`).
+        userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
+        scopes: ["PROJECT_READ", "REPO_READ", "REPO_WRITE"],
       }),
     },
   },
