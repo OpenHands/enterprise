@@ -6,7 +6,6 @@ import { useLinkIntegration } from "#/hooks/mutation/use-link-integration";
 import { useUnlinkIntegration } from "#/hooks/mutation/use-unlink-integration";
 import { useConfigureIntegration } from "#/hooks/mutation/use-configure-integration";
 import { useConfig } from "#/hooks/query/use-config";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useJiraInstanceStatus } from "#/hooks/query/use-jira-instance-status";
 import { I18nKey } from "#/i18n/declaration";
@@ -41,8 +40,7 @@ export function IntegrationRow({
   // Jira Cloud only: setting up the workspace connection is admin/owner-only;
   // members link their own account (OAuth mode) or are matched by email.
   const { data: config } = useConfig();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const isJira = platform === "jira";
   const canConfigure = !isJira || hasPermission("manage_integration_providers");
   const jiraOauthEnabled = config?.jira_oauth_enabled ?? true;

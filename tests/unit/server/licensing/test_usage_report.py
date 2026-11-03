@@ -316,10 +316,7 @@ async def test_posts_the_report_to_customer_center():
     ],
     ids=['revoked-key', 'bad-field', 'server-error', 'unreachable'],
 )
-async def test_logs_a_failed_report_without_raising(
-    response, logged, caplog, monkeypatch
-):
-    monkeypatch.setattr(openhands_logger, 'propagate', True)
+async def test_logs_a_failed_report_without_raising(response, logged, caplog):
     customer_center = FakeCustomerCenter(response)
 
     with caplog.at_level(logging.WARNING, logger=openhands_logger.name):

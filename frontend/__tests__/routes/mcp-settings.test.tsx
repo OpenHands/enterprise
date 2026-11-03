@@ -19,6 +19,7 @@ import MCPSettingsScreen, { clientLoader } from "#/routes/mcp-settings";
 import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Settings } from "#/types/settings";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 function buildSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -370,6 +371,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       user_id: "me",
       email: "me@acme.org",
       role,
+      permissions: MOCK_ROLE_PERMISSIONS[role],
       llm_api_key: "",
       max_iterations: 1,
       llm_model: "",

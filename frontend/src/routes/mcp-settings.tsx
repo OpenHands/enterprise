@@ -35,7 +35,6 @@ import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
 import { MCPTestResponse } from "#/api/mcp-service/mcp-service.types";
 import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
@@ -143,8 +142,7 @@ function MCPSettingsScreen() {
   const { isTeamOrg } = useOrgTypeAndAccess();
   const orgMcpEnabled =
     !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canManageOrgMcp = orgMcpEnabled && hasPermission("manage_org_mcp");
   const orgMcpServersQuery = useOrgMcpServers();
   const orgListings = useMemo(

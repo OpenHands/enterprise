@@ -1,5 +1,4 @@
 import { ModelRouterManager } from "#/components/features/settings/model-router/model-router-manager";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
@@ -12,8 +11,7 @@ export const clientLoader = createPermissionGuard("view_llm_settings");
  */
 function OrgModelRouterSettingsScreen() {
   const { organizationId } = useOrgTypeAndAccess();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   if (!organizationId) {
     return null;

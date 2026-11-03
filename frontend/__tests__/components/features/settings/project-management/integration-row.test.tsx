@@ -8,7 +8,11 @@ import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { openHands } from "#/api/open-hands-axios";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
-import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import {
+  MOCK_PERSONAL_ORG,
+  MOCK_TEAM_ORG_ACME,
+  MOCK_ROLE_PERMISSIONS,
+} from "#/mocks/org-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Organization, OrganizationMember } from "#/types/org";
 
@@ -36,6 +40,7 @@ const createMockMember = (
   llm_model: "gpt-4",
   llm_base_url: "",
   status: "active",
+  permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
   ...overrides,
 });
 

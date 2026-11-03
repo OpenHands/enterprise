@@ -7,7 +7,7 @@ import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
 import { hasPendingOrgSwitch } from "./org-url-param";
 import { getActiveOrganizationUser } from "./permission-checks";
-import { PermissionKey, rolePermissions } from "./permissions";
+import { PermissionKey } from "./permissions";
 
 /**
  * Whether the current user holds the instance-level super-admin role.
@@ -81,7 +81,8 @@ async function getPermissionDeniedFallback(): Promise<string> {
 const PERMISSION_GRANTED = {} as const;
 
 /**
- * Creates a clientLoader guard that checks if the user has the required permission.
+ * Creates a clientLoader guard that checks if the user's `/me` permissions
+ * include the required permission.
  * Redirects (replacing the history entry) to the first available settings
  * page if permission is denied.
  *
@@ -144,9 +145,8 @@ export const createPermissionGuard =
       return getRedirectResponse();
     }
 
-    const userRole = user.role ?? "member";
-
-    if (!rolePermissions[userRole].includes(requiredPermission)) {
+    // `/me` permissions are what the backend enforces. Missing = none.
+    if (!user.permissions?.includes(requiredPermission)) {
       return getRedirectResponse();
     }
 
