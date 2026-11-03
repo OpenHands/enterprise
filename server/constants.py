@@ -87,6 +87,9 @@ DEPLOYMENT_MODE = _get_deployment_mode()
 ROLE_OWNER = 'owner'
 ROLE_ADMIN = 'admin'
 ROLE_MEMBER = 'member'
+# Non-human org members. Not assignable through member, invitation or
+# instance-admin role changes; service accounts get their own API.
+ROLE_SERVICE_ACCOUNT = 'service_account'
 
 # Deprecated - billing margins are now handled internally in litellm
 DEFAULT_BILLING_MARGIN = float(os.environ.get('DEFAULT_BILLING_MARGIN', '1.0'))
