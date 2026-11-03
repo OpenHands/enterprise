@@ -100,7 +100,7 @@ services:
     restart: unless-stopped
 
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.25.1}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.26.1}
     command:
       ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
@@ -144,7 +144,7 @@ services:
     restart: unless-stopped
 
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.32.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.35.0}
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
