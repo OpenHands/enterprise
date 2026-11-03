@@ -145,7 +145,9 @@ class TestGetOrCreateApiKeyForUser:
             with patch(
                 'server.routes.service.UserStore.get_user_by_id', new_callable=AsyncMock
             ) as mock_get_user:
-                mock_get_user.return_value = MagicMock()
+                mock_get_user.return_value = MagicMock(
+                    is_disabled=False, deletion_pending=False
+                )
                 with pytest.raises(HTTPException) as exc_info:
                     await get_or_create_api_key_for_user(
                         user_id='not-a-uuid',
@@ -161,7 +163,7 @@ class TestGetOrCreateApiKeyForUser:
     @pytest.mark.asyncio
     async def test_user_not_in_org(self, valid_user_id, valid_org_id, valid_request):
         """Test error when user is not a member of the org."""
-        mock_user = MagicMock()
+        mock_user = MagicMock(is_disabled=False, deletion_pending=False)
 
         with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
             with patch(
@@ -184,11 +186,51 @@ class TestGetOrCreateApiKeyForUser:
         assert 'not a member of org' in exc_info.value.detail
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'flags', [{'is_disabled': True}, {'deletion_pending': True}]
+    )
+    async def test_disabled_user_is_refused(
+        self, valid_user_id, valid_org_id, valid_request, flags
+    ):
+        """A disabled user gets no key: it would be valid again after enable."""
+        mock_user = MagicMock(is_disabled=False, deletion_pending=False)
+        for name, value in flags.items():
+            setattr(mock_user, name, value)
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.get_or_create_system_api_key = AsyncMock()
+
+        with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', 'test-key'):
+            with patch(
+                'server.routes.service.UserStore.get_user_by_id', new_callable=AsyncMock
+            ) as mock_get_user:
+                with patch(
+                    'server.routes.service.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                ) as mock_get_member:
+                    with patch(
+                        'server.routes.service.ApiKeyStore.get_instance'
+                    ) as mock_get_store:
+                        mock_get_user.return_value = mock_user
+                        mock_get_member.return_value = MagicMock()
+                        mock_get_store.return_value = mock_api_key_store
+                        with pytest.raises(HTTPException) as exc_info:
+                            await get_or_create_api_key_for_user(
+                                user_id=valid_user_id,
+                                org_id=valid_org_id,
+                                request=valid_request,
+                                x_service_api_key='test-key',
+                            )
+
+        assert exc_info.value.status_code == 403
+        assert 'disabled' in exc_info.value.detail
+        mock_api_key_store.get_or_create_system_api_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_successful_key_creation(
         self, valid_user_id, valid_org_id, valid_request
     ):
         """Test successful API key creation."""
-        mock_user = MagicMock()
+        mock_user = MagicMock(is_disabled=False, deletion_pending=False)
         mock_org_member = MagicMock()
         mock_api_key_store = MagicMock()
         mock_api_key_store.get_or_create_system_api_key = AsyncMock(
@@ -254,7 +296,9 @@ class TestGetOrCreateApiKeyForUser:
                     with patch(
                         'server.routes.service.ApiKeyStore.get_instance'
                     ) as mock_get_store:
-                        mock_get_user.return_value = MagicMock()
+                        mock_get_user.return_value = MagicMock(
+                            is_disabled=False, deletion_pending=False
+                        )
                         mock_get_member.return_value = MagicMock()
                         mock_get_store.return_value = mock_api_key_store
 
@@ -276,7 +320,7 @@ class TestGetOrCreateApiKeyForUser:
         self, valid_user_id, valid_org_id, valid_request
     ):
         """Test error handling when store raises exception."""
-        mock_user = MagicMock()
+        mock_user = MagicMock(is_disabled=False, deletion_pending=False)
         mock_org_member = MagicMock()
         mock_api_key_store = MagicMock()
         mock_api_key_store.get_or_create_system_api_key = AsyncMock(

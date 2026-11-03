@@ -1,9 +1,14 @@
 import asyncio
-from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from sqlalchemy import select
 
+from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
+from openhands.app_server.sandbox.sandbox_store import REMOTE_BACKEND, StoredSandbox
+from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LastSuperAdminError,
@@ -366,3 +371,181 @@ async def test_delete_refuses_service_account_but_disable_enable_work(
     # Disable and enable stay allowed: they are the kill switch.
     await service.disable_user(str(user.id))
     await service.enable_user(str(user.id))
+    # A service account has no Keycloak identity to update.
+    service.remote.disable.assert_awaited_once_with(str(user.id), idp_user=False)
+    service.remote.enable.assert_awaited_once_with(str(user.id), idp_user=False)
+
+
+@pytest.mark.asyncio
+async def test_human_lifecycle_updates_the_idp_identity(create_user, service):
+    user = create_user()
+    await service.disable_user(str(user.id))
+    await service.enable_user(str(user.id))
+    service.remote.disable.assert_awaited_once_with(str(user.id), idp_user=True)
+    service.remote.enable.assert_awaited_once_with(str(user.id), idp_user=True)
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_removes_it_and_refuses_humans(
+    create_user, service, async_session_maker
+):
+    """GIVEN a service account and a human WHEN deleted through the explicit path THEN the service account is removed and the human is refused."""
+    sa = create_user(account_type='service')
+    human = create_user()
+
+    await service.delete_service_account(str(sa.id))
+
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is None
+    service.remote.disable.assert_awaited_once_with(str(sa.id), idp_user=False)
+    service.remote.delete.assert_awaited_once_with(str(sa.id), idp_user=False)
+    with pytest.raises(ValueError):
+        await service.delete_service_account(str(human.id))
+    async with async_session_maker() as session:
+        assert await session.get(User, human.id) is not None
+
+
+# --- Service account sandboxes ---
+
+
+@pytest.fixture
+def sandbox_service(async_session_maker):
+    """A real ``RemoteSandboxService`` on the test DB, with the runtime API faked.
+
+    The runtime answers 404, as for a paused sandbox, so ``delete_sandbox``
+    deletes the row. ``get_sandbox_service`` is patched where the lifecycle
+    service imports it; the states it was called with are recorded.
+    """
+    states = []
+
+    @asynccontextmanager
+    async def get_sandbox_service(state, request=None):
+        states.append(state)
+        runtime_gone = httpx.Response(
+            404, request=httpx.Request('GET', 'https://runtime/sessions/x')
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.request.return_value = runtime_gone
+        async with async_session_maker() as session:
+            service = RemoteSandboxService(
+                sandbox_spec_service=AsyncMock(),
+                api_url='https://runtime',
+                api_key='k',
+                web_url=None,
+                resource_factor=1,
+                runtime_class='gvisor',
+                start_sandbox_timeout=1,
+                max_num_sandboxes=1,
+                user_context=getattr(state, USER_CONTEXT_ATTR),
+                httpx_client=client,
+                db_session=session,
+            )
+            yield service
+            await session.commit()
+
+    with patch(
+        'openhands.app_server.config.get_sandbox_service', get_sandbox_service
+    ) as patched:
+        patched.states = states
+        yield patched
+
+
+async def _add_sandbox(async_session_maker, sandbox_id, user_id, paused=True):
+    async with async_session_maker() as session:
+        session.add(
+            StoredSandbox(
+                id=sandbox_id,
+                backend=REMOTE_BACKEND,
+                created_by_user_id=str(user_id),
+                sandbox_spec_id='spec',
+                lifecycle_state='paused' if paused else 'running',
+            )
+        )
+        await session.commit()
+
+
+async def _sandbox_ids(async_session_maker):
+    async with async_session_maker() as session:
+        return set((await session.scalars(select(StoredSandbox.id))).all())
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_deletes_its_paused_sandboxes(
+    create_user, service, async_session_maker, sandbox_service
+):
+    """GIVEN a service account with paused sandboxes WHEN deleted THEN its sandboxes and the account are gone and other users' sandboxes stay."""
+    sa = create_user(account_type='service')
+    other = create_user()
+    await _add_sandbox(async_session_maker, 'sa-1', sa.id)
+    await _add_sandbox(async_session_maker, 'sa-2', sa.id, paused=False)
+    await _add_sandbox(async_session_maker, 'other', other.id)
+
+    await service.delete_service_account(str(sa.id))
+
+    assert await _sandbox_ids(async_session_maker) == {'other'}
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is None
+    # The sandbox service acted for the service account only.
+    assert {
+        getattr(state, USER_CONTEXT_ATTR).user_id for state in sandbox_service.states
+    } == {str(sa.id)}
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_keeps_the_account_when_a_sandbox_fails(
+    create_user, service, async_session_maker, sandbox_service
+):
+    sa = create_user(account_type='service')
+    await _add_sandbox(async_session_maker, 'sa-1', sa.id)
+
+    with patch.object(
+        RemoteSandboxService, 'delete_sandbox', side_effect=RuntimeError('stop failed')
+    ):
+        with pytest.raises(LifecycleCleanupError):
+            await service.delete_service_account(str(sa.id))
+
+    assert await _sandbox_ids(async_session_maker) == {'sa-1'}
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_still_blocked_by_sandboxes_and_deletes_none(
+    create_user, service, async_session_maker, sandbox_service
+):
+    """Human behavior is unchanged: sandboxes block the delete and are not touched."""
+    human = create_user()
+    await _add_sandbox(async_session_maker, 'h-1', human.id)
+
+    with pytest.raises(UserCleanupConflict):
+        await service.delete_user(str(human.id))
+
+    assert await _sandbox_ids(async_session_maker) == {'h-1'}
+    assert sandbox_service.states == []
+
+
+@pytest.mark.asyncio
+async def test_delete_service_account_warns_when_a_sandbox_is_not_visible(
+    create_user, service, async_session_maker, sandbox_service
+):
+    """GIVEN a sandbox row the sandbox service cannot see WHEN deleted THEN a warning is logged and the cleanup check still blocks the delete."""
+    sa = create_user(account_type='service')
+    await _add_sandbox(async_session_maker, 'sa-1', sa.id)
+
+    with (
+        patch.object(
+            RemoteSandboxService, 'delete_sandbox', AsyncMock(return_value=False)
+        ),
+        patch('server.services.admin_user_lifecycle_service.logger') as log,
+    ):
+        with pytest.raises(UserCleanupConflict):
+            await service.delete_service_account(str(sa.id))
+
+    log.warning.assert_called_once()
+    assert log.warning.call_args.kwargs['extra'] == {
+        'user_id': str(sa.id),
+        'sandbox_id': 'sa-1',
+    }
+    assert await _sandbox_ids(async_session_maker) == {'sa-1'}
+    async with async_session_maker() as session:
+        assert await session.get(User, sa.id) is not None

@@ -176,6 +176,7 @@ async def get_or_create_api_key_for_user(
     Raises:
         HTTPException: 401 if service key is invalid
         HTTPException: 404 if user not found
+        HTTPException: 403 if user is disabled or pending deletion
         HTTPException: 403 if user is not a member of the specified org
     """
     # Validate service API key
@@ -196,6 +197,14 @@ async def get_or_create_api_key_for_user(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f'User {user_id} not found',
+        )
+
+    # Same rule as the membership endpoint's ``disabled`` status. A key minted
+    # now would be valid again after the user is enabled.
+    if user.is_disabled or user.deletion_pending:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f'User {user_id} is disabled',
         )
 
     # Verify user is a member of the specified org

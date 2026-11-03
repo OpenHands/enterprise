@@ -6,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 
+from openhands.app_server.sandbox.sandbox_store import StoredSandbox
 from server.logger import logger
 from server.services.user_lifecycle_remote import UserLifecycleRemote
 from storage.database import a_session_maker
@@ -52,7 +53,77 @@ class AdminUserLifecycleService:
     async def delete_user(self, user_id: str):
         return await self._operate(user_id, 'delete')
 
-    async def _operate(self, user_id: str, operation: str):
+    async def delete_service_account(self, user_id: str):
+        """Delete a service account. Refuses any user that is not one.
+
+        The only path that deletes a service account; ``delete_user`` refuses
+        them. The caller must have checked that it owns no automation. Its
+        sandboxes, paused ones included, are deleted first: a service account
+        cannot clear them itself, and they would block the cleanup check.
+
+        Raises:
+            ValueError: If the user is not a service account.
+            LifecycleCleanupError: If a sandbox could not be deleted. Retry.
+        """
+        await self._delete_service_account_sandboxes(UUID(user_id))
+        return await self._operate(user_id, 'delete', service_account=True)
+
+    async def _delete_service_account_sandboxes(self, uid: UUID) -> None:
+        """Delete every sandbox the service account created.
+
+        Does nothing for a user that is not a service account. Each sandbox
+        is deleted and committed on its own, so a failure keeps the ones that
+        are already gone. The sandbox service is scoped to this one user.
+        A sandbox it cannot see is logged and skipped; the cleanup check
+        then blocks the delete.
+        """
+        # Local imports to avoid circular dependencies.
+        from openhands.app_server.config import get_sandbox_service
+        from openhands.app_server.services.injector import InjectorState
+        from openhands.app_server.user.specifiy_user_context import (
+            USER_CONTEXT_ATTR,
+            SpecifyUserContext,
+        )
+
+        async with self.session_factory() as session:
+            account_type = await session.scalar(
+                select(User.account_type).where(User.id == uid)
+            )
+            if account_type != ACCOUNT_TYPE_SERVICE:
+                return
+            sandbox_ids = (
+                await session.scalars(
+                    select(StoredSandbox.id).where(
+                        StoredSandbox.created_by_user_id == str(uid)
+                    )
+                )
+            ).all()
+        for sandbox_id in sandbox_ids:
+            state = InjectorState()
+            setattr(state, USER_CONTEXT_ATTR, SpecifyUserContext(user_id=str(uid)))
+            try:
+                async with get_sandbox_service(state) as sandbox_service:
+                    deleted = await sandbox_service.delete_sandbox(sandbox_id)
+            except Exception as exc:
+                logger.exception(
+                    'Service account sandbox delete failed',
+                    extra={'user_id': str(uid), 'sandbox_id': sandbox_id},
+                )
+                raise LifecycleCleanupError(
+                    'Sandbox cleanup incomplete; retry DELETE.'
+                ) from exc
+            if not deleted:
+                # The row is not visible to the sandbox service (e.g. it
+                # belongs to another backend). Keep going: the cleanup check
+                # in ``_operate`` still blocks the delete while it remains.
+                logger.warning(
+                    'Service account sandbox not deleted: not visible',
+                    extra={'user_id': str(uid), 'sandbox_id': sandbox_id},
+                )
+
+    async def _operate(
+        self, user_id: str, operation: str, service_account: bool = False
+    ):
         uid = UUID(user_id)
         # Serialize remote and local phases across replicas without holding user
         # row locks across the independently committed local revocation phase.
@@ -77,11 +148,20 @@ class AdminUserLifecycleService:
                                 'Personal workspace cleanup incomplete; retry DELETE.'
                             ) from exc
                     return None
-                if operation == 'delete' and user.account_type == ACCOUNT_TYPE_SERVICE:
+                if (
+                    operation == 'delete'
+                    and user.account_type == ACCOUNT_TYPE_SERVICE
+                    and not service_account
+                ):
                     # Service accounts are removed through their org's
-                    # service-account routes. Disable/enable stay allowed.
+                    # service-account routes (``delete_service_account``).
+                    # Disable/enable stay allowed.
                     raise ServiceAccountDeleteError('Cannot delete a service account')
+                if service_account and user.account_type != ACCOUNT_TYPE_SERVICE:
+                    raise ValueError('User is not a service account')
                 result = UserLifecycleResult(str(uid), user.email)
+                # A service account has no Keycloak identity to update.
+                idp_user = user.account_type != ACCOUNT_TYPE_SERVICE
                 if operation == 'enable':
                     if user.deletion_pending:
                         raise UserCleanupConflict(
@@ -129,11 +209,11 @@ class AdminUserLifecycleService:
                 await session.commit()
             try:
                 if operation == 'enable':
-                    await self.remote.enable(str(uid))
+                    await self.remote.enable(str(uid), idp_user=idp_user)
                 else:
-                    await self.remote.disable(str(uid))
+                    await self.remote.disable(str(uid), idp_user=idp_user)
                     if operation == 'delete':
-                        await self.remote.delete(str(uid))
+                        await self.remote.delete(str(uid), idp_user=idp_user)
                 async with self.session_factory() as session:
                     if operation == 'enable':
                         user = await session.get(User, uid, with_for_update=True)

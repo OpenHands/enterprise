@@ -10,16 +10,26 @@ it acts through API keys. Deleting the org deletes it
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.constants import ROLE_SERVICE_ACCOUNT
-from server.routes.org_models import LiteLLMIntegrationError, OrgNotFoundError
+from server.routes.org_models import (
+    LiteLLMIntegrationError,
+    OrgNotFoundError,
+    ServiceAccountResponse,
+)
+from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
+from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_store import UserStore
 
 
@@ -90,6 +100,142 @@ class ServiceAccountService:
             extra={'org_id': str(org_id), 'service_account_id': str(user_id)},
         )
         return user
+
+    @staticmethod
+    def _select_in_org(org_id: UUID):
+        """Select ``(User, role name)`` for the service accounts of ``org_id``.
+
+        A user that is not a service account, or not a member of ``org_id``,
+        is never selected. Every lookup below goes through this query.
+        """
+        return (
+            select(User, Role.name)
+            .join(OrgMember, OrgMember.user_id == User.id)
+            .join(Role, Role.id == OrgMember.role_id)
+            .where(
+                OrgMember.org_id == org_id,
+                User.account_type == ACCOUNT_TYPE_SERVICE,
+            )
+        )
+
+    @staticmethod
+    def _to_response(
+        org_id: UUID,
+        user: User,
+        role_name: str,
+        override: OrgUserBudgetOverride | None = None,
+    ) -> ServiceAccountResponse:
+        return ServiceAccountResponse(
+            id=str(user.id),
+            org_id=str(org_id),
+            name=user.display_name or '',
+            is_disabled=user.is_disabled,
+            role=role_name,
+            monthly_limit=override.monthly_limit if override else None,
+            budget_limit_disabled=override.is_disabled if override else False,
+        )
+
+    @staticmethod
+    async def _overrides_by_user(
+        session: AsyncSession, org_id: UUID, user_ids: list[UUID]
+    ) -> dict[UUID, OrgUserBudgetOverride]:
+        """Return the budget overrides of ``user_ids`` in ``org_id``, in one query."""
+        if not user_ids:
+            return {}
+        result = await session.execute(
+            select(OrgUserBudgetOverride).where(
+                OrgUserBudgetOverride.org_id == org_id,
+                OrgUserBudgetOverride.user_id.in_(user_ids),
+            )
+        )
+        return {o.user_id: o for o in result.scalars()}
+
+    @staticmethod
+    async def get_service_account(
+        org_id: UUID, service_account_id: UUID
+    ) -> ServiceAccountResponse | None:
+        """Return the service account, or ``None`` if ``service_account_id``
+        is not a service account that is a member of ``org_id``."""
+        async with a_session_maker() as session:
+            row = (
+                await session.execute(
+                    ServiceAccountService._select_in_org(org_id).where(
+                        User.id == service_account_id
+                    )
+                )
+            ).first()
+            if row is None:
+                return None
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [row[0].id]
+            )
+        user, role_name = row
+        return ServiceAccountService._to_response(
+            org_id, user, role_name, overrides.get(user.id)
+        )
+
+    @staticmethod
+    async def list_service_accounts(
+        org_id: UUID, offset: int, limit: int
+    ) -> list[ServiceAccountResponse]:
+        """Return up to ``limit`` service accounts of ``org_id`` by name."""
+        async with a_session_maker() as session:
+            rows = (
+                await session.execute(
+                    ServiceAccountService._select_in_org(org_id)
+                    .order_by(func.lower(User.display_name), User.id)
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ).all()
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [user.id for user, _ in rows]
+            )
+        return [
+            ServiceAccountService._to_response(
+                org_id, user, role_name, overrides.get(user.id)
+            )
+            for user, role_name in rows
+        ]
+
+    @staticmethod
+    async def rename_service_account(
+        org_id: UUID, service_account_id: UUID, name: str
+    ) -> ServiceAccountResponse | None:
+        """Rename the service account. Returns ``None`` if it is not one of ``org_id``.
+
+        Raises:
+            ValueError: If ``name`` is blank.
+            ServiceAccountNameExistsError: If another service account of the
+                org has this name, ignoring case.
+        """
+        name = name.strip()
+        if not name:
+            raise ValueError('Service account name is required')
+        async with a_session_maker() as session:
+            row = (
+                await session.execute(
+                    ServiceAccountService._select_in_org(org_id)
+                    .where(User.id == service_account_id)
+                    .with_for_update(of=User)
+                )
+            ).first()
+            if row is None:
+                return None
+            user, role_name = row
+            user.display_name = name
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                if 'uq_user_service_account_name' in str(exc):
+                    raise ServiceAccountNameExistsError(name) from exc
+                raise
+            overrides = await ServiceAccountService._overrides_by_user(
+                session, org_id, [user.id]
+            )
+        return ServiceAccountService._to_response(
+            org_id, user, role_name, overrides.get(user.id)
+        )
 
     @staticmethod
     async def _delete_litellm_user_best_effort(user_id: UUID) -> None:
