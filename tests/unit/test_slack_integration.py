@@ -179,21 +179,19 @@ class TestRepoVerificationHandling:
         assert actions_block is not None
         elements = actions_block.get('elements', [])
 
-        # Should have 3 elements: button, multi_external_select and button
-        assert len(elements) == 3
+        assert len(elements) == 2
 
         # First element: "No Repository" button (immediately available)
         assert elements[0].get('type') == 'button'
         assert elements[0].get('action_id').startswith('no_repository:')
         assert elements[0].get('value') == '-'
 
-        # Second element: multi_external_select for searching repos
-        assert elements[1].get('type') == 'multi_external_select'
-        assert elements[1].get('action_id').startswith('repositories_select:')
+        section = next(b for b in blocks if b.get('type') == 'section')
+        assert section['accessory']['type'] == 'multi_external_select'
+        assert section['accessory']['action_id'].startswith('repositories_select:')
 
-        # Third element: "Start" button for the chosen repos
-        assert elements[2].get('type') == 'button'
-        assert elements[2].get('action_id').startswith('start_with_repositories:')
+        assert elements[1].get('type') == 'button'
+        assert elements[1].get('action_id').startswith('start_with_repositories:')
 
     @pytest.mark.asyncio
     @patch('integrations.slack.slack_manager.get_redis_client_async')

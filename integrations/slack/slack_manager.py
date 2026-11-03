@@ -391,13 +391,8 @@ class SlackManager(Manager[SlackViewInterface]):
     ) -> list[dict[str, Any]]:
         """Generate a repo selection form with immediate "No Repository" button and search dropdown.
 
-        This form provides three elements side-by-side:
-        1. A "No Repository" button - immediately clickable without any loading
-        2. A multi_external_select dropdown - for searching and choosing repositories
-        3. A "Start" button - starts with the chosen repositories, first one as primary
-
-        This design ensures "No Repository" is always immediately available while
-        still providing full dynamic search capability for repositories.
+        The multi-select is a section accessory, with "No Repository" and "Start"
+        in a separate actions block. Slack rejects the multi-select in that block.
 
         Args:
             message_ts: The message timestamp for tracking
@@ -425,6 +420,16 @@ class SlackManager(Manager[SlackViewInterface]):
             {
                 'type': 'section',
                 'text': {'type': 'mrkdwn', 'text': prompt},
+                'accessory': {
+                    'type': 'multi_external_select',
+                    'action_id': f'repositories_select:{message_ts}:{thread_ts}',
+                    'placeholder': {
+                        'type': 'plain_text',
+                        'text': 'Search repositories...',
+                    },
+                    'min_query_length': 0,
+                    'max_selected_items': MAX_ADDITIONAL_REPOSITORIES + 1,
+                },
             },
             {
                 'type': 'actions',
@@ -438,16 +443,6 @@ class SlackManager(Manager[SlackViewInterface]):
                             'emoji': True,
                         },
                         'value': '-',
-                    },
-                    {
-                        'type': 'multi_external_select',
-                        'action_id': f'repositories_select:{message_ts}:{thread_ts}',
-                        'placeholder': {
-                            'type': 'plain_text',
-                            'text': 'Search repositories...',
-                        },
-                        'min_query_length': 0,
-                        'max_selected_items': MAX_ADDITIONAL_REPOSITORIES + 1,
                     },
                     {
                         'type': 'button',

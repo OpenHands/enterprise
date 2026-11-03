@@ -329,11 +329,8 @@ class TestMentionedRepositories:
         message, _ = mock_send_message.call_args[0]
         assert mock_send_message.call_args.kwargs == {'ephemeral': True}
         elements = _actions(message['blocks'])
-        assert [e['type'] for e in elements] == [
-            'button',
-            'multi_external_select',
-            'button',
-        ]
+        assert [e['type'] for e in elements] == ['button', 'button']
+        assert message['blocks'][1]['accessory']['type'] == 'multi_external_select'
         # The user message is kept for the form submission.
         redis.set.assert_awaited_once()
 
@@ -383,7 +380,8 @@ class TestRepositorySelectionForm:
         }
         assert blocks[1]['type'] == 'section'
         assert 'Could not access' not in blocks[1]['text']['text']
-        no_repo, select, start = _actions(blocks)
+        no_repo, start = _actions(blocks)
+        select = blocks[1]['accessory']
         assert no_repo == {
             'type': 'button',
             'action_id': f'no_repository:{MESSAGE_TS}:None',
@@ -401,12 +399,12 @@ class TestRepositorySelectionForm:
         assert start['action_id'] == f'start_with_repositories:{MESSAGE_TS}:None'
         assert start['style'] == 'primary'
         # Slack requires unique action_ids within a message.
-        assert len({e['action_id'] for e in _actions(blocks)}) == 3
+        assert len({e['action_id'] for e in [no_repo, select, start]}) == 3
 
     def test_form_in_thread_carries_thread_ts(self, slack_manager):
         blocks = slack_manager._generate_repo_selection_form(MESSAGE_TS, '111.222')
 
-        for element in _actions(blocks):
+        for element in [blocks[1]['accessory'], *_actions(blocks)]:
             assert element['action_id'].endswith(f':{MESSAGE_TS}:111.222')
 
 
