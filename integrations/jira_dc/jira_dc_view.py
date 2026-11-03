@@ -233,8 +233,6 @@ class JiraDcNewConversationView(JiraDcViewInterface):
         else:
             prefix = "I'm on it!"
         message = f'{prefix} {self.job_context.display_name} can [track my progress here|{conversation_link}].'
-        if self.selected_repo is None:
-            message += '\n\nNote: This conversation started without a repository.'
         message += MentionedRepositories(
             inaccessible=self.inaccessible_repos, skipped=self.skipped_repos
         ).notes()

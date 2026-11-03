@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from jinja2 import Environment
 
+from openhands.app_server.integrations.service_types import Repository
 from openhands.app_server.user_auth.user_auth import UserAuth
 from storage.jira_user import JiraUser
 from storage.jira_workspace import JiraWorkspace
@@ -29,6 +30,11 @@ class JiraViewInterface(ABC):
     # Mutable state set during processing
     selected_repo: str | None
     conversation_id: str
+    # Verified repositories cloned beside selected_repo, mentions that could
+    # not be accessed, and verified mentions beyond the per-conversation limit.
+    additional_repos: list[Repository]
+    inaccessible_repos: list[str]
+    skipped_repos: list[str]
 
     @abstractmethod
     async def get_issue_details(self) -> tuple[str, str]:
@@ -60,11 +66,11 @@ class StartingConvoException(Exception):
 
 
 class RepositorySelectionError(Exception):
-    """Raised when a mentioned repository cannot be selected.
+    """Raised when none of the mentioned repositories can be used.
 
     This is a separate error domain from StartingConvoException - it represents
-    a repository verification or disambiguation failure rather than a conversation
-    creation failure. The manager catches this and converts it to a user-friendly
+    a repository verification failure rather than a conversation creation
+    failure. The manager catches this and converts it to a user-friendly
     message.
     """
 
