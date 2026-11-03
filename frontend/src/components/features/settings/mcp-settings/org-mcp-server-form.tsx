@@ -89,6 +89,9 @@ export function OrgMcpServerForm({
   const urlChanged = url.trim() !== (listing?.url ?? "");
   const keepStoredCredential =
     hasStoredCredential && managedBy === "org" && !urlChanged && !token;
+  // A user-managed credential is each member's own secret: testing would use
+  // the admin's secret of that name, if any, not the members' (OHE-3871).
+  const canTestConnection = !(managedBy === "user" && auth !== "none");
 
   const validateUrl = (value: string): string | null => {
     if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_URL_REQUIRED);
@@ -246,7 +249,7 @@ export function OrgMcpServerForm({
         value={name}
         onChange={setName}
         isReadOnly={mode === "edit"}
-        placeholder="bifrost-internal"
+        placeholder="my-mcp-server"
       />
 
       <SettingsInput
@@ -340,8 +343,12 @@ export function OrgMcpServerForm({
           required
           value={secretName}
           onChange={setSecretName}
-          placeholder="BIFROST_TOKEN"
-          description={t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+          placeholder="MY_MCP_TOKEN"
+          description={
+            <p className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+            </p>
+          }
         />
       )}
 
@@ -360,11 +367,15 @@ export function OrgMcpServerForm({
               ? REDACTED_MCP_SECRET
               : t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)
           }
-          description={t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+          description={
+            <p className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+            </p>
+          }
         />
       )}
 
-      {testMessage && (
+      {testMessage && canTestConnection && (
         <p
           data-testid="org-mcp-test-message"
           className={cn(
@@ -385,7 +396,7 @@ export function OrgMcpServerForm({
         >
           {t(I18nKey.BUTTON$CANCEL)}
         </BrandButton>
-        {onTest && (
+        {onTest && canTestConnection && (
           <BrandButton
             testId="org-mcp-test-connection"
             type="button"

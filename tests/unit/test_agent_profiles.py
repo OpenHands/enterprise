@@ -1993,6 +1993,72 @@ class TestOrgMcpServerListings:
         assert plain.org_user_managed_mcp_server_names is None
 
     @pytest.mark.asyncio
+    async def test_launch_view_gives_a_user_managed_oauth_listing_the_members_tokens(
+        self, async_session_maker, patch_agent_routes
+    ):
+        """The member's own tokens reach their launch and stay out of the
+        persisted view; a listing they never authorized launches without any."""
+        org_id = patch_agent_routes
+        oauth_url = 'https://jira.example/mcp'
+
+        def oauth_listing(url: str) -> OrgMcpServer:
+            return OrgMcpServer(
+                managed_by='user',
+                server=MCPServer.model_validate(
+                    {
+                        'url': url,
+                        'transport': 'http',
+                        'auth': {
+                            'strategy': 'oauth2',
+                            'authentication': {'type': 'oauth', 'client_id': 'cid'},
+                        },
+                    }
+                ),
+            )
+
+        await _set_org_mcp_servers(
+            async_session_maker,
+            org_id,
+            {
+                'jira': oauth_listing(oauth_url),
+                'confluence': oauth_listing('https://confluence.example/mcp'),
+            },
+        )
+        async with async_session_maker() as session:
+            await session.execute(
+                update(OrgMember)
+                .where(OrgMember.org_id == org_id, OrgMember.user_id == USER_ID)
+                .values(
+                    org_mcp_oauth_states={
+                        'jira': {
+                            'server_url': oauth_url,
+                            'client_id': 'cid',
+                            'state': {'tokens': {'access_token': 'member-token'}},
+                        }
+                    }
+                )
+            )
+            await session.commit()
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with _launch_store_patches(async_session_maker):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
+            launch = await store.load(resolve_agent_profile=True)
+            plain = await store.load()
+
+        assert launch is not None and plain is not None
+        servers = launch.agent_settings.mcp_config
+        tokens = servers['jira'].oauth_auth.state.tokens
+        assert tokens.access_token.get_secret_value() == 'member-token'
+        assert servers['confluence'].oauth_auth.state is None
+        assert sorted(launch.org_user_managed_mcp_server_names) == [
+            'confluence',
+            'jira',
+        ]
+        assert 'jira' not in plain.agent_settings.mcp_config
+
+    @pytest.mark.asyncio
     async def test_settings_carrying_listing_names_are_refused_by_store(
         self, async_session_maker, patch_agent_routes
     ):
