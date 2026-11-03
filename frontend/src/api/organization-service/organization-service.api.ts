@@ -642,6 +642,23 @@ export const organizationService = {
     );
     return status === 200;
   },
+
+  // A member's own OAuth tokens for a user-managed listing, taken server-side
+  // from the finished OAuth job.
+  connectOrgMcpServer: async (orgId: string, name: string, jobId: string) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+      { job_id: jobId },
+    );
+    return status === 200;
+  },
+
+  disconnectOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+    );
+    return status === 200;
+  },
 };
 
 // Types for org conversation APIs
