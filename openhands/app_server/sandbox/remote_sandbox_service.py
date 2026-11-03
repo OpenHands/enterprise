@@ -1076,11 +1076,43 @@ class RemoteSandboxService(SandboxService):
         num_to_pause = len(running) - max_num_sandboxes
         paused_ids: list[str] = []
         for sandbox in running[:num_to_pause]:
+            log_context = {
+                'event': 'sandbox_quota_pause',
+                'reason': 'quota_limit',
+                'selection_policy': 'oldest_created',
+                'sandbox_id': sandbox.id,
+                'owner_user_id': sandbox.created_by_user_id,
+                'sandbox_created_at': sandbox.created_at.isoformat(),
+                'configured_limit': self.max_num_sandboxes,
+                'target_remaining_count': max_num_sandboxes,
+                'eligible_running_count': len(running),
+                'excluded_sandbox_id': exclude_id,
+            }
+            _logger.info(
+                'Selected sandbox for quota pause',
+                extra={**log_context, 'outcome': 'selected'},
+            )
             try:
                 if await self.pause_sandbox(sandbox.id):
                     paused_ids.append(sandbox.id)
-            except Exception:
-                pass
+                    _logger.info(
+                        'Runtime API accepted quota pause',
+                        extra={**log_context, 'outcome': 'pause_requested'},
+                    )
+                else:
+                    _logger.warning(
+                        'Quota pause did not succeed',
+                        extra={**log_context, 'outcome': 'not_paused'},
+                    )
+            except Exception as exc:
+                _logger.warning(
+                    'Quota pause raised an exception',
+                    extra={
+                        **log_context,
+                        'outcome': 'error',
+                        'error_type': type(exc).__name__,
+                    },
+                )
         return paused_ids
 
     async def batch_get_sandboxes(
