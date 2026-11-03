@@ -7,6 +7,16 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
+)
+from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+)
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
@@ -28,16 +38,6 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
-from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
-from openhands.sdk.llm.utils.openhands_provider import (
-    canonicalize_openhands_llm_payload,
-    is_openhands_proxy_base_url,
-)
-from openhands.sdk.profiles import ProfileNotFound
-from openhands.sdk.tool.defaults import (
-    RETIRED_TOOL_SWITCHES,
-    drop_retired_tool_switches,
-)
 from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (
@@ -311,6 +311,7 @@ class SaasSettingsStore(SettingsStore):
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
+        personal_llm_profiles: LLMProfiles | None = None,
     ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
         """Resolve one personal or org profile snapshot or reject the launch."""
         raw_envelope = org.agent_profiles
@@ -333,9 +334,10 @@ class SaasSettingsStore(SettingsStore):
             return None
         active_id = str(active_id)
         profile = None
-        for envelope, profiles in (
-            (personal_envelope, load_member_agent_profiles(org_member)),
-            (raw_envelope, load_agent_profiles(org)),
+        found_scope = None
+        for scope, envelope, profiles in (
+            ('personal', personal_envelope, load_member_agent_profiles(org_member)),
+            ('org', raw_envelope, load_agent_profiles(org)),
         ):
             if active_id not in (envelope or {}).get('profiles', {}):
                 continue
@@ -343,6 +345,7 @@ class SaasSettingsStore(SettingsStore):
             if name is None:
                 raise HTTPException(422, detail={'code': 'agent_profile_unreadable'})
             profile = profiles.load(name)
+            found_scope = scope
             break
         if profile is None:
             raise HTTPException(404, detail={'code': 'agent_profile_not_found'})
@@ -358,7 +361,11 @@ class SaasSettingsStore(SettingsStore):
                 org_launch_stores(
                     org,
                     mcp_config,
-                    llm_profiles=llm_profiles,
+                    llm_profiles=self._profile_launch_llm_profiles(
+                        llm_profiles,
+                        personal_llm_profiles,
+                        include_personal=found_scope == 'personal',
+                    ),
                     fallback_api_key=effective_llm_api_key,
                 ),
             )
@@ -384,6 +391,26 @@ class SaasSettingsStore(SettingsStore):
             profile.revision,
             profile.secret_refs,
         )
+
+    @staticmethod
+    def _profile_launch_llm_profiles(
+        organization: LLMProfiles | None,
+        personal: LLMProfiles | None,
+        *,
+        include_personal: bool,
+    ) -> LLMProfiles | None:
+        if not include_personal or personal is None:
+            return organization
+        if organization is None:
+            return personal
+        merged = LLMProfiles.model_validate(
+            organization.model_dump(mode='python', context={'expose_secrets': True})
+        )
+        for name, llm in personal.profiles.items():
+            merged.save(name, llm, include_secrets=True)
+        if personal.active in merged.profiles:
+            merged.active = personal.active
+        return merged
 
     @staticmethod
     def _apply_org_model_router(
@@ -675,6 +702,7 @@ class SaasSettingsStore(SettingsStore):
         persist_seeded_default = seeded_default and openhands_default_model_name is None
 
         live_llm_profiles: LLMProfiles | None = None
+        personal_llm_profiles = LLMProfiles.model_validate(user.llm_profiles or {})
         deployment_default_materialized = uses_deployment_default_profile(
             LLMProfiles.model_validate(kwargs.get('llm_profiles') or {})
         )
@@ -744,6 +772,7 @@ class SaasSettingsStore(SettingsStore):
                 effective_llm_api_key,
                 override_agent_profile_id,
                 live_llm_profiles,
+                personal_llm_profiles,
             )
             if resolved is not None:
                 (
