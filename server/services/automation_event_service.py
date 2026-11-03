@@ -26,6 +26,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 import aiohttp
@@ -609,9 +610,38 @@ class AutomationEventService:
             # Azure DevOps org claims hold the organization name. There is no
             # user owner to fall back to.
             return extract_azure_devops_org(payload) or None, 'Organization', None
+        if provider == ProviderType.GITLAB:
+            return self._extract_gitlab_owner_info(payload)
 
         logger.warning(f'Unsupported provider ({provider.value})')
         return None, None, None
+
+    def _extract_gitlab_owner_info(
+        self, payload: dict[str, Any]
+    ) -> tuple[str | None, str | None, int | None]:
+        """Extract the top-level namespace that owns a GitLab project.
+
+        GitLab claims hold a top-level group path, the same segment the resolver
+        routes by. A payload does not say whether that namespace is a user's,
+        but GitLab usernames and group paths share one namespace: when it is
+        the acting user's username, the project is that user's personal one.
+        """
+        project = payload.get('project') or {}
+        path = project.get('path_with_namespace')
+        if not path:
+            # Older job payloads carry no project object, only its web URL.
+            homepage = (payload.get('repository') or {}).get('homepage') or ''
+            path = urlparse(homepage).path.strip('/')
+        if not path:
+            return None, None, None
+
+        namespace = path.split('/')[0]
+        user = payload.get('user') or {}
+        username = user.get('username') or payload.get('user_username')
+        user_id = user.get('id') or payload.get('user_id')
+        if username and user_id and username.lower() == namespace.lower():
+            return namespace, 'User', user_id
+        return namespace, 'Group', None
 
     def _extract_bitbucket_data_center_repository(
         self,

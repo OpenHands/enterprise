@@ -1994,3 +1994,167 @@ class TestResolveDefaultOrgFallback:
             assert context is not None
             assert context.org_id == org.id
             assert context.git_org == 'Fabrikam'
+
+
+def _gitlab_mr_payload(path='acme/platform/api', username='alice', user_id=7):
+    return {
+        'object_kind': 'merge_request',
+        'event_type': 'merge_request',
+        'user': {'id': user_id, 'username': username, 'name': 'Alice'},
+        'project': {'id': 42, 'path_with_namespace': path},
+        'object_attributes': {'iid': 3, 'action': 'open'},
+    }
+
+
+class TestGitLabEvents:
+    """GitLab events route by the project's top-level namespace."""
+
+    def test_extract_owner_from_group_project(self, mock_token_manager):
+        service = create_service(mock_token_manager)
+        assert service._extract_owner_info(
+            ProviderType.GITLAB, _gitlab_mr_payload()
+        ) == ('acme', 'Group', None)
+
+    def test_extract_owner_from_the_actors_personal_project(self, mock_token_manager):
+        service = create_service(mock_token_manager)
+        payload = _gitlab_mr_payload(path='Alice/scratch', username='alice')
+        assert service._extract_owner_info(ProviderType.GITLAB, payload) == (
+            'Alice',
+            'User',
+            7,
+        )
+
+    def test_extract_owner_from_a_push_payloads_flat_user_fields(
+        self, mock_token_manager
+    ):
+        service = create_service(mock_token_manager)
+        payload = {
+            'object_kind': 'push',
+            'user_id': 9,
+            'user_username': 'bob',
+            'project': {'path_with_namespace': 'bob/tools'},
+        }
+        assert service._extract_owner_info(ProviderType.GITLAB, payload) == (
+            'bob',
+            'User',
+            9,
+        )
+
+    def test_extract_owner_from_a_job_payload_without_a_project(
+        self, mock_token_manager
+    ):
+        service = create_service(mock_token_manager)
+        payload = {
+            'object_kind': 'build',
+            'user': {'id': 7, 'username': 'alice'},
+            'repository': {'homepage': 'https://gitlab.example.com/acme/api'},
+        }
+        assert service._extract_owner_info(ProviderType.GITLAB, payload) == (
+            'acme',
+            'Group',
+            None,
+        )
+
+    def test_extract_owner_without_a_project_path(self, mock_token_manager):
+        service = create_service(mock_token_manager)
+        assert service._extract_owner_info(
+            ProviderType.GITLAB, {'object_kind': 'note'}
+        ) == (None, None, None)
+
+    @pytest.mark.asyncio
+    async def test_forward_claimed_group_event(
+        self, mock_token_manager, mock_org_git_claim
+    ):
+        from server.services.automation_event_service import AutomationEventService
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+        payload = _gitlab_mr_payload()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=mock_org_git_claim.org_id,
+            ) as mock_resolver,
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch.object(
+                AutomationEventService,
+                '_should_forward_source_event',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                AutomationEventService,
+                '_send_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = AutomationEventService(mock_token_manager)
+            await service.forward_event(
+                provider=ProviderType.GITLAB,
+                payload=payload,
+                installation_id='hook-1',
+                event_type='merge_request',
+            )
+
+        mock_resolver.assert_awaited_once_with(
+            provider='gitlab', full_repo_name='acme/'
+        )
+        provider, org_id, event_payload = mock_send.call_args[0]
+        assert provider == ProviderType.GITLAB
+        assert org_id == mock_org_git_claim.org_id
+        assert event_payload['organization']['git_org'] == 'acme'
+        assert event_payload['payload'] == payload
+
+    @pytest.mark.asyncio
+    async def test_forward_personal_project_event_to_personal_org(
+        self, mock_token_manager
+    ):
+        from server.services.automation_event_service import AutomationEventService
+
+        personal_org = uuid.uuid4()
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+        mock_token_manager.get_user_id_from_idp_user_id = AsyncMock(
+            return_value=str(personal_org)
+        )
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch.object(
+                AutomationEventService,
+                '_should_forward_source_event',
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                AutomationEventService,
+                '_resolve_default_org_fallback',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(
+                AutomationEventService,
+                '_send_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = AutomationEventService(mock_token_manager)
+            await service.forward_event(
+                provider=ProviderType.GITLAB,
+                payload=_gitlab_mr_payload(path='alice/scratch'),
+                installation_id='hook-1',
+            )
+
+        mock_token_manager.get_user_id_from_idp_user_id.assert_awaited_once_with(
+            '7', ProviderType.GITLAB
+        )
+        assert mock_send.call_args[0][1] == personal_org

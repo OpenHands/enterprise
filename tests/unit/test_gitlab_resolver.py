@@ -48,6 +48,7 @@ async def test_gitlab_events_deduplication_with_object_id(
     # Call the endpoint
     response = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -71,6 +72,7 @@ async def test_gitlab_events_deduplication_with_object_id(
     # Call the endpoint again with the same payload
     response = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -128,6 +130,7 @@ async def test_gitlab_events_deduplication_without_object_id(
     # Call the endpoint
     response = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -151,6 +154,7 @@ async def test_gitlab_events_deduplication_without_object_id(
     # Call the endpoint again with the same payload
     response = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -197,6 +201,7 @@ async def test_gitlab_events_different_payloads_not_deduplicated(
     # Call the endpoint with first payload
     response1 = await gitlab_events(
         request=mock_request1,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -224,6 +229,7 @@ async def test_gitlab_events_different_payloads_not_deduplicated(
     # Call the endpoint with second payload
     response2 = await gitlab_events(
         request=mock_request2,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -274,6 +280,7 @@ async def test_gitlab_events_multiple_identical_payloads_deduplicated(
     # Call the endpoint first time
     response1 = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -299,6 +306,7 @@ async def test_gitlab_events_multiple_identical_payloads_deduplicated(
     # Call the endpoint second time with the same payload
     response2 = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',
@@ -322,6 +330,7 @@ async def test_gitlab_events_multiple_identical_payloads_deduplicated(
     # Call the endpoint third time with the same payload
     response3 = await gitlab_events(
         request=mock_request,
+        background_tasks=MagicMock(),
         x_gitlab_token='test_token',
         x_openhands_webhook_id='test_webhook_id',
         x_openhands_user_id='test_user_id',

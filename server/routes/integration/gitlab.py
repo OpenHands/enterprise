@@ -2,7 +2,15 @@ import asyncio
 import hashlib
 import json
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    status,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -17,10 +25,13 @@ from integrations.models import Message, SourceType
 from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL, IS_LOCAL_DEPLOYMENT
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
+from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.auth import secrets_equal
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import AUTOMATION_EVENT_FORWARDING_ENABLED
 from server.auth.token_manager import TokenManager
+from server.services.automation_event_service import AutomationEventService
 from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
 from storage.redis import get_redis_client_async
@@ -30,6 +41,11 @@ webhook_store = GitlabWebhookStore()
 
 token_manager = TokenManager()
 gitlab_manager = GitlabManager(token_manager)
+automation_event_service = AutomationEventService(token_manager)
+
+# GitLab retries a delivery it saw fail, and a project under several hooked
+# groups gets the same event from each hook. Either way the payload repeats.
+AUTOMATION_DEDUP_TTL_SECONDS = 3600
 
 
 # Request/Response models
@@ -80,9 +96,33 @@ async def verify_gitlab_signature(
         raise HTTPException(status_code=403, detail="Request signatures didn't match!")
 
 
+async def forward_gitlab_event_to_automations(
+    payload: dict, installation_id: str
+) -> None:
+    """Forward a verified GitLab event to the automation service once."""
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    dedup_key = f'gitlab_automation:{digest}'
+    try:
+        redis = get_redis_client_async()
+        if not await redis.set(dedup_key, 1, nx=True, ex=AUTOMATION_DEDUP_TTL_SECONDS):
+            logger.info('gitlab_automation_event_is_duplicate')
+            return
+    except Exception:
+        # Better an occasional duplicate run than a dropped event.
+        logger.warning('gitlab_automation_dedup_unavailable', exc_info=True)
+
+    await automation_event_service.forward_event(
+        provider=ProviderType.GITLAB,
+        payload=payload,
+        installation_id=installation_id,
+        event_type=payload.get('object_kind'),
+    )
+
+
 @gitlab_integration_router.post('/gitlab/events')
 async def gitlab_events(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_gitlab_token: str = Header(None),
     x_openhands_webhook_id: str = Header(None),
     x_openhands_user_id: str = Header(None),
@@ -95,6 +135,16 @@ async def gitlab_events(
         )
 
         payload_data = await request.json()
+
+        # Before the resolver's dedup below, which keys on the object id and
+        # so would drop a second, distinct event on the same merge request.
+        if AUTOMATION_EVENT_FORWARDING_ENABLED:
+            background_tasks.add_task(
+                forward_gitlab_event_to_automations,
+                payload=payload_data,
+                installation_id=x_openhands_webhook_id,
+            )
+
         object_attributes = payload_data.get('object_attributes', {})
         dedup_key = object_attributes.get('id')
 
