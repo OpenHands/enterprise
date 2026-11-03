@@ -14,6 +14,9 @@ import { I18nKey } from "#/i18n/declaration";
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 import { MCPServerModal } from "#/components/features/settings/mcp-settings/mcp-server-modal";
 import { OrgMcpServerList } from "#/components/features/settings/mcp-settings/org-mcp-server-list";
+import { McpLibrarySection } from "#/components/features/settings/mcp-settings/mcp-library-section";
+import { McpInstallModal } from "#/components/features/settings/mcp-settings/mcp-install-modal";
+import type { McpLibraryEntry } from "#/utils/mcp-library";
 import {
   OrgMcpConnectModal,
   OrgMcpServerModal,
@@ -189,6 +192,13 @@ function MCPSettingsScreen() {
     useState<OrgMcpServerView | null>(null);
   const [listingToDelete, setListingToDelete] =
     useState<OrgMcpServerView | null>(null);
+
+  // The MCP Library (OHE-3870) replaces the agent-canvas MCP page, which
+  // points here whenever organization MCP servers are on, in any workspace.
+  const mcpLibraryEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  const [libraryEntry, setLibraryEntry] = useState<McpLibraryEntry | null>(
+    null,
+  );
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -443,6 +453,10 @@ function MCPSettingsScreen() {
         </section>
       ) : null}
 
+      {mcpLibraryEnabled ? (
+        <McpLibrarySection onSelect={setLibraryEntry} />
+      ) : null}
+
       {!isSaasMode ? (
         <section
           data-testid="mcp-search-settings-section"
@@ -498,6 +512,14 @@ function MCPSettingsScreen() {
             </div>
           </div>
         </section>
+      ) : null}
+
+      {libraryEntry ? (
+        <McpInstallModal
+          entry={libraryEntry}
+          reservedNames={orgListings.map((listing) => listing.name)}
+          onClose={() => setLibraryEntry(null)}
+        />
       ) : null}
 
       {view === "add" && (

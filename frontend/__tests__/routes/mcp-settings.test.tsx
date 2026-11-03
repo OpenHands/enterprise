@@ -59,14 +59,14 @@ function deepMerge(
   return result;
 }
 
-function renderMcpSettingsScreen() {
+function renderMcpSettingsScreen(organizationId = "1") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
 
-  useSelectedOrganizationStore.setState({ organizationId: "1" });
+  useSelectedOrganizationStore.setState({ organizationId });
 
   return render(<MCPSettingsScreen />, {
     wrapper: ({ children }) => (
@@ -404,6 +404,7 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     expect(
       screen.queryByTestId("org-mcp-servers-section"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("mcp-library-section")).not.toBeInTheDocument();
     expect(getOrgMcpServers).not.toHaveBeenCalled();
   });
 
@@ -587,5 +588,250 @@ describe("MCPSettingsScreen organization MCP servers", () => {
       await within(modal).findByText("SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG"),
     ).toBeInTheDocument();
     expect(saveSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCPSettingsScreen MCP Library", () => {
+  // A team org of the mock user: org "1" is their Personal Workspace.
+  const TEAM_ORG_ID = "2";
+
+  /** Flag on, SaaS mode, a member with no MCP servers of their own. */
+  function arrangeLibrary({
+    listings = [],
+    providersConfigured = [],
+  }: {
+    listings?: OrgMcpServerItem[];
+    providersConfigured?: string[];
+  } = {}) {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      app_mode: "saas",
+      providers_configured: providersConfigured,
+      feature_flags: { enable_org_mcp_servers: true },
+    } as never);
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        agent_settings: {
+          mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
+        },
+      }),
+    );
+    vi.spyOn(organizationService, "getMe").mockResolvedValue({
+      org_id: TEAM_ORG_ID,
+      user_id: "me",
+      email: "me@acme.org",
+      role: "member",
+      permissions: MOCK_ROLE_PERMISSIONS.member,
+      llm_api_key: "",
+      max_iterations: 1,
+      llm_model: "",
+      llm_base_url: "",
+      status: "active",
+    });
+    vi.spyOn(organizationService, "getOrgMcpServers").mockResolvedValue({
+      items: listings,
+    });
+    return {
+      saveSettings: vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true),
+      testServer: vi
+        .spyOn(McpService, "testServer")
+        .mockResolvedValue({ ok: true, tools: ["probe"] }),
+      createSecret: vi
+        .spyOn(SecretsService, "createSecret")
+        .mockResolvedValue(true as never),
+    };
+  }
+
+  async function openLibraryEntry(id: string) {
+    await userEvent.type(await screen.findByTestId("mcp-library-search"), id);
+    await userEvent.click(screen.getByTestId(`mcp-library-card-${id}`));
+    return screen.findByTestId("mcp-install-modal");
+  }
+
+  async function savedMcpConfig(saveSettings: {
+    mock: { calls: unknown[][] };
+  }) {
+    await waitFor(() => expect(saveSettings.mock.calls.length).toBe(1));
+    const [payload] = saveSettings.mock.calls[0] as [
+      { agent_settings_diff: { mcp_config: Record<string, unknown> } },
+    ];
+    return payload.agent_settings_diff.mcp_config;
+  }
+
+  it("lists the catalog's MCP servers in a searchable Library", async () => {
+    arrangeLibrary();
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const section = await screen.findByTestId("mcp-library-section");
+    await userEvent.type(
+      within(section).getByTestId("mcp-library-search"),
+      "linear",
+    );
+
+    expect(
+      within(section)
+        .getAllByTestId(/^mcp-library-card-/)
+        .map((card) => card.dataset.testid),
+    ).toEqual(["mcp-library-card-linear"]);
+  });
+
+  it("tests a bearer-token server, then saves it as the member's own without taking an organization listing's name", async () => {
+    const { saveSettings, testServer } = arrangeLibrary({
+      listings: [
+        {
+          name: "linear",
+          managed_by: "org",
+          server: { url: "https://linear.example/mcp", transport: "http" },
+          secret_names: [],
+        },
+      ],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("linear");
+    await userEvent.type(
+      within(modal).getByTestId("mcp-install-field-api_key"),
+      "lin_api_key",
+    );
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    const server = {
+      url: "https://mcp.linear.app/mcp",
+      auth: { strategy: "bearer", value: "lin_api_key" },
+    };
+    expect(testServer).toHaveBeenCalledWith({ name: "linear", server });
+    expect(await savedMcpConfig(saveSettings)).toEqual({ linear_1: server });
+  });
+
+  it("keeps the install dialog open and saves nothing when the connection test fails", async () => {
+    const { saveSettings, testServer } = arrangeLibrary();
+    testServer.mockResolvedValue({
+      ok: false,
+      error: "401 Unauthorized",
+      error_kind: "connection",
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("linear");
+    await userEvent.type(
+      within(modal).getByTestId("mcp-install-field-api_key"),
+      "wrong-key",
+    );
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    expect(
+      await within(modal).findByTestId("mcp-install-modal-error"),
+    ).toHaveTextContent("MCP$TEST_ERROR_CONNECTION");
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it("saves header-field servers with header authentication", async () => {
+    const { saveSettings } = arrangeLibrary();
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("datadog");
+    await userEvent.type(
+      within(modal).getByTestId("mcp-install-field-DD-API-KEY"),
+      "dd-api",
+    );
+    await userEvent.type(
+      within(modal).getByTestId("mcp-install-field-DD-APPLICATION-KEY"),
+      "dd-app",
+    );
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    expect(await savedMcpConfig(saveSettings)).toEqual({
+      datadog: {
+        url: "https://mcp.datadoghq.com/v1/mcp",
+        auth: {
+          strategy: "header",
+          headers: { "DD-API-KEY": "dd-api", "DD-APPLICATION-KEY": "dd-app" },
+        },
+      },
+    });
+  });
+
+  it("saves a local stdio server without a connection test and keeps its key as a personal secret", async () => {
+    const { saveSettings, testServer, createSecret } = arrangeLibrary();
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("tavily");
+    await userEvent.type(
+      within(modal).getByTestId("mcp-install-field-TAVILY_API_KEY"),
+      "tvly-key",
+    );
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    expect(await savedMcpConfig(saveSettings)).toEqual({
+      tavily: {
+        command: "npx",
+        args: ["-y", "tavily-mcp"],
+        env: { TAVILY_API_KEY: "tvly-key" },
+      },
+    });
+    expect(testServer).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(createSecret).toHaveBeenCalledWith(
+        "TAVILY_API_KEY",
+        "tvly-key",
+        expect.any(String),
+      ),
+    );
+  });
+
+  it("authorizes an OAuth server in a sign-in window and saves its OAuth state", async () => {
+    const { saveSettings, testServer } = arrangeLibrary();
+    const signInWindow = { close: vi.fn(), location: { href: "" } };
+    vi.spyOn(window, "open").mockReturnValue(signInWindow as never);
+    const startOAuth = vi.spyOn(McpService, "startOAuth").mockResolvedValue({
+      ok: true,
+      job_id: "job-1",
+      authorization_url: "https://mcp.miro.com/authorize",
+    });
+    vi.spyOn(McpService, "getOAuthStatus").mockResolvedValue({
+      ok: true,
+      status: "succeeded",
+      job_id: "job-1",
+      oauth_state: { tokens: { access_token: "token" } },
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("miro");
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    expect(await savedMcpConfig(saveSettings)).toEqual({
+      miro: {
+        url: "https://mcp.miro.com/",
+        auth: {
+          strategy: "oauth2",
+          state: { tokens: { access_token: "token" } },
+        },
+      },
+    });
+    expect(startOAuth).toHaveBeenCalledWith({
+      name: "miro",
+      server: { url: "https://mcp.miro.com/", auth: { strategy: "oauth2" } },
+      timeout: 120,
+    });
+    expect(testServer).not.toHaveBeenCalled();
+  });
+
+  it("offers the instance's native GitHub integration next to the GitHub MCP server", async () => {
+    arrangeLibrary({ providersConfigured: ["github"] });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    await userEvent.click(within(modal).getByTestId("mcp-native-install"));
+
+    expect(
+      within(modal).getByTestId("mcp-install-tab-mcp"),
+    ).toBeInTheDocument();
+    expect(open).toHaveBeenCalledWith(
+      `/settings/integrations?org=${TEAM_ORG_ID}`,
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 });
