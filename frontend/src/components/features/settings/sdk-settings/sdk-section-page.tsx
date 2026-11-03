@@ -10,7 +10,6 @@ import {
   useConversationSettingsSchema,
 } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
-import { useMe } from "#/hooks/query/use-me";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
 import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
@@ -219,8 +218,7 @@ export function SdkSectionPage({
     settings?.conversation_settings_schema,
   );
   const { data: config } = useConfig();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   const isOssMode = config?.app_mode === "oss";
   const isReadOnly =

@@ -35,6 +35,65 @@ def no_sandbox_spec_prepare():
         yield mock_prepare
 
 
+@pytest.fixture(autouse=True)
+def no_role_rows():
+    """Keep startup tests away from the database: the role check sees no rows."""
+    with patch(
+        'storage.role_store.RoleStore.list_roles',
+        new=AsyncMock(return_value=[]),
+    ) as mock_list_roles:
+        yield mock_list_roles
+
+
+def _role_row(name: str):
+    from storage.role import Role
+
+    return Role(name=name, rank=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
+async def test_unknown_role_row_logs_error(no_role_rows):
+    """Startup logs one ERROR per role row the code does not know."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    no_role_rows.return_value = [
+        _role_row('owner'),
+        _role_row('service_account'),
+        _role_row('legacy_role'),
+    ]
+
+    with (
+        patch('server.app_lifespan.saas_app_lifespan_service.init_analytics_service'),
+        patch('server.app_lifespan.saas_app_lifespan_service.logger') as mock_logger,
+    ):
+        await SaasAppLifespanService().__aenter__()
+
+    mock_logger.error.assert_called_once_with(
+        'role_name_unknown', extra={'role_name': 'legacy_role'}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('no_sandbox_spec_prepare')
+async def test_role_check_failure_does_not_block_startup(no_role_rows):
+    """A failed role check is logged; startup continues."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    no_role_rows.side_effect = RuntimeError('database down')
+
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.init_analytics_service'
+        ) as mock_init,
+        patch('server.app_lifespan.saas_app_lifespan_service.logger') as mock_logger,
+    ):
+        await SaasAppLifespanService().__aenter__()
+
+    mock_init.assert_called_once()
+    assert mock_logger.exception.call_args.args == ('role_name_check_failed',)
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('no_sandbox_spec_prepare')
 async def test_aenter_calls_init_analytics_service():

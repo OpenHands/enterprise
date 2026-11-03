@@ -10,7 +10,7 @@ import types
 import zipfile
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
@@ -2691,8 +2691,10 @@ class TestLiveStatusAppConversationService:
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
             self.mock_user
         )
+        # The conversation's final secrets ride along so org MCP listings the
+        # member has not connected to can be left out (OHE-3091).
         self.service._configure_llm_and_mcp.assert_called_once_with(
-            self.mock_user, 'gpt-4', test_conversation_id
+            self.mock_user, 'gpt-4', test_conversation_id, secrets=ANY
         )
 
     @pytest.mark.asyncio
@@ -6271,6 +6273,115 @@ class TestLiveStatusAppConversationService:
         assert 'custom-stdio' in mcp_servers
 
         assert len(mcp_servers) == 3
+
+    def _user_with_org_listings(self):
+        """Two org listings in the launch map: one the member connects to with
+        ``${BIFROST_TOKEN}`` (user-managed), one with the org's own key."""
+        from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
+
+        self.mock_user.mcp_config = MCPConfig(
+            mcpServers={
+                'bifrost': RemoteMCPServer(
+                    url='https://bifrost.example/mcp',
+                    transport='http',
+                    headers={'Authorization': 'Bearer ${BIFROST_TOKEN}'},
+                ),
+                'datadog': RemoteMCPServer(
+                    url='https://dd.example/mcp',
+                    transport='http',
+                    headers={'Authorization': 'Bearer dd-service-key'},
+                ),
+            }
+        )
+        self.mock_user.org_user_managed_mcp_server_names = ['bifrost']
+
+    def test_merge_custom_mcp_config_skips_an_unconnected_org_listing(self):
+        """OHE-3091: without the personal secret the reference would stay
+        literal and the server would fail to authenticate, so it is left out."""
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(
+            servers, self.mock_user, {'OTHER_SECRET': object()}
+        )
+
+        assert set(servers) == {'datadog'}
+
+    def test_merge_custom_mcp_config_keeps_a_connected_org_listing(self):
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(
+            servers, self.mock_user, {'BIFROST_TOKEN': object()}
+        )
+
+        assert set(servers) == {'bifrost', 'datadog'}
+
+    def test_merge_custom_mcp_config_without_secrets_keeps_every_server(self):
+        """Unknown secrets (no ``secrets`` argument) never drop a server."""
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(servers, self.mock_user)
+
+        assert set(servers) == {'bifrost', 'datadog'}
+
+    def _user_with_oauth_org_listings(self):
+        """Two user-managed OAuth listings: one this member authorized (tokens
+        injected at load), one they did not."""
+
+        def oauth(state=None):
+            auth = {
+                'strategy': 'oauth2',
+                'authentication': {'type': 'oauth', 'client_id': 'cid'},
+            }
+            if state is not None:
+                auth['state'] = state
+            return auth
+
+        self.mock_user.agent_settings = Settings(
+            agent_settings={
+                'llm': {'model': 'gpt-4'},
+                'mcp_config': {
+                    'jira': {
+                        'url': 'https://jira.example/mcp',
+                        'transport': 'http',
+                        'auth': oauth({'tokens': {'access_token': 'member-token'}}),
+                    },
+                    'confluence': {
+                        'url': 'https://confluence.example/mcp',
+                        'transport': 'http',
+                        'auth': oauth(),
+                    },
+                },
+            }
+        ).agent_settings
+        self.mock_user.org_user_managed_mcp_server_names = ['jira', 'confluence']
+
+    def test_merge_custom_mcp_config_skips_an_unauthorized_oauth_org_listing(self):
+        """OHE-3091: a sandbox cannot run the consent flow, so a user-managed
+        OAuth listing this member never authorized is left out, with or
+        without the conversation's secrets being known."""
+        self._user_with_oauth_org_listings()
+        with_secrets: dict = {}
+        without_secrets: dict = {}
+
+        self.service._merge_custom_mcp_config(with_secrets, self.mock_user, {})
+        self.service._merge_custom_mcp_config(without_secrets, self.mock_user)
+
+        assert set(with_secrets) == {'jira'}
+        assert set(without_secrets) == {'jira'}
+
+    @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_forwards_secrets_to_the_merge(self):
+        self._user_with_org_listings()
+        self.mock_user_context.get_mcp_api_key.return_value = None
+
+        _llm, mcp_config = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id, secrets={}
+        )
+
+        assert set(mcp_config) == {'default', 'datadog'}
 
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_custom_config_error_handling(self):

@@ -99,6 +99,16 @@ class Org(Base):
     provider_connections: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # Org-scoped MCP server listings (OHE-3091). Envelope is
+    # ``{servers: {<name>: {managed_by: 'org' | 'user', server: <MCPServer>}}}``
+    # (see ``storage.org_mcp_servers``). Encrypted because an ``org``-managed
+    # listing carries the admin's shared credential inline. Never merged into
+    # ``agent_settings``: the launch path adds the listings under each member's
+    # own servers (``storage.agent_profile_resolution.launch_mcp_config``).
+    # NULL reads back as no listings.
+    mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
     # Org-scoped Model Routers (SDK meta-profiles). Envelope is
     # ``{profiles: {<name>: MetaProfile}, active: <name> | null,
     # run_at_conversation_start: bool}`` (see OrgMetaProfiles). Plain JSON: a

@@ -28,7 +28,7 @@ describe("toOrgMcpServerView", () => {
   it("reads a bearer listing as the API returns it, credential masked", () => {
     const view = toOrgMcpServerView(listing());
 
-    expect(view).toEqual({
+    expect(view).toMatchObject({
       name: "bifrost",
       managedBy: "user",
       type: "shttp",
@@ -78,7 +78,88 @@ describe("toOrgMcpServerView", () => {
   });
 });
 
+describe("toOrgMcpServerView with OAuth", () => {
+  const OAUTH_SERVER = {
+    url: "https://issues.example/mcp",
+    transport: "http",
+    auth: {
+      strategy: "oauth2",
+      authentication: {
+        type: "oauth",
+        client_id: "client-1",
+        client_secret: REDACTED_MCP_SECRET,
+        scopes: ["read", "write"],
+      },
+    },
+  };
+
+  it("reads a user-managed listing and whether this member authorized it", () => {
+    const view = toOrgMcpServerView({
+      name: "issue-tracker",
+      managed_by: "user",
+      server: OAUTH_SERVER,
+      secret_names: [],
+      connected: false,
+    });
+
+    expect(view.auth).toBe("oauth");
+    expect(view.oauth).toEqual({
+      clientId: "client-1",
+      clientSecret: REDACTED_MCP_SECRET,
+      scopes: "read write",
+      authorized: false,
+    });
+    expect(view.connected).toBe(false);
+    // The masked config goes back as is to authorize.
+    expect(view.server).toEqual(OAUTH_SERVER);
+  });
+
+  it("reads an organization-managed listing that holds masked tokens", () => {
+    const view = toOrgMcpServerView({
+      name: "issue-tracker",
+      managed_by: "org",
+      server: {
+        ...OAUTH_SERVER,
+        auth: {
+          ...OAUTH_SERVER.auth,
+          state: { tokens: { access_token: REDACTED_MCP_SECRET } },
+        },
+      },
+      secret_names: [],
+    });
+
+    expect(view.oauth?.authorized).toBe(true);
+    expect(view.connected).toBeUndefined();
+  });
+});
+
 describe("buildOrgMcpServerPayload", () => {
+  it("sends the OAuth client settings, and the job only when the org holds the tokens", () => {
+    const values = {
+      name: "issue-tracker",
+      type: "shttp" as const,
+      url: "https://issues.example/mcp",
+      auth: "oauth" as const,
+      keepStoredOAuthClientSecret: true,
+      oauthScopes: "read, write",
+      oauthJobId: "job-1",
+    };
+
+    const org = buildOrgMcpServerPayload({ ...values, managedBy: "org" });
+    const user = buildOrgMcpServerPayload({ ...values, managedBy: "user" });
+
+    expect(org.oauth_job_id).toBe("job-1");
+    expect(org.server.auth).toEqual({
+      strategy: "oauth2",
+      authentication: {
+        type: "oauth",
+        client_secret: REDACTED_MCP_SECRET,
+        scopes: ["read", "write"],
+      },
+    });
+    expect(user).not.toHaveProperty("oauth_job_id");
+  });
+
   it("stores a user-managed credential as a reference to the personal secret", () => {
     const payload = buildOrgMcpServerPayload({
       name: "bifrost",
@@ -150,6 +231,27 @@ describe("buildOrgMcpServerPayload", () => {
       url: "https://docs.example/mcp",
       transport: "http",
     });
+  });
+});
+
+describe("isOrgMcpServerConnected with OAuth", () => {
+  const listing = (connected?: boolean) =>
+    toOrgMcpServerView({
+      name: "issue-tracker",
+      managed_by: "user",
+      server: {
+        url: "https://issues.example/mcp",
+        transport: "http",
+        auth: { strategy: "oauth2" },
+      },
+      secret_names: [],
+      connected,
+    });
+
+  it("follows the member's own authorization, not their secrets", () => {
+    expect(isOrgMcpServerConnected(listing(true), new Set())).toBe(true);
+    expect(isOrgMcpServerConnected(listing(false), new Set())).toBe(false);
+    expect(isOrgMcpServerConnected(listing(), new Set(["ANY"]))).toBe(false);
   });
 });
 

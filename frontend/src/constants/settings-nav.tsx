@@ -1,6 +1,7 @@
 import {
   AppWindow,
   BarChart2,
+  Bot,
   Briefcase,
   DollarSign,
   LayoutDashboard,
@@ -63,6 +64,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/org-members",
     text: "SETTINGS$NAV_ORG_MEMBERS",
     subtitle: "SETTINGS$PAGE_ORG_MEMBERS_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <Bot className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/service-accounts",
+    text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
+    subtitle: "SETTINGS$PAGE_SERVICE_ACCOUNTS_SUBLINE",
     section: "org",
   },
   {

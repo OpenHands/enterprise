@@ -55,7 +55,28 @@ class SlackStatusResponse(BaseModel):
     connected: bool
 
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+class _LazySignatureVerifier:
+    """Build the Slack signature verifier on first use.
+
+    ``slack_sdk`` 3.45+ rejects a non-string ``signing_secret`` at construction
+    time, but this module is imported (e.g. by ``saas_server``) even when Slack
+    is not configured, so the verifier must not be built at import time.
+    """
+
+    def __init__(self) -> None:
+        self._verifier: SignatureVerifier | None = None
+
+    def is_valid(
+        self, body: str | bytes, timestamp: str | None, signature: str | None
+    ) -> bool:
+        if self._verifier is None:
+            self._verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+        return self._verifier.is_valid(
+            body=body, timestamp=timestamp, signature=signature
+        )
+
+
+signature_verifier = _LazySignatureVerifier()
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
