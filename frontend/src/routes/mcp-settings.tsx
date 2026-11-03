@@ -41,6 +41,7 @@ import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import {
   useCreateOrgMcpServer,
   useDeleteOrgMcpServer,
@@ -139,8 +140,11 @@ function MCPSettingsScreen() {
 
   // Organization MCP server listings (OHE-3091), behind a flag until bug
   // bash is complete. Admins manage them; every member launches with them
-  // and connects the user-managed ones with a personal secret.
-  const orgMcpEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  // and connects the user-managed ones with a personal secret. A personal
+  // workspace has no organization to share them with (OHE-3864).
+  const { isTeamOrg } = useOrgTypeAndAccess();
+  const orgMcpEnabled =
+    !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
   const { hasPermission } = usePermission();
   const canManageOrgMcp = orgMcpEnabled && hasPermission("manage_org_mcp");
   const orgMcpServersQuery = useOrgMcpServers();
@@ -381,13 +385,24 @@ function MCPSettingsScreen() {
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
+        {/* Next to the organization's servers, this list is the member's own (OHE-3868). */}
         <header className="min-w-0 space-y-1">
-          <Typography.H2>{t(I18nKey.SETTINGS$MCP_TITLE)}</Typography.H2>
+          <Typography.H2>
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_TITLE
+                : I18nKey.SETTINGS$MCP_TITLE,
+            )}
+          </Typography.H2>
           <p
             data-testid="settings-page-subtitle"
             className="text-sm leading-5 text-muted"
           >
-            {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION
+                : I18nKey.SETTINGS$MCP_DESCRIPTION,
+            )}
           </p>
         </header>
         <BrandButton
