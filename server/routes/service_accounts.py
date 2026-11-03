@@ -37,6 +37,7 @@ from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LifecycleCleanupError,
 )
+from server.services.feature_flag_service import feature_flag_service
 from server.services.service_account_service import (
     ServiceAccountNameExistsError,
     ServiceAccountService,
@@ -46,10 +47,32 @@ from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import ManagedLlmKeyStatus, SaasSettingsStore
 from storage.user_data_cleanup import UserCleanupConflict
 
+
+async def validate_service_accounts_enabled() -> None:
+    """Reject every service account route unless ENABLE_SERVICE_ACCOUNTS is on.
+
+    Resolution goes through the feature flag service's default-flag pattern:
+    DB row first, the registered env-var default as fallback, and the same
+    fallback if evaluation errors.
+    """
+    if not await feature_flag_service.resolve('ENABLE_SERVICE_ACCOUNTS'):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'Service accounts are disabled in this environment. '
+                'Enable the ENABLE_SERVICE_ACCOUNTS feature flag (or the '
+                'ENABLE_SERVICE_ACCOUNTS environment variable) to use them.'
+            ),
+        )
+
+
 service_accounts_router = APIRouter(
     prefix='/api/organizations',
     tags=['Service Accounts'],
-    dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
+    dependencies=[
+        REJECT_X_ORG_ID_PATH_MISMATCH,
+        Depends(validate_service_accounts_enabled),
+    ],
 )
 
 # Injected into every run from the SA's own key (``SaasUserAuth.get_secrets``).
