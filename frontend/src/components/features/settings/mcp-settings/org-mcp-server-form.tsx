@@ -249,7 +249,7 @@ export function OrgMcpServerForm({
         value={name}
         onChange={setName}
         isReadOnly={mode === "edit"}
-        placeholder="bifrost-internal"
+        placeholder="my-mcp-server"
       />
 
       <SettingsInput
@@ -343,8 +343,12 @@ export function OrgMcpServerForm({
           required
           value={secretName}
           onChange={setSecretName}
-          placeholder="BIFROST_TOKEN"
-          description={t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+          placeholder="MY_MCP_TOKEN"
+          description={
+            <p className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+            </p>
+          }
         />
       )}
 
@@ -363,7 +367,11 @@ export function OrgMcpServerForm({
               ? REDACTED_MCP_SECRET
               : t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)
           }
-          description={t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+          description={
+            <p className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+            </p>
+          }
         />
       )}
 
