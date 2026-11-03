@@ -353,10 +353,8 @@ def _has_personal_server(body: MCPTestRequestBody, settings: Settings | None) ->
     return bool(body.name) and existing is not None and body.name in existing
 
 
-async def _org_managed_server(
-    name: str | None, user_context: UserContext
-) -> MCPServer | None:
-    """The caller's org's ``org``-managed MCP listing ``name``, if any (OHE-3091)."""
+async def _org_listing(name: str | None, user_context: UserContext) -> Any | None:
+    """The caller's org's MCP listing ``name``, if any (OHE-3091)."""
     if not name:
         return None
     get_effective_org_id = getattr(user_context, 'get_effective_org_id', None)
@@ -373,9 +371,16 @@ async def _org_managed_server(
     )
 
     try:
-        entry = await OrgMcpServersStore(org_id).get(name)
+        return await OrgMcpServersStore(org_id).get(name)
     except OrgMcpServersOrgMissingError:
         return None
+
+
+async def _org_managed_server(
+    name: str | None, user_context: UserContext
+) -> MCPServer | None:
+    """The caller's org's ``org``-managed MCP listing ``name``, if any (OHE-3091)."""
+    entry = await _org_listing(name, user_context)
     if entry is None or entry.managed_by != 'org':
         return None
     return entry.server
