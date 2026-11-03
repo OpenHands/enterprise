@@ -169,6 +169,7 @@ class OrgMemberFinancialService:
                 OrgMemberFinancialResponse(
                     user_id=user_id_str,
                     email=user.email if user else None,
+                    account_type=user.account_type if user else 'human',
                     lifetime_spend=individual_spend,
                     current_budget=current_budget,
                     max_budget=max_budget,

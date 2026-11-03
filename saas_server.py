@@ -63,6 +63,7 @@ from server.routes.instance_admin import instance_admin_router  # noqa: E402
 from server.routes.integration.jira import jira_integration_router  # noqa: E402
 from server.routes.integration.jira_dc import jira_dc_integration_router  # noqa: E402
 from server.routes.integration.slack import slack_router  # noqa: E402
+from server.routes.license import license_router  # noqa: E402
 from server.routes.oauth_device import oauth_device_router  # noqa: E402
 from server.routes.oauth_providers_admin import (  # noqa: E402
     oauth_provider_admin_router,
@@ -88,6 +89,7 @@ from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
+from server.routes.service_accounts import service_accounts_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
     admin_users_router,
     super_admin_router,
@@ -216,6 +218,7 @@ base_app.include_router(invitation_router)  # Static member paths precede /{user
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(org_mcp_servers_router)  # Org-scoped MCP server listings
+base_app.include_router(service_accounts_router)  # Service account admin
 base_app.include_router(admin_user_router)
 base_app.include_router(
     super_admin_router
@@ -294,6 +297,7 @@ base_app.include_router(
     analytics_events_router
 )  # Add routes for client-initiated analytics events
 base_app.include_router(quota_router)  # Add routes for quota status
+base_app.include_router(license_router)  # License status for the license banner
 base_app.include_router(
     quota_admin_router
 )  # Add admin routes for quota (org-level + increase requests)

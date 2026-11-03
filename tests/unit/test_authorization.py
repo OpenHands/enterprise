@@ -222,6 +222,38 @@ class TestRolePermissions:
         # Member has view-only automations access — no create/edit/delete
         assert Permission.MANAGE_AUTOMATIONS not in member_perms
 
+    def test_service_account_permissions_exact(self):
+        """
+        GIVEN: ROLE_PERMISSIONS and SUPER_ROLE_PERMISSIONS mappings
+        WHEN: Checking the service_account role
+        THEN: It can only view automations, org settings and LLM settings,
+              and it grants nothing as a super role
+        """
+        assert ROLE_PERMISSIONS[RoleName.SERVICE_ACCOUNT] == frozenset(
+            [
+                Permission.VIEW_AUTOMATIONS,
+                Permission.VIEW_ORG_SETTINGS,
+                Permission.VIEW_LLM_SETTINGS,
+            ]
+        )
+        assert SUPER_ROLE_PERMISSIONS[RoleName.SERVICE_ACCOUNT] == frozenset()
+
+    def test_manage_service_accounts_is_owner_and_admin_only(self):
+        """
+        GIVEN: ROLE_PERMISSIONS and SUPER_ROLE_PERMISSIONS mappings
+        WHEN: Checking MANAGE_SERVICE_ACCOUNTS
+        THEN: Only the org-scoped owner and admin roles grant it
+        """
+        assert Permission.MANAGE_SERVICE_ACCOUNTS.value == 'manage_service_accounts'
+        granted = {
+            role
+            for role, perms in ROLE_PERMISSIONS.items()
+            if Permission.MANAGE_SERVICE_ACCOUNTS in perms
+        }
+        assert granted == {RoleName.OWNER, RoleName.ADMIN}
+        for perms in SUPER_ROLE_PERMISSIONS.values():
+            assert Permission.MANAGE_SERVICE_ACCOUNTS not in perms
+
     def test_create_organization_is_not_org_scoped_for_any_role(self):
         """
         GIVEN: ROLE_PERMISSIONS mapping

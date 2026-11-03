@@ -1,3 +1,5 @@
+import copy
+import json
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -12,10 +14,69 @@ from openhands.app_server.event.event_parsing import (
     UnparsedAction,
     UnparsedEvent,
     UnparsedObservation,
+    parse_event_json,
     parse_event_payload,
 )
 from openhands.app_server.event_callback.webhook_router import on_event
+from openhands.sdk import Event
 from openhands.sdk.event import ActionEvent, ConversationStateUpdateEvent
+
+
+@pytest.mark.parametrize('as_bytes', [False, True])
+@pytest.mark.parametrize('extra', [{}, {'future_field': True}, {'source': 'future'}])
+def test_snapshot_json_preserves_payload_and_fallback(as_bytes, extra):
+    payload = ConversationStateUpdateEvent(
+        key='full_state',
+        value={'history': [{'content': ['hello'], 'nested': {'n': 1}}]},
+    ).model_dump(mode='json')
+    payload.update(extra)
+    expected = parse_event_payload(payload)
+    encoded = json.dumps(payload)
+    event = parse_event_json(encoded.encode() if as_bytes else encoded)
+
+    assert type(event) is type(expected)
+    assert event.model_dump(mode='json') == expected.model_dump(mode='json')
+
+
+def test_payload_snapshot_remains_isolated_from_caller_mutations():
+    payload = ConversationStateUpdateEvent(
+        key='full_state', value={'history': [{'content': ['hello']}]}
+    ).model_dump(mode='json')
+    original = copy.deepcopy(payload)
+    event = parse_event_payload(payload)
+    payload['value']['history'][0]['content'].append('changed')
+
+    assert event.model_dump(mode='json') == original
+
+
+def test_snapshot_json_does_not_deep_copy_owned_state():
+    payload = ConversationStateUpdateEvent(
+        key='full_state', value={'history': [{'content': ['hello']}]}
+    ).model_dump(mode='json')
+    with patch('openhands.app_server.event.event_parsing.copy.deepcopy') as deepcopy:
+        event = parse_event_json(json.dumps(payload))
+    deepcopy.assert_not_called()
+    assert event.model_dump(mode='json') == payload
+
+
+def test_snapshot_json_preserves_fallback_when_sdk_mutates_envelope():
+    payload = ConversationStateUpdateEvent(
+        key='full_state', value={'history': ['hello']}
+    ).model_dump(mode='json')
+    validate = Event.model_validate.__func__
+
+    def legacy_validate(cls, data, **kwargs):
+        if cls is Event and data.get('kind') == 'ConversationStateUpdateEvent':
+            data.pop('kind')
+            raise ValueError('Legacy validator rejected the envelope')
+        return validate(cls, data, **kwargs)
+
+    with patch.object(Event, 'model_validate', classmethod(legacy_validate)):
+        event = parse_event_json(json.dumps(payload))
+
+    assert isinstance(event, UnparsedEvent)
+    assert event.original_kind == 'ConversationStateUpdateEvent'
+    assert event.model_dump(mode='json') == payload
 
 
 def _custom_action_event_payload() -> dict:

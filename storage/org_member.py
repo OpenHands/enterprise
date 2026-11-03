@@ -46,6 +46,12 @@ class OrgMember(Base):
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
+    # OAuth tokens this member obtained for the organization's user-managed
+    # OAuth MCP listings (OHE-3091), keyed by listing name. The listing itself
+    # (``org.mcp_servers``) holds only the OAuth client configuration.
+    org_mcp_oauth_states: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
     # Personal (member-scoped) Agent Profiles: the same ``AgentProfiles``
     # envelope as ``org.agent_profiles`` (migration 198). Its ``active`` is
     # unused -- ``active_agent_profile_id`` below is the single launch pointer

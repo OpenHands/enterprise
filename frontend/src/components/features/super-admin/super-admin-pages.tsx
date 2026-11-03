@@ -14,6 +14,7 @@ import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
+  useSetServiceAccountsEnabled,
   useUpdateSetupState,
 } from "#/hooks/mutation/use-super-admin-mutations";
 import {
@@ -750,6 +751,10 @@ export function SuperAdminInstance() {
   const { data: setupState } = useSetupState();
   const { mutate: updateSetupState } = useUpdateSetupState();
   const hasGuide = Boolean(setupState?.guide_org_id);
+  const {
+    mutate: setServiceAccountsEnabled,
+    isPending: isSettingServiceAccounts,
+  } = useSetServiceAccountsEnabled();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -775,6 +780,14 @@ export function SuperAdminInstance() {
         onToggle={(show) => updateSetupState({ guide_dismissed: !show })}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_SETUP_GUIDE)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-service-accounts"
+        isToggled={config?.feature_flags?.enable_service_accounts === true}
+        isDisabled={isSettingServiceAccounts}
+        onToggle={(enabled) => setServiceAccountsEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS)}
       </SettingsSwitch>
     </div>
   );

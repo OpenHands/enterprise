@@ -8,7 +8,6 @@ import {
 import { useLogout } from "#/hooks/mutation/use-logout";
 import { useMe } from "#/hooks/query/use-me";
 import { useConfig } from "#/hooks/query/use-config";
-import { OrganizationUserRole } from "#/types/org";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
 import { OrgSelector } from "../org/org-selector";
@@ -33,7 +32,6 @@ const contextMenuListItemClassName = cn(
 );
 
 interface UserContextMenuProps {
-  type: OrganizationUserRole;
   onClose: () => void;
   onOpenInviteModal: () => void;
   onOpenCreateOrganizationModal?: () => void;
@@ -41,7 +39,6 @@ interface UserContextMenuProps {
 }
 
 export function UserContextMenu({
-  type,
   onClose,
   onOpenInviteModal,
   onOpenCreateOrganizationModal,
@@ -60,7 +57,6 @@ export function UserContextMenu({
   // Keep all nav items including headers and dividers for proper section grouping
   const navItems = settingsNavItems;
 
-  const isMember = type === "member";
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
   const showSuperAdmin = canAccessSuperAdminDashboard(
@@ -79,8 +75,10 @@ export function UserContextMenu({
       item.text === I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   );
 
-  // Show invite button for admin/owner in team orgs
-  const showInviteButton = !isMember && !isPersonalOrg;
+  // Show invite button in team orgs when /me grants the invite permission
+  const showInviteButton =
+    me?.permissions?.includes("invite_user_to_organization") === true &&
+    !isPersonalOrg;
 
   // CTA only renders in SaaS Cloud desktop mode
   const isCTAEnabled = isEnterpriseCloud && !isMobile;

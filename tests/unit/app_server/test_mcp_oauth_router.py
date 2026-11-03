@@ -13,10 +13,11 @@ from collections.abc import Callable
 from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import AnyUrl
 
@@ -25,8 +26,10 @@ from openhands.app_server.mcp import mcp_oauth_router
 from openhands.app_server.mcp.mcp_oauth_router import (
     _CloudCoordinatedOAuth,
     callback_router,
+    completed_oauth_job_state,
     router,
 )
+from openhands.app_server.mcp.mcp_test_router import user_context_dependency
 from openhands.app_server.user_auth import get_user_id, get_user_settings
 from openhands.app_server.utils.dependencies import check_session_api_key
 
@@ -135,13 +138,17 @@ def resolve():
         yield mock
 
 
-def _client(user_id: str | None = USER_ID) -> TestClient:
+def _client(
+    user_id: str | None = USER_ID, user_context: Any | None = None
+) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     app.include_router(callback_router, prefix='/api/v1')
     app.dependency_overrides[check_session_api_key] = lambda: None
     app.dependency_overrides[get_user_settings] = lambda: None
     app.dependency_overrides[get_user_id] = lambda: user_id
+    context = user_context if user_context is not None else SimpleNamespace()
+    app.dependency_overrides[user_context_dependency.dependency] = lambda: context
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -259,6 +266,149 @@ def test_start_succeeds_without_consent_when_stored_tokens_work(redis):
     assert start.json() == {'ok': True, 'job_id': job_id}
     assert final['status'] == 'succeeded'
     assert final['oauth_state']['tokens']['access_token'] == 'refreshed-access-token'
+
+
+def _org_oauth_listing(managed_by: str, state: dict | None = None):
+    from openhands.sdk.mcp.config import MCPServer
+    from storage.org_mcp_servers import OrgMcpServer
+
+    auth: dict[str, Any] = {
+        'strategy': 'oauth2',
+        'authentication': {
+            'type': 'oauth',
+            'client_id': 'cid',
+            'client_secret': 'the-real-client-secret',
+        },
+    }
+    if state is not None:
+        auth['state'] = state
+    return OrgMcpServer(
+        managed_by=managed_by,
+        server=MCPServer.model_validate({'url': MCP_URL, 'auth': auth}),
+    )
+
+
+MASKED_ORG_SERVER = {
+    'url': MCP_URL,
+    'auth': {
+        'strategy': 'oauth2',
+        'authentication': {
+            'type': 'oauth',
+            'client_id': 'cid',
+            'client_secret': '**********',
+        },
+    },
+}
+
+
+def _run_org_listing_flow(listing, server=MASKED_ORG_SERVER):
+    """Start a flow naming an org listing; return what the probe saw and the status."""
+    seen: dict[str, Any] = {}
+
+    def probe(request, cipher, mcp_oauth_factory=None):
+        seen['auth'] = request.resolved_server.oauth_auth
+        return MCPTestSuccess(
+            tools=['read_subject'],
+            oauth_state=MCPOAuthStateResponse(
+                tokens={'access_token': 'callers-own-token'},
+                client_info={
+                    'client_id': 'cid',
+                    'client_secret': 'the-real-client-secret',
+                },
+            ),
+        )
+
+    user_context = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=uuid4()))
+    client = _client(user_context=user_context)
+    with (
+        patch.object(mcp_oauth_router, '_probe_mcp_server', side_effect=probe),
+        patch(
+            'storage.org_mcp_servers_store.OrgMcpServersStore.get',
+            AsyncMock(return_value=listing),
+        ),
+    ):
+        start = client.post(
+            '/api/v1/mcp/oauth/start',
+            json={'name': 'jira', 'server': server, 'timeout': 120},
+        )
+        job_id = start.json()['job_id']
+        final = _wait_for(
+            lambda: client.get(f'/api/v1/mcp/oauth/status/{job_id}').json(),
+            lambda s: s['status'] in ('succeeded', 'failed'),
+        )
+    return seen, start, final, job_id
+
+
+def test_org_listing_flow_restores_the_client_secret_and_hides_the_state(redis):
+    """OHE-3091: a member authorizes a user-managed OAuth listing with its client
+    secret masked. It is restored from the listing, and the status keeps it, and
+    the tokens, out of the browser."""
+    seen, start, final, _job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    assert start.status_code == 200
+    assert (
+        seen['auth'].authentication.client_secret.get_secret_value()
+        == 'the-real-client-secret'
+    )
+    assert final['status'] == 'succeeded'
+    assert 'oauth_state' not in final
+    assert 'the-real-client-secret' not in str(final)
+    assert 'callers-own-token' not in str(final)
+
+
+def test_org_listing_flow_never_starts_from_the_stored_tokens(redis):
+    """A member must not get the organization's shared tokens back by starting
+    a flow on an org-managed listing: they stay out of the probe entirely."""
+    listing = _org_oauth_listing(
+        'org', state={'tokens': {'access_token': 'shared-org-token'}}
+    )
+
+    seen, _start, final, _job_id = _run_org_listing_flow(listing)
+
+    assert seen['auth'].state is None
+    assert final['status'] == 'succeeded'
+    assert 'shared-org-token' not in str(final)
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_hands_the_tokens_to_server_side_callers(redis):
+    _seen, _start, _final, job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    state = await completed_oauth_job_state(job_id, USER_ID, f'{MCP_URL}/')
+
+    assert state.tokens['access_token'] == 'callers-own-token'
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_refuses_other_callers_and_other_urls(redis):
+    _seen, _start, _final, job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    with pytest.raises(HTTPException) as foreign:
+        await completed_oauth_job_state(job_id, 'someone-else', MCP_URL)
+    with pytest.raises(HTTPException) as elsewhere:
+        await completed_oauth_job_state(job_id, USER_ID, 'https://evil.example/mcp')
+    with pytest.raises(HTTPException) as unknown:
+        await completed_oauth_job_state('f' * 32, USER_ID, MCP_URL)
+
+    assert foreign.value.status_code == 404
+    assert elsewhere.value.status_code == 422
+    assert unknown.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_refuses_an_unfinished_job(redis):
+    job_id = 'c' * 32
+    redis.hashes[f'mcp_oauth:job:{job_id}'] = {
+        'user_id': USER_ID,
+        'status': 'authorizing',
+        'callback_ready': '1',
+        'server_url': MCP_URL,
+    }
+
+    with pytest.raises(HTTPException) as unfinished:
+        await completed_oauth_job_state(job_id, USER_ID, MCP_URL)
+
+    assert unfinished.value.status_code == 422
 
 
 def test_start_requires_an_oauth_credential(redis):
