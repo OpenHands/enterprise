@@ -61,6 +61,7 @@ from openhands.app_server.event_callback.sql_event_callback_service import (
 )
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
+from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.auth_user_context import AuthUserContext
@@ -264,6 +265,44 @@ def detect_automation_trigger(
     return None
 
 
+def _conversation_id_from_path(request: Request) -> UUID | None:
+    """The ``conversation_id`` path parameter, when the route has one."""
+    raw = request.path_params.get('conversation_id')
+    if not isinstance(raw, str):
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
+
+
+async def _recover_sandbox_record(
+    conversation_id: UUID | None,
+    sandbox_service: SandboxService,
+    session_api_key: str,
+) -> SandboxRecord | None:
+    """Re-check a key the stored hash rejected against the conversation's runtime.
+
+    The stored hash is a cache of the runtime's key. A /resume that the runtime
+    API completed after this side gave up on it rotates the key without
+    updating the cache, locking the resumed runtime out of its own webhook
+    (enterprise#1030). Only ``/events/{conversation_id}`` names the sandbox the
+    key should belong to; the sandbox service decides whether its provider
+    confirms the key and refreshes the hash.
+    """
+    if conversation_id is None:
+        return None
+    state = InjectorState()
+    setattr(state, USER_CONTEXT_ATTR, ADMIN)
+    async with get_app_conversation_info_service(state) as service:
+        app_conversation_info = await service.get_app_conversation_info(conversation_id)
+    if app_conversation_info is None:
+        return None
+    return await sandbox_service.recover_sandbox_record_by_session_api_key(
+        app_conversation_info.sandbox_id, session_api_key
+    )
+
+
 async def valid_sandbox(
     request: Request,
     session_api_key: str = Depends(
@@ -287,9 +326,18 @@ async def valid_sandbox(
             session_api_key
         )
         if sandbox_record is None:
-            raise HTTPException(
-                status.HTTP_401_UNAUTHORIZED, detail='Invalid session API key'
+            conversation_id = _conversation_id_from_path(request)
+            sandbox_record = await _recover_sandbox_record(
+                conversation_id, sandbox_service, session_api_key
             )
+            if sandbox_record is None:
+                _logger.warning(
+                    'Rejected webhook request: invalid session API key',
+                    extra={'conversation_id': conversation_id},
+                )
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, detail='Invalid session API key'
+                )
 
         # Scope webhook services to the authenticated sandbox, independent of the
         # owner's currently selected organization.

@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import logging
 import os
 from dataclasses import dataclass, field
@@ -428,6 +429,49 @@ class RemoteSandboxService(SandboxService):
             credential_org_id=stored_sandbox.credential_org_id,
         )
 
+    async def recover_sandbox_record_by_session_api_key(
+        self, sandbox_id: str, session_api_key: str
+    ) -> SandboxRecord | None:
+        """Accept the key only if it is the active runtime's current key; re-sync the hash.
+
+        A /resume that completes on the runtime API but fails on this side
+        (timeout, dropped connection, 5xx) rotates the key without
+        ``resume_sandbox`` learning it, so ``session_api_key_hash`` keeps the
+        previous key and the resumed runtime's webhook posts are rejected until
+        some later resume succeeds (enterprise#1030). The runtime API is the
+        source of truth for the current key: a key that matches an active
+        runtime's key is valid, and its hash is persisted so the indexed lookup
+        hits again. Paused runtimes and rotated-out keys are refused.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return None
+        try:
+            runtime_data = await self._get_runtime(sandbox_id)
+        except httpx.HTTPError:
+            _logger.exception(
+                f'Error getting runtime for sandbox {sandbox_id}', stack_info=True
+            )
+            return None
+        status = self._get_sandbox_status_from_runtime(runtime_data)
+        if status not in _ACTIVE_SANDBOX_STATUSES:
+            return None
+        current_key = runtime_data.get('session_api_key')
+        if not isinstance(current_key, str) or not hmac.compare_digest(
+            current_key.encode(), session_api_key.encode()
+        ):
+            return None
+        stored_sandbox.session_api_key_hash = _hash_session_api_key(session_api_key)
+        _logger.info(
+            f'Updated session_api_key_hash for sandbox {sandbox_id} from the '
+            'runtime API after a stale-hash webhook rejection'
+        )
+        return SandboxRecord(
+            id=stored_sandbox.id,
+            created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
+        )
+
     async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
         """Reserve one slot of the user's daily sandbox quota.
 
@@ -720,7 +764,10 @@ class RemoteSandboxService(SandboxService):
         - runtime ``paused``/``error``: sandbox-limit cleanup, then /resume;
         - runtime API 409: re-check once (``_resolve_resume_conflict``), then
           True, False, or a structured 409 ``SandboxError``;
-        - runtime API lookup/resume failure: 502 ``SandboxError``.
+        - runtime API lookup/resume failure: 502 ``SandboxError``. The runtime
+          API may still complete the resume and rotate the key; the webhook
+          auth then re-syncs the stored hash from the runtime
+          (``recover_sandbox_record_by_session_api_key``).
 
         Security: When a sandbox is resumed, the runtime-api generates a new
         session_api_key and returns it. This invalidates any previously leaked

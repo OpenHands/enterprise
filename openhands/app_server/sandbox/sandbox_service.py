@@ -238,6 +238,19 @@ class SandboxService(ABC):
         Return None if no sandbox matches the key.
         """
 
+    async def recover_sandbox_record_by_session_api_key(
+        self, sandbox_id: str, session_api_key: str
+    ) -> SandboxRecord | None:
+        """Re-check a session API key against its provider after a stored-hash miss.
+
+        Called by the webhook auth when ``get_sandbox_record_by_session_api_key``
+        found nothing but the request names the sandbox the key should belong
+        to. Backends whose provider rotates the key, and can read it back, may
+        refresh the stored hash and return the record. The default accepts
+        nothing.
+        """
+        return None
+
     async def batch_get_sandboxes(
         self, sandbox_ids: list[str]
     ) -> list[SandboxInfo | None]:

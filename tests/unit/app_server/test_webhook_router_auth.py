@@ -302,6 +302,137 @@ class TestValidSandbox:
         # Verify the sandbox service was NOT called (rejected before lookup)
         mock_sandbox_service.get_sandbox_record_by_session_api_key.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_valid_sandbox_accepts_key_the_conversations_runtime_confirms(
+        self,
+    ):
+        """A key the stored hash rejects is re-checked against the runtime of the
+        conversation named in the path, so a runtime whose /resume rotated the key
+        after this side gave up on it is not locked out (enterprise#1030)."""
+        # Arrange
+        session_api_key = 'rotated-key'
+        conversation_id = uuid4()
+        expected_sandbox = SandboxRecord(
+            id='sandbox-123', created_by_user_id='user-123'
+        )
+        mock_sandbox_service = AsyncMock()
+        mock_sandbox_service.get_sandbox_record_by_session_api_key = AsyncMock(
+            return_value=None
+        )
+        mock_sandbox_service.recover_sandbox_record_by_session_api_key = AsyncMock(
+            return_value=expected_sandbox
+        )
+        mock_info_service = AsyncMock()
+        mock_info_service.get_app_conversation_info = AsyncMock(
+            return_value=AppConversationInfo(
+                id=conversation_id,
+                sandbox_id='sandbox-123',
+                created_by_user_id='user-123',
+            )
+        )
+        mock_request = create_mock_request()
+        mock_request.path_params = {'conversation_id': str(conversation_id)}
+
+        # Act
+        with (
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_sandbox_service',
+                create_sandbox_service_context_manager(mock_sandbox_service),
+            ),
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_app_conversation_info_service',
+                create_sandbox_service_context_manager(mock_info_service),
+            ),
+        ):
+            result = await valid_sandbox(
+                request=mock_request,
+                session_api_key=session_api_key,
+            )
+
+        # Assert
+        assert result == expected_sandbox
+        mock_sandbox_service.recover_sandbox_record_by_session_api_key.assert_awaited_once_with(
+            'sandbox-123', session_api_key
+        )
+        user_context = mock_request.state._attributes[USER_CONTEXT_ATTR]
+        assert isinstance(user_context, SandboxUserContext)
+        assert user_context.user_id == 'user-123'
+        assert user_context.sandbox_id == 'sandbox-123'
+
+    @pytest.mark.asyncio
+    async def test_valid_sandbox_raises_401_when_runtime_does_not_confirm_key(
+        self,
+    ):
+        """A key neither the stored hash nor the runtime recognizes is rejected."""
+        # Arrange
+        conversation_id = uuid4()
+        mock_sandbox_service = AsyncMock()
+        mock_sandbox_service.get_sandbox_record_by_session_api_key = AsyncMock(
+            return_value=None
+        )
+        mock_sandbox_service.recover_sandbox_record_by_session_api_key = AsyncMock(
+            return_value=None
+        )
+        mock_info_service = AsyncMock()
+        mock_info_service.get_app_conversation_info = AsyncMock(
+            return_value=AppConversationInfo(
+                id=conversation_id,
+                sandbox_id='sandbox-123',
+                created_by_user_id='user-123',
+            )
+        )
+        mock_request = create_mock_request()
+        mock_request.path_params = {'conversation_id': str(conversation_id)}
+
+        # Act & Assert
+        with (
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_sandbox_service',
+                create_sandbox_service_context_manager(mock_sandbox_service),
+            ),
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_app_conversation_info_service',
+                create_sandbox_service_context_manager(mock_info_service),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await valid_sandbox(
+                    request=mock_request,
+                    session_api_key='stale-key',
+                )
+
+        assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+        assert 'Invalid session API key' in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_valid_sandbox_does_not_consult_runtime_without_conversation_id(
+        self,
+    ):
+        """Routes that do not name a conversation (e.g. /conversations) cannot
+        identify the sandbox, so an unknown key is rejected without a runtime check."""
+        # Arrange
+        mock_sandbox_service = AsyncMock()
+        mock_sandbox_service.get_sandbox_record_by_session_api_key = AsyncMock(
+            return_value=None
+        )
+        mock_sandbox_service.recover_sandbox_record_by_session_api_key = AsyncMock()
+        mock_request = create_mock_request()
+        mock_request.path_params = {}
+
+        # Act & Assert
+        with patch(
+            'openhands.app_server.event_callback.webhook_router.get_sandbox_service',
+            create_sandbox_service_context_manager(mock_sandbox_service),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await valid_sandbox(
+                    request=mock_request,
+                    session_api_key='unknown-key',
+                )
+
+        assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+        mock_sandbox_service.recover_sandbox_record_by_session_api_key.assert_not_awaited()
+
 
 class TestValidConversation:
     """Test suite for valid_conversation function."""

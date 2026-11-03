@@ -1625,6 +1625,113 @@ class TestUserSecurity:
         assert await db_service.get_sandbox_record_by_session_api_key('key-b') is None
 
 
+class TestSessionKeyRecoveryAfterFailedResume:
+    """The webhook re-syncs a hash left stale by a /resume that failed on this
+    side but completed on the runtime API (enterprise#1030)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('runtime_status', ['running', 'starting'])
+    async def test_rotated_key_is_accepted_after_failed_resume(
+        self, remote_sandbox_service, runtime_status
+    ):
+        """A resume the runtime API completed after this side timed out rotates
+        the key; the key the resumed runtime presents is accepted and stored."""
+        stored_sandbox = create_stored_sandbox(
+            session_api_key_hash=_hash_session_api_key('old-key')
+        )
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused', session_api_key='old-key'),
+                create_runtime_data(
+                    status=runtime_status, session_api_key='rotated-key'
+                ),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        remote_sandbox_service.httpx_client.request.side_effect = httpx.ReadTimeout(
+            'timed out'
+        )
+        with pytest.raises(SandboxError):
+            await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key('old-key')
+
+        record = await remote_sandbox_service.recover_sandbox_record_by_session_api_key(
+            'test-sandbox-123', 'rotated-key'
+        )
+
+        assert record is not None
+        assert record.id == 'test-sandbox-123'
+        assert record.created_by_user_id == 'test-user-123'
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'rotated-key'
+        )
+
+    @pytest.mark.asyncio
+    async def test_paused_runtime_key_is_not_revalidated(self, remote_sandbox_service):
+        """Pausing cleared the hash; the paused runtime's key stays invalid."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(status='paused', session_api_key='key')
+        )
+
+        record = await remote_sandbox_service.recover_sandbox_record_by_session_api_key(
+            'test-sandbox-123', 'key'
+        )
+
+        assert record is None
+        assert stored_sandbox.session_api_key_hash is None
+
+    @pytest.mark.asyncio
+    async def test_key_that_is_not_the_runtimes_current_key_is_refused(
+        self, remote_sandbox_service
+    ):
+        """A rotated-out key is refused and the stored hash is left alone."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash='existing-hash')
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(
+                status='running', session_api_key='rotated-key'
+            )
+        )
+
+        record = await remote_sandbox_service.recover_sandbox_record_by_session_api_key(
+            'test-sandbox-123', 'old-key'
+        )
+
+        assert record is None
+        assert stored_sandbox.session_api_key_hash == 'existing-hash'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'lookup_error',
+        [_http_status_error(404), httpx.ConnectError('connection refused')],
+    )
+    async def test_runtime_lookup_failure_refuses_the_key(
+        self, remote_sandbox_service, lookup_error
+    ):
+        """Without the runtime API's answer nothing is accepted or rewritten."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash='existing-hash')
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(side_effect=lookup_error)
+
+        record = await remote_sandbox_service.recover_sandbox_record_by_session_api_key(
+            'test-sandbox-123', 'key'
+        )
+
+        assert record is None
+        assert stored_sandbox.session_api_key_hash == 'existing-hash'
+
+
 class TestErrorHandling:
     """Test cases for error handling scenarios."""
 
