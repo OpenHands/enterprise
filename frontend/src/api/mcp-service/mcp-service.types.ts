@@ -1,6 +1,8 @@
 // mcp-service.types.ts
 // Types for the /api/v1/mcp endpoints.
 
+import type { MCPJsonValue } from "#/types/settings";
+
 /**
  * Body for `POST /api/v1/mcp/test` (mirrors the backend `MCPTestRequestBody`).
  * `server` is a single entry in the SDK `mcp_config` map shape (as produced by
@@ -30,3 +32,28 @@ export interface MCPTestFailure {
 }
 
 export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
+
+/** `POST /api/v1/mcp/oauth/start`: opens a consent flow for a remote server. */
+export interface MCPOAuthStartResponse {
+  ok: boolean;
+  job_id?: string | null;
+  authorization_url?: string | null;
+  error?: string | null;
+  error_kind?: string | null;
+}
+
+/**
+ * `GET /api/v1/mcp/oauth/status/{job_id}`. On success `oauth_state` carries
+ * the tokens to store in the server's `auth.state`.
+ */
+export interface MCPOAuthStatusResponse {
+  ok: boolean;
+  status: "pending" | "authorizing" | "succeeded" | "failed";
+  job_id: string;
+  authorization_url?: string | null;
+  callback_ready?: boolean;
+  tools?: string[] | null;
+  oauth_state?: Record<string, MCPJsonValue> | null;
+  error?: string | null;
+  error_kind?: string | null;
+}
