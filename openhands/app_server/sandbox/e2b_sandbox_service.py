@@ -61,6 +61,12 @@ from openhands.app_server.sandbox.sandbox_store import (
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN
 
+# Where the agent server keeps conversations and bash events inside a sandbox:
+# outside the workspace the agent works in and may serve on the app ports
+# (OHE-3812). The template's start command runs as root (scripts/e2b/
+# build_template.py), so the agent server can create it.
+STATE_DIR = '/var/openhands'
+
 _logger = logging.getLogger(__name__)
 
 # Ownership lives in the sandbox table (see `sandbox_store`). These metadata
@@ -597,8 +603,11 @@ class E2BSandboxService(ManagedSandboxService):
         shared by every sandbox built from it.
         """
         # The spec's working dir is the project checkout; its parent is the
-        # workspace root the agent server keeps its own state under. None of
-        # these directories need to exist beforehand.
+        # workspace root. The agent server's own state lives outside it, in
+        # STATE_DIR, so an agent serving its workspace on the app ports cannot
+        # publish it (OHE-3812); a pause snapshots the whole filesystem, so the
+        # state is as durable there as anywhere. None of these directories
+        # need to exist beforehand.
         working_dir = sandbox_spec.working_dir.rstrip('/')
         workspace_dir = dirname(working_dir)
         if workspace_dir in ('', '/'):
@@ -606,8 +615,8 @@ class E2BSandboxService(ManagedSandboxService):
         body: dict[str, Any] = {
             'session_api_keys': [session_api_key],
             'secret_key': base62.encodebytes(os.urandom(32)),
-            'conversations_path': f'{workspace_dir}/conversations',
-            'bash_events_dir': f'{workspace_dir}/bash_events',
+            'conversations_path': f'{STATE_DIR}/conversations',
+            'bash_events_dir': f'{STATE_DIR}/bash_events',
             'conversation_worktree_root': f'{workspace_dir}/worktrees',
             # `get_agent_server_env` is resolved here rather than baked into
             # the spec's initial_env, because it can carry LLM_API_KEY and the

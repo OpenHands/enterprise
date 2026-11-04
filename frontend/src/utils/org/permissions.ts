@@ -13,6 +13,7 @@ type ManageSecretsPermission = "manage_secrets";
 type ManageOrgSecretsPermission = "manage_org_secrets";
 type ManageOrgAgentProfilesPermission = "manage_org_agent_profiles";
 type ManageMCPPermission = "manage_mcp";
+type ManageOrgMCPPermission = "manage_org_mcp";
 type ManageIntegrationsPermission = "manage_integrations";
 type ManageIntegrationProvidersPermission = "manage_integration_providers";
 type ManageApplicationSettingsPermission = "manage_application_settings";
@@ -38,6 +39,7 @@ export type PermissionKey =
   | ManageOrgSecretsPermission
   | ManageOrgAgentProfilesPermission
   | ManageMCPPermission
+  | ManageOrgMCPPermission
   | ManageIntegrationsPermission
   | ManageIntegrationProvidersPermission
   | ManageApplicationSettingsPermission
@@ -80,6 +82,7 @@ const memberPerms: PermissionKey[] = [
 const adminOnly: PermissionKey[] = [
   "manage_org_secrets",
   "manage_org_agent_profiles",
+  "manage_org_mcp",
   "manage_integration_providers",
   "edit_llm_settings",
   "view_billing",

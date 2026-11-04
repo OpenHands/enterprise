@@ -128,12 +128,19 @@ class UserStore:
                             'user_store:create_user:first_user_designated_superadmin',
                             extra={'user_id': user_id},
                         )
-                        # This Super Admin runs the first-install wizard.
+                        # This Super Admin runs the first-install wizard. The
+                        # row may already exist without users, created for the
+                        # instance ID (InstanceSettingsStore).
                         if ENABLE_SUPER_ADMIN:
+                            stmt = insert(InstanceSettings).values(
+                                id=1, setup_user_id=user_uuid
+                            )
                             await session.execute(
-                                insert(InstanceSettings)
-                                .values(id=1, setup_user_id=user_uuid)
-                                .on_conflict_do_nothing(index_elements=['id'])
+                                stmt.on_conflict_do_update(
+                                    index_elements=['id'],
+                                    set_={'setup_user_id': user_uuid},
+                                    where=InstanceSettings.setup_user_id.is_(None),
+                                )
                             )
 
             org = await session.get(Org, user_uuid)

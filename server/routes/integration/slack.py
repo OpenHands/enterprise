@@ -29,7 +29,7 @@ from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
     ProviderType,
 )
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth import get_user_id
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
@@ -55,7 +55,28 @@ class SlackStatusResponse(BaseModel):
     connected: bool
 
 
-signature_verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+class _LazySignatureVerifier:
+    """Build the Slack signature verifier on first use.
+
+    ``slack_sdk`` 3.45+ rejects a non-string ``signing_secret`` at construction
+    time, but this module is imported (e.g. by ``saas_server``) even when Slack
+    is not configured, so the verifier must not be built at import time.
+    """
+
+    def __init__(self) -> None:
+        self._verifier: SignatureVerifier | None = None
+
+    def is_valid(
+        self, body: str | bytes, timestamp: str | None, signature: str | None
+    ) -> bool:
+        if self._verifier is None:
+            self._verifier = SignatureVerifier(signing_secret=SLACK_SIGNING_SECRET)
+        return self._verifier.is_valid(
+            body=body, timestamp=timestamp, signature=signature
+        )
+
+
+signature_verifier = _LazySignatureVerifier()
 slack_router = APIRouter(prefix='/slack')
 
 # Build https://slack.com/oauth/v2/authorize with sufficient query parameters
@@ -77,6 +98,15 @@ token_manager = TokenManager()
 slack_manager = SlackManager(token_manager)
 slack_team_store = SlackTeamStore.get_instance()
 jwt_service_dependency = depends_jwt_service()
+
+
+def verify_slack_oauth_state(jwt_service: JwtService, state: str) -> dict:
+    return jwt_service.verify_jws_token(
+        state,
+        audience=JwtAudience.SLACK_OAUTH_STATE,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=lambda payload: 'slack_user_id' in payload,
+    )
 
 
 @slack_router.get('/install')
@@ -126,12 +156,14 @@ async def install_callback(
         # Create a state variable for keycloak oauth
         payload = {}
         if state:
-            payload = jwt_service.verify_jws_token(state)
+            payload = verify_slack_oauth_state(jwt_service, state)
         payload['slack_user_id'] = authed_user.get('id')
         payload['bot_access_token'] = bot_access_token
         payload['team_id'] = team_id
 
-        state = jwt_service.create_jws_token(payload)
+        state = jwt_service.create_jws_token(
+            payload, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
 
         # Redirect into keycloak
         scope = quote('openid email profile offline_access')
@@ -178,7 +210,7 @@ async def keycloak_callback(
             status_code=400,
         )
 
-    payload: dict[str, str] = jwt_service.verify_jws_token(state)
+    payload: dict[str, str] = verify_slack_oauth_state(jwt_service, state)
     slack_user_id = payload['slack_user_id']
     bot_access_token: str | None = payload['bot_access_token']
     team_id = payload['team_id']

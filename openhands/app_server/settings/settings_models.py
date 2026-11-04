@@ -766,6 +766,7 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
         'active_agent_profile_revision',
         'active_agent_profile_scope',
         'active_agent_profile_secret_refs',
+        'org_user_managed_mcp_server_names',
     ]
 )
 
@@ -840,6 +841,12 @@ class Settings(BaseModel):
     # only (OHE-3088). Same non-persisted contract as the two fields above.
     active_agent_profile_scope: Literal['personal', 'org'] | None = None
     active_agent_profile_secret_refs: list[str] | None = None
+    # Organization MCP server listings (OHE-3091) merged into the launch view's
+    # ``mcp_config`` that each member connects to with a personal secret
+    # (``managed_by='user'``). Conversation-start drops the ones whose
+    # ``${NAME}`` references this member's secrets cannot satisfy. Same
+    # non-persisted, launch-only contract as the profile fields above.
+    org_user_managed_mcp_server_names: list[str] | None = None
 
     # True when this instance came from a resolve-requested load: its
     # agent_settings are the *effective* launch view (possibly an Agent

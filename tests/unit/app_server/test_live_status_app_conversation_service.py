@@ -10,7 +10,7 @@ import types
 import zipfile
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
@@ -25,6 +25,10 @@ from openhands.agent_server.models import (
 )
 from openhands.app_server.acp_providers import (
     SURFACED_ACP_PROVIDERS,
+)
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryStatus,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
     ARCHIVE_WORKSPACE_PATH_TAG_KEY,
@@ -44,6 +48,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     LiveStatusAppConversationService,
     LiveStatusAppConversationServiceInjector,
+    SandboxRuntime,
     _compose_system_message_suffix,
     _exception_detail,
     _resolve_title_llm_profile,
@@ -78,6 +83,7 @@ from openhands.app_server.sandbox.sandbox_models import (
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
@@ -123,6 +129,25 @@ def _runtime_agent(request):
         LaunchRuntime(browser_available=True, acp_skill_sourcing='openhands_managed'),
         additions=request.agent_launch_additions,
     ).agent
+
+
+def _eval_proxy_connections():
+    """Org provider connections with one linked-profile target."""
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnection,
+        ProviderConnections,
+    )
+
+    return ProviderConnections(
+        connections={
+            'eval_proxy': ProviderConnection(
+                id='eval_proxy',
+                display_name='Eval proxy',
+                api_key=SecretStr('sk-eval-proxy'),
+                base_url='https://llm-proxy.eval.example.test',
+            )
+        }
+    )
 
 
 class _AsyncSessionContext:
@@ -377,7 +402,9 @@ class TestLiveStatusAppConversationService:
             app_mode='test',
         )
 
-        self.service._ensure_profile_runtime = AsyncMock(return_value=True)
+        self.service._ensure_profile_runtime = AsyncMock(
+            return_value=SandboxRuntime(browser_available=True, sdk_version='1.54.0')
+        )
 
         # Mock user info
         self.mock_user = _TestUserInfo(
@@ -646,6 +673,58 @@ class TestLiveStatusAppConversationService:
         # The profile deleted on the app-server is pruned from the sandbox.
         self.mock_httpx_client.delete.assert_awaited_once()
         assert self.mock_httpx_client.delete.await_args.args[0] == f'{base}/Gone'
+
+    async def test_seed_sandbox_profiles_resolves_linked_profiles(self):
+        """A linked profile is seeded with its connection's key and base_url and
+        without the link: the agent server's profile store drops inline
+        credentials from any profile that still has ``provider_connection_id``.
+        A profile whose connection is missing is seeded with no key."""
+        user = SimpleNamespace(
+            id='member-user',
+            llm_profiles=LLMProfiles(
+                profiles={
+                    'Eval': LLM(
+                        model='litellm_proxy/anthropic/claude-haiku',
+                        provider_connection_id='eval_proxy',
+                        usage_id='p',
+                    ),
+                    'Dangling': LLM(
+                        model='anthropic/claude-haiku',
+                        provider_connection_id='gone',
+                        usage_id='p',
+                    ),
+                }
+            ),
+            agent_settings=SimpleNamespace(
+                llm=LLM(model='openhands/gpt-5.5', api_key=SecretStr('managed-key'))
+            ),
+        )
+        self.mock_user_context.get_user_info = AsyncMock(return_value=user)
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=_eval_proxy_connections()
+        )
+        self.service._maybe_refresh_managed_llm_key = AsyncMock(
+            return_value=user.agent_settings.llm
+        )
+        ok = Mock(raise_for_status=Mock())
+        listing = Mock(raise_for_status=Mock())
+        listing.json = Mock(return_value={'profiles': []})
+        self.mock_httpx_client.post = AsyncMock(return_value=ok)
+        self.mock_httpx_client.get = AsyncMock(return_value=listing)
+
+        await self.service._seed_sandbox_profiles('http://agent.test', 'sess-key')
+
+        base = 'http://agent.test/api/profiles'
+        pushed = {
+            call.args[0]: call.kwargs['json']['llm']
+            for call in self.mock_httpx_client.post.call_args_list
+        }
+        assert pushed[f'{base}/Eval']['api_key'] == 'sk-eval-proxy'
+        assert pushed[f'{base}/Eval']['base_url'] == (
+            'https://llm-proxy.eval.example.test'
+        )
+        assert 'provider_connection_id' not in pushed[f'{base}/Eval']
+        assert 'api_key' not in pushed[f'{base}/Dangling']
 
     def test_apply_suggested_task_sets_prompt_and_trigger(self):
         """Test suggested task prompts populate initial message and trigger."""
@@ -1052,7 +1131,7 @@ class TestLiveStatusAppConversationService:
         )
         self.mock_user_context.get_latest_token = AsyncMock(return_value='legacy_value')
         self.mock_jwt_service.create_jws_token.side_effect = (
-            lambda payload, expires_in: f'jwt-{sorted(payload.items())}'
+            lambda payload, expires_in, audience: f'jwt-{sorted(payload.items())}'
         )
 
     @pytest.mark.asyncio
@@ -1071,11 +1150,13 @@ class TestLiveStatusAppConversationService:
         self.mock_jwt_service.create_jws_token.assert_any_call(
             payload={'user_id': self.mock_user.id, 'oauth_provider_id': 7},
             expires_in=None,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
         assert isinstance(result['GITLAB_TOKEN'], LookupSecret)
         self.mock_jwt_service.create_jws_token.assert_any_call(
             payload={'user_id': self.mock_user.id, 'provider_type': 'gitlab'},
             expires_in=None,
+            audience=JwtAudience.SECRET_LOOKUP,
         )
 
     @pytest.mark.asyncio
@@ -1658,6 +1739,70 @@ class TestLiveStatusAppConversationService:
         assert llm.stream is True
 
     @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_sends_llm_without_connection_link(self):
+        """The agent server has no copy of the org's connections, so the start
+        LLM keeps the resolved key and base_url but drops the link."""
+        from pydantic import SecretStr as _SecretStr
+
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={
+                'llm': LLM(
+                    model='anthropic/claude-test',
+                    base_url='https://llm-proxy.example.test',
+                    api_key=_SecretStr('sk-proxy'),
+                    provider_connection_id='proxy',
+                )
+            }
+        )
+        self.mock_user_context.get_mcp_api_key.return_value = None
+
+        llm, _ = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id
+        )
+
+        assert llm.provider_connection_id is None
+        assert llm.base_url == 'https://llm-proxy.example.test'
+        assert llm.api_key.get_secret_value() == 'sk-proxy'
+
+    @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_keeps_connection_key_on_managed_proxy(
+        self, monkeypatch
+    ):
+        """The managed key refresh must still see the link, so a linked LLM on
+        the managed proxy keeps its connection key (detach comes after it)."""
+        from pydantic import SecretStr as _SecretStr
+
+        self.service.app_mode = 'saas'
+        self.service.openhands_provider_base_url = 'https://llm-proxy.app.all-hands.dev'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        self.mock_user_context.get_mcp_api_key.return_value = None
+        get_key = AsyncMock(return_value='sk-managed-key')
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=get_key,
+            rotate_key=AsyncMock(),
+            verify_key=AsyncMock(return_value=False),
+        )
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={
+                'llm': LLM(
+                    model='openhands/claude-test',
+                    base_url='https://llm-proxy.app.all-hands.dev',
+                    api_key=_SecretStr('sk-proxy'),
+                    provider_connection_id='proxy',
+                )
+            }
+        )
+
+        llm, _ = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id
+        )
+
+        assert llm.api_key.get_secret_value() == 'sk-proxy'
+        get_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_configure_llm_preserves_reasoning_effort(self):
         """User-configured reasoning_effort must survive _configure_llm.
 
@@ -2056,10 +2201,58 @@ class TestLiveStatusAppConversationService:
         self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
         self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
         self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
-        base = 'openhands.app_server.app_conversation.additional_repositories'
+        base = (
+            'openhands.app_server.app_conversation.live_status_app_conversation_service'
+        )
 
         with patch(
             f'{base}.agent_server_runs_hooks_from_project_dir', return_value=True
+        ) as gate:
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+                selected_repository='test_repo',
+                sandbox_sdk_version='1.61.0',
+            )
+
+        gate.assert_called_once_with('1.61.0')
+        assert request.hook_config == hooks
+        assert request.hook_project_dir == '/test/dir/test_repo'
+        assert request.model_dump()['hook_project_dir'] == '/test/dir/test_repo'
+
+    @pytest.mark.asyncio
+    async def test_build_request_skips_hooks_in_an_older_sandbox_with_additional_repositories(
+        self,
+    ):
+        """A sandbox whose agent-server predates ``hook_project_dir`` would run the
+        primary's hooks from the parent folder, so they stay skipped and the field
+        is not sent, whatever the app server's own SDK supports."""
+        self.service._load_hooks_from_workspace = AsyncMock()
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = real_llm
+        mock_agent.condenser = None
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
+        extra = AdditionalRepository(
+            repository='org/lib',
+            folder='lib',
+            path='/test/dir/lib',
+            status=AdditionalRepositoryStatus.CLONED,
+        )
+        base = 'openhands.app_server.app_conversation.additional_repositories'
+
+        with (
+            patch(f'{base}._models_have_hook_project_dir', return_value=True),
+            patch(f'{base}._installed_sdk_version', return_value='1.61.0'),
         ):
             request = await self.service._build_start_conversation_request_for_user(
                 user=self.mock_user,
@@ -2071,11 +2264,13 @@ class TestLiveStatusAppConversationService:
                 working_dir='/test/dir',
                 remote_workspace=Mock(spec=AsyncRemoteWorkspace),
                 selected_repository='test_repo',
+                additional_repositories=[extra],
+                sandbox_sdk_version='1.60.0',
             )
 
-        assert request.hook_config == hooks
-        assert request.hook_project_dir == '/test/dir/test_repo'
-        assert request.model_dump()['hook_project_dir'] == '/test/dir/test_repo'
+        self.service._load_hooks_from_workspace.assert_not_awaited()
+        assert request.hook_config is None
+        assert request.model_dump().get('hook_project_dir') is None
 
     @pytest.mark.asyncio
     async def test_build_request_honours_a_profiles_tool_selection(self):
@@ -2592,8 +2787,10 @@ class TestLiveStatusAppConversationService:
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
             self.mock_user
         )
+        # The conversation's final secrets ride along so org MCP listings the
+        # member has not connected to can be left out (OHE-3091).
         self.service._configure_llm_and_mcp.assert_called_once_with(
-            self.mock_user, 'gpt-4', test_conversation_id
+            self.mock_user, 'gpt-4', test_conversation_id, secrets=ANY
         )
 
     @pytest.mark.asyncio
@@ -3145,6 +3342,37 @@ class TestLiveStatusAppConversationService:
             registry.update_secrets({name: secret})
         assert 'profile-scoped-token' not in registry.mask_secrets_in_output(
             'credential: profile-scoped-token'
+        )
+
+    @pytest.mark.parametrize('acp', [False, True])
+    @pytest.mark.asyncio
+    async def test_scoped_profile_keeps_git_credential_helper_token_masked(self, acp):
+        from openhands.app_server.sandbox.sandbox_service import (
+            GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
+        )
+        from openhands.sdk.conversation.secret_registry import SecretRegistry
+        from openhands.sdk.settings import ACPAgentSettings
+
+        self.mock_user.active_agent_profile_secret_refs = []
+        self.mock_user_context.get_secrets = AsyncMock(return_value={})
+        self.mock_user_context.get_provider_tokens = AsyncMock(return_value={})
+        settings = (
+            ACPAgentSettings(acp_server='claude-code')
+            if acp
+            else OpenHandsAgentSettings(llm={'model': 'gpt-4', 'api_key': 'test-key'})
+        )
+        result = await self._build_request_with_agent_settings(
+            settings,
+            git_credential_access_tokens={'github': 'profile-scoped-git-jwt'},
+        )
+        # The helper reads this JWT from a file the agent can also read, so it is
+        # registered as a conversation secret even under a scoped profile.
+        name = GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX + 'GITHUB'
+        assert set(result.secrets) == {name}
+        registry = SecretRegistry()
+        registry.update_secrets({name: result.secrets[name]})
+        assert 'profile-scoped-git-jwt' not in registry.mask_secrets_in_output(
+            'credential: profile-scoped-git-jwt'
         )
 
     @pytest.mark.asyncio
@@ -4489,6 +4717,83 @@ class TestLiveStatusAppConversationService:
         )
         assert rotated
 
+    def _use_agent_server_below_the_sdk_floor(self) -> None:
+        """Run the real runtime check against an agent-server on SDK 1.50.1."""
+        del self.service._ensure_profile_runtime  # the shared stub from setup
+
+        def get(url, **_):
+            response = Mock(raise_for_status=Mock())
+            response.json.return_value = (
+                {'sdk_version': '1.50.1', 'usable_tools': ['terminal']}
+                if url.endswith('/server_info')
+                else {'profiles': []}
+            )
+            return response
+
+        self.mock_httpx_client.get = AsyncMock(side_effect=get)
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_in_sandbox_below_the_sdk_floor(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """An ordinary launch still starts in a sandbox whose agent-server predates
+        the Agent Profile runtime, such as one created before an image bump."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self._use_agent_server_below_the_sdk_floor()
+        self.service._process_pending_messages = AsyncMock()
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(conversation_id=conversation_id)
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posted = [call.args[0] for call in self.mock_httpx_client.post.await_args_list]
+        assert 'http://agent-server:8000/api/conversations' in posted
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_persona_below_the_sdk_floor(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """That agent-server would drop the persona silently, so the start fails
+        with the upgrade error instead of launching without it."""
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self._use_agent_server_below_the_sdk_floor()
+        self.mock_user.agent_settings = self.mock_user.agent_settings.model_copy(
+            update={'persona': 'Review only.'}
+        )
+
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest(conversation_id=conversation_id)
+            )
+        ]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        assert 'to launch an Agent Profile persona' in tasks[-1].detail
+        self.mock_httpx_client.post.assert_not_awaited()
+
     async def test_start_app_conversation_in_sandbox_whose_image_is_no_longer_advertised(
         self,
     ):
@@ -4683,6 +4988,163 @@ class TestLiveStatusAppConversationService:
         self.service.maybe_run_setup_script.assert_not_called()
         self.service._build_start_conversation_request_for_user.assert_not_called()
         self.mock_httpx_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('selected_repository', [None, 'owner/repo'])
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_loads_skills_once(
+        self,
+        mock_conversation_info_class,
+        mock_remote_workspace_class,
+        selected_repository,
+    ):
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        del self.service.run_setup_scripts
+        del self.service._build_start_conversation_request_for_user
+        for name in (
+            '_configure_git_credential_helpers',
+            '_configure_azure_devops_git_credentials',
+            'clone_or_init_git_repo',
+            'maybe_run_setup_script',
+            'maybe_setup_git_hooks',
+            'maybe_inject_memory_context',
+        ):
+            setattr(self.service, name, AsyncMock())
+        self.service._process_pending_messages = AsyncMock()
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._mint_azure_devops_access_token = AsyncMock()
+        self.service._mint_git_credential_access_tokens = AsyncMock()
+        self.service.clone_additional_repositories = AsyncMock(return_value=[])
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(
+            return_value=(LLM(model='gpt-4', api_key=SecretStr('test-key')), {})
+        )
+        self.service._resolve_registered_marketplaces = AsyncMock(return_value=[])
+        self.service.load_and_merge_all_skills = AsyncMock(return_value=[])
+        workspace = mock_remote_workspace_class.return_value
+        workspace.working_dir = '/test/workspace'
+        workspace.execute_command = AsyncMock(
+            return_value=SimpleNamespace(exit_code=0, stdout='')
+        )
+        statuses = []
+        async for task in self.service._start_app_conversation(
+            AppConversationStartRequest(
+                selected_repository=selected_repository,
+                git_provider=ProviderType.GITHUB if selected_repository else None,
+                disabled_skills=['disabled-test-skill'],
+            )
+        ):
+            statuses.append(task.status)
+
+        assert statuses[-1] == AppConversationStartTaskStatus.READY, task.detail
+        assert statuses.count(AppConversationStartTaskStatus.SETTING_UP_SKILLS) == 1
+        self.service.load_and_merge_all_skills.assert_awaited_once()
+        assert (
+            self.service.load_and_merge_all_skills.call_args.kwargs[
+                'registered_marketplaces'
+            ]
+            == []
+        )
+        self.mock_httpx_client.post.assert_awaited_once()
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_early_title_finishes_while_sandbox_is_still_starting(
+        self, info_class, workspace_class
+    ):
+        self._arrange_start_app_conversation(uuid4(), info_class, workspace_class)
+        self.service._start_title_llm = AsyncMock(return_value=None)
+        self.service._persist_start_title = AsyncMock()
+        self.service._sync_start_title = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        self.mock_app_conversation_info_service.complete_title_generation = AsyncMock()
+        original_wait = self.service._wait_for_sandbox_start
+
+        async def wait_for_sandbox(task):
+            for _ in range(10):
+                if task.title_generation.status != 'pending':
+                    break
+                await asyncio.sleep(0)
+            assert task.title_generation.status == 'fallback'
+            assert task.app_conversation_id is None
+            self.service._persist_start_title.assert_awaited_once()
+            async for result in original_wait(task):
+                yield result
+
+        self.service._wait_for_sandbox_start = wait_for_sandbox
+        request = AppConversationStartRequest(
+            generate_title_on_submit=True,
+            initial_message=SendMessageRequest(
+                content=[TextContent(text='Fix checkout')]
+            ),
+        )
+        tasks = [task async for task in self.service._start_app_conversation(request)]
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posted = self.mock_httpx_client.post.call_args.kwargs['json']
+        assert posted['autotitle'] is False
+        assert posted['title'] == 'Fix checkout'
+        saved = self.mock_app_conversation_info_service.save_app_conversation_info.call_args.args[
+            0
+        ]
+        assert saved.title == 'Fix checkout'
+        assert not any(
+            isinstance(call.args[0].processor, SetTitleCallbackProcessor)
+            for call in self.mock_event_callback_service.save_event_callback.call_args_list
+        )
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_slow_title_does_not_delay_ready(self, info_class, workspace_class):
+        self._arrange_start_app_conversation(uuid4(), info_class, workspace_class)
+        self.service._start_title_llm = AsyncMock(return_value=None)
+        self.service._persist_start_title = AsyncMock()
+        self.service._sync_start_title = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        self.mock_app_conversation_info_service.complete_title_generation = AsyncMock()
+        release = asyncio.Event()
+
+        async def generate(pending, message, llm):
+            await release.wait()
+            return pending.model_copy(
+                update={'status': 'generated', 'title': 'Checkout repair'}
+            )
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.generate_start_title',
+            side_effect=generate,
+        ):
+            start = self.service._start_app_conversation(
+                AppConversationStartRequest(
+                    generate_title_on_submit=True,
+                    initial_message=SendMessageRequest(
+                        content=[TextContent(text='Fix checkout')]
+                    ),
+                )
+            )
+            async with asyncio.timeout(2):
+                async for task in start:
+                    if task.status == AppConversationStartTaskStatus.READY:
+                        assert task.title_generation.status == 'pending'
+                        release.set()
+            self.service._persist_start_title.assert_awaited_once()
+            assert task.title_generation.title == 'Checkout repair'
 
     def _arrange_start_app_conversation(
         self,
@@ -5112,6 +5574,83 @@ class TestLiveStatusAppConversationService:
             'sk-profile'
         )
         assert self.mock_user.agent_settings.llm.model == 'openai/gpt-4o'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_runs_linked_llm_profile_on_its_connection(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """OHE-3290: a linked llm_profile runs with its connection's key and
+        base_url, not the member's settings key."""
+        profiles = LLMProfiles()
+        profiles.save(
+            'eval',
+            LLM(
+                model='litellm_proxy/anthropic/claude-haiku',
+                provider_connection_id='eval_proxy',
+            ),
+        )
+        self.mock_user = UserInfo(
+            id='member-1',
+            agent_settings={'llm': {'model': 'openai/gpt-4o', 'api_key': 'sk-member'}},
+            llm_profiles=profiles,
+        )
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=_eval_proxy_connections()
+        )
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest(llm_profile='eval')
+        ):
+            pass
+
+        launched_llm = (
+            self.service._build_start_conversation_request_for_user.call_args.args[
+                0
+            ].agent_settings.llm
+        )
+        assert launched_llm.base_url == 'https://llm-proxy.eval.example.test'
+        assert launched_llm.api_key.get_secret_value() == 'sk-eval-proxy'
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_rejects_missing_connection_before_sandbox(
+        self,
+    ):
+        """A linked llm_profile whose connection is missing fails fast with
+        422, before any sandbox work."""
+        from openhands.app_server.settings.provider_connections import (
+            ProviderConnections,
+        )
+
+        profiles = LLMProfiles()
+        profiles.save(
+            'eval', LLM(model='anthropic/claude-haiku', provider_connection_id='gone')
+        )
+        self.mock_user.llm_profiles = profiles
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_user_context.get_provider_connections = AsyncMock(
+            return_value=ProviderConnections()
+        )
+        self.service._wait_for_sandbox_start = Mock()
+
+        with pytest.raises(HTTPException) as exc_info:
+            async for _ in self.service._start_app_conversation(
+                AppConversationStartRequest(llm_profile='eval')
+            ):
+                pass
+
+        assert exc_info.value.status_code == 422
+        assert "provider connection 'gone'" in exc_info.value.detail
+        self.service._wait_for_sandbox_start.assert_not_called()
 
     @pytest.mark.parametrize(
         ('acp', 'llm_profile', 'detail'),
@@ -5831,6 +6370,69 @@ class TestLiveStatusAppConversationService:
 
         assert len(mcp_servers) == 3
 
+    def _user_with_org_listings(self):
+        """Two org listings in the launch map: one the member connects to with
+        ``${BIFROST_TOKEN}`` (user-managed), one with the org's own key."""
+        from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
+
+        self.mock_user.mcp_config = MCPConfig(
+            mcpServers={
+                'bifrost': RemoteMCPServer(
+                    url='https://bifrost.example/mcp',
+                    transport='http',
+                    headers={'Authorization': 'Bearer ${BIFROST_TOKEN}'},
+                ),
+                'datadog': RemoteMCPServer(
+                    url='https://dd.example/mcp',
+                    transport='http',
+                    headers={'Authorization': 'Bearer dd-service-key'},
+                ),
+            }
+        )
+        self.mock_user.org_user_managed_mcp_server_names = ['bifrost']
+
+    def test_merge_custom_mcp_config_skips_an_unconnected_org_listing(self):
+        """OHE-3091: without the personal secret the reference would stay
+        literal and the server would fail to authenticate, so it is left out."""
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(
+            servers, self.mock_user, {'OTHER_SECRET': object()}
+        )
+
+        assert set(servers) == {'datadog'}
+
+    def test_merge_custom_mcp_config_keeps_a_connected_org_listing(self):
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(
+            servers, self.mock_user, {'BIFROST_TOKEN': object()}
+        )
+
+        assert set(servers) == {'bifrost', 'datadog'}
+
+    def test_merge_custom_mcp_config_without_secrets_keeps_every_server(self):
+        """Unknown secrets (no ``secrets`` argument) never drop a server."""
+        self._user_with_org_listings()
+        servers: dict = {}
+
+        self.service._merge_custom_mcp_config(servers, self.mock_user)
+
+        assert set(servers) == {'bifrost', 'datadog'}
+
+    @pytest.mark.asyncio
+    async def test_configure_llm_and_mcp_forwards_secrets_to_the_merge(self):
+        self._user_with_org_listings()
+        self.mock_user_context.get_mcp_api_key.return_value = None
+
+        _llm, mcp_config = await self.service._configure_llm_and_mcp(
+            self.mock_user, None, self.conversation_id, secrets={}
+        )
+
+        assert set(mcp_config) == {'default', 'datadog'}
+
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_custom_config_error_handling(self):
         """Test _configure_llm_and_mcp handles invalid custom MCP config gracefully."""
@@ -6229,17 +6831,53 @@ class TestLiveStatusAppConversationService:
         # Verify empty results
         assert len(result.items) == 0
 
+    @pytest.mark.parametrize(
+        'launch, requirement',
+        [('persona', 'an Agent Profile persona'), ('acp', 'an ACP agent')],
+    )
+    @pytest.mark.asyncio
+    async def test_old_runtime_rejects_launches_it_cannot_honor(
+        self, launch, requirement
+    ):
+        """An agent-server below the floor drops a persona silently and rejects
+        the ACP settings transport, so those launches fail with the upgrade error."""
+        response = Mock()
+        response.json.return_value = {'sdk_version': '1.50.1'}
+        self.mock_httpx_client.get = AsyncMock(return_value=response)
+        agent_settings = (
+            ACPAgentSettings(acp_server='codex')
+            if launch == 'acp'
+            else self.mock_user.agent_settings.model_copy(
+                update={'persona': 'Review only.'}
+            )
+        )
+
+        with pytest.raises(SandboxError, match=f'to launch {requirement}'):
+            await LiveStatusAppConversationService._ensure_profile_runtime(
+                self.service, 'http://sandbox', 'session-key', agent_settings
+            )
+
     @pytest.mark.parametrize('version', ['1.50.1', '1.53.0', 'unknown', None])
     @pytest.mark.asyncio
-    async def test_old_runtime_is_rejected_before_launch(self, version):
+    async def test_old_runtime_lets_an_ordinary_launch_proceed(self, version):
+        """Everything else a launch sends is honored by an old agent-server, so
+        the start goes ahead instead of stranding the sandbox after an image bump."""
         response = Mock()
-        response.json.return_value = {'sdk_version': version}
+        response.json.return_value = {
+            'sdk_version': version,
+            'usable_tools': ['browser_tool_set'],
+        }
         self.mock_httpx_client.get = AsyncMock(return_value=response)
-        with pytest.raises(SandboxError, match='Upgrade its image'):
-            await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service, 'http://sandbox', 'session-key'
-            )
-        self.mock_httpx_client.post.assert_not_called()
+
+        runtime = await LiveStatusAppConversationService._ensure_profile_runtime(
+            self.service,
+            'http://sandbox',
+            'session-key',
+            self.mock_user.agent_settings,
+        )
+
+        assert runtime.browser_available is True
+        assert runtime.sdk_version == (version if isinstance(version, str) else None)
 
     @pytest.mark.parametrize('usable_tools', [[], ['terminal'], ['browser_tool_set']])
     @pytest.mark.asyncio
@@ -6250,12 +6888,14 @@ class TestLiveStatusAppConversationService:
             'usable_tools': usable_tools,
         }
         self.mock_httpx_client.get = AsyncMock(return_value=response)
-        browser_available = (
-            await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service, 'http://sandbox', 'session-key'
-            )
+        runtime = await LiveStatusAppConversationService._ensure_profile_runtime(
+            self.service,
+            'http://sandbox',
+            'session-key',
+            self.mock_user.agent_settings,
         )
-        assert browser_available == ('browser_tool_set' in usable_tools)
+        assert runtime.browser_available == ('browser_tool_set' in usable_tools)
+        assert runtime.sdk_version == '1.54.0'
         self.mock_httpx_client.get.assert_awaited_once_with(
             'http://sandbox/server_info',
             headers={'X-Session-API-Key': 'session-key'},
@@ -8142,6 +8782,7 @@ async def test_mint_azure_devops_access_token_for_entra_user():
     }
     # Session-length, not the multi-day resume window nor the provider ceiling.
     assert kwargs['expires_in'] == _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+    assert kwargs['audience'] == JwtAudience.SECRET_LOOKUP
 
 
 def _task_for_mint():
@@ -8157,7 +8798,9 @@ def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
     service.web_url = web_url
     service.jwt_service = Mock()
     service.jwt_service.create_jws_token = Mock(
-        side_effect=lambda payload, expires_in: f'jwt.{payload["provider_type"]}'
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["provider_type"]}'
+        )
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
@@ -8199,6 +8842,7 @@ async def test_mint_git_credential_access_tokens_one_per_provider_except_azure_d
     assert all(
         c.kwargs['expires_in'] == _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT for c in calls
     )
+    assert all(c.kwargs['audience'] == JwtAudience.SECRET_LOOKUP for c in calls)
 
 
 @pytest.mark.asyncio
@@ -8267,6 +8911,24 @@ def _azure_devops_mint_service(*, web_url, latest_token, user_id='user-1'):
         LiveStatusAppConversationService._mint_azure_devops_access_token, service
     )
     return service
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_skips_when_sandbox_cannot_call_back():
+    """Without a webhook secrets URL the sandbox can reach, no helper JWT is
+    minted and the clones keep their authenticated URL."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com', providers=[ProviderType.GITHUB]
+    )
+    service._secret_lookup_url = Mock(return_value=None)
+    task = _task_for_mint()
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert task._git_credential_access_tokens == {}
+    service.jwt_service.create_jws_token.assert_not_called()
 
 
 def test_exception_detail_unwraps_dict_message():

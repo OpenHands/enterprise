@@ -1451,3 +1451,63 @@ class TestStartJobErrorMessages:
 
         # Assert
         mock_send_message.assert_awaited_once_with(message, slack_new_conversation_view)
+
+
+def _slack_state_jwt_service():
+    from pydantic import SecretStr
+
+    from openhands.app_server.services.jwt_service import JwtService
+    from openhands.app_server.utils.encryption_key import EncryptionKey
+
+    return JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+
+
+def test_slack_oauth_state_round_trip():
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    state = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'team_id': 'T1'},
+        audience=JwtAudience.SLACK_OAUTH_STATE,
+    )
+
+    payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+
+    assert payload['slack_user_id'] == 'U1'
+
+
+def test_slack_oauth_state_rejects_a_token_for_another_audience():
+    import jwt
+
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    session_cookie = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'user_id': 'user-1'}, audience=JwtAudience.SESSION
+    )
+
+    with pytest.raises(jwt.InvalidTokenError):
+        slack_routes.verify_slack_oauth_state(jwt_service, session_cookie)
+
+
+@pytest.mark.parametrize(
+    'claims, accepted',
+    [({'slack_user_id': 'U1', 'team_id': 'T1'}, True), ({'user_id': 'u'}, False)],
+)
+def test_slack_oauth_state_minted_before_audiences(claims, accepted):
+    import jwt
+
+    from server.routes.integration import slack as slack_routes
+    from tests.unit.unscoped_jws import mint_unscoped_jws_token
+
+    jwt_service = _slack_state_jwt_service()
+    state = mint_unscoped_jws_token(jwt_service, claims)
+
+    if accepted:
+        payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+        assert payload['slack_user_id'] == 'U1'
+    else:
+        with pytest.raises(jwt.InvalidTokenError):
+            slack_routes.verify_slack_oauth_state(jwt_service, state)

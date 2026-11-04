@@ -278,12 +278,14 @@ def _service(
     webhook_base_url: str | None = None,
     lifecycle: SandboxLifecycleSettings | None = None,
     max_num_sandboxes: int = 10,
+    state_dir: str | None = None,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
+        state_dir=state_dir,
     )
     return K8sAgentSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -477,6 +479,25 @@ class TestInitHandshake:
         assert body['allow_cors_origins'] == [WEB_URL]
         assert agent_server.init_post_urls == [f'{AGENT_SERVER_URL}/api/init']
         assert agent_server.init_post_headers[0] == {'X-Init-API-Key': INIT_API_KEY}
+
+    @pytest.mark.asyncio
+    async def test_init_body_keeps_the_state_on_the_template_state_volume(
+        self, k8s, db_session
+    ):
+        """With a state volume named on the spec, the agent server's state
+        leaves the workspace the agent may serve; the worktrees stay with the
+        project."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session, k8s, httpx_client=agent_server, state_dir='/var/openhands/'
+        ).start_sandbox()
+
+        body = agent_server.init_post_bodies[0]
+        InitRequest.model_validate(body)
+        assert body['conversations_path'] == '/var/openhands/conversations'
+        assert body['bash_events_dir'] == '/var/openhands/bash_events'
+        assert body['conversation_worktree_root'] == '/workspace/worktrees'
 
     @pytest.mark.asyncio
     async def test_secret_key_is_the_session_key(self, k8s, db_session):

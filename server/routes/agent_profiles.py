@@ -90,14 +90,16 @@ from server.verified_models.default_profile import (
 )
 from storage.agent_profile_resolution import (
     AgentProfileScope,
+    launch_mcp_config,
     load_agent_profiles,
     load_llm_profiles,
     load_member_agent_profiles,
-    member_mcp_config,
     org_launch_stores,
 )
 from storage.database import a_session_maker
 from storage.org import Org
+from storage.org_mcp_servers import org_managed_server_names
+from storage.org_mcp_servers_store import OrgMcpServersStore
 from storage.org_member import OrgMember
 from storage.org_secrets_store import OrgSecretsStore
 from storage.org_service import OrgService
@@ -439,10 +441,12 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
 
     An org profile launches for every member, so it may not lean on what the
     authoring admin has configured personally: ACP backends are per-member
-    installs, MCP servers are per-member settings (``None`` stays accepted for
-    the legacy seeded ``default``; an explicit list must be empty), and
-    ``secret_refs`` may only name org-shared secrets, which is what the launch
-    path resolves an org profile's explicit list against (OHE-3753).
+    installs, ``mcp_server_refs`` may only name the organization's own
+    ``org``-managed MCP server listings (OHE-3091; ``None`` stays accepted for
+    the legacy seeded ``default``), and ``secret_refs`` may only name
+    org-shared secrets, which is what the launch path resolves an org profile's
+    explicit list against (OHE-3753). ``user``-managed listings are excluded
+    for the same reason: they resolve against a member's personal secret.
     """
     if profile.agent_kind != 'openhands':
         raise HTTPException(
@@ -450,10 +454,19 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
             detail='Organization agent profiles must use the OpenHands agent',
         )
     if profile.mcp_server_refs:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail='Organization agent profiles cannot reference MCP servers',
+        listings = await OrgMcpServersStore(org_id).list()
+        unknown = sorted(
+            set(profile.mcp_server_refs) - org_managed_server_names(listings)
         )
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    'Organization agent profiles can only reference '
+                    "the organization's organization-managed MCP servers; "
+                    'not organization-managed: ' + ', '.join(unknown)
+                ),
+            )
     if profile.secret_refs:
         store = await OrgSecretsStore.get_instance(org_id)
         shared = {secret.name for secret in await store.list_shared()}
@@ -833,7 +846,7 @@ async def materialize_agent_profile(
     org, member = await _get_org_and_member(effective_org_id, user_id)
     profile, _found_scope = _load_named_profile(scope, org, member, name)
 
-    mcp_config = member_mcp_config(member) if member is not None else {}
+    mcp_config = launch_mcp_config(org, member)
     async with a_session_maker() as session:
         model_name = await get_openhands_default_model_name(session)
     stores = org_launch_stores(

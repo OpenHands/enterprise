@@ -136,6 +136,10 @@ export const integrationService = {
     const { data } = await openHands.get<AzureDevOpsOrganizations>(
       "/integration/azure-devops/organizations",
     );
+    // A server without the route answers with the SPA's index.html.
+    if (!Array.isArray(data?.organizations)) {
+      throw new Error("Invalid Azure DevOps organizations response");
+    }
     return data;
   },
 

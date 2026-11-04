@@ -7,10 +7,12 @@ to it, under the conversation's working folder, which becomes the agent's
 working directory. Only the primary supplies conversation hooks and ``setup.sh``.
 """
 
+import importlib.metadata
 import re
 from collections.abc import Sequence
 from enum import Enum
 
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.app_server.integrations.service_types import ProviderType
@@ -121,46 +123,125 @@ def agent_working_dir(
     return working_dir if additional_repositories else project_dir
 
 
-def agent_server_runs_hooks_from_project_dir() -> bool:
-    """Whether the agent-server runs command hooks from ``hook_project_dir``.
+class ConversationRoot(BaseModel):
+    """A folder the conversation's read endpoints serve."""
 
-    The SDK and the sandbox agent-server are pinned to the same version, so the
-    installed models say what the sandbox understands and what
-    ``ConversationSettings.create_request`` forwards.
+    path: str = Field(description='Absolute path of the folder in the sandbox')
+    folder: str | None = Field(
+        default=None,
+        description='Repository folder name; None for the working folder itself',
+    )
+    repository: str | None = None
+    primary: bool = False
+
+
+def conversation_roots(
+    working_dir: str,
+    selected_repository: str | None,
+    additional_repositories: Sequence[AdditionalRepository],
+) -> list[ConversationRoot]:
+    """The folders the read endpoints serve, in order; the first is the default.
+
+    The primary's folder comes first. Without a primary the working folder is
+    the default: it is the project folder of a repository-less conversation and
+    the parent of the clones otherwise. Each cloned additional repository
+    follows in request order; a failed clone has no folder to serve.
     """
+    roots: list[ConversationRoot] = []
+    if selected_repository:
+        folder = selected_repository.split('/')[-1]
+        roots.append(
+            ConversationRoot(
+                path=f'{working_dir}/{folder}',
+                folder=folder,
+                repository=selected_repository,
+                primary=True,
+            )
+        )
+    else:
+        roots.append(ConversationRoot(path=working_dir))
+    for repo in additional_repositories:
+        if repo.status == AdditionalRepositoryStatus.CLONED:
+            roots.append(
+                ConversationRoot(
+                    path=repo.path, folder=repo.folder, repository=repo.repository
+                )
+            )
+    return roots
+
+
+def select_root(
+    roots: Sequence[ConversationRoot], repository: str | None
+) -> ConversationRoot | None:
+    """The root named by ``repository`` (a folder name), the default when None."""
+    if repository is None:
+        return roots[0] if roots else None
+    for root in roots:
+        if root.folder == repository:
+            return root
+    return None
+
+
+def _models_have_hook_project_dir() -> bool:
+    """Whether the installed SDK carries ``hook_project_dir`` end to end."""
     return (
         'hook_project_dir' in ConversationConfig.model_fields
         and 'hook_project_dir' in ConversationSettings.model_fields
     )
 
 
+def _installed_sdk_version() -> str | None:
+    try:
+        return importlib.metadata.version('openhands-sdk')
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def agent_server_runs_hooks_from_project_dir(
+    sandbox_sdk_version: str | None,
+) -> bool:
+    """Whether the sandbox's agent-server runs command hooks from ``hook_project_dir``.
+
+    The installed models say what ``ConversationSettings.create_request`` forwards.
+    The sandbox can be older than the app server: one created before an upgrade
+    still hosts new conversations (#1083), and an older agent-server ignores the
+    field and runs hooks from the working directory. So the sandbox must also
+    report (``/server_info``) an openhands-sdk at least as new as the one installed
+    here, whose request model has the field.
+    """
+    if not _models_have_hook_project_dir():
+        return False
+    installed = _installed_sdk_version()
+    if installed is None or not isinstance(sandbox_sdk_version, str):
+        return False
+    try:
+        return Version(sandbox_sdk_version) >= Version(installed)
+    except InvalidVersion:
+        return False
+
+
 def loads_repository_hooks(
     additional_repositories: Sequence[AdditionalRepository],
     *,
-    project_dir_supported: bool | None = None,
+    project_dir_supported: bool,
 ) -> bool:
     """Whether the primary's ``hooks.json`` is loaded for this conversation.
 
     With additional repositories the agent works from the parent folder, so a
-    relative-path hook would run against the wrong tree unless the agent-server
-    runs hooks from the primary's folder (``hook_project_dir``).
+    relative-path hook would run against the wrong tree unless the sandbox's
+    agent-server runs hooks from the primary's folder (``hook_project_dir``).
     """
-    if not additional_repositories:
-        return True
-    if project_dir_supported is None:
-        project_dir_supported = agent_server_runs_hooks_from_project_dir()
-    return project_dir_supported
+    return not additional_repositories or project_dir_supported
 
 
 def hook_project_dir_setting(
-    hook_config: object | None, project_dir: str
+    hook_config: object | None, project_dir: str, *, project_dir_supported: bool
 ) -> dict[str, str]:
     """The ``hook_project_dir`` request setting, when hooks were loaded.
 
-    Older agent-servers do not know the field, so it is only sent when the
-    pinned SDK has it.
+    Only sent to a sandbox whose agent-server knows the field.
     """
-    if hook_config is None or not agent_server_runs_hooks_from_project_dir():
+    if hook_config is None or not project_dir_supported:
         return {}
     return {'hook_project_dir': project_dir}
 
@@ -302,6 +383,11 @@ def _is_under(source: str | None, directory: str) -> bool:
     if not source:
         return False
     return source == directory or source.startswith(directory.rstrip('/') + '/')
+
+
+def skill_in_folder(skill: Skill, path: str) -> bool:
+    """Whether ``skill`` was loaded from a file under ``path``."""
+    return _is_under(skill.source, path)
 
 
 def _relative_glob(pattern: str) -> str:

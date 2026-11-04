@@ -58,6 +58,10 @@ class Permission(str, Enum):
 
     # MCP
     MANAGE_MCP = 'manage_mcp'
+    # Org-scoped MCP server listings — create/edit/delete the organization's
+    # MCP server catalog. Admin/Owner only; all members can *use* (read
+    # redacted listings, launch conversations with) them.
+    MANAGE_ORG_MCP = 'manage_org_mcp'
 
     # Integrations
     MANAGE_INTEGRATIONS = 'manage_integrations'
@@ -184,6 +188,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SECRETS,
             Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
+            Permission.MANAGE_ORG_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
             Permission.MANAGE_API_KEYS,
@@ -221,6 +226,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_SECRETS,
             Permission.MANAGE_ORG_SECRETS,
             Permission.MANAGE_MCP,
+            Permission.MANAGE_ORG_MCP,
             Permission.MANAGE_INTEGRATIONS,
             Permission.MANAGE_APPLICATION_SETTINGS,
             Permission.MANAGE_API_KEYS,

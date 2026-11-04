@@ -41,7 +41,6 @@ async def test_worker_runs_on_its_queues_and_logs_them(monkeypatch, caplog):
 
     monkeypatch.setenv('OH_WORKER_CONCURRENCY', '3')
     monkeypatch.setattr(app, 'run_worker_async', run_worker_async)
-    monkeypatch.setattr(openhands_logger, 'propagate', True)
 
     with caplog.at_level(logging.INFO, logger=openhands_logger.name):
         await worker_main.run()
