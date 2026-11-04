@@ -33,6 +33,9 @@ from openhands.app_server.app_conversation.app_conversation_info_service import 
 from openhands.app_server.app_conversation.app_conversation_models import (
     ARCHIVE_WORKSPACE_PATH_TAG_KEY,
     AppConversation,
+    AppConversationAttachSecretRequest,
+    AppConversationAttachSecretResponse,
+    AppConversationAttachSecretStatus,
     AppConversationInfo,
     AppConversationPage,
     AppConversationStartRequest,
@@ -776,6 +779,151 @@ async def _persist_conversation_model(
             conversation_id,
             stack_info=True,
         )
+
+
+@router.post(
+    '/{conversation_id}/secrets',
+    responses={
+        404: {'description': 'Conversation or sandbox not found'},
+        410: {'description': 'Conversation is archived (sandbox no longer exists)'},
+        502: {'description': 'Agent server returned an error'},
+    },
+)
+async def attach_secret_to_conversation(
+    conversation_id: UUID,
+    request: AppConversationAttachSecretRequest,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    secrets_store: SecretsStore = Depends(get_secrets_store),
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> AppConversationAttachSecretResponse:
+    """Live-attach a saved secret to a running conversation.
+
+    Canvas's ``request_secret`` client tool asks the user for a credential via
+    a modal and persists it through ``POST /api/v1/secrets``. This endpoint then
+    pushes that secret into the *running* conversation's secret registry by
+    calling the sandbox agent-server's ``POST /api/conversations/{id}/secrets``,
+    so the agent can use ``$NAME`` in terminal commands without restarting the
+    conversation.
+
+    Only the secret *name* is accepted from the client. The app-server resolves
+    the plaintext from the secrets store server-side, so the value never
+    transits the browser a second time and never lands in agent-visible tool
+    arguments, events, or logs. The agent only observes a status.
+
+    Outcomes:
+    - ``attached``: pushed to the running conversation.
+    - ``deferred``: the sandbox is paused/starting/archived, so there is no live
+      conversation to push to. The secret was already persisted via
+      ``/api/v1/secrets`` and reaches the conversation on resume/start without
+      re-saving — this is a recoverable state, not a false ``saved``.
+    - ``not_found``: no saved secret by that name.
+    - ``error``: the agent-server push failed unexpectedly.
+    """
+    # Look up the conversation. We intentionally do NOT use the generic
+    # _get_agent_server_context helper here because that helper returns 404
+    # (rather than `deferred`) for non-RUNING sandboxes, and a paused/archived
+    # conversation is the recoverable "try again on resume" path here.
+    conversation = await app_conversation_service.get_app_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Conversation {conversation_id} not found',
+        )
+
+    sandbox = await sandbox_service.get_sandbox(conversation.sandbox_id)
+    if not sandbox:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Sandbox not found for conversation {conversation_id}',
+        )
+
+    if sandbox.status == SandboxStatus.MISSING:
+        # Archived conversation: the secret is persisted, so it will be injected
+        # when the user starts a new conversation. No false success.
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.DEFERRED,
+            message='Conversation is archived; the saved secret will be '
+            'available to the next conversation.',
+        )
+
+    if sandbox.status != SandboxStatus.RUNNING:
+        # Paused / starting / stopping / error: recoverable. The persisted
+        # secret reaches the conversation on resume without re-saving.
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.DEFERRED,
+            message=f'Sandbox is {sandbox.status.value}; the saved secret will '
+            'be available when the conversation resumes.',
+        )
+
+    # Resolve the plaintext value server-side. load_personal excludes
+    # org-shared secrets, matching the create/update path so a personal
+    # request_secret can only attach a personal secret here.
+    secrets = await secrets_store.load_personal()
+    secret_value = _custom_secret_value(secrets, request.secret_name)
+    if secret_value is None:
+        # Never reveal whether a name exists vs. is empty; just "not found".
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.NOT_FOUND,
+            message=f"No saved secret named '{request.secret_name}'.",
+        )
+
+    agent_server_url = None
+    for exposed_url in sandbox.exposed_urls or []:
+        if exposed_url.name == AGENT_SERVER:
+            agent_server_url = exposed_url.url
+            break
+
+    if not agent_server_url:
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.ERROR,
+            message='Agent server URL not found for sandbox.',
+        )
+
+    agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+
+    # Push to the running conversation. The value is sent only to the trusted
+    # sandbox agent-server over the session-scoped key; it is never logged.
+    try:
+        response = await httpx_client.post(
+            f'{agent_server_url}/api/conversations/{conversation_id}/secrets',
+            json={'secrets': {request.secret_name: secret_value}},
+            headers=(
+                {'X-Session-API-Key': sandbox.session_api_key}
+                if sandbox.session_api_key
+                else {}
+            ),
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.warning(
+            'Agent server returned %s when attaching secret %r to conversation %s',
+            e.response.status_code,
+            request.secret_name,
+            conversation_id,
+        )
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.ERROR,
+            message=f'Agent server error: {e.response.status_code}',
+        )
+    except httpx.RequestError:
+        logger.warning(
+            'Failed to reach agent server when attaching secret %r to conversation %s',
+            request.secret_name,
+            conversation_id,
+        )
+        return AppConversationAttachSecretResponse(
+            status=AppConversationAttachSecretStatus.ERROR,
+            message='Failed to reach agent server.',
+        )
+
+    return AppConversationAttachSecretResponse(
+        status=AppConversationAttachSecretStatus.ATTACHED,
+        message=None,
+    )
 
 
 @router.post(
