@@ -66,6 +66,8 @@ docker compose up -d
 
 Then open <http://localhost:9043/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:9043/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
 
+Logs from every container in the stack, including sandboxes, go to `./logs/openhands-<date>.log`. Each line is a JSON object with the service name and the log message, so `jq 'select(.service == "app")' logs/openhands-*.log` shows the app logs. A new file starts each day (UTC), and files older than seven days are deleted. Set `LOG_DIR` to write them somewhere else, and `LOG_RETENTION_DAYS` to keep them longer.
+
 To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
 
 ```bash

@@ -3,6 +3,10 @@ x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.85.0}
 services:
   db:
     image: postgres:16
+    # Vector only collects log lines written after it starts, so the containers that start first wait for it.
+    depends_on: &logs-first
+      vector:
+        condition: service_healthy
     environment:
       POSTGRES_USER: ${DB_USER:-openhands}
       POSTGRES_PASSWORD: ${DB_PASS:-openhands}
@@ -20,6 +24,7 @@ services:
   # Its keys are short-lived, so it has no volume.
   redis:
     image: redis:7
+    depends_on: *logs-first
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -148,6 +153,7 @@ services:
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
+    depends_on: *logs-first
     # AGENT_CANVAS_LOCK_TO_CLOUD must exactly match the address in your browser, such as http://localhost:9043.
     command:
       - --port
@@ -200,6 +206,33 @@ services:
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
     restart: unless-stopped
 
+  # Vector writes the logs of every container in the stack, and of the sandboxes, to one file per day
+  # in LOG_DIR (UTC dates). Each line is a JSON object with the service name and the log message.
+  vector:
+    image: ${VECTOR_IMAGE:-timberio/vector:0.61.0-alpine}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${LOG_DIR:-./logs}:/var/log/openhands
+    configs:
+      - source: vector-config
+        target: /etc/vector/vector.yaml
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8686/health']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  # Vector does not delete old log files, so this service deletes the files older than LOG_RETENTION_DAYS.
+  log-cleanup:
+    image: busybox:1.37
+    init: true
+    command:
+      ['sh', '-c', 'while true; do find /var/log/openhands -name "openhands-*.log" -mtime +${LOG_RETENTION_DAYS:-7} -delete; sleep 3600; done']
+    volumes:
+      - ${LOG_DIR:-./logs}:/var/log/openhands
+    restart: unless-stopped
+
 volumes:
   db-data:
   app-filestore:
@@ -240,3 +273,44 @@ configs:
           reverse_proxy app:3000
         }
       }
+  vector-config:
+    content: |
+      api:
+        enabled: true
+      sources:
+        stack:
+          type: docker_logs
+          include_labels:
+            - com.docker.compose.project=${COMPOSE_PROJECT_NAME}
+        # The app starts sandbox containers outside of Compose, so they have their own label.
+        sandboxes:
+          type: docker_logs
+          include_labels:
+            - openhands.managed=true
+      transforms:
+        tidy:
+          type: remap
+          inputs: [stack, sandboxes]
+          source: |
+            . = {
+              "timestamp": .timestamp,
+              "service": string(.label."com.docker.compose.service") ?? .container_name,
+              "container": .container_name,
+              "image": .image,
+              "stream": .stream,
+              "message": .message
+            }
+        # When a container stops, Vector reads its last log line again. This drops the copy.
+        dedupe:
+          type: dedupe
+          inputs: [tidy]
+          fields:
+            match: [container, timestamp, stream, message]
+      sinks:
+        file:
+          type: file
+          inputs: [dedupe]
+          # The date in the name starts a new file each day.
+          path: /var/log/openhands/openhands-%Y-%m-%d.log
+          encoding:
+            codec: json

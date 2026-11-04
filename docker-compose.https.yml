@@ -7,6 +7,9 @@ services:
 
   https:
     image: caddy:2
+    depends_on:
+      vector:
+        condition: service_healthy
     ports:
       - '80:80'
       - '443:443'
