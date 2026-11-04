@@ -447,6 +447,35 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows a stdio listing by its command line and the secret members need", async () => {
+    arrangeOrgMcp({
+      role: "member",
+      listings: [
+        {
+          name: "slack",
+          managed_by: "user",
+          server: {
+            command: "npx",
+            args: ["-y", "@slack/mcp"],
+            env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+          },
+          secret_names: ["SLACK_TOKEN"],
+        },
+      ],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+
+    const row = await screen.findByTestId("org-mcp-server-item");
+    expect(
+      within(row).getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
+    expect(within(row).getByText("npx -y @slack/mcp")).toBeInTheDocument();
+    expect(within(row).getByTestId("org-mcp-server-status")).toHaveTextContent(
+      "SETTINGS$MCP_ORG_NEEDS_CONNECTION",
+    );
+  });
+
   describe("user-managed OAuth listings", () => {
     const OAUTH_LISTING: OrgMcpServerItem = {
       name: "issue-tracker",
