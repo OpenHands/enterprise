@@ -69,6 +69,10 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 # Cache key prefixes (provider is appended dynamically)
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 UNROUTED_EVENT_CACHE_PREFIX = 'automation:unrouted_event'
+# Providers whose Settings page shows dropped events; nothing reads GitHub's.
+UNROUTED_EVENT_PROVIDERS = frozenset(
+    {ProviderType.BITBUCKET_DATA_CENTER, ProviderType.AZURE_DEVOPS}
+)
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
 
@@ -615,7 +619,8 @@ class AutomationEventService:
                 f'[AutomationEventService] {provider.value} org {git_org_name} '
                 f'not claimed and no personal org found, skipping'
             )
-            await self._record_unrouted_event(provider, git_org_name, payload)
+            if provider in UNROUTED_EVENT_PROVIDERS:
+                await self._record_unrouted_event(provider, git_org_name, payload)
             return None
 
         return OrgContext(org_id=org_id, git_org=git_org_name)
@@ -651,15 +656,11 @@ class AutomationEventService:
             return payload.get('eventKey')
         if provider == ProviderType.AZURE_DEVOPS:
             return payload.get('eventType')
-        # GitHub carries the event name in a header; the payload only has the
-        # action.
-        return payload.get('action')
+        return None
 
     def _extract_repository_name(
         self, provider: ProviderType, payload: dict[str, Any]
     ) -> str | None:
-        if provider == ProviderType.GITHUB:
-            return (payload.get('repository') or {}).get('full_name')
         if provider == ProviderType.BITBUCKET_DATA_CENTER:
             repo = self._extract_bitbucket_data_center_repository(payload)
             project_key = (repo.get('project') or {}).get('key')

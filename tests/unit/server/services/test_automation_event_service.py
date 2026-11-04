@@ -2137,6 +2137,40 @@ class TestUnroutedEvents:
         assert record['repository'] == 'fabrikam-web'
 
     @pytest.mark.asyncio
+    async def test_dropped_github_event_is_not_recorded(
+        self, mock_token_manager, github_org_payload, monkeypatch
+    ):
+        """
+        GIVEN: A GitHub event for an unclaimed org
+        WHEN: _resolve_org_context drops it
+        THEN: Nothing is recorded, since no settings page shows GitHub drops
+        """
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            context = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+
+        assert context is None
+        assert not any(
+            call.args[0].startswith('automation:unrouted_event:')
+            for call in mock_redis.setex.call_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_forwarded_event_records_nothing(
         self, mock_token_manager, bitbucket_dc_pr_payload, mock_org_git_claim
     ):
