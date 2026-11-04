@@ -9,7 +9,7 @@ import { parseMcpConfig } from "#/utils/mcp-config";
 /** What the settings API returns in place of a stored credential. */
 export const REDACTED_MCP_SECRET = "**********";
 
-export type OrgMcpServerType = "sse" | "shttp";
+export type OrgMcpServerType = "sse" | "shttp" | "stdio";
 export type OrgMcpAuthKind = "none" | "bearer" | "header" | "oauth";
 
 /** A listing as the Settings > MCP page shows and edits it. */
@@ -17,8 +17,14 @@ export interface OrgMcpServerView {
   name: string;
   managedBy: OrgMcpManagedBy;
   type: OrgMcpServerType;
-  url: string;
+  /** Remote listings (`type !== "stdio"`). */
+  url?: string;
   timeout?: number;
+  /** Stdio listings: the command each member's sandbox runs. Env values
+   * come back masked, `${NAME}` references included. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
   auth: OrgMcpAuthKind;
   /** The header carrying the credential (`auth === "header"`). */
   headerName?: string;
@@ -46,8 +52,12 @@ export interface OrgMcpServerFormValues {
   name: string;
   managedBy: OrgMcpManagedBy;
   type: OrgMcpServerType;
-  url: string;
+  url?: string;
   timeout?: number;
+  /** Stdio listings. */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
   auth: OrgMcpAuthKind;
   headerName?: string;
   /** User-managed: the personal secret every member creates to connect. */
@@ -106,6 +116,20 @@ function oauthView(auth: {
 
 export function toOrgMcpServerView(item: OrgMcpServerItem): OrgMcpServerView {
   const parsed = parseMcpConfig({ [item.name]: item.server });
+  const stdio = parsed.stdio_servers[0];
+  if (stdio !== undefined) {
+    return {
+      name: item.name,
+      managedBy: item.managed_by,
+      type: "stdio",
+      command: stdio.command,
+      ...(stdio.args !== undefined && { args: stdio.args }),
+      ...(stdio.env !== undefined && { env: stdio.env }),
+      auth: "none",
+      secretNames: item.secret_names ?? [],
+      server: item.server,
+    };
+  }
   const sse = parsed.sse_servers[0];
   const shttp = parsed.shttp_servers[0];
   const entry = sse ?? shttp;
@@ -170,9 +194,31 @@ export function secretReference(secretName: string): string {
   return `\${${secretName}}`;
 }
 
+/** What a listing points at, for list rows: its URL, or the stdio command line. */
+export function orgMcpServerDescription(view: OrgMcpServerView): string {
+  if (view.type === "stdio") {
+    return [view.command, ...(view.args ?? [])].filter(Boolean).join(" ");
+  }
+  return view.url ?? "";
+}
+
 export function buildOrgMcpServerPayload(
   values: OrgMcpServerFormValues,
 ): OrgMcpServerCreate {
+  if (values.type === "stdio") {
+    // Same shape as a personal stdio server (`toSdkMcpConfig`): credentials
+    // travel in `env`, which the backend masks on every read.
+    const env = values.env ?? {};
+    return {
+      name: values.name,
+      managed_by: values.managedBy,
+      server: {
+        command: values.command,
+        ...(values.args && values.args.length > 0 && { args: values.args }),
+        ...(Object.keys(env).length > 0 && { env }),
+      },
+    };
+  }
   const server: Record<string, unknown> = {
     url: values.url,
     transport: values.type === "sse" ? "sse" : "http",
