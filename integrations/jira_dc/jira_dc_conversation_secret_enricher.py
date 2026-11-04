@@ -4,6 +4,10 @@ from datetime import timedelta
 from urllib.parse import urlparse
 from uuid import UUID
 
+from integrations.jira_dc.jira_dc_auth_provider import (
+    JiraDcSecretHint,
+    get_jira_dc_secret_hint,
+)
 from integrations.jira_dc.jira_dc_user_token import (
     JiraDcUserToken,
     JiraDcUserTokenError,
@@ -27,16 +31,16 @@ from storage.jira_dc_integration_store import JiraDcIntegrationStore
 from storage.jira_dc_workspace import JiraDcWorkspace
 
 
-def _jira_dc_secret_hint() -> str:
+def _jira_dc_secret_hint(base_url: str, secret_name: str) -> str:
     # The base URL is deliberately spelled out (not exposed as a secret/env var):
     # registered secrets get masked as <secret-hidden> in agent output, which
     # mangled every Jira link the agent echoed back to the user.
     return f"""You have credentialed access to the Jira Data Center REST API:
 
-  - Base URL: {JIRA_DC_BASE_URL}
-  - Auth:     Authorization: Bearer $JIRA_DC_TOKEN
+  - Base URL: {base_url}
+  - Auth:     Authorization: Bearer ${secret_name}
 
-The token value is supplied only as a sandbox secret/environment variable. Never echo or log the value of $JIRA_DC_TOKEN."""
+The token value is supplied only as a sandbox secret/environment variable. Never echo or log the value of ${secret_name}."""
 
 
 def _email_mode_hint(host: str) -> str:
@@ -73,12 +77,36 @@ def _workspace_matches_configured_jira_dc_host(workspace_name: str) -> bool:
     return workspace_name.lower() == configured_host.lower()
 
 
-def _append_jira_dc_hint(system_message_suffix: str | None) -> str:
+def _append_jira_dc_hint(
+    system_message_suffix: str | None, base_url: str, secret_name: str
+) -> str:
+    hint = _jira_dc_secret_hint(base_url, secret_name)
     if not system_message_suffix:
-        return _jira_dc_secret_hint()
-    if 'JIRA_DC_TOKEN' in system_message_suffix:
+        return hint
+    if secret_name in system_message_suffix:
         return system_message_suffix
-    return f'{system_message_suffix}\n\n{_jira_dc_secret_hint()}'
+    return f'{system_message_suffix}\n\n{hint}'
+
+
+def _auth_provider_hint_enrichment(
+    system_message_suffix: str | None, hint: JiraDcSecretHint
+) -> ConversationSecretEnrichment:
+    return ConversationSecretEnrichment(
+        system_message_suffix=_append_jira_dc_hint(
+            system_message_suffix, hint.base_url, hint.secret_name
+        )
+    )
+
+
+async def _without_integration_token(
+    user_id: str, system_message_suffix: str | None
+) -> ConversationSecretEnrichment:
+    # The generic named-secret path may still expose the user's token from a
+    # ``jira_dc`` auth provider; tell the agent how to use it.
+    hint = await get_jira_dc_secret_hint(user_id)
+    if hint is None:
+        return ConversationSecretEnrichment(system_message_suffix=system_message_suffix)
+    return _auth_provider_hint_enrichment(system_message_suffix, hint)
 
 
 async def _get_effective_org_id(user_context: UserContext) -> UUID | None:
@@ -174,10 +202,16 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
         # Identity is resolved via user_context; `user` is required only by the interface.
         del user
 
+        user_id = await user_context.get_user_id()
+
         if not JIRA_DC_ENABLE_OAUTH:
-            # Email mode: no per-user token to inject. When a connection is set up
-            # for the caller's org, tell the agent how to point the user at
+            # Email mode: no per-user token to inject. A token from a jira_dc auth
+            # provider may still be exposed; otherwise, when a connection is set
+            # up for the caller's org, tell the agent how to point the user at
             # enabling live access instead of failing silently.
+            hint = await get_jira_dc_secret_hint(user_id) if user_id else None
+            if hint:
+                return _auth_provider_hint_enrichment(system_message_suffix, hint)
             store = JiraDcIntegrationStore.get_instance()
             workspace = await store.get_active_workspace()
             if workspace and await _workspace_matches_context(workspace, user_context):
@@ -190,7 +224,6 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
                 system_message_suffix=system_message_suffix
             )
 
-        user_id = await user_context.get_user_id()
         if not user_id:
             return ConversationSecretEnrichment(
                 system_message_suffix=system_message_suffix
@@ -199,23 +232,16 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
         store = JiraDcIntegrationStore.get_instance()
         jira_dc_user = await store.get_user_by_active_workspace(user_id)
         if not jira_dc_user:
-            return ConversationSecretEnrichment(
-                system_message_suffix=system_message_suffix
-            )
+            return await _without_integration_token(user_id, system_message_suffix)
 
         workspace = await store.get_workspace_by_id(jira_dc_user.jira_dc_workspace_id)
-        if not workspace or workspace.status != 'active':
-            return ConversationSecretEnrichment(
-                system_message_suffix=system_message_suffix
-            )
-        if not _workspace_matches_configured_jira_dc_host(workspace.name):
-            return ConversationSecretEnrichment(
-                system_message_suffix=system_message_suffix
-            )
-        if not await _workspace_matches_context(workspace, user_context):
-            return ConversationSecretEnrichment(
-                system_message_suffix=system_message_suffix
-            )
+        if (
+            not workspace
+            or workspace.status != 'active'
+            or not _workspace_matches_configured_jira_dc_host(workspace.name)
+            or not await _workspace_matches_context(workspace, user_context)
+        ):
+            return await _without_integration_token(user_id, system_message_suffix)
 
         secrets: dict[str, SecretSource] = {}
 
@@ -256,9 +282,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
                 strict=strict,
             )
             if user_token is None:
-                return ConversationSecretEnrichment(
-                    system_message_suffix=system_message_suffix
-                )
+                return await _without_integration_token(user_id, system_message_suffix)
             secrets['JIRA_DC_TOKEN'] = StaticSecret(
                 value=user_token.access_token,
                 description='Jira Data Center OAuth access token',
@@ -266,5 +290,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
 
         return ConversationSecretEnrichment(
             secrets=secrets,
-            system_message_suffix=_append_jira_dc_hint(system_message_suffix),
+            system_message_suffix=_append_jira_dc_hint(
+                system_message_suffix, JIRA_DC_BASE_URL, 'JIRA_DC_TOKEN'
+            ),
         )
