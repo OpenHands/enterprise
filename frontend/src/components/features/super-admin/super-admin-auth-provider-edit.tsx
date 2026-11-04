@@ -485,6 +485,30 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
             />
           </>
         ) : null}
+        {form.kind === KIND_PASSWORD ? (
+          <SettingsTextarea
+            testId="super-admin-auth-provider-permitted-email-patterns"
+            label={t(
+              I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS,
+            )}
+            value={form.permittedEmailPatterns}
+            description={
+              <p
+                data-testid="super-admin-auth-provider-permitted-email-patterns-hint"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(
+                  I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS_HINT,
+                )}
+              </p>
+            }
+            onChange={(value) =>
+              setForm((prev) => ({ ...prev, permittedEmailPatterns: value }))
+            }
+            rows={3}
+            showOptionalTag
+          />
+        ) : null}
         {form.kind === KIND_SAML ? (
           <>
             <p
