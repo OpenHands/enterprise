@@ -215,8 +215,10 @@ def build_workspace_list_command(
     prune = (
         f'-type d \\( {" -o ".join(prune_parts)} \\) -prune -o ' if prune_parts else ''
     )
+    # ``{}`` is find's -exec placeholder for the current path. This is a plain
+    # string (not an f-string), so the braces are literal; do not escape them.
     types = (
-        '\\( -type f -o \\( -type l -exec test -f {{}} \\; \\) \\)'
+        '\\( -type f -o \\( -type l -exec test -f {} \\; \\) \\)'
         if options.include_symlinks
         else '-type f'
     )

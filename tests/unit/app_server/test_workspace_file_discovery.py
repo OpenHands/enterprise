@@ -166,6 +166,45 @@ class TestBuildWorkspaceListCommand:
         opts = normalize_options({'include_symlinks': True})
         cmd = build_workspace_list_command(opts)
         assert '-type l -exec test -f' in cmd
+        # find's -exec placeholder is a single pair of braces, not the literal
+        # ``{{}}`` (a regression that made the symlink branch always fail).
+        assert '-exec test -f {} \\;' in cmd
+        assert '{{}}' not in cmd
+
+    def test_symlinks_on_actually_lists_symlink_to_regular_file(self, tmp_path):
+        """End-to-end: the generated find lists a symlink that resolves to a
+        regular file when ``include_symlinks`` is on, and omits it when off."""
+        import subprocess
+
+        (tmp_path / 'a.txt').write_text('hi')
+        (tmp_path / 'link_a.txt').symlink_to('a.txt')
+        node_modules = tmp_path / 'node_modules'
+        node_modules.mkdir()
+        (node_modules / 'pkg.js').write_text('x')
+
+        opts_on = normalize_options({'include_symlinks': True})
+        out_on = subprocess.run(
+            ['bash', '-lc', build_workspace_list_command(opts_on)],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        ).stdout
+        files_on, _ = parse_workspace_file_list(out_on, opts_on.max_files)
+        assert 'link_a.txt' in files_on
+        assert 'a.txt' in files_on
+        # mandatory exclusion still applies with symlinks on
+        assert 'node_modules/pkg.js' not in files_on
+
+        opts_off = normalize_options({'include_symlinks': False})
+        out_off = subprocess.run(
+            ['bash', '-lc', build_workspace_list_command(opts_off)],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        ).stdout
+        files_off, _ = parse_workspace_file_list(out_off, opts_off.max_files)
+        assert 'link_a.txt' not in files_off
+        assert 'a.txt' in files_off
 
     def test_command_starts_with_find_in_cwd(self):
         opts = normalize_options(None)
