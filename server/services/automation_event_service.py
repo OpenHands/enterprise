@@ -64,6 +64,10 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
+# The automation service dedupes a built-in source on the delivery id in
+# GitHub's header name, as it verifies every source's signature from
+# X-Hub-Signature-256. Sent whenever the provider identified the delivery.
+AUTOMATION_DELIVERY_ID_HEADER = 'X-GitHub-Delivery'
 
 
 def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
@@ -150,6 +154,7 @@ class AutomationEventService:
         payload: dict[str, Any],
         installation_id: int | str,
         event_type: str | None = None,
+        delivery_id: str | None = None,
     ) -> None:
         """
         Forward a Git provider webhook event to the automation service.
@@ -162,6 +167,8 @@ class AutomationEventService:
             provider: The Git provider type (e.g., GITHUB, GITLAB, BITBUCKET)
             payload: The raw webhook payload from the provider
             installation_id: The provider's installation/webhook ID
+            delivery_id: The provider's id for this delivery, when it sends one,
+                so the automation service can drop a redelivery
         """
         org_id: UUID | None = None
         try:
@@ -180,7 +187,9 @@ class AutomationEventService:
             # Build minimal payload and forward immediately
             # Access control is NOT computed here - it's deferred to execution time
             event_payload = self._build_event_payload(org_context, payload)
-            await self._send_to_automation_service(provider, org_id, event_payload)
+            await self._send_to_automation_service(
+                provider, org_id, event_payload, delivery_id=delivery_id
+            )
 
         except (aiohttp.ClientError, asyncio.TimeoutError):
             # Network errors are expected and recoverable
@@ -262,6 +271,7 @@ class AutomationEventService:
                 source='jira_dc',
                 org_id=org_id,
                 payload=event_payload,
+                delivery_id=delivery_id,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.exception(
@@ -849,11 +859,13 @@ class AutomationEventService:
         provider: ProviderType,
         org_id: UUID,
         payload: dict[str, Any],
+        delivery_id: str | None = None,
     ) -> None:
         await self._send_source_to_automation_service(
             source=provider.value,
             org_id=org_id,
             payload=payload,
+            delivery_id=delivery_id,
         )
 
     @staticmethod
@@ -873,6 +885,7 @@ class AutomationEventService:
         source: str,
         org_id: UUID,
         payload: dict[str, Any],
+        delivery_id: str | None = None,
     ) -> None:
         """
         Send the normalized payload to the automation service.
@@ -884,6 +897,7 @@ class AutomationEventService:
             source: The automation event source
             org_id: The OpenHands organization ID
             payload: The event payload to send
+            delivery_id: The provider's id for this delivery, if it sent one
         """
         if not AUTOMATION_SERVICE_URL:
             logger.warning(
@@ -905,6 +919,8 @@ class AutomationEventService:
             'Content-Type': 'application/json',
             'X-Hub-Signature-256': signature,
         }
+        if delivery_id:
+            headers[AUTOMATION_DELIVERY_ID_HEADER] = delivery_id
 
         try:
             async with aiohttp.ClientSession() as session:
