@@ -1941,9 +1941,7 @@ async def list_conversation_files(
             # expects ``string[]`` with HTTP 200 for both populated and empty
             # workspaces. Truncation/status metadata is only surfaced on the
             # typed path.
-            return JSONResponse(
-                status_code=status.HTTP_200_OK, content=files
-            )
+            return JSONResponse(status_code=status.HTTP_200_OK, content=files)
         result = WorkspaceFileListing(
             status=status_value,
             files=files,
