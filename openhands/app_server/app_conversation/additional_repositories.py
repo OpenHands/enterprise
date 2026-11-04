@@ -7,10 +7,12 @@ to it, under the conversation's working folder, which becomes the agent's
 working directory. Only the primary supplies conversation hooks and ``setup.sh``.
 """
 
+import importlib.metadata
 import re
 from collections.abc import Sequence
 from enum import Enum
 
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.app_server.integrations.service_types import ProviderType
@@ -180,46 +182,66 @@ def select_root(
     return None
 
 
-def agent_server_runs_hooks_from_project_dir() -> bool:
-    """Whether the agent-server runs command hooks from ``hook_project_dir``.
-
-    The SDK and the sandbox agent-server are pinned to the same version, so the
-    installed models say what the sandbox understands and what
-    ``ConversationSettings.create_request`` forwards.
-    """
+def _models_have_hook_project_dir() -> bool:
+    """Whether the installed SDK carries ``hook_project_dir`` end to end."""
     return (
         'hook_project_dir' in ConversationConfig.model_fields
         and 'hook_project_dir' in ConversationSettings.model_fields
     )
 
 
+def _installed_sdk_version() -> str | None:
+    try:
+        return importlib.metadata.version('openhands-sdk')
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def agent_server_runs_hooks_from_project_dir(
+    sandbox_sdk_version: str | None,
+) -> bool:
+    """Whether the sandbox's agent-server runs command hooks from ``hook_project_dir``.
+
+    The installed models say what ``ConversationSettings.create_request`` forwards.
+    The sandbox can be older than the app server: one created before an upgrade
+    still hosts new conversations (#1083), and an older agent-server ignores the
+    field and runs hooks from the working directory. So the sandbox must also
+    report (``/server_info``) an openhands-sdk at least as new as the one installed
+    here, whose request model has the field.
+    """
+    if not _models_have_hook_project_dir():
+        return False
+    installed = _installed_sdk_version()
+    if installed is None or not isinstance(sandbox_sdk_version, str):
+        return False
+    try:
+        return Version(sandbox_sdk_version) >= Version(installed)
+    except InvalidVersion:
+        return False
+
+
 def loads_repository_hooks(
     additional_repositories: Sequence[AdditionalRepository],
     *,
-    project_dir_supported: bool | None = None,
+    project_dir_supported: bool,
 ) -> bool:
     """Whether the primary's ``hooks.json`` is loaded for this conversation.
 
     With additional repositories the agent works from the parent folder, so a
-    relative-path hook would run against the wrong tree unless the agent-server
-    runs hooks from the primary's folder (``hook_project_dir``).
+    relative-path hook would run against the wrong tree unless the sandbox's
+    agent-server runs hooks from the primary's folder (``hook_project_dir``).
     """
-    if not additional_repositories:
-        return True
-    if project_dir_supported is None:
-        project_dir_supported = agent_server_runs_hooks_from_project_dir()
-    return project_dir_supported
+    return not additional_repositories or project_dir_supported
 
 
 def hook_project_dir_setting(
-    hook_config: object | None, project_dir: str
+    hook_config: object | None, project_dir: str, *, project_dir_supported: bool
 ) -> dict[str, str]:
     """The ``hook_project_dir`` request setting, when hooks were loaded.
 
-    Older agent-servers do not know the field, so it is only sent when the
-    pinned SDK has it.
+    Only sent to a sandbox whose agent-server knows the field.
     """
-    if hook_config is None or not agent_server_runs_hooks_from_project_dir():
+    if hook_config is None or not project_dir_supported:
         return {}
     return {'hook_project_dir': project_dir}
 

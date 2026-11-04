@@ -8,7 +8,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from typing import Any, AsyncGenerator, BinaryIO, NamedTuple, Sequence, cast
 from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
@@ -28,6 +28,7 @@ from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
+    agent_server_runs_hooks_from_project_dir,
     agent_working_dir,
     hook_project_dir_setting,
     loads_repository_hooks,
@@ -492,6 +493,13 @@ def _compose_system_message_suffix(
     return '\n\n'.join(parts) if parts else None
 
 
+class SandboxRuntime(NamedTuple):
+    """What ``/server_info`` says about the sandbox before a start."""
+
+    browser_available: bool
+    sdk_version: str | None
+
+
 def _profile_runtime_requirement(
     agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
 ) -> str | None:
@@ -834,9 +842,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
-            browser_available = await self._ensure_profile_runtime(
+            runtime = await self._ensure_profile_runtime(
                 agent_server_url, sandbox.session_api_key, agent_settings
             )
+            browser_available = runtime.browser_available
 
             # Get the working dir
             sandbox_spec = (
@@ -927,6 +936,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
                     additional_repositories=task._additional_repositories,
+                    sandbox_sdk_version=runtime.sdk_version,
                 )
             )
 
@@ -1907,8 +1917,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         url: str,
         api_key: str | None,
         agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
-    ) -> bool:
-        """Return the runtime's browser availability; reject what it cannot run.
+    ) -> SandboxRuntime:
+        """Return the runtime's browser availability and SDK; reject what it cannot run.
 
         A sandbox on openhands-sdk <1.54.0 (one created before an image bump)
         still runs an ordinary launch, so that proceeds with a warning rather
@@ -1943,7 +1953,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 reported,
             )
 
-        return BROWSER_TOOL_NAME in info.get('usable_tools', [])
+        return SandboxRuntime(
+            browser_available=BROWSER_TOOL_NAME in info.get('usable_tools', []),
+            sdk_version=reported if isinstance(reported, str) else None,
+        )
 
     def _inherit_configuration_from_parent(
         self, request: AppConversationStartRequest, parent_info: AppConversationInfo
@@ -3068,6 +3081,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_span_name: str | None = None,
         browser_available: bool = True,
         additional_repositories: Sequence[AdditionalRepository] = (),
+        sandbox_sdk_version: str | None = None,
     ) -> StartConversationRequest:
         """Build a scoped request for runtime finalization."""
         llm_settings = (
@@ -3342,11 +3356,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- hooks (require remote workspace; must precede request build) -----
         hook_config: HookConfig | None = None
-        if remote_workspace and not loads_repository_hooks(additional_repositories):
+        hooks_from_project_dir = agent_server_runs_hooks_from_project_dir(
+            sandbox_sdk_version
+        )
+        if remote_workspace and not loads_repository_hooks(
+            additional_repositories, project_dir_supported=hooks_from_project_dir
+        ):
             _logger.info(
                 'Not loading repository hooks: with additional repositories this '
-                'agent-server would run them from the parent folder, not the '
-                'primary repository'
+                'sandbox (openhands-sdk %s) would run them from the parent folder, '
+                'not the primary repository',
+                sandbox_sdk_version,
             )
         elif remote_workspace:
             try:
@@ -3399,7 +3419,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_definitions': agent_definitions,
                 'plugins': sdk_plugins,
                 'hook_config': hook_config,
-                **hook_project_dir_setting(hook_config, project_dir),
+                **hook_project_dir_setting(
+                    hook_config,
+                    project_dir,
+                    project_dir_supported=hooks_from_project_dir,
+                ),
             }
         )
 
