@@ -26,6 +26,7 @@ const mockResources: BitbucketDCResource[] = [
     webhook_secret_set: false,
     installed_by_user_id: null,
     last_synced: null,
+    unrouted_event: null,
   },
   {
     project_key: "OPS",
@@ -41,6 +42,7 @@ const mockResources: BitbucketDCResource[] = [
     webhook_secret_set: true,
     installed_by_user_id: "kc-bot",
     last_synced: "2026-01-01T00:00:00",
+    unrouted_event: null,
   },
 ];
 
@@ -163,6 +165,51 @@ describe("BitbucketDCWebhookManager", () => {
     await screen.findByTestId("bbdc-install-webhook-PROJ/myrepo");
     expect(
       screen.queryByTestId("bbdc-uninstall-webhook-PROJ/myrepo"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the last automation event dropped because the project is unclaimed", async () => {
+    vi.spyOn(integrationService, "getBitbucketDCResources").mockResolvedValue({
+      resources: [
+        {
+          ...mockResources[0],
+          unrouted_event: {
+            provider: "bitbucket_data_center",
+            git_org: "PROJ",
+            event_key: "pr:opened",
+            repository: "PROJ/myrepo",
+            received_at: "2026-11-04T10:00:00+00:00",
+            count: 2,
+          },
+        },
+        mockResources[1],
+      ],
+    });
+
+    renderComponent();
+
+    const note = await screen.findByTestId("bbdc-unrouted-event-PROJ/myrepo");
+    expect(note).toHaveTextContent(
+      I18nKey.BITBUCKET_DATA_CENTER$UNROUTED_EVENT_NOTE,
+    );
+    expect(note).toHaveTextContent(
+      I18nKey.BITBUCKET_DATA_CENTER$UNROUTED_EVENT_LAST,
+    );
+    expect(
+      screen.queryByTestId("bbdc-unrouted-event-OPS/platform"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows no dropped-event note when nothing was dropped", async () => {
+    vi.spyOn(integrationService, "getBitbucketDCResources").mockResolvedValue({
+      resources: mockResources,
+    });
+
+    renderComponent();
+
+    await screen.findByText("myrepo");
+    expect(
+      screen.queryByTestId("bbdc-unrouted-event-PROJ/myrepo"),
     ).not.toBeInTheDocument();
   });
 });

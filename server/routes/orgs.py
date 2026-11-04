@@ -64,6 +64,7 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
+from server.services.automation_event_service import invalidate_org_claim_cache
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
     OrgAppSettingsServiceInjector,
@@ -1896,6 +1897,8 @@ async def claim_git_organization(
             git_organization=request.git_organization,
             claimed_by=UUID(user_id),
         )
+        # Automation events may have cached "not claimed" for this org.
+        await invalidate_org_claim_cache(claim.provider, claim.git_organization)
 
         return GitOrgClaimResponse(
             id=str(claim.id),
@@ -1973,6 +1976,7 @@ async def disconnect_git_organization(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Git organization claim not found',
             )
+        await invalidate_org_claim_cache(deleted.provider, deleted.git_organization)
 
         return {'message': 'Git organization claim removed successfully'}
 

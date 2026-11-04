@@ -152,6 +152,10 @@ class TestClaimGitOrganization:
                 'server.routes.orgs.OrgGitClaimStore.create_claim',
                 AsyncMock(return_value=mock_claim),
             ) as mock_create,
+            patch(
+                'server.routes.orgs.invalidate_org_claim_cache',
+                AsyncMock(),
+            ) as mock_invalidate,
         ):
             # Act
             response = await claim_git_organization(
@@ -170,6 +174,8 @@ class TestClaimGitOrganization:
             git_organization='OpenHands',
             claimed_by=uuid.UUID(user_id),
         )
+        # The automation event cache may hold a negative lookup for this org.
+        mock_invalidate.assert_awaited_once_with('github', 'OpenHands')
 
     @pytest.mark.asyncio
     async def test_claim_fails_when_already_claimed(self, org_id, user_id, make_claim):
@@ -269,41 +275,59 @@ class TestDisconnectGitOrganization:
     """Tests for the disconnect Git organization endpoint."""
 
     @pytest.mark.asyncio
-    async def test_disconnect_succeeds_for_existing_claim(self, org_id, user_id):
+    async def test_disconnect_succeeds_for_existing_claim(
+        self, org_id, user_id, make_claim
+    ):
         """
         GIVEN: A valid claim belonging to the organization
         WHEN: DELETE /api/organizations/{org_id}/git-claims/{claim_id} is called
-        THEN: The claim is deleted and a success message is returned
+        THEN: The claim is deleted, its cached lookup cleared, and a success
+              message is returned
         """
         # Arrange
-        claim_id = uuid.uuid4()
+        claim = make_claim(
+            org_id, provider='bitbucket_data_center', git_organization='proj'
+        )
 
-        with patch(
-            'server.routes.orgs.OrgGitClaimStore.delete_claim',
-            AsyncMock(return_value=True),
-        ) as mock_delete:
+        with (
+            patch(
+                'server.routes.orgs.OrgGitClaimStore.delete_claim',
+                AsyncMock(return_value=claim),
+            ) as mock_delete,
+            patch(
+                'server.routes.orgs.invalidate_org_claim_cache',
+                AsyncMock(),
+            ) as mock_invalidate,
+        ):
             # Act
             result = await disconnect_git_organization(
-                org_id=org_id, claim_id=claim_id, user_id=user_id
+                org_id=org_id, claim_id=claim.id, user_id=user_id
             )
 
         # Assert
         assert result == {'message': 'Git organization claim removed successfully'}
-        mock_delete.assert_called_once_with(claim_id=claim_id, org_id=org_id)
+        mock_delete.assert_called_once_with(claim_id=claim.id, org_id=org_id)
+        mock_invalidate.assert_awaited_once_with('bitbucket_data_center', 'proj')
 
     @pytest.mark.asyncio
     async def test_disconnect_fails_when_claim_not_found(self, org_id, user_id):
         """
         GIVEN: A claim_id that does not exist for this organization
         WHEN: DELETE /api/organizations/{org_id}/git-claims/{claim_id} is called
-        THEN: A 404 Not Found error is returned
+        THEN: A 404 Not Found error is returned and no cache is touched
         """
         # Arrange
         claim_id = uuid.uuid4()
 
-        with patch(
-            'server.routes.orgs.OrgGitClaimStore.delete_claim',
-            AsyncMock(return_value=False),
+        with (
+            patch(
+                'server.routes.orgs.OrgGitClaimStore.delete_claim',
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.routes.orgs.invalidate_org_claim_cache',
+                AsyncMock(),
+            ) as mock_invalidate,
         ):
             # Act & Assert
             with pytest.raises(Exception) as exc_info:
@@ -312,6 +336,7 @@ class TestDisconnectGitOrganization:
                 )
 
             assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        mock_invalidate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_disconnect_returns_500_on_unexpected_error(self, org_id, user_id):
@@ -534,6 +559,7 @@ class TestGitClaimsHTTPIntegration:
                 'server.routes.orgs.OrgGitClaimStore.create_claim',
                 AsyncMock(return_value=mock_claim),
             ),
+            patch('server.routes.orgs.invalidate_org_claim_cache', AsyncMock()),
         ):
             client = TestClient(mock_app)
             response = client.post(
@@ -555,6 +581,10 @@ class TestGitClaimsHTTPIntegration:
         """
         org_id = uuid.uuid4()
         claim_id = uuid.uuid4()
+        mock_claim = MagicMock(spec=OrgGitClaim)
+        mock_claim.id = claim_id
+        mock_claim.provider = 'github'
+        mock_claim.git_organization = 'openhands'
 
         with (
             patch(
@@ -563,8 +593,9 @@ class TestGitClaimsHTTPIntegration:
             ),
             patch(
                 'server.routes.orgs.OrgGitClaimStore.delete_claim',
-                AsyncMock(return_value=True),
+                AsyncMock(return_value=mock_claim),
             ),
+            patch('server.routes.orgs.invalidate_org_claim_cache', AsyncMock()),
         ):
             client = TestClient(mock_app)
             response = client.delete(

@@ -28,6 +28,16 @@ export interface ResourceInstallationResult {
   error: string | null;
 }
 
+/** Last automation event dropped because no organization claimed its Git org. */
+export interface UnroutedAutomationEvent {
+  provider: string;
+  git_org: string;
+  event_key: string | null;
+  repository: string | null;
+  received_at: string;
+  count: number;
+}
+
 export interface BitbucketDCResource {
   project_key: string;
   repo_slug: string;
@@ -41,6 +51,7 @@ export interface BitbucketDCResource {
   webhook_secret_set: boolean;
   installed_by_user_id: string | null;
   last_synced: string | null;
+  unrouted_event: UnroutedAutomationEvent | null;
 }
 
 export interface BitbucketDCResourcesResponse {
@@ -110,6 +121,7 @@ export interface AzureDevOpsWebhookStatus {
   last_verified_at: string | null;
   automation_events_enabled: boolean;
   automation_webhooks_installed: boolean;
+  unrouted_event: UnroutedAutomationEvent | null;
 }
 
 export interface AzureDevOpsWebhookInstallationResult {

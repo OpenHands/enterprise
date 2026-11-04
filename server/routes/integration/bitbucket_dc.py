@@ -29,7 +29,11 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_EVENT_FORWARDING_ENABLED
 from server.auth.token_manager import TokenManager
-from server.services.automation_event_service import AutomationEventService
+from server.services.automation_event_service import (
+    AutomationEventService,
+    UnroutedEvent,
+    get_unrouted_events,
+)
 from storage.bitbucket_dc_webhook_store import BitbucketDCWebhookStore
 from storage.redis import get_redis_client_async
 
@@ -83,6 +87,8 @@ class BitbucketDCResourceWithWebhookStatus(BaseModel):
     webhook_secret_set: bool
     installed_by_user_id: str | None
     last_synced: str | None
+    # Last automation event dropped because no org has claimed the project.
+    unrouted_event: UnroutedEvent | None = None
 
 
 class BitbucketDCResourcesResponse(BaseModel):
@@ -316,6 +322,12 @@ async def get_bitbucket_dc_resources(
             repo_identities.append((parts[0], parts[1]))
 
         webhook_map = await webhook_store.get_webhooks_by_repos(repo_identities)
+        unrouted_events: dict[str, UnroutedEvent] = {}
+        if AUTOMATION_EVENT_FORWARDING_ENABLED:
+            unrouted_events = await get_unrouted_events(
+                ProviderType.BITBUCKET_DATA_CENTER,
+                [project_key for project_key, _ in repo_identities],
+            )
 
         resources: list[BitbucketDCResourceWithWebhookStatus] = []
         for project_key, repo_slug in repo_identities:
@@ -339,6 +351,7 @@ async def get_bitbucket_dc_resources(
                         if webhook and webhook.last_synced
                         else None
                     ),
+                    unrouted_event=unrouted_events.get(project_key),
                 )
             )
 

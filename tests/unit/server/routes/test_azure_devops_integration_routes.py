@@ -192,6 +192,52 @@ async def test_get_azure_devops_resources_reports_disabled_hook_as_not_installed
     assert status.work_item_subscription_id == 'work-item-subscription-id'
 
 
+@pytest.mark.asyncio
+async def test_get_azure_devops_resources_reports_dropped_automation_events(
+    monkeypatch,
+):
+    """An event dropped because the org is unclaimed shows up in the status."""
+    from server.services.automation_event_service import UnroutedEvent
+
+    monkeypatch.setattr(azure_devops, 'HOST_URL', 'https://app.example.com')
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', 'secret')
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+
+    class FakeAzureDevOpsService:
+        organization = 'alonaking'
+
+        async def get_accessible_organizations(self):
+            return ['alonaking']
+
+        async def list_service_hook_subscriptions(self):
+            return []
+
+    monkeypatch.setattr(
+        azure_devops,
+        'SaaSAzureDevOpsService',
+        lambda **kwargs: FakeAzureDevOpsService(),
+    )
+    dropped = UnroutedEvent(
+        provider='azure_devops',
+        git_org='alonaking',
+        event_key='git.pullrequest.created',
+        repository='fabrikam-web',
+        received_at='2026-11-04T10:00:00+00:00',
+        count=1,
+    )
+    get_unrouted_events = AsyncMock(return_value={'alonaking': dropped})
+    monkeypatch.setattr(azure_devops, 'get_unrouted_events', get_unrouted_events)
+
+    status = await azure_devops.get_azure_devops_resources(
+        user_id='user-id', organization='alonaking'
+    )
+
+    get_unrouted_events.assert_awaited_once_with(
+        ProviderType.AZURE_DEVOPS, ['alonaking']
+    )
+    assert status.unrouted_event == dropped
+
+
 def test_matchers_require_absent_project_id():
     url = 'https://app.example.com/integration/azure-devops/events'
     org_wide = {

@@ -125,6 +125,37 @@ function AutomationHooksNote({ status }: { status: AzureDevOpsWebhookStatus }) {
   );
 }
 
+// Automation events for an Azure DevOps organization no OpenHands org has
+// claimed are dropped server-side; the last one is kept so admins can see
+// why nothing runs.
+function UnroutedEventNote({ status }: { status: AzureDevOpsWebhookStatus }) {
+  const { t, i18n } = useTranslation();
+  const event = status.unrouted_event;
+  if (!event) {
+    return null;
+  }
+  const date = new Date(event.received_at).toLocaleString(i18n.language, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return (
+    <Typography.Text
+      className="block mt-2 text-xs text-yellow-300 max-w-xs"
+      testId="azure-devops-unrouted-event"
+    >
+      {t(I18nKey.AZURE_DEVOPS$UNROUTED_EVENT_NOTE, {
+        organization: status.organization,
+      })}{" "}
+      {t(I18nKey.AZURE_DEVOPS$UNROUTED_EVENT_LAST, {
+        eventKey: event.event_key ?? "?",
+        repository: event.repository ?? status.organization,
+        date,
+        count: event.count,
+      })}
+    </Typography.Text>
+  );
+}
+
 function OrganizationRow({ organization }: { organization: string }) {
   const { t } = useTranslation();
   const {
@@ -179,6 +210,7 @@ function OrganizationRow({ organization }: { organization: string }) {
         <StatusBadge status={status} />
         <InstallDetails status={status} />
         <AutomationHooksNote status={status} />
+        <UnroutedEventNote status={status} />
       </td>
       <td className="px-4 py-3">
         {canManage ? (

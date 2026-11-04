@@ -42,6 +42,36 @@ function StatusBadge({ enrolled }: { enrolled: boolean }) {
   );
 }
 
+// Automation events for a project no organization has claimed are dropped
+// server-side; the last one is kept so admins can see why nothing runs.
+function UnroutedEventNote({ resource }: { resource: BitbucketDCResource }) {
+  const { t, i18n } = useTranslation();
+  const event = resource.unrouted_event;
+  if (!event) {
+    return null;
+  }
+  const date = new Date(event.received_at).toLocaleString(i18n.language, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return (
+    <Typography.Text
+      className="block mt-2 text-xs text-yellow-300 max-w-xs"
+      testId={`bbdc-unrouted-event-${resourceKey(resource)}`}
+    >
+      {t(I18nKey.BITBUCKET_DATA_CENTER$UNROUTED_EVENT_NOTE, {
+        projectKey: resource.project_key,
+      })}{" "}
+      {t(I18nKey.BITBUCKET_DATA_CENTER$UNROUTED_EVENT_LAST, {
+        eventKey: event.event_key ?? "?",
+        repository: event.repository ?? resource.full_name,
+        date,
+        count: event.count,
+      })}
+    </Typography.Text>
+  );
+}
+
 export function BitbucketDCWebhookManager({
   className,
 }: BitbucketDCWebhookManagerProps) {
@@ -207,6 +237,7 @@ export function BitbucketDCWebhookManager({
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge enrolled={resource.webhook_enrolled} />
+                      <UnroutedEventNote resource={resource} />
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-2">
