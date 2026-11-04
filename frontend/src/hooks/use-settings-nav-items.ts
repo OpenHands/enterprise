@@ -18,6 +18,7 @@ import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
 import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
+import { ORG_QUERY_PARAM } from "#/utils/org/org-url-param";
 
 // Rendered navigation item types
 export type SettingsNavRenderedItem =
@@ -90,6 +91,14 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // OHE-3456: the Agent Profiles page supersedes the single-agent page.
   if (agentProfilesEnabled) {
     items = items.filter((item) => item.to !== "/settings/agent");
+    items = items.map((item) =>
+      item.to === "/settings/agents"
+        ? {
+            ...item,
+            to: `/canvas/agents${organizationId ? `?${ORG_QUERY_PARAM}=${organizationId}` : ""}`,
+          }
+        : item,
+    );
   }
 
   // Budgets/"Your budget" stay reachable (they render a "please enable
@@ -152,6 +161,20 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // Everyone in a team org has their own budget; personal workspaces do not.
   if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
+  }
+
+  // A personal workspace has no separate organization-scoped resource
+  // libraries. Those resources are managed from Canvas Agent setup instead of
+  // the legacy Enterprise settings pages.
+  if (isPersonalOrg) {
+    const personalOrgHiddenPaths = new Set([
+      "/settings/agent-context",
+      "/settings/secrets",
+      "/settings/mcp",
+      "/settings/integrations",
+      "/settings/skills",
+    ]);
+    items = items.filter((item) => !personalOrgHiddenPaths.has(item.to));
   }
 
   const PERSONAL_LLM_PATHS = new Set([

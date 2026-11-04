@@ -63,6 +63,17 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/credits",
 ]);
 
+const PERSONAL_ORG_HIDDEN_SETTINGS_PATHS = new Set<string>([
+  "/settings/agent-context",
+  "/settings/secrets",
+  "/settings/mcp",
+  "/settings/integrations",
+  "/settings/skills",
+]);
+
+const canvasAgentsPath = (orgId: string | null) =>
+  `/canvas/agents${orgId ? `?${ORG_QUERY_PARAM}=${encodeURIComponent(orgId)}` : ""}`;
+
 /**
  * Empty loader data for successful permission checks.
  * React Router's dataStrategy treats a missing/`null` route result as an error
@@ -113,12 +124,17 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
-  // On SaaS the personal Agent page is superseded by Agent Profiles once
-  // ``enable_agent_profiles_page`` is on (OHE-3456); keep the old URL working
-  // for bookmarks and in-app links.
+  // On SaaS the personal Agent page is superseded by Canvas Agent Profiles
+  // once ``enable_agent_profiles_page`` is on (OHE-3456). Keep old URLs working
+  // for bookmarks and in-app links, but load the Canvas document instead of
+  // rendering the legacy Enterprise editor inside Settings.
   const agentProfilesEnabled = !!featureFlags?.enable_agent_profiles_page;
-  if (isSaas && agentProfilesEnabled && pathname === "/settings/agent") {
-    return replace("/settings/agents");
+  if (
+    isSaas &&
+    agentProfilesEnabled &&
+    (pathname === "/settings/agent" || pathname === "/settings/agents")
+  ) {
+    return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
   }
 
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
@@ -179,6 +195,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
+    PERSONAL_ORG_HIDDEN_SETTINGS_PATHS.has(pathname) ||
     adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
@@ -255,6 +272,10 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       ) {
         return replace("/settings");
       }
+    }
+
+    if (PERSONAL_ORG_HIDDEN_SETTINGS_PATHS.has(pathname) && isPersonalOrg) {
+      return replace(canvasAgentsPath(orgId));
     }
 
     if (adminOnlyPermission) {
