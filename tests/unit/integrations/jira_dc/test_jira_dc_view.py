@@ -251,7 +251,9 @@ def test_get_response_msg_without_repository(new_conversation_view):
 
     response = new_conversation_view.get_response_msg()
 
-    assert 'Note: This conversation started without a repository.' in response
+    assert response.startswith("I'm on it!")
+    assert 'without a repository' not in response
+    assert '\n' not in response
 
 
 def _repo(full_name: str) -> Repository:
