@@ -56,6 +56,16 @@ describe("transformVSCodeUrl", () => {
   it("should handle invalid URLs gracefully", () => {
     const input = "not-a-valid-url";
 
-    expect(transformVSCodeUrl(input)).toBe(input);
+    expect(transformVSCodeUrl(input)).toBeNull();
+  });
+
+  it.each([
+    "not-a-valid-url",
+    // eslint-disable-next-line no-script-url
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "file:///etc/passwd",
+  ])("should reject %s", (input) => {
+    expect(transformVSCodeUrl(input)).toBeNull();
   });
 });
