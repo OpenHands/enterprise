@@ -90,7 +90,7 @@ If you need help from OpenHands support, run this from the repository root and s
 ./scripts/support-bundle.sh
 ```
 
-It collects the logs of every container in the stack, including the sandboxes, and the state of the stack. If you start the stack with `-f` options, pass the same options to the script. Keys, secrets and passwords in the compose config are masked. The logs can contain other data from your installation, so look through the archive before you send it. Docker deletes the logs of a container when it removes the container, for example on `docker compose down` or an upgrade, so run the script before you do either.
+It collects the logs of every container in the stack, including the sandboxes, and the state of the stack. If you start the stack with `-f` options, pass the same options to the script. Keys, secrets and passwords in the compose config are masked. Docker deletes the logs of a container when it removes the container, for example on `docker compose down` or an upgrade, so run the script before you do either.
 
 ### Learn More
 

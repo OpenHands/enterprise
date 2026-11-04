@@ -82,5 +82,3 @@ tar -czf "$out_dir/$name.tar.gz" -C "$work" "$name"
 
 echo
 echo "Created $out_dir/$name.tar.gz ($(du -h "$out_dir/$name.tar.gz" | awk '{print $1}'))."
-echo "The logs can contain email addresses, IP addresses and other data from your installation."
-echo "Look through the files before you send the archive to OpenHands support."
