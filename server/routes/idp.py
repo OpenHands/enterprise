@@ -360,9 +360,7 @@ _ERROR_MESSAGES = {
         f'Password must be at least {MIN_PASSWORD_LENGTH} characters.'
     ),
     'password_mismatch': 'Passwords do not match.',
-    'email_not_permitted': (
-        'Password login is not available for this email address.'
-    ),
+    'email_not_permitted': ('Password login is not available for this email address.'),
     'superadmin_exists': (
         'An administrator account already exists. Please sign in instead.'
     ),
