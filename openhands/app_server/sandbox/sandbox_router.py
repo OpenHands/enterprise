@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Annotated, cast
 
+import httpx
 from fastapi import (
     APIRouter,
     Depends,
@@ -14,16 +15,26 @@ from fastapi import (
     status,
 )
 from fastapi.security import APIKeyHeader
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
+from openhands.app_server.app_conversation.codex_credential_binding import (
+    CredentialBindingReplacement,
+    CredentialBindingValue,
+    CredentialBindingVersion,
+    credential_version,
+    reactivate_sandbox_codex_credential_bindings,
+)
 from openhands.app_server.config import (
     depends_sandbox_service,
     depends_user_context,
+    get_global_config,
     get_httpx_client,
     get_sandbox_service,
     get_sandbox_spec_service,
 )
+from openhands.app_server.integrations.provider import CustomSecret
 from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
@@ -34,16 +45,22 @@ from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
 )
 from openhands.app_server.sandbox.session_auth import validate_session_key
+from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.secrets.secrets_router import _secrets_write_lock
 from openhands.app_server.services.db_session import depends_db_session
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
-    get_for_user as get_user_auth_for_user,
+    get_for_sandbox as get_user_auth_for_sandbox,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.git import configure_git_user_settings
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 _logger = logging.getLogger(__name__)
@@ -170,7 +187,11 @@ async def _restore_git_user_settings_after_resume(
     git_user_name: str | None,
     git_user_email: str | None,
 ) -> None:
-    """Restore Git identity after the sandbox's ephemeral home is recreated."""
+    """Restore Git identity after the sandbox's ephemeral home is recreated.
+
+    Also re-sends the Codex credential bindings the resumed agent server waits
+    for before it hydrates those conversations.
+    """
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, ADMIN)
 
@@ -189,6 +210,10 @@ async def _restore_git_user_settings_after_resume(
             if sandbox.session_api_key is None:
                 raise ValueError(f'Sandbox session key unavailable: {sandbox_id}')
 
+            await _reactivate_codex_credential_bindings(
+                sandbox_service, httpx_client, sandbox
+            )
+
             workspace = AsyncRemoteWorkspace(
                 host=sandbox_service._get_agent_server_url(sandbox),
                 api_key=sandbox.session_api_key,
@@ -205,6 +230,29 @@ async def _restore_git_user_settings_after_resume(
             sandbox_id,
             exc_info=True,
         )
+
+
+async def _reactivate_codex_credential_bindings(
+    sandbox_service: SandboxService,
+    httpx_client: httpx.AsyncClient,
+    sandbox: SandboxInfo,
+) -> None:
+    """Re-send the Codex credential bindings a resumed agent server waits for."""
+    # Imported lazily: the conversation service's module graph reaches back
+    # into this package, so a module-level import would be circular.
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        get_sandbox_web_url,
+    )
+
+    web_url = get_sandbox_web_url(get_global_config(), sandbox_service)
+    if web_url is None:
+        return
+    await reactivate_sandbox_codex_credential_bindings(
+        httpx_client,
+        sandbox=sandbox,
+        agent_server_url=sandbox_service._get_agent_server_url(sandbox),
+        web_url=web_url,
+    )
 
 
 @router.delete('/{sandbox_id}', responses={404: {'description': 'Item not found'}})
@@ -246,13 +294,13 @@ async def _valid_sandbox_from_session_key(
 
 
 async def _get_user_context(sandbox_info: SandboxInfo) -> AuthUserContext:
-    """Build an ``AuthUserContext`` for the sandbox owner."""
+    """Build a credential context from the persisted sandbox identity."""
     if not sandbox_info.created_by_user_id:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             detail='Sandbox has no associated user',
         )
-    user_auth = await get_user_auth_for_user(sandbox_info.created_by_user_id)
+    user_auth = await get_user_auth_for_sandbox(sandbox_info)
     return AuthUserContext(user_auth=user_auth)
 
 
@@ -320,3 +368,85 @@ async def get_secret_value(
             return Response(content=token_value, media_type='text/plain')
 
     raise HTTPException(status.HTTP_404_NOT_FOUND, detail='Secret not found')
+
+
+# ---------------------------------------------------------------------------
+# Codex credential binding callback (authenticated via X-Session-API-Key)
+# ---------------------------------------------------------------------------
+
+_CODEX_CREDENTIAL_BINDING_PATH = (
+    '/{sandbox_id}/credential-bindings/' + CODEX_AUTH_SECRET_NAME
+)
+_INVALID_CODEX_AUTH_DETAIL = (
+    'CODEX_AUTH_JSON must be ChatGPT-mode Codex auth JSON with a refresh token'
+)
+
+
+@router.get(_CODEX_CREDENTIAL_BINDING_PATH, include_in_schema=False)
+async def load_codex_credential(
+    sandbox_info: SandboxInfo = Depends(_valid_sandbox_from_session_key),
+) -> CredentialBindingValue:
+    """Serve the saved ``CODEX_AUTH_JSON`` to the sandbox's credential binding.
+
+    The agent server probes this when a binding is activated and loads it at
+    every Codex session start. Only the owner's personal secret is served: an
+    org-shared one has no owner-writable row for a rotation to go back to.
+    404 and 422 map to the SDK's re-authentication prompt.
+    """
+    user_context = await _get_user_context(sandbox_info)
+    secrets_store = await user_context.user_auth.get_secrets_store()
+    secrets = await secrets_store.load_personal()
+    secret = secrets.custom_secrets.get(CODEX_AUTH_SECRET_NAME) if secrets else None
+    if secret is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail='Secret not found')
+    value = secret.secret.get_secret_value()
+    if not is_valid_codex_auth(value):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_INVALID_CODEX_AUTH_DETAIL
+        )
+    return CredentialBindingValue(value=value, version=credential_version(value))
+
+
+@router.put(_CODEX_CREDENTIAL_BINDING_PATH, include_in_schema=False)
+async def replace_codex_credential(
+    replacement: CredentialBindingReplacement,
+    sandbox_info: SandboxInfo = Depends(_valid_sandbox_from_session_key),
+) -> CredentialBindingVersion:
+    """Persist a Codex credential the sandbox rotated.
+
+    Compare-and-swap against the version the GET served: a stale version is a
+    409 (the SDK reloads and converges or fails closed) and a secret that is no
+    longer saved is a 404. The write takes the same per-user lock as the
+    secrets API, so an edit of another secret cannot drop the rotation.
+    """
+    if not is_valid_codex_auth(replacement.value):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_INVALID_CODEX_AUTH_DETAIL
+        )
+    user_context = await _get_user_context(sandbox_info)
+    secrets_store = await user_context.user_auth.get_secrets_store()
+    async with _secrets_write_lock(sandbox_info.created_by_user_id, secrets_store):
+        secrets = await secrets_store.load_personal()
+        current = (
+            secrets.custom_secrets.get(CODEX_AUTH_SECRET_NAME) if secrets else None
+        )
+        if secrets is None or current is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail='Secret not found')
+        if credential_version(current.secret.get_secret_value()) != (
+            replacement.expected_version
+        ):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail='Credential version conflict'
+            )
+        custom_secrets = dict(secrets.custom_secrets)
+        custom_secrets[CODEX_AUTH_SECRET_NAME] = CustomSecret(
+            secret=SecretStr(replacement.value),
+            description=current.description,
+        )
+        await secrets_store.store(
+            Secrets(
+                custom_secrets=custom_secrets,
+                provider_tokens=secrets.provider_tokens,
+            )
+        )
+    return CredentialBindingVersion(version=credential_version(replacement.value))

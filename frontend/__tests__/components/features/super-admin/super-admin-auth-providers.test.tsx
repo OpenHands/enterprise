@@ -233,6 +233,8 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITHUB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -275,6 +277,7 @@ describe("Super Admin Auth Providers page", () => {
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
           named_secret: null,
+          attribute_mapping: {},
         },
       }),
     );
@@ -310,6 +313,7 @@ describe("Super Admin Auth Providers page", () => {
               "https://YOUR_DOMAIN.okta.com/oauth2/v1/authorize",
             token_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/token",
             userinfo_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -342,6 +346,7 @@ describe("Super Admin Auth Providers page", () => {
             authorization_url: "https://PLACEHOLDER.COM/OAUTH/auth",
             token_url: "https://PLACEHOLDER.COM/OAUTH/token",
             userinfo_url: "https://PLACEHOLDER.COM/OAUTH/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -380,12 +385,111 @@ describe("Super Admin Auth Providers page", () => {
           userinfo_url: "https://api.github.com/user",
           legacy_keycloak_type: null,
           named_secret: "GITHUB_TOKEN",
+          attribute_mapping: {},
         }),
       }),
     );
     expect(params.icon).toContain("<svg");
     expect(params.icon).toContain("#FFFFFF");
     expect(params.icon).not.toContain("currentColor");
+  });
+
+  it("creates a Bitbucket Data Center provider with placeholder host URLs", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 13 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    const params = createAuthProvider.mock.calls[0][0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        title: "Log in with Bitbucket Data Center",
+        is_idp: true,
+        enabled: false,
+        color: "#0052CC",
+        details: expect.objectContaining({
+          provider_type: "bitbucket_data_center",
+          client_id: "PLACEHOLDER",
+          authorization_url:
+            "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/authorize",
+          token_url: "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/token",
+          userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
+          scopes: ["PROJECT_READ", "REPO_READ", "REPO_WRITE"],
+          legacy_keycloak_type: null,
+          named_secret: "BITBUCKET_DATA_CENTER_TOKEN",
+          attribute_mapping: {},
+        }),
+      }),
+    );
+    expect(params.icon).toContain("<svg");
+    expect(params.icon).not.toContain("currentColor");
+    expect(await screen.findByTestId("location")).toHaveTextContent("13");
+  });
+
+  it("creates an Azure DevOps provider that requests a refresh token from Entra", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 12 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    const params = createAuthProvider.mock.calls[0][0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        title: "Log in with Azure DevOps",
+        is_idp: true,
+        enabled: false,
+        color: "#0078D4",
+        details: expect.objectContaining({
+          provider_type: "azure_devops",
+          client_id: "PLACEHOLDER",
+          authorization_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
+          token_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
+          userinfo_url: null,
+          scopes: [
+            "openid",
+            "email",
+            "profile",
+            "offline_access",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.profile",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.project",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.work_write",
+          ],
+          legacy_keycloak_type: null,
+          named_secret: "AZURE_DEVOPS_TOKEN",
+          attribute_mapping: {},
+        }),
+      }),
+    );
+    expect(params.icon).toContain("<svg");
+    expect(params.icon).not.toContain("currentColor");
+    expect(await screen.findByTestId("location")).toHaveTextContent("12");
   });
 
   it("creates a SAML provider with placeholder IdP values", async () => {

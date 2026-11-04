@@ -260,7 +260,7 @@ async def _row_exists(db_session, sandbox_id: str) -> bool:
 
 
 def _user_context(user_id: str | None) -> AsyncMock:
-    context = AsyncMock()
+    context = AsyncMock(spec=UserContext)
     context.get_user_id.return_value = user_id
     context.get_default_sandbox_spec_id.return_value = None
     return context
@@ -278,12 +278,14 @@ def _service(
     webhook_base_url: str | None = None,
     lifecycle: SandboxLifecycleSettings | None = None,
     max_num_sandboxes: int = 10,
+    state_dir: str | None = None,
 ) -> K8sAgentSandboxService:
     spec = K8sAgentSandboxSpecInfo(
         id=POOL,
         command=None,
         working_dir='/workspace/project',
         init_api_key=SecretStr(init_api_key) if init_api_key else None,
+        state_dir=state_dir,
     )
     return K8sAgentSandboxService(
         sandbox_spec_service=PresetSandboxSpecService(specs=[spec]),
@@ -477,6 +479,25 @@ class TestInitHandshake:
         assert body['allow_cors_origins'] == [WEB_URL]
         assert agent_server.init_post_urls == [f'{AGENT_SERVER_URL}/api/init']
         assert agent_server.init_post_headers[0] == {'X-Init-API-Key': INIT_API_KEY}
+
+    @pytest.mark.asyncio
+    async def test_init_body_keeps_the_state_on_the_template_state_volume(
+        self, k8s, db_session
+    ):
+        """With a state volume named on the spec, the agent server's state
+        leaves the workspace the agent may serve; the worktrees stay with the
+        project."""
+        agent_server = FakeAgentServer()
+
+        await _service(
+            db_session, k8s, httpx_client=agent_server, state_dir='/var/openhands/'
+        ).start_sandbox()
+
+        body = agent_server.init_post_bodies[0]
+        InitRequest.model_validate(body)
+        assert body['conversations_path'] == '/var/openhands/conversations'
+        assert body['bash_events_dir'] == '/var/openhands/bash_events'
+        assert body['conversation_worktree_root'] == '/workspace/worktrees'
 
     @pytest.mark.asyncio
     async def test_secret_key_is_the_session_key(self, k8s, db_session):
@@ -1088,3 +1109,16 @@ class TestAgentSandboxClient:
             AgentSandboxClient(NAMESPACE)
 
         register.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_persists_credential_organization(k8s, db_session):
+    from uuid import uuid4
+
+    org_id = uuid4()
+    context = _user_context(OWNER_ID)
+    context.get_effective_org_id = AsyncMock(return_value=org_id)
+    sandbox = await _service(db_session, k8s, user_context=context).start_sandbox()
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.credential_org_id == org_id
+    assert sandbox.credential_org_id == org_id

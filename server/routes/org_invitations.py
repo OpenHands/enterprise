@@ -10,6 +10,7 @@ from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
+from server.routes.idp import signup_link_url_for_invitation
 from server.routes.org_invitation_models import (
     AcceptInvitationRequest,
     AcceptInvitationResponse,
@@ -31,6 +32,8 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from storage.default_org_service import get_default_org_config
+from storage.org_invitation import OrgInvitation
+from storage.org_invitation_store import OrgInvitationStore
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 
@@ -267,24 +270,56 @@ async def accept_invitation_redirect(
     token: str,
     request: Request,
 ):
-    """Redirect invitation acceptance to frontend.
+    """Redirect invitation acceptance to the frontend, or to IDP onboarding.
 
     This endpoint is accessed via the link in the invitation email.
-    It always redirects to the home page with the invitation token,
-    allowing the frontend to handle the acceptance flow via a modal.
+    It redirects to the home page with the invitation token, allowing the
+    frontend to handle the acceptance flow once the user is signed in.
 
     This approach works with SameSite='strict' cookies because:
     - Cross-site navigation (clicking email link) doesn't send cookies
     - But same-origin POST requests (from frontend) DO send cookies
+
+    When sign-in runs through the integrated password IDP, an invitee with
+    no account yet could never get past it (account creation there is
+    admin-only), so a pending invitation for such an email is redirected to
+    that IDP's set-password form instead, which accepts the invitation once
+    the password is set. See ``signup_link_url_for_invitation``.
 
     Args:
         token: The invitation token from the email link
         request: FastAPI request
 
     Returns:
-        RedirectResponse: Redirect to home page with invitation_token query param
+        RedirectResponse: Redirect to home page with invitation_token query
+        param, or to the integrated IDP's set-password form
     """
     base_url = str(request.base_url).rstrip('/')
+
+    try:
+        invitation = await OrgInvitationStore.get_invitation_by_token(token)
+        if (
+            invitation is not None
+            and invitation.status == OrgInvitation.STATUS_PENDING
+            and not OrgInvitationStore.is_token_expired(invitation)
+        ):
+            signup_url = await signup_link_url_for_invitation(
+                request, invitation.email, token
+            )
+            if signup_url:
+                logger.info(
+                    'Invitation accept: redirecting new user to IDP sign-up',
+                    extra={'token_prefix': token[:10] + '...'},
+                )
+                return RedirectResponse(signup_url, status_code=302)
+    except Exception:
+        # The frontend flow below is always a safe fallback, so failing to
+        # resolve the IDP detour must not break the invitation link.
+        logger.exception(
+            'Invitation accept: failed to resolve IDP sign-up detour',
+            extra={'token_prefix': token[:10] + '...'},
+            stack_info=True,
+        )
 
     logger.info(
         'Invitation accept: redirecting to frontend for acceptance',

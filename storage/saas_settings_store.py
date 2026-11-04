@@ -13,8 +13,8 @@ from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
+    detach_provider_connection,
     has_real_api_key,
-    resolve_profile_llm,
 )
 from openhands.app_server.settings.meta_profiles import (
     ORG_OWNED_ROUTER_SETTINGS_KEYS,
@@ -64,8 +64,10 @@ from storage.agent_profile_resolution import (
     load_llm_profiles,
     load_member_agent_profiles,
     load_meta_profiles,
+    load_provider_connections,
     locate_agent_profile,
     org_launch_stores,
+    resolve_org_profile_llm,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -78,6 +80,7 @@ from storage.mcp_config import (
     serialize_mcp_config,
 )
 from storage.org import Org
+from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
@@ -421,6 +424,7 @@ class SaasSettingsStore(SettingsStore):
             llm_names = referenced_llm_profile_names(config)
             if config.prompt_template is not None:
                 llm_names.update(profiles.profiles)
+            connections = load_provider_connections(org)
             resolved_llms: dict[str, Any] = {}
             for llm_name in sorted(llm_names):
                 profile_llm = profiles.get(llm_name)
@@ -429,20 +433,14 @@ class SaasSettingsStore(SettingsStore):
                         f'Model Router {name!r} references missing LLM profile '
                         f'{llm_name!r}'
                     )
-                profile_llm = resolve_profile_llm(
-                    profile_llm,
-                    managed_proxy_url=LITE_LLM_API_URL,
-                    fallback_api_key=effective_llm_api_key,
-                )
-                payload = profile_llm.model_dump(
-                    mode='json', context={'expose_secrets': True}
-                )
-                resolved_llms[llm_name] = apply_provider_connection(
-                    org,
-                    canonicalize_bundled_proxy_llm(
-                        canonicalize_openhands_llm_payload(payload)
-                    ),
-                )
+                # The agent server has no copy of the org's connections.
+                resolved_llms[llm_name] = detach_provider_connection(
+                    resolve_org_profile_llm(
+                        connections,
+                        profile_llm,
+                        fallback_api_key=effective_llm_api_key,
+                    )
+                ).model_dump(mode='json', context={'expose_secrets': True})
         except Exception:
             logger.warning(
                 'Failed to inline the active Model Router %r for org %s; '
@@ -721,6 +719,24 @@ class SaasSettingsStore(SettingsStore):
             resolve_agent_profile or override_agent_profile_id is not None
         )
         if resolution_requested:
+            # Organization MCP server listings (OHE-3091) join the launch view
+            # only: a plain load() is the persisted view a settings round-trip
+            # writes back, and a member's row must never absorb them. Merged
+            # before profile resolution so ``mcp_server_refs`` can name them;
+            # a member's own server keeps the bare name on a collision. A
+            # user-managed OAuth listing gets this member's own tokens.
+            org_listings = load_org_mcp_servers(org)
+            if org_listings:
+                member_servers = merged_agent_settings.get('mcp_config') or {}
+                merged_agent_settings['mcp_config'] = {
+                    **org_launch_mcp_servers(org, org_member, org_listings),
+                    **member_servers,
+                }
+                kwargs['org_user_managed_mcp_server_names'] = [
+                    name
+                    for name, entry in org_listings.items()
+                    if entry.managed_by == 'user' and name not in member_servers
+                ]
             resolved = self._resolve_active_agent_profile(
                 org,
                 org_member,
@@ -825,7 +841,9 @@ class SaasSettingsStore(SettingsStore):
 
     async def store(self, item: Settings):
         if item is not None and (
-            item._resolved_view or item.active_agent_profile_id is not None
+            item._resolved_view
+            or item.active_agent_profile_id is not None
+            or item.org_user_managed_mcp_server_names is not None
         ):
             # A resolved Agent-Profile launch view (from
             # load(resolve_agent_profile=True) / an override) is the profile's

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from abc import ABC
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatchcase
 from typing import Any, Literal
 
 from cryptography import x509
@@ -215,6 +216,11 @@ class OAuthProviderDetails(AuthProviderDetails):
     # name; a user linked to more than one gets a single secret, see
     # ``SaasUserAuth.get_named_oauth_secrets``.
     named_secret: str | None = None
+    # Identity field (``sub`` / ``email`` / ``email_verified``) -> the
+    # userinfo / ID-token claim the provider sends it as, for providers that
+    # aren't OIDC-shaped (e.g. Jira Data Center's ``key`` / ``emailAddress``).
+    # See ``server.auth.provider_identity.map_oauth_claims``.
+    attribute_mapping: dict[str, str] = Field(default_factory=dict)
 
     @field_validator('legacy_keycloak_type')
     @classmethod
@@ -260,7 +266,38 @@ class PasswordProviderDetails(AuthProviderDetails):
     endpoint to configure -- this row exists purely so the login path has an
     ``auth_providers`` id to carry in the ``openhands_auth`` cookie and to
     participate in ``is_idp`` listings like any other provider.
+
+    ``permitted_email_patterns`` optionally restricts which accounts may use
+    password login (e.g. only E2E test users on an SSO-only deployment). Each
+    entry is a case-insensitive ``fnmatch`` glob matched against the whole
+    email (``e2e-*@example.com``). ``None`` -- also what an empty list
+    normalizes to -- means unrestricted.
     """
+
+    permitted_email_patterns: list[str] | None = None
+
+    @field_validator('permitted_email_patterns', mode='before')
+    @classmethod
+    def _normalize_permitted_email_patterns(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError('permitted_email_patterns must be a list of strings')
+        patterns = [v.strip().lower() for v in value]
+        if any(not p for p in patterns):
+            raise ValueError('permitted_email_patterns must not contain blank entries')
+        return patterns or None
+
+    def permits_email(self, email: str) -> bool:
+        """Whether ``email`` may use password login under this configuration."""
+        if self.permitted_email_patterns is None:
+            return True
+        normalized = email.strip().lower()
+        # A glob such as ``*@example.com`` would otherwise also match
+        # ``someone@evil.com@example.com``.
+        if normalized.count('@') != 1:
+            return False
+        return any(fnmatchcase(normalized, p) for p in self.permitted_email_patterns)
 
 
 class SamlProviderDetails(AuthProviderDetails):

@@ -57,6 +57,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     REMOTE_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     search_stored_sandboxes,
@@ -214,6 +215,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxInfo(
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
+            credential_org_id=stored.credential_org_id,
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -386,14 +388,24 @@ class RemoteSandboxService(SandboxService):
             )
             return self._to_sandbox_info(stored_sandbox, None)
 
-    async def _get_user_running_sandboxes(self) -> list[StoredSandbox]:
+    async def _get_user_running_sandboxes(
+        self, owner_user_id: str | None = None
+    ) -> list[StoredSandbox]:
         """Return the DB records for sandboxes that are actually running right now.
 
         Calls the runtime /list endpoint (which returns all running sessions across
-        all users) and cross-references with the current user's DB records.  This
+        all users) and cross-references with the quota owner's DB records. This
         is the authoritative source of truth: a sandbox only counts as running if
         the runtime says it is — stale or expired DB rows are automatically excluded.
         """
+        if owner_user_id is None:
+            owner_user_id = await self.user_context.get_user_id()
+        if not owner_user_id:
+            raise SandboxError(
+                status_code=409,
+                detail='Sandbox owner is required to enforce sandbox limits',
+            )
+
         response = await self._send_runtime_api_request('GET', '/list')
         response.raise_for_status()
         running_session_ids = {
@@ -403,9 +415,11 @@ class RemoteSandboxService(SandboxService):
         }
 
         query = await secure_select(self.user_context, REMOTE_BACKEND)
-        query = query.filter(StoredSandbox.id.in_(running_session_ids)).order_by(
-            StoredSandbox.created_at.asc()
-        )
+        # ADMIN may read every sandbox, but quota cleanup still has one owner.
+        query = query.filter(
+            StoredSandbox.created_by_user_id == owner_user_id,
+            StoredSandbox.id.in_(running_session_ids),
+        ).order_by(StoredSandbox.created_at.asc(), StoredSandbox.id.asc())
         result = await self.db_session.execute(query)
         return list(result.scalars().all())
 
@@ -423,6 +437,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
@@ -463,16 +478,7 @@ class RemoteSandboxService(SandboxService):
             return False
         if server_config.app_mode.value != 'saas':
             return False
-        get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
-        org_id = await get_effective_org_id() if get_effective_org_id else None
-        if org_id is None:
-            # ResolverUserContext has no get_effective_org_id; it carries the
-            # org the integration run targets as resolver_org_id. Without
-            # this, a resolver start would fall back to the user's
-            # last-selected org and apply that org's override instead of the
-            # target org's (cf. _get_effective_org_id in
-            # integrations/jira_dc/jira_dc_conversation_secret_enricher.py).
-            org_id = getattr(self.user_context, 'resolver_org_id', None)
+        org_id = await get_credential_org_id(self.user_context)
         async with a_session_maker() as session:
             return await DailySandboxQuotaService(session).reserve(user_id, org_id)
 
@@ -534,6 +540,7 @@ class RemoteSandboxService(SandboxService):
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
         user_id = await self.user_context.get_user_id()
+        credential_org_id = await get_credential_org_id(self.user_context)
         quota_reserved = await self._reserve_daily_sandbox_quota(user_id)
         try:
             # Enforce sandbox limits by cleaning up old sandboxes
@@ -556,6 +563,7 @@ class RemoteSandboxService(SandboxService):
                 id=sandbox_id,
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
+                credential_org_id=credential_org_id,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )
@@ -751,7 +759,16 @@ class RemoteSandboxService(SandboxService):
 
         # Enforce sandbox limits only when a real paused-to-starting transition
         # is about to happen (this fetches the runtime API's global /list).
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        if not stored_sandbox.created_by_user_id:
+            raise SandboxError(
+                status_code=409,
+                detail='Sandbox owner is required to enforce sandbox limits',
+            )
+        await self.pause_old_sandboxes(
+            self.max_num_sandboxes - 1,
+            exclude_id=sandbox_id,
+            owner_user_id=stored_sandbox.created_by_user_id,
+        )
 
         try:
             response = await self._send_runtime_api_request(
@@ -1033,17 +1050,22 @@ class RemoteSandboxService(SandboxService):
         return archived
 
     async def pause_old_sandboxes(
-        self, max_num_sandboxes: int, exclude_id: str | None = None
+        self,
+        max_num_sandboxes: int,
+        exclude_id: str | None = None,
+        *,
+        owner_user_id: str | None = None,
     ) -> list[str]:
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
-        only sandboxes that are actually running are considered.
+        only the quota owner's running sandboxes are considered. Without an
+        explicit owner, the caller must have a user id.
         """
         if max_num_sandboxes < 0:
             raise ValueError('max_num_sandboxes must not be negative')
 
-        running = await self._get_user_running_sandboxes()
+        running = await self._get_user_running_sandboxes(owner_user_id)
         if exclude_id is not None:
             running = [sandbox for sandbox in running if sandbox.id != exclude_id]
 
@@ -1054,11 +1076,43 @@ class RemoteSandboxService(SandboxService):
         num_to_pause = len(running) - max_num_sandboxes
         paused_ids: list[str] = []
         for sandbox in running[:num_to_pause]:
+            log_context = {
+                'event': 'sandbox_quota_pause',
+                'reason': 'quota_limit',
+                'selection_policy': 'oldest_created',
+                'sandbox_id': sandbox.id,
+                'owner_user_id': sandbox.created_by_user_id,
+                'sandbox_created_at': sandbox.created_at.isoformat(),
+                'configured_limit': self.max_num_sandboxes,
+                'target_remaining_count': max_num_sandboxes,
+                'eligible_running_count': len(running),
+                'excluded_sandbox_id': exclude_id,
+            }
+            _logger.info(
+                'Selected sandbox for quota pause',
+                extra={**log_context, 'outcome': 'selected'},
+            )
             try:
                 if await self.pause_sandbox(sandbox.id):
                     paused_ids.append(sandbox.id)
-            except Exception:
-                pass
+                    _logger.info(
+                        'Runtime API accepted quota pause',
+                        extra={**log_context, 'outcome': 'pause_requested'},
+                    )
+                else:
+                    _logger.warning(
+                        'Quota pause did not succeed',
+                        extra={**log_context, 'outcome': 'not_paused'},
+                    )
+            except Exception as exc:
+                _logger.warning(
+                    'Quota pause raised an exception',
+                    extra={
+                        **log_context,
+                        'outcome': 'error',
+                        'error_type': type(exc).__name__,
+                    },
+                )
         return paused_ids
 
     async def batch_get_sandboxes(

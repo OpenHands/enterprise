@@ -65,12 +65,11 @@ function parseScopes(value: string): string[] | null {
   return scopes.length > 0 ? scopes : null;
 }
 
-/** Parses the attribute-mapping field's ``openhands_field=saml_attr``
- * comma/newline-separated text into ``SamlProviderDetails.attribute_mapping``
- * (keyed by ``openhands_field`` -- see ``server.routes.saml
- * ._extract_mapped_attribute``, which looks up ``attribute_mapping[field]``
- * to get the SAML attribute name to read). Blank entries and entries
- * missing a ``=`` are dropped. */
+/** Parses the attribute-mapping field's ``openhands_field=provider_attr``
+ * comma/newline-separated text into the OAuth/SAML ``attribute_mapping``
+ * (keyed by ``openhands_field`` -- see ``server.auth.provider_identity
+ * .map_oauth_claims`` and ``server.routes.saml._extract_mapped_attribute``).
+ * Blank entries and entries missing a ``=`` are dropped. */
 function parseAttributeMapping(value: string): Record<string, string> {
   const mapping: Record<string, string> = {};
   value
@@ -89,6 +88,17 @@ function parseAttributeMapping(value: string): Record<string, string> {
       }
     });
   return mapping;
+}
+
+/** Parses the permitted-email-patterns field's comma/newline-separated
+ * globs into ``PasswordProviderDetails.permitted_email_patterns``; blank
+ * entries are dropped and an empty result is ``null`` (unrestricted). */
+function parseEmailPatterns(value: string): string[] | null {
+  const patterns = value
+    .split(/[\n,]+/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+  return patterns.length > 0 ? patterns : null;
 }
 
 /** Inverse of ``parseAttributeMapping``, for populating the form from an
@@ -152,11 +162,13 @@ export interface AuthProviderFormState {
    * ``server.routes.oauth_providers_admin._ensure_sp_keypair``). */
   spX509Cert: string;
   nameIdFormat: string;
-  /** ``openhands_field=saml_attr`` pairs, comma/newline-separated -- see
-   * ``parseAttributeMapping``. Only the ``email`` key currently has any
-   * effect server-side (``server.routes.saml._extract_mapped_attribute``
-   * is only ever called for ``'email'``). */
+  /** ``openhands_field=provider_attr`` pairs, comma/newline-separated --
+   * see ``parseAttributeMapping``. Shared by OAuth (``sub`` / ``email`` /
+   * ``email_verified``) and SAML (``sub`` / ``email``). */
   attributeMapping: string;
+  /** Globs, comma/newline-separated -- see ``parseEmailPatterns``. ``""``
+   * means any email may use password login. */
+  permittedEmailPatterns: string;
 }
 
 const EMPTY_FORM: AuthProviderFormState = {
@@ -187,6 +199,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   spX509Cert: "",
   nameIdFormat: "",
   attributeMapping: "",
+  permittedEmailPatterns: "",
 };
 
 export function toFormState(provider: AuthProvider): AuthProviderFormState {
@@ -211,6 +224,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       permittedDriftSeconds: String(details.permitted_drift_seconds),
       legacyKeycloakType: details.legacy_keycloak_type ?? "",
       namedSecret: details.named_secret ?? "",
+      attributeMapping: formatAttributeMapping(details.attribute_mapping),
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -246,6 +260,9 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
     enabled: provider.enabled,
     allowRegistration: provider.allow_registration,
     allowMatchByEmail: provider.allow_match_by_email,
+    permittedEmailPatterns: (
+      provider.details.permitted_email_patterns ?? []
+    ).join("\n"),
   };
 }
 
@@ -266,7 +283,8 @@ function oauthDetailsUnchanged(
     form.permittedDriftSeconds.trim() ===
       initial.permittedDriftSeconds.trim() &&
     form.legacyKeycloakType === initial.legacyKeycloakType &&
-    form.namedSecret.trim() === initial.namedSecret.trim()
+    form.namedSecret.trim() === initial.namedSecret.trim() &&
+    form.attributeMapping.trim() === initial.attributeMapping.trim()
   );
 }
 
@@ -291,7 +309,10 @@ function samlDetailsUnchanged(
 
 function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
   if (form.kind === KIND_PASSWORD) {
-    return { kind: KIND_PASSWORD };
+    return {
+      kind: KIND_PASSWORD,
+      permitted_email_patterns: parseEmailPatterns(form.permittedEmailPatterns),
+    };
   }
   if (form.kind === KIND_SAML) {
     return {
@@ -331,6 +352,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       : Number(DEFAULT_PERMITTED_DRIFT_SECONDS),
     legacy_keycloak_type: form.legacyKeycloakType || null,
     named_secret: form.namedSecret.trim() || null,
+    attribute_mapping: parseAttributeMapping(form.attributeMapping),
   };
 }
 
@@ -353,8 +375,16 @@ export function buildUpdatePayload(
     form.kind === KIND_OAUTH && !oauthDetailsUnchanged(form, initial);
   const samlFieldsChanged =
     form.kind === KIND_SAML && !samlDetailsUnchanged(form, initial);
+  const passwordFieldsChanged =
+    form.kind === KIND_PASSWORD &&
+    JSON.stringify(parseEmailPatterns(form.permittedEmailPatterns)) !==
+      JSON.stringify(parseEmailPatterns(initial.permittedEmailPatterns));
   const detailsChanged =
-    kindChanged || secretTyped || oauthFieldsChanged || samlFieldsChanged;
+    kindChanged ||
+    secretTyped ||
+    oauthFieldsChanged ||
+    samlFieldsChanged ||
+    passwordFieldsChanged;
 
   return {
     title: form.title.trim(),

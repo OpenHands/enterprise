@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AzureDevOpsWebhookManager } from "#/components/features/settings/git-settings/azure-devops-webhook-manager";
 import { integrationService } from "#/api/integration-service/integration-service.api";
+import { openHands } from "#/api/open-hands-axios";
 import { I18nKey } from "#/i18n/declaration";
 
 vi.mock("#/utils/custom-toast-handlers", () => ({
@@ -306,6 +307,21 @@ describe("Azure DevOps organization management", () => {
     expect(
       await screen.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_ERROR),
     ).toBeInTheDocument();
+    expect(integrationService.getAzureDevOpsResources).not.toHaveBeenCalled();
+  });
+
+  it("shows the error state when the server answers with the app's HTML page", async () => {
+    vi.mocked(integrationService.getAzureDevOpsOrganizations).mockRestore();
+    vi.spyOn(openHands, "get").mockResolvedValue({
+      data: "<!DOCTYPE html><html></html>",
+    });
+    renderManager();
+    expect(
+      await screen.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_ERROR),
+    ).toBeInTheDocument();
+    expect(openHands.get).toHaveBeenCalledWith(
+      "/integration/azure-devops/organizations",
+    );
     expect(integrationService.getAzureDevOpsResources).not.toHaveBeenCalled();
   });
 

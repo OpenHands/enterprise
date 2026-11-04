@@ -1577,3 +1577,56 @@ class TestTagsContainsFilter:
         # Assert
         assert matching == 2
         assert missing == 0
+
+
+class TestCreateAppConversationInfo:
+    """``create_app_conversation_info`` inserts once and never overwrites."""
+
+    @pytest.mark.asyncio
+    async def test_inserts_once_and_keeps_the_existing_row(
+        self,
+        service: SQLAppConversationInfoService,
+        sample_conversation_info: AppConversationInfo,
+    ):
+        assert await service.create_app_conversation_info(sample_conversation_info)
+
+        stub_defaults = sample_conversation_info.model_copy(
+            update={'title': 'Conversation stub', 'selected_repository': None}
+        )
+        assert not await service.create_app_conversation_info(stub_defaults)
+
+        stored = await service.get_app_conversation_info(sample_conversation_info.id)
+        assert stored is not None
+        assert stored.title == 'Test Conversation'
+        assert stored.selected_repository == 'https://github.com/test/repo'
+        # The session is usable after the refused insert.
+        await service.update_title(sample_conversation_info.id, 'Renamed')
+        renamed = await service.get_app_conversation_info(sample_conversation_info.id)
+        assert renamed is not None and renamed.title == 'Renamed'
+
+
+@pytest.mark.asyncio
+async def test_title_completion_preserves_manual_rename_and_other_columns(
+    service, sample_conversation_info
+):
+    from openhands.app_server.app_conversation.start_title import pending_start_title
+
+    pending = pending_start_title('Fix checkout')
+    sample_conversation_info.title = pending.title
+    sample_conversation_info.title_generation = pending
+    await service.save_app_conversation_info(sample_conversation_info)
+    generated = pending.model_copy(
+        update={'status': 'generated', 'title': 'Checkout repair'}
+    )
+    assert await service.complete_title_generation(
+        sample_conversation_info.id, generated
+    )
+    saved = await service.get_app_conversation_info(sample_conversation_info.id)
+    assert saved.title == 'Checkout repair'
+    assert saved.selected_repository == sample_conversation_info.selected_repository
+
+    saved.title = 'My custom name'
+    saved.title_generation = None
+    await service.save_app_conversation_info(saved)
+    assert not await service.complete_title_generation(saved.id, generated)
+    assert (await service.get_app_conversation_info(saved.id)).title == 'My custom name'

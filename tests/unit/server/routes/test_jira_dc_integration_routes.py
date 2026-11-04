@@ -14,6 +14,8 @@ from pydantic import SecretStr, ValidationError
 
 from integrations.jira_dc.jira_dc_service_account import JiraDcServiceAccount
 from integrations.jira_dc.jira_dc_user_token import JiraDcUserToken
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes.integration.jira_dc import (
     JiraDcLinkCreate,
@@ -2313,3 +2315,31 @@ async def test_get_jira_dc_instance_status_not_configured(
     response = await get_jira_dc_instance_status(mock_request)
     assert response.configured is False
     assert response.host is None
+
+
+_JIRA_DC_CLAIMS = {
+    'integration': 'jira_dc',
+    'secret_name': 'JIRA_DC_TOKEN',
+    'user_id': 'kc-user',
+    'workspace_id': 7,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'audience', [JwtAudience.SESSION, JwtAudience.SECRET_LOOKUP], ids=str
+)
+@patch('server.routes.integration.jira_dc.jira_dc_manager')
+async def test_get_jira_dc_secret_token_rejects_a_token_for_another_audience(
+    mock_manager, audience
+):
+    jwt_service = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+    token = jwt_service.create_jws_token(_JIRA_DC_CLAIMS, audience=audience)
+    mock_manager.integration_store = AsyncMock()
+
+    with patch('server.routes.integration.jira_dc.JIRA_DC_ENABLE_OAUTH', True):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_jira_dc_secret_token(access_token=token, jwt_service=jwt_service)
+
+    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+    mock_manager.integration_store.get_workspace_by_id.assert_not_awaited()

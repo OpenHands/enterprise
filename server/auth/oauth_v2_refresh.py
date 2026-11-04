@@ -19,6 +19,7 @@ from uuid import UUID
 import httpx
 
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
@@ -285,5 +286,7 @@ def sign_oauth_v2_cookie(payload: dict, max_age_seconds: int) -> str:
     from storage.encrypt_utils import get_jwt_service
 
     return get_jwt_service().create_jws_token(
-        payload, expires_in=timedelta(seconds=max_age_seconds)
+        payload,
+        expires_in=timedelta(seconds=max_age_seconds),
+        audience=JwtAudience.SESSION,
     )

@@ -186,7 +186,6 @@ USER root
 RUN /usr/local/bin/python3 -m pip uninstall -y pip --break-system-packages
 USER openhands
 
-COPY --chown=openhands:openhands --chmod=770 ./skills ./skills
 COPY --chown=openhands:openhands --chmod=770 ./openhands ./openhands
 COPY --chown=openhands:openhands --chmod=770 ./server ./server
 COPY --chown=openhands:openhands --chmod=770 ./storage ./storage

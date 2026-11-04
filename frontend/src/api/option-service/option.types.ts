@@ -80,10 +80,18 @@ export interface WebClientFeatureFlags {
   /** When true, org admins can add, edit and delete the organization's
    *  shared Agent Profiles on the Agent Profiles page. Off by default. */
   enable_org_agent_profiles?: boolean;
+  /** When true, Settings > MCP shows the organization's MCP server listings
+   *  and both Agent Profile editors list them. Mirrors the
+   *  ENABLE_ORG_MCP_SERVERS env var; off by default (OHE-3091). */
+  enable_org_mcp_servers?: boolean;
   /** When true, the org "Model Router" settings page is shown and the
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
   enable_model_router?: boolean;
+  /** When true, the Service Accounts settings page is shown and the
+   *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
+   *  database flag, then the env var; off by default (OHE-3795). */
+  enable_service_accounts?: boolean;
 }
 
 /** One entry of a model picker; built from what an ACP session reported. */

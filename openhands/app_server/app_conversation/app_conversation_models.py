@@ -191,6 +191,12 @@ class ConversationPullRequest(BaseModel):
     git_provider: ProviderType | None = None
 
 
+class ConversationTitleGeneration(OpenHandsModel):
+    status: Literal['pending', 'generated', 'fallback']
+    title: str
+    deadline_at: datetime
+
+
 class AppConversationInfo(BaseModel):
     """Conversation info which does not contain status."""
 
@@ -203,6 +209,7 @@ class AppConversationInfo(BaseModel):
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
     title: str | None = None
+    title_generation: ConversationTitleGeneration | None = None
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     # The repository of each entry in ``pr_number`` when it was recorded.
@@ -405,6 +412,7 @@ class AppConversationStartRequest(OpenHandsModel):
     )
     suggested_task: SuggestedTask | None = None
     title: str | None = None
+    generate_title_on_submit: bool = False
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     parent_conversation_id: OpenHandsUUID | None = None
@@ -570,6 +578,7 @@ class AppConversationStartTask(OpenHandsModel):
     agent_server_url: str | None = Field(
         default=None, description='The agent server url, if READY'
     )
+    title_generation: ConversationTitleGeneration | None = None
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -580,6 +589,17 @@ class AppConversationStartTask(OpenHandsModel):
     # and the masked-secret registration so both use the exact same value. Unset
     # when the user has no Entra Azure DevOps token.
     _azure_devops_access_token: str | None = PrivateAttr(default=None)
+    # Same, for the other git providers: one exchange JWT per provider the user
+    # has a token for (keyed by ProviderType value), so the sandbox's git
+    # credential helper can fetch the current token for any of that provider's
+    # repositories, not only the selected one. Empty when nothing was minted.
+    _git_credential_access_tokens: dict[str, str] = PrivateAttr(default_factory=dict)
+    # The ``<protocol>://<host>`` contexts whose credential helper the setup
+    # flow installed in the sandbox. A clone under one of them leaves the token
+    # out of its remote URL, so none lands in ``.git/config`` under the
+    # workspace (OHE-3812); every other clone keeps the authenticated URL.
+    # Empty until the helpers are set up.
+    _git_credential_prefixes: set[str] = PrivateAttr(default_factory=set)
     # Clone results of the request's additional repositories, saved on the
     # conversation once it starts.
     _additional_repositories: list[AdditionalRepository] = PrivateAttr(

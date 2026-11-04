@@ -16,8 +16,9 @@ from openhands.app_server.event_callback.webhook_router import (
     router,
 )
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 
 class _StubUserContext:
@@ -35,13 +36,23 @@ class _StubUserContext:
 JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
 
 
+def _lookup_token(payload: dict) -> str:
+    return JWT_SERVICE.create_jws_token(
+        payload=payload, audience=JwtAudience.SECRET_LOOKUP
+    )
+
+
 def _get(payload: dict | None):
+    return _get_with_token(None if payload is None else _lookup_token(payload))
+
+
+def _get_with_token(token: str | None):
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     app.dependency_overrides[jwt_dependency.dependency] = lambda: JWT_SERVICE
     headers = {}
-    if payload is not None:
-        headers['X-Access-Token'] = JWT_SERVICE.create_jws_token(payload=payload)
+    if token is not None:
+        headers['X-Access-Token'] = token
     with patch(
         'openhands.app_server.event_callback.webhook_router._resolve_user_context',
         return_value=_StubUserContext(),
@@ -71,3 +82,35 @@ def test_provider_type_token_returns_the_latest_provider_token():
 
 def test_missing_access_token_is_unauthorized():
     assert _get(None).status_code == 401
+
+
+def test_session_cookie_is_not_a_lookup_token():
+    """A signed-in user's ``openhands_auth`` cookie names a user too, but it
+    must not be exchangeable for that user's git provider token."""
+    cookie = JWT_SERVICE.create_jws_token(
+        {'user_id': 'user-1', 'provider_type': 'github'},
+        audience=JwtAudience.SESSION,
+    )
+
+    assert _get_with_token(cookie).status_code == 401
+
+
+def test_lookup_token_minted_before_audiences_still_works():
+    """Running conversations keep the unscoped tokens they were started with."""
+    token = mint_unscoped_jws_token(
+        JWT_SERVICE, {'user_id': 'user-1', 'provider_type': 'github'}
+    )
+
+    response = _get_with_token(token)
+
+    assert response.status_code == 200
+    assert response.text == 'github-token'
+
+
+def test_unscoped_session_cookie_is_not_a_lookup_token():
+    cookie = mint_unscoped_jws_token(
+        JWT_SERVICE,
+        {'user_id': 'user-1', 'accepted_tos': True, 'access_token_expires_at': None},
+    )
+
+    assert _get_with_token(cookie).status_code == 401

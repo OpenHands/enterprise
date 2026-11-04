@@ -7,10 +7,11 @@ import re
 import shlex
 import tempfile
 from abc import ABC
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
@@ -155,7 +156,8 @@ def get_project_dir(
 # their token per conversation), mode 600. The ADO token the helper returns to
 # git is never persisted — only this short-lived exchange JWT is, and only in the
 # sandbox the conversation controls.
-_AZURE_DEVOPS_ACCESS_TOKEN_FILE = '$HOME/.openhands/azure-devops-access-token'
+_AZURE_DEVOPS_ACCESS_TOKEN_SUBPATH = '.openhands/azure-devops-access-token'
+_AZURE_DEVOPS_ACCESS_TOKEN_FILE = f'$HOME/{_AZURE_DEVOPS_ACCESS_TOKEN_SUBPATH}'
 
 
 def _azure_devops_credential_helper_script(web_url: str | None) -> str:
@@ -203,6 +205,122 @@ fi
 
 printf '%s\\n' "username=oauth2"
 printf 'password=%s\\n' "$token"
+"""
+
+
+def _credential_helper_clone_url(
+    remote_repo_url: str, prefixes: Iterable[str]
+) -> str | None:
+    """The URL to clone instead of an authenticated one a credential helper serves.
+
+    ``prefixes`` are the ``<protocol>://<host>`` contexts the setup flow
+    configured a helper for (``_configure_git_credential_helpers``). A URL that
+    carries credentials under one of them comes back without its userinfo: git
+    asks the helper for the token, and nothing lands in ``.git/config``
+    (OHE-3812). None when the URL carries no credentials or no helper covers
+    it, Azure DevOps included (its helper is wired separately): the
+    authenticated URL is then the only way to clone.
+    """
+    parsed = urlsplit(remote_repo_url)
+    hostname = parsed.hostname
+    if not hostname or not parsed.username:
+        return None
+    host = hostname if parsed.port is None else f'{hostname}:{parsed.port}'
+    clean_url = urlunsplit(parsed._replace(netloc=host))
+    for prefix in prefixes:
+        prefix = prefix.rstrip('/')
+        if clean_url == prefix or clean_url.startswith(prefix + '/'):
+            return clean_url
+    return None
+
+
+def _sandbox_home(result: Any) -> str | None:
+    """``$HOME`` as the last command of a setup chain printed it, or None.
+
+    Only the sandbox can expand ``$HOME``; a file upload needs the absolute
+    path. None when the chain failed or printed something else.
+    """
+    if result.exit_code:
+        return None
+    home = result.stdout.strip()
+    return home if home.startswith('/') else None
+
+
+# Per-conversation exchange JWTs for the other git providers, one file per
+# provider (``<provider>.token``, mode 600), read by the shared credential helper
+# below. The provider token the helper returns to git is never persisted.
+_GIT_CREDENTIAL_TOKEN_SUBDIR = '.openhands/git-credentials'
+_GIT_CREDENTIAL_TOKEN_DIR = f'$HOME/{_GIT_CREDENTIAL_TOKEN_SUBDIR}'
+_GIT_CREDENTIAL_HELPER = '$HOME/.openhands/git-credential-helper'
+
+# The git username each provider pairs with a token. Bitbucket tokens stored as
+# ``user:secret`` carry their own username, which the helper uses instead.
+_GIT_CREDENTIAL_USERNAMES = {
+    ProviderType.GITHUB: 'x-access-token',
+    ProviderType.GITLAB: 'oauth2',
+    ProviderType.BITBUCKET: 'x-token-auth',
+    ProviderType.BITBUCKET_DATA_CENTER: 'x-token-auth',
+    ProviderType.FORGEJO: 'x-access-token',
+}
+
+
+def _git_credential_helper_script(web_url: str | None) -> str:
+    """Git credential helper fetching a provider token on demand.
+
+    Installed once per sandbox and configured per provider host as
+    ``credential.<protocol>://<host>.helper = !<helper> <provider>``. On ``get``
+    it reads that provider's per-conversation exchange JWT from
+    ``_GIT_CREDENTIAL_TOKEN_DIR`` and exchanges it at ``/api/v1/webhooks/secrets``
+    for the user's current token. A ``user:secret`` token (Bitbucket) supplies
+    the username; a bare token or the ``x-token-auth:<token>`` form leaves the
+    configured ``credential.<host>.username`` in place.
+    Mirrors ``_azure_devops_credential_helper_script``.
+    """
+    app_base_url = shlex.quote(web_url if isinstance(web_url, str) else '')
+    return f"""#!/bin/sh
+provider="$1"
+if [ "$2" != "get" ]; then
+  exit 0
+fi
+cat > /dev/null
+token_file="{_GIT_CREDENTIAL_TOKEN_DIR}/$provider.token"
+access_token=""
+if [ -r "$token_file" ]; then
+  access_token="$(cat "$token_file" 2>/dev/null)"
+fi
+webhook_url="${{OH_WEBHOOKS_0_BASE_URL:-}}"
+app_base_url={app_base_url}
+if [ -n "$webhook_url" ]; then
+  base_url="${{webhook_url%/api/v1/webhooks}}"
+else
+  base_url="$app_base_url"
+fi
+if [ -z "$access_token" ] || [ -z "$base_url" ]; then
+  exit 0
+fi
+
+secret_url="$base_url/api/v1/webhooks/secrets"
+secret="$(curl -fsS \\
+  -H "X-Access-Token: $access_token" \\
+  "$secret_url" 2>/dev/null)"
+if [ -z "$secret" ]; then
+  echo "openhands: $provider credential exchange failed (token may be expired)" >&2
+  exit 0
+fi
+
+case "$secret" in
+  x-token-auth:*)
+    # Not a user: keep the username configured for this host.
+    printf 'password=%s\\n' "${{secret#*:}}"
+    ;;
+  *:*)
+    printf 'username=%s\\n' "${{secret%%:*}}"
+    printf 'password=%s\\n' "${{secret#*:}}"
+    ;;
+  *)
+    printf 'password=%s\\n' "$secret"
+    ;;
+esac
 """
 
 
@@ -439,6 +557,13 @@ class AppConversationServiceBase(AppConversationService, ABC):
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         task.status = AppConversationStartTaskStatus.PREPARING_REPOSITORY
         yield task
+        # Deliver this conversation's per-provider git credentials before any
+        # clone: a helper per provider host, so hooks and the agent can clone any
+        # repository the user can reach with plain git, and so the clones below
+        # can leave the token out of their remote URL (OHE-3812).
+        task._git_credential_prefixes = await self._configure_git_credential_helpers(
+            workspace, getattr(task, '_git_credential_access_tokens', None)
+        )
         await self.clone_or_init_git_repo(task, workspace, sandbox)
 
         # Deliver this conversation's Azure DevOps credential (per conversation,
@@ -488,15 +613,6 @@ class AppConversationServiceBase(AppConversationService, ABC):
         # conversation starts. This writes the MEMORY.md file so the SDK's
         # load_memory() picks it up on the first send_message/run.
         await self.maybe_inject_memory_context(workspace, project_dir)
-
-        task.status = AppConversationStartTaskStatus.SETTING_UP_SKILLS
-        yield task
-        await self.load_and_merge_all_skills(
-            sandbox,
-            task.request.selected_repository,
-            project_dir,
-            agent_server_url,
-        )
 
     async def _configure_git_user_settings(
         self,
@@ -601,16 +717,14 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 )
                 return
 
-            # Write the key to a temp file in the sandbox, import, then shred.
-            # A file (rather than a heredoc on the command line) keeps the key
-            # material out of the process list.
+            # Upload the key to a temp file in the sandbox, import, then shred.
+            # The upload keeps the key material out of the process list and
+            # out of the bash API's command log on the sandbox volume.
             key_path = f'/tmp/.oh-gpg-import-{base62.encodebytes(os.urandom(16))}'
-            result = await workspace.execute_command(
-                f'printf %s {shlex.quote(armored)} > {shlex.quote(key_path)}',
-                workspace.working_dir,
-            )
-            if result.exit_code:
-                _logger.warning(f'Failed to write GPG key file: {result.stderr}')
+            if not await self._upload_secret_file(workspace, key_path, armored):
+                _logger.warning(
+                    'Failed to write GPG key file; commit signing disabled.'
+                )
                 return
 
             try:
@@ -621,6 +735,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                     workspace.working_dir,
                 )
                 import_result = await workspace.execute_command(
+                    f'chmod 600 {shlex.quote(key_path)} && '
                     f'gpg --batch --import {shlex.quote(key_path)}',
                     workspace.working_dir,
                 )
@@ -811,6 +926,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             request.selected_branch,
             request.git_provider,
             full_clone,
+            task=task,
         )
         if not cloned:
             at_branch = (
@@ -833,13 +949,26 @@ class AppConversationServiceBase(AppConversationService, ABC):
         branch: str | None,
         git_provider: ProviderType | None,
         full_clone: bool,
+        task: AppConversationStartTask | None = None,
     ) -> bool:
         """Clone a repository into ``dir_name`` and check out its branch.
 
         Returns False when nothing usable was cloned. Never includes git's
         output in errors: the URL and that output can hold credentials.
+
+        With ``task``, a repository under one of the ``<protocol>://<host>``
+        contexts the setup flow installed a credential helper for
+        (``_configure_git_credential_helpers``) is cloned with the URL stripped
+        of its embedded credentials, so none lands in ``.git/config``
+        (OHE-3812); the helper supplies the token to git. Otherwise the
+        authenticated URL is cloned as before.
         """
-        quoted_remote_repo_url = shlex.quote(remote_repo_url)
+        prefixes = getattr(task, '_git_credential_prefixes', None)
+        if not isinstance(prefixes, (set, frozenset)):
+            prefixes = frozenset()
+        clean_url = _credential_helper_clone_url(remote_repo_url, prefixes)
+        clone_url = remote_repo_url if clean_url is None else clean_url
+        quoted_remote_repo_url = shlex.quote(clone_url)
         quoted_dir_name = shlex.quote(dir_name)
         git_dir = Path(workspace.working_dir) / dir_name
         azure_devops_bearer_token = await self._get_azure_devops_bearer_token_for_git(
@@ -884,6 +1013,8 @@ class AppConversationServiceBase(AppConversationService, ABC):
             )
             if existing.exit_code:
                 return False
+            if clean_url is not None:
+                await self._strip_origin_credentials(workspace, git_dir, prefixes)
 
         # Checkout the appropriate branch
         if branch:
@@ -926,7 +1057,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         ) -> AdditionalRepository:
             async with semaphore:
                 error = await self._clone_additional_repository(
-                    workspace, item, folder, full_clone
+                    workspace, item, folder, full_clone, task=task
                 )
             return AdditionalRepository(
                 repository=item.repository,
@@ -959,6 +1090,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         item: AdditionalRepositoryRequest,
         folder: str,
         full_clone: bool,
+        task: AppConversationStartTask | None = None,
     ) -> str | None:
         """Clone one additional repository; return an error message on failure."""
         at_branch = f' at branch {item.branch!r}' if item.branch else ''
@@ -980,6 +1112,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 item.branch,
                 item.git_provider,
                 full_clone,
+                task=task,
             ):
                 return None
         except Exception as exc:
@@ -1000,6 +1133,54 @@ class AppConversationServiceBase(AppConversationService, ABC):
             return None
 
         return await get_azure_devops_bearer_token(self.user_context)
+
+    async def _strip_origin_credentials(
+        self, workspace: AsyncRemoteWorkspace, git_dir: Path, prefixes: Iterable[str]
+    ) -> None:
+        """Drop embedded credentials from ``origin`` of an already-present clone.
+
+        A sub-conversation sharing its sandbox finds the repository cloned by an
+        earlier conversation with the token in the remote URL. Now that a
+        credential helper covers ``prefixes``, an origin under one of them is
+        rewritten without its userinfo so the token leaves ``.git/config``.
+        """
+        result = await workspace.execute_command('git remote get-url origin', git_dir)
+        if result.exit_code:
+            return
+        clean_url = _credential_helper_clone_url(result.stdout.strip(), prefixes)
+        if clean_url is None:
+            return
+        result = await workspace.execute_command(
+            f'git remote set-url origin {shlex.quote(clean_url)}', git_dir
+        )
+        if result.exit_code:
+            _logger.warning(
+                'Git remote set-url failed: '
+                f'{redact_url_credentials_in_text(result.stderr)}'
+            )
+
+    async def _upload_secret_file(
+        self, workspace: AsyncRemoteWorkspace, path: str, content: str
+    ) -> bool:
+        """Place ``content`` at the absolute ``path`` in the sandbox.
+
+        Through the file upload, never a shell command: the bash API persists
+        every command it runs, verbatim, on the sandbox volume (OHE-3812). The
+        caller tightens the file's mode in its next command. False, with a log
+        line and no exception, when the upload fails, so a start never breaks
+        on a credential it can do without.
+        """
+        try:
+            result = await workspace.file_upload(content.encode(), path)
+        except Exception as exc:
+            _logger.warning(f'Upload of {path} failed: {type(exc).__name__}')
+            return False
+        if not getattr(result, 'success', False):
+            _logger.warning(
+                f'Upload of {path} failed: {getattr(result, "error", None)}'
+            )
+            return False
+        return True
 
     async def _configure_azure_devops_git_credentials(
         self,
@@ -1034,16 +1215,32 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
             )
         helper_script = _azure_devops_credential_helper_script(web_url)
-        commands = [
+        # The helper first, then $HOME (which only the sandbox can expand) for
+        # the token upload's absolute path. The token is uploaded rather than
+        # written by a command: the bash API keeps every command it runs on the
+        # sandbox volume (OHE-3812). Run in '/', which always exists (the
+        # grouped per-conversation working dir may not yet); every path here is
+        # absolute under $HOME.
+        setup = [
             'mkdir -p "$HOME/.openhands"',
             'helper="$HOME/.openhands/azure-devops-credential-helper"',
-            # Double-quoted so $HOME expands, matching the helper script's reader.
-            f'token_file="{_AZURE_DEVOPS_ACCESS_TOKEN_FILE}"',
             f'printf %s {shlex.quote(helper_script)} > "$helper"',
             'chmod 700 "$helper"',
-            # The token value is passed quoted and never echoed to stdout.
-            f'printf %s {shlex.quote(access_token)} > "$token_file"',
-            'chmod 600 "$token_file"',
+            'printf %s "$HOME"',
+        ]
+        result = await workspace.execute_command(' && '.join(setup), '/')
+        home = _sandbox_home(result)
+        if home is None:
+            _logger.warning(
+                f'Azure DevOps git credential setup failed: {result.stderr}'
+            )
+            return
+        token_file = f'{home}/{_AZURE_DEVOPS_ACCESS_TOKEN_SUBPATH}'
+        if not await self._upload_secret_file(workspace, token_file, access_token):
+            return
+        commands = [
+            f'chmod 600 {shlex.quote(token_file)}',
+            'helper="$HOME/.openhands/azure-devops-credential-helper"',
             'git config --global credential.https://dev.azure.com.useHttpPath true',
         ]
         for org in orgs:
@@ -1053,13 +1250,133 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 'git config --global --replace-all '
                 f'{shlex.quote(prefix + ".helper")} "!\\"$helper\\""',
             ]
-        # Run in '/', which always exists (the grouped per-conversation working
-        # dir may not yet); every path here is absolute under $HOME.
         result = await workspace.execute_command(' && '.join(commands), '/')
         if result.exit_code:
             _logger.warning(
                 f'Azure DevOps git credential setup failed: {result.stderr}'
             )
+
+    async def _git_credential_username(self, provider_handler, provider) -> str:
+        """The git username to pair with ``provider``'s token.
+
+        Bitbucket Data Center decides per server and token which username it
+        accepts beside a bare token; ask its service, as the clone URL does.
+        """
+        if provider == ProviderType.BITBUCKET_DATA_CENTER:
+            try:
+                service = provider_handler.get_service(provider)
+                username, _ = await service.get_git_credentials()
+                if username:
+                    return username
+            except Exception as exc:
+                _logger.debug(
+                    f'Bitbucket Data Center git username lookup failed: {exc}'
+                )
+        return _GIT_CREDENTIAL_USERNAMES.get(provider, 'x-access-token')
+
+    async def _configure_git_credential_helpers(
+        self,
+        workspace: AsyncRemoteWorkspace,
+        access_tokens: Mapping[str, str] | None,
+    ) -> set[str]:
+        """Deliver this conversation's per-provider credentials to the sandbox.
+
+        For each provider with a minted exchange JWT, uploads the JWT to a
+        mode-600 file and configures the shared credential helper for that
+        provider's git host (``credential.<protocol>://<host>``) in the global
+        git config, so plain ``git clone/fetch/push`` of any repository on that
+        host, from the agent's terminal or a hook, authenticates with the
+        user's current token. Returns the ``<protocol>://<host>`` contexts
+        whose helper is in place: ``_clone_repository`` clones repositories
+        under them without the token in the remote URL. Empty, and the clones
+        keep their authenticated URL, when nothing was minted or the setup
+        failed. Azure DevOps is handled by
+        ``_configure_azure_devops_git_credentials``.
+
+        The JWTs go through the file upload rather than a shell command: the
+        bash API keeps every command it runs on the sandbox volume (OHE-3812).
+        """
+        if not isinstance(access_tokens, Mapping) or not access_tokens:
+            return set()
+        try:
+            provider_handler = await self.user_context.get_provider_handler()
+        except Exception as exc:
+            _logger.debug(f'No provider handler for git credential helpers: {exc}')
+            return set()
+
+        # Each provider's git host, username and JWT, resolved before anything
+        # touches the sandbox.
+        targets: list[tuple[str, str, str, str]] = []
+        for value, token in access_tokens.items():
+            try:
+                provider = ProviderType(value)
+            except ValueError:
+                continue
+            if provider == ProviderType.AZURE_DEVOPS or not token:
+                continue
+            try:
+                protocol, host = provider_handler.get_git_host(provider)
+            except ValueError as exc:
+                _logger.warning(f'Skipping git credential helper for {value}: {exc}')
+                continue
+            if not host:
+                continue
+            username = await self._git_credential_username(provider_handler, provider)
+            targets.append((value, f'{protocol}://{host}', username, token))
+        if not targets:
+            return set()
+
+        web_url = getattr(self, 'web_url', None)
+        if web_url is None:
+            _logger.debug(
+                'Git credential helper has no configured web_url; '
+                'it will rely on OH_WEBHOOKS_0_BASE_URL at runtime.'
+            )
+        helper_script = _git_credential_helper_script(web_url)
+        # The helper and the token directory, then $HOME (which only the
+        # sandbox can expand) for the uploads' absolute paths. Run in '/',
+        # which always exists; every path here is absolute under $HOME.
+        setup = [
+            f'token_dir="{_GIT_CREDENTIAL_TOKEN_DIR}"',
+            'mkdir -p "$token_dir"',
+            'chmod 700 "$token_dir"',
+            f'helper="{_GIT_CREDENTIAL_HELPER}"',
+            f'printf %s {shlex.quote(helper_script)} > "$helper"',
+            'chmod 700 "$helper"',
+            'printf %s "$HOME"',
+        ]
+        result = await workspace.execute_command(' && '.join(setup), '/')
+        home = _sandbox_home(result)
+        if home is None:
+            _logger.warning(f'Git credential helper setup failed: {result.stderr}')
+            return set()
+
+        commands = [f'helper="{_GIT_CREDENTIAL_HELPER}"']
+        configured: list[str] = []
+        prefixes: set[str] = set()
+        for value, prefix, username, token in targets:
+            token_file = f'{home}/{_GIT_CREDENTIAL_TOKEN_SUBDIR}/{value}.token'
+            if not await self._upload_secret_file(workspace, token_file, token):
+                continue
+            username_key = f'credential.{prefix}.username'
+            helper_key = f'credential.{prefix}.helper'
+            commands += [
+                f'chmod 600 {shlex.quote(token_file)}',
+                f'git config --global {shlex.quote(username_key)} '
+                f'{shlex.quote(username)}',
+                'git config --global --replace-all '
+                f'{shlex.quote(helper_key)} "!\\"$helper\\" {value}"',
+            ]
+            configured.append(f'{value}@{prefix}')
+            prefixes.add(prefix)
+        if not configured:
+            return set()
+        result = await workspace.execute_command(' && '.join(commands), '/')
+        if result.exit_code:
+            _logger.warning(f'Git credential helper setup failed: {result.stderr}')
+            return set()
+        _logger.info(f'Git credential helpers configured for {configured}')
+        return prefixes
 
     async def _configure_marketplace_git_credentials(
         self,
@@ -1154,19 +1471,25 @@ class AppConversationServiceBase(AppConversationService, ABC):
         if pre_commit_command_result.exit_code:
             return
 
+        # File transfers need absolute paths inside the repository.
+        hook_path = f'{project_dir}/{PRE_COMMIT_HOOK}'
+        local_hook_path = f'{project_dir}/{PRE_COMMIT_LOCAL}'
+
         # Check if there's an existing pre-commit hook
-        with tempfile.TemporaryFile(mode='w+t') as temp_file:
-            download_result = await workspace.file_download(
-                PRE_COMMIT_HOOK, str(temp_file)
-            )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            existing_hook = Path(temp_dir) / 'pre-commit'
+            download_result = await workspace.file_download(hook_path, existing_hook)
             if download_result.success:
                 _logger.info('Preserving existing pre-commit hook')
                 # an existing pre-commit hook exists
-                if 'This hook was installed by OpenHands' not in temp_file.read():
+                if (
+                    'This hook was installed by OpenHands'
+                    not in existing_hook.read_text(errors='replace')
+                ):
                     # Move the existing hook to pre-commit.local
                     command = (
-                        f'mv {PRE_COMMIT_HOOK} {PRE_COMMIT_LOCAL} &&'
-                        f'chmod +x {PRE_COMMIT_LOCAL}'
+                        f'mv {shlex.quote(hook_path)} {shlex.quote(local_hook_path)} && '
+                        f'chmod +x {shlex.quote(local_hook_path)}'
                     )
                     mv_chmod_result = await workspace.execute_command(
                         command, project_dir
@@ -1178,13 +1501,18 @@ class AppConversationServiceBase(AppConversationService, ABC):
                         return
 
         # write the pre-commit hook
-        await workspace.file_upload(
+        upload_result = await workspace.file_upload(
             source_path=Path(__file__).parent / 'git' / 'pre-commit.sh',
-            destination_path=PRE_COMMIT_HOOK,
+            destination_path=hook_path,
         )
+        if not upload_result.success:
+            _logger.error(f'Failed to write pre-commit hook: {upload_result.error}')
+            return
 
         # Make the pre-commit hook executable
-        chmod_result = await workspace.execute_command(f'chmod +x {PRE_COMMIT_HOOK}')
+        chmod_result = await workspace.execute_command(
+            f'chmod +x {shlex.quote(hook_path)}', project_dir
+        )
         if chmod_result.exit_code:
             _logger.error(
                 f'Failed to make pre-commit hook executable: {chmod_result.stderr}'
