@@ -80,6 +80,7 @@ from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
     Settings,
@@ -8117,12 +8118,16 @@ class TestBuildAcpStartConversationRequestSecrets:
         request_observability_span_name=None,
         user_email=None,
         azure_devops_access_token=None,
+        provider_connections=None,
     ):
         """Wire user_context and call _build_acp_start_conversation_request."""
         service.user_context.get_user_info = AsyncMock(return_value=user)
         service.user_context.get_user_email = AsyncMock(return_value=user_email)
         service.user_context.get_secrets = AsyncMock(return_value=secrets or {})
         service.user_context.get_provider_tokens = AsyncMock(return_value=None)
+        service.user_context.get_provider_connections = AsyncMock(
+            return_value=provider_connections or ProviderConnections()
+        )
         sandbox = Mock(spec=SandboxInfo)
         return service._build_acp_start_conversation_request(
             user=user,
@@ -8189,7 +8194,10 @@ class TestBuildAcpStartConversationRequestSecrets:
     async def test_acp_request_passes_title_llm_profile(self, service, tmp_path):
         user = self._make_acp_user()
         profiles = LLMProfiles()
-        profiles.save('Titles', LLM(model='anthropic/claude-haiku-3-5'))
+        profiles.save(
+            'Titles',
+            LLM(model='anthropic/claude-haiku-3-5', api_key=SecretStr('sk-titles')),
+        )
         user.llm_profiles = profiles
         user.title_llm_profile = 'Titles'
 
@@ -8205,13 +8213,60 @@ class TestBuildAcpStartConversationRequestSecrets:
         stays the fallback."""
         user = self._make_acp_user()
         profiles = LLMProfiles()
-        profiles.save('Default', LLM(model='openai/gpt-4o'))
+        profiles.save(
+            'Default', LLM(model='openai/gpt-4o', api_key=SecretStr('sk-default'))
+        )
         profiles.active = 'Default'
         user.llm_profiles = profiles
 
         request = await self._call_build(service, user, tmp_path)
 
         assert request.title_llm_profile == 'Default'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('preferred', [True, False])
+    async def test_acp_request_omits_keyless_title_profile(
+        self, service, tmp_path, preferred
+    ):
+        """A profile with no key would 401 every title call in the sandbox (the
+        user authenticates Claude Code with a token, not an API key), so it is
+        not sent; the agent-server then titles from the first message."""
+        user = self._make_acp_user()
+        profiles = LLMProfiles()
+        profiles.save('Keyless', LLM(model='anthropic/claude-sonnet-4-5'))
+        user.llm_profiles = profiles
+        if preferred:
+            user.title_llm_profile = 'Keyless'
+        else:
+            profiles.active = 'Keyless'
+
+        request = await self._call_build(service, user, tmp_path)
+
+        assert request.title_llm_profile is None
+
+    @pytest.mark.asyncio
+    async def test_acp_request_passes_title_profile_keyed_by_connection(
+        self, service, tmp_path
+    ):
+        user = self._make_acp_user()
+        profiles = LLMProfiles()
+        profiles.save(
+            'Linked',
+            LLM(
+                model='anthropic/claude-haiku-3-5', provider_connection_id='eval_proxy'
+            ),
+        )
+        user.llm_profiles = profiles
+        user.title_llm_profile = 'Linked'
+
+        request = await self._call_build(
+            service,
+            user,
+            tmp_path,
+            provider_connections=_eval_proxy_connections(),
+        )
+
+        assert request.title_llm_profile == 'Linked'
 
     @pytest.mark.asyncio
     async def test_acp_request_includes_registered_marketplaces(

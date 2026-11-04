@@ -146,6 +146,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.settings.llm_profiles import (
     detach_provider_connection,
+    has_real_api_key,
     resolve_profile_llm,
 )
 from openhands.app_server.settings.marketplace_composition import (
@@ -3698,7 +3699,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             'user_id': user.id,
             'secrets': secrets,
         }
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = await self._resolve_acp_title_llm_profile(user)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -3708,6 +3709,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if request_observability_span_name:
             create_kwargs['observability_span_name'] = request_observability_span_name
         return conv_settings.create_request(StartConversationRequest, **create_kwargs)
+
+    async def _resolve_acp_title_llm_profile(self, user: UserInfo) -> str | None:
+        """The title profile for an ACP launch, only if it carries a usable key.
+
+        ACP settings have no LLM, so profile seeding has no settings key to fall
+        back on. A keyless profile (e.g. Anthropic, when the user authenticates
+        Claude Code with an OAuth token) would reach the sandbox without
+        credentials and make every title call fail with a missing-key error.
+        """
+        name = _resolve_title_llm_profile(user)
+        if name is None:
+            return None
+        # Imported lazily: settings_router transitively imports this service, so
+        # a module-level import would be circular.
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        resolved = resolve_profile_llm(
+            user.llm_profiles.require(name),
+            managed_proxy_url=LITE_LLM_API_URL,
+            connections=await self.user_context.get_provider_connections(),
+        )
+        return name if has_real_api_key(resolved.api_key) else None
 
     async def _process_pending_messages(
         self,
