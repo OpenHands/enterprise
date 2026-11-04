@@ -84,6 +84,14 @@ To run other published versions, set any of these (shell or `.env`):
 
 For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
 
+If you need help from OpenHands support, run this from the repository root and send us the archive it creates:
+
+```bash
+./scripts/support-bundle.sh
+```
+
+It collects the logs of every container in the stack, including the sandboxes, and the state of the stack. If you start the stack with `-f` options, pass the same options to the script. Keys, secrets and passwords in the compose config are masked. The logs can contain other data from your installation, so look through the archive before you send it. Docker deletes the logs of a container when it removes the container, for example on `docker compose down` or an upgrade, so run the script before you do either.
+
 ### Learn More
 
 - **Documentation**: [https://docs.openhands.dev/enterprise](https://docs.openhands.dev/enterprise)
